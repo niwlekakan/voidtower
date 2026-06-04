@@ -296,6 +296,31 @@ build_from_source() {
   success "Built and installed from source"
 }
 
+# ─── App catalog ──────────────────────────────────────────────────────────────
+install_catalog() {
+  local catalog_dir="/usr/share/voidtower/apps"
+  mkdir -p "$catalog_dir"
+
+  # Prefer local source tree if already cloned by build_from_source
+  local src_catalog
+  src_catalog=$(dirname "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo ".")")/../app-vault/apps
+  if [[ -d "$src_catalog" ]]; then
+    cp "$src_catalog/"*.yml "$catalog_dir/" 2>/dev/null || true
+  else
+    # Download catalog tarball from GitHub (works for binary installs)
+    local tmp_cat; tmp_cat=$(mktemp -d)
+    if curl -fsSL "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" \
+        | tar -xz -C "$tmp_cat" --strip-components=2 --wildcards "*/app-vault/apps/" 2>/dev/null; then
+      cp "$tmp_cat/"*.yml "$catalog_dir/" 2>/dev/null || true
+    fi
+    rm -rf "$tmp_cat"
+  fi
+
+  local count; count=$(ls "$catalog_dir/"*.yml 2>/dev/null | wc -l)
+  [[ "$count" -gt 0 ]] && success "App catalog installed (${count} apps)" \
+                        || warn "App catalog empty — apps will not appear in the vault"
+}
+
 # ─── System setup ────────────────────────────────────────────────────────────
 setup_system() {
   info "Creating directories and system user…"
@@ -332,6 +357,7 @@ ExecStart=${VT_INSTALL_DIR}/${BINARY_NAME} --bind ${VT_BIND} --port ${VT_PORT}${
 Environment=VOIDTOWER_DATA_DIR=${VT_DATA_DIR}
 Environment=VOIDTOWER_CONFIG_DIR=${VT_CONFIG_DIR}
 Environment=VOIDTOWER_FRONTEND_DIR=${VT_INSTALL_DIR}/frontend
+Environment=VOIDTOWER_CATALOG_DIR=/usr/share/voidtower/apps
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -1268,6 +1294,7 @@ main() {
     build_from_source
   fi
 
+  install_catalog
   install_service
   setup_domain
 

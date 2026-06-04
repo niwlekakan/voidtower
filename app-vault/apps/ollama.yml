@@ -12,16 +12,14 @@ compose:
         - "11434:11434"
       volumes:
         - ollama_data:/root/.ollama
+        - ${HOME}/.local/share/voidtower/models:/vt-models:ro
+      runtime: nvidia
       environment:
         - NVIDIA_VISIBLE_DEVICES=all
         - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      deploy:
-        resources:
-          reservations:
-            devices:
-              - driver: nvidia
-                count: all
-                capabilities: [gpu]
+        - OLLAMA_VULKAN=1
+      devices:
+        - /dev/dri:/dev/dri
   volumes:
     ollama_data:
 links:

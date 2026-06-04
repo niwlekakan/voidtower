@@ -33,6 +33,7 @@ pub mod tags;
 pub mod ai;
 pub mod models;
 pub mod storage;
+pub mod system;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -111,9 +112,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/models",              get(models::list_models))
         .route("/api/models/download",     post(models::start_download))
         .route("/api/models/download/:id", get(models::download_status))
-        .route("/api/models/active",       get(models::get_active))
-        .route("/api/models/load",         post(models::load_model))
-        .route("/api/models/:filename",    delete(models::delete_model))
+        .route("/api/models/active",          get(models::get_active))
+        .route("/api/models/load",            post(models::load_model))
+        .route("/api/models/ollama/pull",       post(models::start_ollama_pull))
+        .route("/api/models/ollama/pull/:id",   get(models::get_ollama_pull_status))
+        .route("/api/models/ollama/create",     post(models::start_ollama_create))
+        .route("/api/models/ollama/create/:id", get(models::get_ollama_create_status))
+        .route("/api/models/:filename",       delete(models::delete_model))
         // Proxy manager
         .route("/api/proxy", get(proxy::list).post(proxy::create))
         .route("/api/proxy/nginx-install-cmd", get(proxy::nginx_install_cmd))
@@ -196,6 +201,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/storage/raid/stop",    post(storage::stop_raid))
         .route("/api/storage/format",       post(storage::format_device))
         .route("/api/storage/paths",        get(storage::get_storage_paths).post(storage::set_storage_paths))
+        .route("/api/system/version",       get(system::version))
+        .route("/api/system/update-check",  get(system::update_check))
+        .route("/api/system/restart",       post(system::restart))
+        .route("/api/system/update",        post(system::update))
         .layer(cors)
         .with_state(state)
 }

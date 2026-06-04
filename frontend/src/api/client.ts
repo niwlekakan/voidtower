@@ -307,15 +307,21 @@ export const api = {
   },
 
   models: {
-    list:           () => request<import('./types').ModelFile[]>('/api/models'),
-    startDownload:  (url: string, filename?: string) =>
+    list:             () => request<import('./types').ModelFile[]>('/api/models'),
+    startDownload:    (url: string, filename?: string) =>
       request<{ id: string }>('/api/models/download', { method: 'POST', body: JSON.stringify({ url, filename }) }),
-    downloadStatus: (id: string) => request<import('./types').DownloadStatus>(`/api/models/download/${id}`),
-    deleteModel:    (filename: string) =>
+    downloadStatus:   (id: string) => request<import('./types').DownloadStatus>(`/api/models/download/${id}`),
+    deleteModel:      (filename: string) =>
       request<{ ok: boolean }>(`/api/models/${encodeURIComponent(filename)}`, { method: 'DELETE' }),
-    loadModel:      (filename: string) =>
+    loadModel:        (filename: string) =>
       request<{ ok: boolean }>('/api/models/load', { method: 'POST', body: JSON.stringify({ filename }) }),
-    getActive:      () => request<{ filename: string | null }>('/api/models/active'),
+    getActive:        () => request<{ filename: string | null }>('/api/models/active'),
+    ollamaPull:         (model: string) =>
+      request<{ id: string }>('/api/models/ollama/pull', { method: 'POST', body: JSON.stringify({ model }) }),
+    ollamaPullStatus:   (id: string) => request<import('./types').OllamaPullStatus>(`/api/models/ollama/pull/${id}`),
+    ollamaCreate:       (filename: string) =>
+      request<{ id: string; model_name: string }>('/api/models/ollama/create', { method: 'POST', body: JSON.stringify({ filename }) }),
+    ollamaCreateStatus: (id: string) => request<import('./types').OllamaPullStatus>(`/api/models/ollama/create/${id}`),
   },
 
   vms: {

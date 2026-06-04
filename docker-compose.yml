@@ -1,12 +1,30 @@
 version: "3.9"
 
+# Profiles:
+#   (none)       — VoidTower only
+#   --profile aio — + Odysseus + Voidwatch + companion services (chromadb, searxng, ntfy)
+#   --profile ai  — + Ollama local AI runtime (large; opt-in)
+#
+# Quick start:
+#   docker compose up -d                          # VoidTower only
+#   docker compose --profile aio up -d            # Full AIO stack
+#   docker compose --profile aio --profile ai up -d  # Full stack + Ollama
+
+networks:
+  voidlink:
+    driver: bridge
+
 services:
+
+  # ── VoidTower ─────────────────────────────────────────────────────────────────
   voidtower:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: voidtower
     restart: unless-stopped
+    networks:
+      - voidlink
     ports:
       - "80:80"
       - "443:443"
@@ -17,7 +35,7 @@ services:
       # Mount your own TLS cert/key to skip the self-signed cert:
       # - ./tls/cert.pem:/etc/voidtower/tls/cert.pem:ro
       # - ./tls/key.pem:/etc/voidtower/tls/key.pem:ro
-      # Uncomment to enable Docker management from within VoidTower:
+      # Uncomment to let VoidTower manage Docker containers directly:
       # - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - VOIDTOWER_BIND=0.0.0.0
@@ -32,6 +50,135 @@ services:
       retries: 3
       start_period: 10s
 
+  # ── Odysseus AI Workspace (--profile aio) ─────────────────────────────────────
+  odysseus:
+    profiles: [aio]
+    build:
+      context: https://github.com/niwlekakan/odysseus.git#odysseus-voidlink
+    container_name: odysseus
+    restart: unless-stopped
+    networks:
+      - voidlink
+    ports:
+      - "${ODYSSEUS_BIND:-127.0.0.1}:${ODYSSEUS_PORT:-7000}:7000"
+    volumes:
+      - odysseus-data:/app/data
+      - odysseus-logs:/app/logs
+      - odysseus-huggingface:/app/.cache/huggingface
+      - odysseus-local:/app/.local
+    environment:
+      # Voidwatch — talks to VoidTower over the internal Docker network
+      - VOIDTOWER_URL=http://voidtower:8743
+      - VOIDTOWER_TOKEN=${VOIDWATCH_TOKEN:-}
+      - VOIDWATCH_WEBHOOK_SECRET=${VOIDWATCH_WEBHOOK_SECRET:-}
+      # AI provider — Ollama on the internal network if --profile ai is active,
+      # or point at a host/remote endpoint via OLLAMA_BASE_URL in .env
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - LLM_HOST=${LLM_HOST:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Internal companion services
+      - SEARXNG_INSTANCE=http://searxng:8080
+      - CHROMADB_HOST=chromadb
+      - CHROMADB_PORT=8000
+      - DATABASE_URL=sqlite:///./data/app.db
+      # Auth
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
+      - ODYSSEUS_ADMIN_USER=${ODYSSEUS_ADMIN_USER:-admin}
+      - ODYSSEUS_ADMIN_PASSWORD=${ODYSSEUS_ADMIN_PASSWORD:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,https://localhost}
+      - SECURE_COOKIES=${SECURE_COOKIES:-false}
+      # Runtime
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - CLEANUP_INTERVAL_HOURS=24
+    depends_on:
+      voidtower:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+
+  chromadb:
+    profiles: [aio]
+    image: docker.io/chromadb/chroma:latest
+    container_name: chromadb
+    restart: unless-stopped
+    networks:
+      - voidlink
+    volumes:
+      - chromadb-data:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=FALSE
+
+  searxng:
+    profiles: [aio]
+    image: docker.io/searxng/searxng:2026.5.31-7159b8aed
+    container_name: searxng
+    restart: unless-stopped
+    networks:
+      - voidlink
+    volumes:
+      - searxng-data:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-}
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=5).read(1)\""]
+      interval: 5s
+      timeout: 6s
+      retries: 20
+      start_period: 10s
+
+  ntfy:
+    profiles: [aio]
+    image: docker.io/binwiederhier/ntfy
+    container_name: ntfy
+    command: serve
+    restart: unless-stopped
+    networks:
+      - voidlink
+    volumes:
+      - ntfy-cache:/var/cache/ntfy
+    environment:
+      - NTFY_BASE_URL=${NTFY_BASE_URL:-http://localhost:8091}
+
+  # ── Ollama local AI runtime (--profile ai) ────────────────────────────────────
+  ollama:
+    profiles: [ai]
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    networks:
+      - voidlink
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    # Uncomment for NVIDIA GPU passthrough:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # Uncomment for AMD GPU passthrough:
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # environment:
+    #   - OLLAMA_VULKAN=1
+
 volumes:
   voidtower-data:
   voidtower-config:
+  odysseus-data:
+  odysseus-logs:
+  odysseus-huggingface:
+  odysseus-local:
+  chromadb-data:
+  searxng-data:
+  ntfy-cache:
+  ollama-data:

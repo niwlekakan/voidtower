@@ -23,6 +23,8 @@ Everything else — Jellyfin, Nextcloud, Gitea, Portainer, and 20+ other apps �
 
 ## Quick start — Docker (recommended)
 
+No build required — the image is pulled automatically from GHCR.
+
 ```bash
 # 1. Clone and configure
 git clone -b voidtower-aio https://github.com/niwlekakan/voidtower
@@ -48,6 +50,8 @@ Then open `https://localhost` and complete the [first-run setup](#first-run-setu
 | `docker compose --profile aio --profile ai up -d` | + Ollama local AI |
 
 Homelab apps (Jellyfin, Nextcloud, etc.) are never started by Compose — deploy them from **VoidTower → App Vault**.
+
+The `docker-compose.yml` mounts `/var/run/docker.sock` so VoidTower can manage containers and update itself from the UI. If you prefer not to expose the socket, comment that line out — container management and in-UI updates will be unavailable.
 
 ---
 
@@ -145,6 +149,7 @@ Copy `.env.example` to `.env` before starting. Key variables:
 | `OLLAMA_BASE_URL` | Override Ollama URL (default: `http://ollama:11434` for Docker, `http://localhost:11434` for bare metal) |
 | `ODYSSEUS_PORT` | Host port for Odysseus (default: `7000`) |
 | `PUID` / `PGID` | File ownership for Odysseus data mounts (match your host user) |
+| `VOIDTOWER_IMAGE` | Pin a specific VoidTower image tag (e.g. `ghcr.io/niwlekakan/voidtower:aio-v1.2.3`). Leave unset to use `aio-latest`. |
 
 ---
 
@@ -276,6 +281,35 @@ OLLAMA_BASE_URL=http://192.168.1.5:11434
 
 ---
 
+## Updates
+
+Both installation paths support in-UI updates from **VoidTower → Updates**.
+
+### Docker
+
+The VoidTower image is published to `ghcr.io/niwlekakan/voidtower` on every push to this branch and on release tags. Updates are applied without touching the host.
+
+1. Open **VoidTower → Updates → VoidTower Application**
+2. Click **Check for update** — pulls the latest image manifest in the background
+3. If a newer image is available, click **Apply update** — VoidTower pulls the image and recreates its own container; the UI reconnects automatically when it comes back up
+
+Requires `/var/run/docker.sock` to be mounted (enabled by default in `docker-compose.yml`).
+
+To pin a release, set `VOIDTOWER_IMAGE=ghcr.io/niwlekakan/voidtower:aio-v1.2.3` in `.env` before restarting. Check available tags at `ghcr.io/niwlekakan/voidtower`.
+
+Companion containers (Odysseus, SearXNG, etc.) are updated from the **Docker Images** section on the same page.
+
+### Bare metal
+
+1. Open **VoidTower → Updates → VoidTower Application**
+2. The current commit is compared against the upstream branch — pending commits are listed with authors and dates
+3. Click **Apply update** — VoidTower tags the current commit as a rollback point, pulls from GitHub, rebuilds backend and frontend, and restarts
+4. If something goes wrong, expand **Rollback points** and click **Roll back** to return to a previous build
+
+The **OS Packages** section on the same page lists available package upgrades and can apply them (apt / pacman / dnf).
+
+---
+
 ## Service management
 
 ### Docker
@@ -367,7 +401,7 @@ sudo bash scripts/uninstall.sh --all --purge
 | **Security** | Session list for all users, revoke individual sessions or all-others, full audit log. |
 | **Themes** | 7 built-in themes + custom token editor with live color pickers, 14-param animation editor, randomise button. |
 | **Animated backgrounds** | 7 canvas-based presets (Void, Grid, Aurora, Pulse, Noise, Hex, Circuit) + 4 glass levels. |
-| **System** | In-app updater — checks GitHub for new commits, pulls latest, rebuilds, and restarts automatically. |
+| **System** | In-app updater — Docker mode: checks GHCR for a newer image, applies with container recreation; bare-metal mode: checks upstream branch commits, pulls latest, rebuilds, and restarts. OS package updates (apt/pacman/dnf) with dry-run. Rollback points for bare-metal installs. |
 | **Mobile** | Responsive layout — hamburger sidebar on small screens, touch-friendly targets. |
 
 ---

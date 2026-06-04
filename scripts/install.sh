@@ -164,6 +164,7 @@ download_binary() {
 
   tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
   install -m 755 "$tmp_dir/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
+  echo "${VT_VERSION}" > "${VT_INSTALL_DIR}/.version"
   success "Binary installed to ${VT_INSTALL_DIR}/${BINARY_NAME}"
 }
 
@@ -743,8 +744,8 @@ offer_odysseus() {
   case "${choice:-3}" in
     1)
       local ODYSSEUS_DIR="${VT_INSTALL_DIR}/odysseus"
-      info "Cloning Odysseus…"
-      if git clone --depth 1 https://github.com/pewdiepie-archdaemon/odysseus "$ODYSSEUS_DIR" 2>/dev/null; then
+      info "Cloning Odysseus (VoidLink fork)…"
+      if git clone --depth 1 -b odysseus-voidlink https://github.com/niwlekakan/odysseus "$ODYSSEUS_DIR" 2>/dev/null; then
         local llm_base="http://host.docker.internal:8080"
         cat > "${ODYSSEUS_DIR}/.env" <<ODENV
 OLLAMA_BASE_URL=${llm_base}/v1
@@ -764,7 +765,7 @@ ODENV
           warn "Odysseus failed to start. Check: docker compose -f ${ODYSSEUS_DIR}/docker-compose.yml logs"
         fi
       else
-        warn "Clone failed. Install manually: https://github.com/pewdiepie-archdaemon/odysseus"
+        warn "Clone failed. Install manually: https://github.com/niwlekakan/odysseus (branch: odysseus-voidlink)"
       fi
       ;;
     2)

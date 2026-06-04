@@ -8,6 +8,9 @@ frontend/dist/
 frontend/.vite/
 *.tsbuildinfo
 
+# Dev data (local state, not for VCS)
+backend/dev-data/
+
 # Environment / secrets
 .env
 .env.local

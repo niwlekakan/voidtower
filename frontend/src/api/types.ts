@@ -354,6 +354,16 @@ export interface DownloadStatus {
   error: string | null
 }
 
+export interface OllamaPullStatus {
+  id: string
+  model: string
+  status: 'pulling' | 'done' | 'error'
+  current_layer: string | null
+  total_bytes: number | null
+  pulled_bytes: number | null
+  error: string | null
+}
+
 export interface Tag {
   id: string
   name: string

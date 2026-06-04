@@ -22,6 +22,25 @@ fn downloads() -> &'static Mutex<HashMap<String, DownloadState>> {
     DOWNLOADS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+// ─── Ollama pull state ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OllamaPullState {
+    pub id: String,
+    pub model: String,
+    pub status: String, // "pulling" | "done" | "error"
+    pub current_layer: Option<String>,
+    pub total_bytes: Option<u64>,
+    pub pulled_bytes: Option<u64>,
+    pub error: Option<String>,
+}
+
+static OLLAMA_PULLS: OnceLock<Mutex<HashMap<String, OllamaPullState>>> = OnceLock::new();
+
+fn ollama_pulls() -> &'static Mutex<HashMap<String, OllamaPullState>> {
+    OLLAMA_PULLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -328,4 +347,238 @@ pub async fn load_model(
         .await.map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "ok": true, "model": req.filename })))
+}
+
+// ─── Ollama pull ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct OllamaPullReq { pub model: String }
+
+pub async fn start_ollama_pull(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<OllamaPullReq>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+
+    // Allow letters, digits, colons (tags), hyphens, dots, underscores, slashes (registry)
+    if req.model.is_empty() || !req.model.chars().all(|c| c.is_alphanumeric() || matches!(c, ':' | '-' | '.' | '_' | '/')) {
+        return Err(AppError::BadRequest("Invalid model name".into()));
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    {
+        let mut map = ollama_pulls().lock().unwrap();
+        map.insert(id.clone(), OllamaPullState {
+            id: id.clone(), model: req.model.clone(),
+            status: "pulling".into(),
+            current_layer: Some("Connecting to Ollama…".into()),
+            total_bytes: None, pulled_bytes: None, error: None,
+        });
+    }
+
+    let id2 = id.clone();
+    let model = req.model.clone();
+    tokio::spawn(async move {
+        let result = do_ollama_pull(&id2, &model).await;
+        let mut map = ollama_pulls().lock().unwrap();
+        if let Some(entry) = map.get_mut(&id2) {
+            match result {
+                Ok(_)  => { entry.status = "done".into();  entry.current_layer = Some("Complete".into()); }
+                Err(e) => { entry.status = "error".into(); entry.error = Some(e); }
+            }
+        }
+    });
+
+    Ok(Json(serde_json::json!({ "id": id })))
+}
+
+async fn do_ollama_pull(id: &str, model: &str) -> std::result::Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(7200))
+        .build().map_err(|e| e.to_string())?;
+
+    let resp = client
+        .post("http://localhost:11434/api/pull")
+        .json(&serde_json::json!({ "name": model, "stream": true }))
+        .send().await
+        .map_err(|e| format!("Cannot reach Ollama: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Ollama returned HTTP {}", resp.status()));
+    }
+
+    use futures_util::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(nl) = buf.find('\n') {
+            let line = buf[..nl].trim().to_string();
+            buf = buf[nl + 1..].to_string();
+            if line.is_empty() { continue; }
+
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                let status_msg = v.get("status").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let total     = v.get("total").and_then(|n| n.as_u64());
+                let completed = v.get("completed").and_then(|n| n.as_u64());
+
+                {
+                    let mut map = ollama_pulls().lock().unwrap();
+                    if let Some(entry) = map.get_mut(id) {
+                        entry.current_layer = Some(status_msg.clone());
+                        if total.is_some() {
+                            entry.total_bytes  = total;
+                            entry.pulled_bytes = completed;
+                        }
+                    }
+                }
+
+                if status_msg == "success" { return Ok(()); }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn get_ollama_pull_status(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<OllamaPullState>> {
+    let map = ollama_pulls().lock().unwrap();
+    map.get(&id).cloned().map(Json).ok_or(AppError::NotFound)
+}
+
+// ─── Ollama create (load GGUF into Ollama) ────────────────────────────────────
+
+static OLLAMA_CREATES: OnceLock<Mutex<HashMap<String, OllamaPullState>>> = OnceLock::new();
+
+fn ollama_creates() -> &'static Mutex<HashMap<String, OllamaPullState>> {
+    OLLAMA_CREATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn gguf_to_ollama_name(filename: &str) -> String {
+    filename
+        .trim_end_matches(".gguf")
+        .to_lowercase()
+        .replace(' ', "-")
+}
+
+#[derive(Deserialize)]
+pub struct OllamaCreateReq { pub filename: String }
+
+pub async fn start_ollama_create(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<OllamaCreateReq>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+
+    if req.filename.contains('/') || req.filename.contains("..") || !req.filename.ends_with(".gguf") {
+        return Err(AppError::BadRequest("Invalid filename".into()));
+    }
+
+    // Verify the file exists
+    let dir = models_dir(&state).await;
+    if !dir.join(&req.filename).exists() {
+        return Err(AppError::NotFound);
+    }
+
+    let model_name = gguf_to_ollama_name(&req.filename);
+    let id = uuid::Uuid::new_v4().to_string();
+
+    {
+        let mut map = ollama_creates().lock().unwrap();
+        map.insert(id.clone(), OllamaPullState {
+            id: id.clone(), model: model_name.clone(),
+            status: "pulling".into(),
+            current_layer: Some("Sending to Ollama…".into()),
+            total_bytes: None, pulled_bytes: None, error: None,
+        });
+    }
+
+    let id2 = id.clone();
+    let filename = req.filename.clone();
+    let model_name_spawn = model_name.clone();
+    tokio::spawn(async move {
+        let result = do_ollama_create(&id2, &filename, &model_name_spawn).await;
+        let mut map = ollama_creates().lock().unwrap();
+        if let Some(entry) = map.get_mut(&id2) {
+            match result {
+                Ok(_)  => { entry.status = "done".into();  entry.current_layer = Some("Complete".into()); }
+                Err(e) => { entry.status = "error".into(); entry.error = Some(e); }
+            }
+        }
+    });
+
+    Ok(Json(serde_json::json!({ "id": id, "model_name": model_name })))
+}
+
+async fn do_ollama_create(id: &str, filename: &str, model_name: &str) -> std::result::Result<(), String> {
+    let modelfile = format!("FROM /vt-models/{filename}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(7200))
+        .build().map_err(|e| e.to_string())?;
+
+    let resp = client
+        .post("http://localhost:11434/api/create")
+        .json(&serde_json::json!({ "name": model_name, "modelfile": modelfile, "stream": true }))
+        .send().await
+        .map_err(|e| format!("Cannot reach Ollama: {e}"))?;
+
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Ollama error: {body}"));
+    }
+
+    use futures_util::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(nl) = buf.find('\n') {
+            let line = buf[..nl].trim().to_string();
+            buf = buf[nl + 1..].to_string();
+            if line.is_empty() { continue; }
+
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                    return Err(err.to_string());
+                }
+                let status_msg = v.get("status").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let total     = v.get("total").and_then(|n| n.as_u64());
+                let completed = v.get("completed").and_then(|n| n.as_u64());
+
+                {
+                    let mut map = ollama_creates().lock().unwrap();
+                    if let Some(entry) = map.get_mut(id) {
+                        entry.current_layer = Some(status_msg.clone());
+                        if total.is_some() {
+                            entry.total_bytes  = total;
+                            entry.pulled_bytes = completed;
+                        }
+                    }
+                }
+
+                if status_msg == "success" { return Ok(()); }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn get_ollama_create_status(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<OllamaPullState>> {
+    let map = ollama_creates().lock().unwrap();
+    map.get(&id).cloned().map(Json).ok_or(AppError::NotFound)
 }

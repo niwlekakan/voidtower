@@ -4,7 +4,7 @@ import { api, ApiClientError } from '@/api/client'
 import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
-import { Trash2, UserPlus, Bell, Send, Key, Globe } from 'lucide-react'
+import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch } from 'lucide-react'
 
 export default function SettingsPage() {
   const currentUser = useAuthStore((s) => s.user)
@@ -25,6 +25,9 @@ export default function SettingsPage() {
 
       {/* Notification webhooks — admin/owner only */}
       {isAdmin && <NotificationsSection />}
+
+      {/* System — update + restart */}
+      {isAdmin && <SystemSection />}
 
       {/* Change own password */}
       <AccountSection />
@@ -410,6 +413,109 @@ function NotificationsSection() {
       <Button size="sm" variant="primary" onClick={save} disabled={saving}>
         {saving ? 'Saving…' : 'Save'}
       </Button>
+    </div>
+  )
+}
+
+// ─── System section ───────────────────────────────────────────────────────────
+
+function SystemSection() {
+  const [version, setVersion] = useState<{ commit: string; branch: string; commit_date: string; dirty: boolean } | null>(null)
+  const [check, setCheck] = useState<{ behind: number; ahead: number; can_update: boolean; remote_commit: string } | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [restarting, setRestarting] = useState(false)
+  const [updating, setUpdating] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/system/version', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null).then(setVersion).catch(() => {})
+  }, [])
+
+  const checkUpdates = async () => {
+    setChecking(true)
+    try {
+      const r = await fetch('/api/system/update-check', { credentials: 'include' })
+      if (r.ok) setCheck(await r.json())
+    } finally { setChecking(false) }
+  }
+
+  const doRestart = async () => {
+    if (!confirm('Restart VoidTower now? You will be disconnected briefly.')) return
+    setRestarting(true)
+    try {
+      await fetch('/api/system/restart', { method: 'POST', credentials: 'include' })
+      // Poll until server comes back
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch('/api/system/version', { credentials: 'include' })
+          if (r.ok) { clearInterval(poll); setRestarting(false); notify.success('VoidTower restarted.') }
+        } catch {}
+      }, 1500)
+    } catch { setRestarting(false) }
+  }
+
+  const doUpdate = async () => {
+    if (!confirm('Pull latest from GitHub, rebuild, and restart? This may take a few minutes.')) return
+    setUpdating(true)
+    notify.info('Update started', 'VoidTower will restart when done.')
+    try {
+      await fetch('/api/system/update', { method: 'POST', credentials: 'include' })
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch('/api/system/version', { credentials: 'include' })
+          if (r.ok) { clearInterval(poll); setUpdating(false); setCheck(null); const v = await r.json(); setVersion(v); notify.success('Update complete.') }
+        } catch {}
+      }, 3000)
+    } catch { setUpdating(false) }
+  }
+
+  return (
+    <div className="card space-y-4">
+      <div className="flex items-center gap-2">
+        <GitBranch size={15} style={{ color: 'var(--accent-primary)' }} />
+        <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>System</h2>
+      </div>
+
+      {version && (
+        <div className="flex flex-wrap gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+          <span>Branch: <code style={{ color: 'var(--text-primary)' }}>{version.branch}</code></span>
+          <span>Commit: <code style={{ color: 'var(--text-primary)' }}>{version.commit}</code></span>
+          {version.dirty && <span style={{ color: 'var(--accent-warning, #f59e0b)' }}>● uncommitted changes</span>}
+        </div>
+      )}
+
+      {check && (
+        <div className="rounded px-3 py-2 text-xs" style={{
+          background: check.can_update ? 'var(--accent-warning, #f59e0b)18' : 'var(--accent-success)18',
+          border: `1px solid ${check.can_update ? 'var(--accent-warning, #f59e0b)44' : 'var(--accent-success)44'}`,
+          color: check.can_update ? 'var(--accent-warning, #f59e0b)' : 'var(--accent-success)',
+        }}>
+          {check.can_update
+            ? `${check.behind} new commit${check.behind !== 1 ? 's' : ''} available (${check.remote_commit})`
+            : 'Up to date'}
+          {check.ahead > 0 && ` · ${check.ahead} local commit${check.ahead !== 1 ? 's' : ''} ahead`}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <Button variant="secondary" size="sm" onClick={checkUpdates} disabled={checking}>
+          {checking
+            ? <><RefreshCw size={13} className="animate-spin mr-1.5" />Checking…</>
+            : <><RefreshCw size={13} className="mr-1.5" />Check for updates</>}
+        </Button>
+        {check?.can_update && (
+          <Button variant="secondary" size="sm" onClick={doUpdate} disabled={updating}>
+            {updating
+              ? <><Download size={13} className="animate-spin mr-1.5" />Updating…</>
+              : <><Download size={13} className="mr-1.5" />Update &amp; restart</>}
+          </Button>
+        )}
+        <Button variant="danger" size="sm" onClick={doRestart} disabled={restarting}>
+          {restarting
+            ? <><RefreshCw size={13} className="animate-spin mr-1.5" />Restarting…</>
+            : <><RefreshCw size={13} className="mr-1.5" />Restart VoidTower</>}
+        </Button>
+      </div>
     </div>
   )
 }

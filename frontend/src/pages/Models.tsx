@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  CheckCircle, Download, HardDrive, Loader2, Play, Trash2, XCircle,
+  CheckCircle, Download, HardDrive, Loader2, Play, Trash2, XCircle, CloudDownload,
 } from 'lucide-react'
 import { api } from '@/api/client'
-import type { DownloadStatus, ModelFile } from '@/api/types'
+import type { DownloadStatus, ModelFile, OllamaPullStatus } from '@/api/types'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -145,6 +145,86 @@ function DownloadRow({
   )
 }
 
+// ─── OllamaPullRow ───────────────────────────────────────────────────────────
+
+interface ActivePull { id: string; status: OllamaPullStatus | null }
+
+function OllamaPullRow({ pull, onDone }: { pull: ActivePull; onDone: () => void }) {
+  const [status, setStatus] = useState<OllamaPullStatus | null>(pull.status)
+  const doneNotified = useRef(false)
+
+  useEffect(() => {
+    if (!pull.id) return
+    const interval = setInterval(async () => {
+      try {
+        const s = await api.models.ollamaPullStatus(pull.id)
+        setStatus(s)
+        if (s.status !== 'pulling') {
+          clearInterval(interval)
+          if (!doneNotified.current) { doneNotified.current = true; onDone() }
+        }
+      } catch { clearInterval(interval) }
+    }, 1200)
+    return () => clearInterval(interval)
+  }, [pull.id, onDone])
+
+  if (!status) return null
+
+  const pct = status.total_bytes && status.pulled_bytes != null
+    ? Math.min(100, (status.pulled_bytes / status.total_bytes) * 100)
+    : null
+
+  return (
+    <div
+      className="rounded p-3 space-y-1.5"
+      style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium truncate font-mono" style={{ color: 'var(--text-primary)' }}>
+          {status.model}
+        </span>
+        <span className="text-xs shrink-0" style={{ color: status.status === 'error' ? 'var(--accent-danger)' : 'var(--text-muted)' }}>
+          {status.status === 'done'    && <span style={{ color: 'var(--accent-success)' }}>Done</span>}
+          {status.status === 'error'   && (status.error ?? 'Error')}
+          {status.status === 'pulling' && (
+            pct !== null
+              ? `${formatBytes(status.pulled_bytes!)} / ${formatBytes(status.total_bytes!)} (${pct.toFixed(1)}%)`
+              : (status.current_layer ?? 'Pulling…')
+          )}
+        </span>
+      </div>
+      {status.status === 'pulling' && (
+        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--border-subtle)' }}>
+          <div
+            className="h-full rounded-full transition-all"
+            style={{
+              width: pct !== null ? `${pct.toFixed(1)}%` : '100%',
+              background: 'var(--accent-warning, #f59e0b)',
+              animation: pct === null ? 'pulse 1.5s ease-in-out infinite' : undefined,
+            }}
+          />
+        </div>
+      )}
+      {status.status === 'pulling' && status.current_layer && pct !== null && (
+        <p className="text-xs" style={{ color: 'var(--text-disabled)' }}>{status.current_layer}</p>
+      )}
+    </div>
+  )
+}
+
+// ─── Ollama model presets ─────────────────────────────────────────────────────
+
+const OLLAMA_PRESETS = [
+  { label: 'Llama 3.2 3B',   model: 'llama3.2:3b',         size: '~2.0 GB' },
+  { label: 'Llama 3.2 1B',   model: 'llama3.2:1b',         size: '~1.3 GB' },
+  { label: 'Gemma 3 4B',     model: 'gemma3:4b',           size: '~3.3 GB' },
+  { label: 'Qwen2.5 7B',     model: 'qwen2.5:7b',          size: '~4.7 GB' },
+  { label: 'Mistral 7B',     model: 'mistral:7b',          size: '~4.1 GB' },
+  { label: 'Phi-4 Mini',     model: 'phi4-mini',           size: '~2.5 GB' },
+  { label: 'nomic-embed',    model: 'nomic-embed-text',    size: '~274 MB' },
+  { label: 'DeepSeek-R1 7B', model: 'deepseek-r1:7b',     size: '~4.7 GB' },
+]
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function ModelsPage() {
@@ -157,6 +237,13 @@ export default function ModelsPage() {
   const [filename, setFilename] = useState('')
   const [downloading, setDownloading] = useState(false)
   const [activeDownloads, setActiveDownloads] = useState<ActiveDownload[]>([])
+
+  const [ollamaModel, setOllamaModel] = useState('')
+  const [ollamaPulling, setOllamaPulling] = useState(false)
+  const [activePulls, setActivePulls] = useState<ActivePull[]>([])
+
+  const [activeCreates, setActiveCreates] = useState<ActivePull[]>([])
+  const [creatingModel, setCreatingModel] = useState<string | null>(null)
 
   const [notification, setNotification] = useState<{ text: string; ok: boolean } | null>(null)
   const notifTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -240,10 +327,57 @@ export default function ModelsPage() {
     } else if (status.status === 'error') {
       notify(`Download failed: ${status.error ?? 'unknown error'}`, false)
     }
-    // Keep row visible briefly then clean up
     setTimeout(() => {
       setActiveDownloads(prev => prev.filter(d => d.id !== id))
     }, 4000)
+  }, [notify, fetchModels])
+
+  const handleOllamaPull = async () => {
+    const model = ollamaModel.trim()
+    if (!model) return
+    setOllamaPulling(true)
+    try {
+      const { id } = await api.models.ollamaPull(model)
+      setActivePulls(prev => [...prev, { id, status: null }])
+      setOllamaModel('')
+    } catch (e: any) {
+      notify(e?.message ?? 'Failed to start pull', false)
+    } finally {
+      setOllamaPulling(false)
+    }
+  }
+
+  const handleOllamaPullDone = useCallback((id: string, status: OllamaPullStatus) => {
+    if (status.status === 'done') {
+      notify(`Pulled "${status.model}" successfully.`)
+      fetchModels()
+    } else if (status.status === 'error') {
+      notify(`Pull failed: ${status.error ?? 'unknown error'}`, false)
+    }
+    setTimeout(() => setActivePulls(prev => prev.filter(p => p.id !== id)), 4000)
+  }, [notify, fetchModels])
+
+  const handleOllamaCreate = async (filename: string) => {
+    setCreatingModel(filename)
+    try {
+      const { id, model_name } = await api.models.ollamaCreate(filename)
+      setActiveCreates(prev => [...prev, { id, status: null }])
+      notify(`Loading "${model_name}" into Ollama…`)
+    } catch (e: any) {
+      notify(e?.message ?? 'Failed to load into Ollama', false)
+    } finally {
+      setCreatingModel(null)
+    }
+  }
+
+  const handleOllamaCreateDone = useCallback((id: string, status: OllamaPullStatus) => {
+    if (status.status === 'done') {
+      notify(`"${status.model}" is ready in Ollama.`)
+      fetchModels()
+    } else if (status.status === 'error') {
+      notify(`Load failed: ${status.error ?? 'unknown error'}`, false)
+    }
+    setTimeout(() => setActiveCreates(prev => prev.filter(p => p.id !== id)), 4000)
   }, [notify, fetchModels])
 
   return (
@@ -357,10 +491,18 @@ export default function ModelsPage() {
                           style={{ background: 'var(--accent-primary)22', color: 'var(--accent-primary)', border: '1px solid var(--accent-primary)44' }}
                           title="Load into llama.cpp"
                         >
-                          {loadingModel === m.filename
-                            ? <Loader2 size={11} className="animate-spin" />
-                            : <Play size={11} />}
-                          Load
+                          {loadingModel === m.filename ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
+                          llama.cpp
+                        </button>
+                        <button
+                          disabled={creatingModel === m.filename}
+                          onClick={() => handleOllamaCreate(m.filename)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
+                          style={{ background: 'var(--accent-warning, #f59e0b)22', color: 'var(--accent-warning, #f59e0b)', border: '1px solid var(--accent-warning, #f59e0b)44' }}
+                          title="Import into Ollama"
+                        >
+                          {creatingModel === m.filename ? <Loader2 size={11} className="animate-spin" /> : <CloudDownload size={11} />}
+                          Ollama
                         </button>
                         <button
                           disabled={deletingModel === m.filename}
@@ -369,9 +511,7 @@ export default function ModelsPage() {
                           style={{ background: 'var(--accent-danger)22', color: 'var(--accent-danger)', border: '1px solid var(--accent-danger)44' }}
                           title="Delete model file"
                         >
-                          {deletingModel === m.filename
-                            ? <Loader2 size={11} className="animate-spin" />
-                            : <Trash2 size={11} />}
+                          {deletingModel === m.filename ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
                           Delete
                         </button>
                       </div>
@@ -386,11 +526,93 @@ export default function ModelsPage() {
         )}
       </div>
 
-      {/* Download Model */}
+      {/* Active Ollama imports */}
+      {activeCreates.length > 0 && (
+        <div className="card space-y-2">
+          <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Importing into Ollama</p>
+          {activeCreates.map(pull => (
+            <OllamaPullRow
+              key={pull.id}
+              pull={pull}
+              onDone={() => {
+                api.models.ollamaCreateStatus(pull.id).then(s => handleOllamaCreateDone(pull.id, s)).catch(() => {})
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Pull via Ollama */}
+      <div className="card space-y-5">
+        <div className="flex items-center gap-2">
+          <CloudDownload size={16} style={{ color: 'var(--accent-warning, #f59e0b)' }} />
+          <h2 className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>Pull via Ollama</h2>
+        </div>
+
+        {/* Ollama presets */}
+        <div>
+          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>Popular models — click to fill</p>
+          <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
+            {OLLAMA_PRESETS.map(p => (
+              <button
+                key={p.model}
+                onClick={() => setOllamaModel(p.model)}
+                className="text-left rounded p-3 transition-all hover:opacity-80"
+                style={{
+                  background: ollamaModel === p.model ? 'var(--accent-warning, #f59e0b)22' : 'var(--bg-elevated)',
+                  border: `1px solid ${ollamaModel === p.model ? 'var(--accent-warning, #f59e0b)' : 'var(--border-default)'}`,
+                }}
+              >
+                <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{p.label}</div>
+                <div className="text-xs mt-0.5 font-mono" style={{ color: 'var(--text-muted)' }}>{p.model}</div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-disabled)' }}>{p.size}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Model name input */}
+        <div className="flex gap-2">
+          <input
+            style={{ ...inputStyle, flex: 1 }}
+            placeholder="llama3.2, gemma3:4b, …"
+            value={ollamaModel}
+            onChange={e => setOllamaModel(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleOllamaPull()}
+          />
+          <button
+            onClick={handleOllamaPull}
+            disabled={ollamaPulling || !ollamaModel.trim()}
+            className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
+            style={{ background: 'var(--accent-warning, #f59e0b)', color: 'white', whiteSpace: 'nowrap' }}
+          >
+            {ollamaPulling ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />}
+            Pull
+          </button>
+        </div>
+
+        {/* Active pulls */}
+        {activePulls.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Active Pulls</p>
+            {activePulls.map(pull => (
+              <OllamaPullRow
+                key={pull.id}
+                pull={pull}
+                onDone={() => {
+                  api.models.ollamaPullStatus(pull.id).then(s => handleOllamaPullDone(pull.id, s)).catch(() => {})
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Download Model (GGUF) */}
       <div className="card space-y-5">
         <div className="flex items-center gap-2">
           <Download size={16} style={{ color: 'var(--accent-primary)' }} />
-          <h2 className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>Download Model</h2>
+          <h2 className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>Download GGUF Model</h2>
         </div>
 
         {/* Popular presets */}

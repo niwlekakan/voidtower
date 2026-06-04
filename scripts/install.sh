@@ -483,7 +483,7 @@ download_model() {
 
 install_llama_service() {
   [[ "$HAVE_SYSTEMD" == false || "$SKIP_SYSTEMD" == true ]] && return
-  [[ -f "${VT_INSTALL_DIR}/llama.cpp/llama-server" && -n "$MODEL_PATH" ]] || return
+  [[ -f "${VT_INSTALL_DIR}/llama.cpp/llama-server" && -n "$MODEL_PATH" ]] || return 0
   local N_GPU_LAYERS=0
   [[ "$GPU_VENDOR" != "cpu" ]] && N_GPU_LAYERS=99
   local N_THREADS; N_THREADS=$(nproc 2>/dev/null || echo 4)
@@ -556,7 +556,7 @@ pull_ollama_model() {
 configure_odysseus_for_ollama() {
   local model="$1"
   local env_file="${ODYSSEUS_INSTALL_DIR}/.env"
-  [[ -f "$env_file" ]] || return
+  [[ -f "$env_file" ]] || return 0
 
   # Set or update OLLAMA_BASE_URL and default model
   if grep -q "OLLAMA_BASE_URL" "$env_file" 2>/dev/null; then
@@ -945,7 +945,7 @@ _write_domain_cfg() {
 
 _setup_nginx_voidtower() {
   local domain="$1"
-  _install_nginx || return
+  _install_nginx || return 0
   local sites_dir="/etc/nginx/sites-enabled"
   [[ -d "$sites_dir" ]] || sites_dir="/etc/nginx/conf.d"
   cat > "${sites_dir}/voidtower.conf" <<NGXEOF
@@ -1048,7 +1048,7 @@ setup_ai_legacy() {
 # ─── Bootstrap token ─────────────────────────────────────────────────────────
 show_token() {
   local token_file="${VT_DATA_DIR}/bootstrap.token"
-  [[ -f "$token_file" ]] || return
+  [[ -f "$token_file" ]] || return 0
   local token; token=$(cat "$token_file")
   echo; echo -e "${BOLD}${YELLOW}── Bootstrap Token (shown once) ──${RESET}"
   echo -e "  ${CYAN}${token}${RESET}"
@@ -1201,7 +1201,7 @@ print_summary() {
 # ─── Odysseus offer (interactive, non-integrated path) ────────────────────────
 offer_odysseus() {
   [[ "$WITH_ODYSSEUS" == true ]] && return  # already handled
-  command -v docker &>/dev/null || return
+  command -v docker &>/dev/null || return 0
   echo; echo -e "  ${BOLD}Install Odysseus AI workspace?${RESET}"
   echo -e "  [1] Yes (Docker)  [2] Save custom workspace URL  [3] Skip"
   local choice; read -rp "  Choice [1-3]: " choice

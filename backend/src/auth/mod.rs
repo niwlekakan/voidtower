@@ -253,6 +253,53 @@ pub async fn delete_expired_sessions(pool: &SqlitePool) -> Result<u64> {
     Ok(result.rows_affected())
 }
 
+pub async fn validate_api_token(
+    pool: &SqlitePool,
+    raw_token: &str,
+    required_scope: &str,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(raw_token.as_bytes());
+    let token_hash = hex::encode(h.finalize());
+
+    #[derive(sqlx::FromRow)]
+    struct TokenRow {
+        id: String,
+        user_id: String,
+        scopes: String,
+        expires_at: Option<i64>,
+    }
+
+    let row = sqlx::query_as::<_, TokenRow>(
+        "SELECT id, user_id, scopes, expires_at FROM api_tokens WHERE token_hash = ?",
+    )
+    .bind(&token_hash)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("Invalid token"))?;
+
+    let now = unix_now();
+    if let Some(exp) = row.expires_at {
+        if exp < now {
+            return Err(anyhow::anyhow!("Token expired"));
+        }
+    }
+
+    let scopes: Vec<String> = serde_json::from_str(&row.scopes).unwrap_or_default();
+    if !scopes.iter().any(|s| s == required_scope) {
+        return Err(anyhow::anyhow!("Token missing required scope: {required_scope}"));
+    }
+
+    let _ = sqlx::query("UPDATE api_tokens SET last_used_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(&row.id)
+        .execute(pool)
+        .await;
+
+    Ok(row.user_id)
+}
+
 pub async fn has_any_user(pool: &SqlitePool) -> Result<bool> {
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
         .fetch_one(pool)

@@ -1,0 +1,22 @@
+id: kavita
+name: Kavita
+description: Fast, feature-rich self-hosted digital library for manga, comics & books
+category: media
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    kavita:
+      image: jvmilazz0/kavita:latest
+      restart: unless-stopped
+      ports:
+        - "5001:5000"
+      volumes:
+        - kavita_data:/kavita/config
+        - kavita_books:/books
+  volumes:
+    kavita_data:
+    kavita_books:
+links:
+  home: https://www.kavitareader.com
+  docs: https://wiki.kavitareader.com

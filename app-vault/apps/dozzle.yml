@@ -1,0 +1,18 @@
+id: dozzle
+name: Dozzle
+description: Real-time Docker container log viewer
+category: monitoring
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    dozzle:
+      image: amir20/dozzle:latest
+      restart: unless-stopped
+      ports:
+        - "8888:8080"
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock:ro
+links:
+  home: https://dozzle.dev
+  docs: https://dozzle.dev/guide

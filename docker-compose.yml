@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  voidtower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voidtower
+    restart: unless-stopped
+    ports:
+      - "8743:8743"
+      - "8745:8745"
+    volumes:
+      - voidtower-data:/var/lib/voidtower
+      - voidtower-config:/etc/voidtower
+      # Uncomment to enable Docker management from within VoidTower:
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - VOIDTOWER_BIND=0.0.0.0
+      - VOIDTOWER_PORT=8743
+      - VOIDTOWER_DATA_DIR=/var/lib/voidtower
+      - VOIDTOWER_CONFIG_DIR=/etc/voidtower
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8743/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  voidtower-data:
+  voidtower-config:

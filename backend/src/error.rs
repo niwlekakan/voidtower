@@ -1,0 +1,68 @@
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error("Not found")]
+    NotFound,
+    #[error("Unauthorized")]
+    Unauthorized,
+    #[error("Forbidden")]
+    Forbidden,
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+    #[error("Conflict: {0}")]
+    Conflict(String),
+    #[error("Feature unavailable: {0}")]
+    FeatureUnavailable(String),
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("Internal error: {0}")]
+    Internal(#[from] anyhow::Error),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match &self {
+            AppError::NotFound => (StatusCode::NOT_FOUND, "not_found", self.to_string()),
+            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized", self.to_string()),
+            AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden", self.to_string()),
+            AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone()),
+            AppError::Conflict(m) => (StatusCode::CONFLICT, "conflict", m.clone()),
+            AppError::FeatureUnavailable(m) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "feature_unavailable",
+                m.clone(),
+            ),
+            AppError::Database(e) => {
+                tracing::error!("Database error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "database_error",
+                    "A database error occurred".to_string(),
+                )
+            }
+            AppError::Internal(e) => {
+                tracing::error!("Internal error: {e:#}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "An internal error occurred".to_string(),
+                )
+            }
+        };
+
+        (
+            status,
+            Json(json!({ "error": { "code": code, "message": message } })),
+        )
+            .into_response()
+    }
+}
+
+pub type Result<T> = std::result::Result<T, AppError>;

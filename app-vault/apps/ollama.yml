@@ -1,0 +1,29 @@
+id: ollama
+name: Ollama
+description: Run large language models locally
+category: ai
+version_hint: "latest"
+compose:
+  services:
+    ollama:
+      image: ollama/ollama:latest
+      restart: unless-stopped
+      ports:
+        - "11434:11434"
+      volumes:
+        - ollama_data:/root/.ollama
+      environment:
+        - NVIDIA_VISIBLE_DEVICES=all
+        - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      deploy:
+        resources:
+          reservations:
+            devices:
+              - driver: nvidia
+                count: all
+                capabilities: [gpu]
+  volumes:
+    ollama_data:
+links:
+  home: https://ollama.com
+  docs: https://github.com/ollama/ollama/blob/main/docs/api.md

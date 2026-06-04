@@ -1,0 +1,32 @@
+id: paperless
+name: Paperless-ngx
+description: Document management system
+category: productivity
+version_hint: "latest"
+compose:
+  services:
+    paperless:
+      image: ghcr.io/paperless-ngx/paperless-ngx:latest
+      restart: unless-stopped
+      ports:
+        - "8000:8000"
+      volumes:
+        - paperless_data:/usr/src/paperless/data
+        - paperless_media:/usr/src/paperless/media
+        - paperless_export:/usr/src/paperless/export
+        - paperless_consume:/usr/src/paperless/consume
+      environment:
+        - PAPERLESS_REDIS=redis://paperless-redis:6379
+        - PAPERLESS_SECRET_KEY=change-me-to-a-random-string
+        - PAPERLESS_TIME_ZONE=UTC
+    paperless-redis:
+      image: redis:7-alpine
+      restart: unless-stopped
+  volumes:
+    paperless_data:
+    paperless_media:
+    paperless_export:
+    paperless_consume:
+links:
+  home: https://docs.paperless-ngx.com
+  docs: https://docs.paperless-ngx.com/setup

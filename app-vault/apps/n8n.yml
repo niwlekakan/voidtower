@@ -1,0 +1,24 @@
+id: n8n
+name: n8n
+description: Workflow automation with 400+ integrations
+category: productivity
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    n8n:
+      image: n8nio/n8n:latest
+      restart: unless-stopped
+      ports:
+        - "5678:5678"
+      volumes:
+        - n8n_data:/home/node/.n8n
+      environment:
+        - N8N_BASIC_AUTH_ACTIVE=true
+        - N8N_BASIC_AUTH_USER=admin
+        - N8N_BASIC_AUTH_PASSWORD=changeme
+  volumes:
+    n8n_data:
+links:
+  home: https://n8n.io
+  docs: https://docs.n8n.io

@@ -1,0 +1,20 @@
+id: changedetection
+name: Changedetection.io
+description: Website change detection and restock monitoring
+category: monitoring
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    changedetection:
+      image: ghcr.io/dgtlmoon/changedetection.io:latest
+      restart: unless-stopped
+      ports:
+        - "5000:5000"
+      volumes:
+        - changedetection_data:/datastore
+  volumes:
+    changedetection_data:
+links:
+  home: https://changedetection.io
+  docs: https://github.com/dgtlmoon/changedetection.io/wiki

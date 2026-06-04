@@ -1,0 +1,21 @@
+id: portainer
+name: Portainer
+description: Docker and container management UI
+category: monitoring
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    portainer:
+      image: portainer/portainer-ce:latest
+      restart: unless-stopped
+      ports:
+        - "9000:9000"
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - portainer_data:/data
+  volumes:
+    portainer_data:
+links:
+  home: https://www.portainer.io
+  docs: https://docs.portainer.io

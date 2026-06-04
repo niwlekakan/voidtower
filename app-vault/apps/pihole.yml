@@ -1,0 +1,27 @@
+id: pihole
+name: Pi-hole
+description: Network-wide ad blocker and DNS sinkhole
+category: networking
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    pihole:
+      image: pihole/pihole:latest
+      restart: unless-stopped
+      ports:
+        - "53:53/tcp"
+        - "53:53/udp"
+        - "8053:80"
+      volumes:
+        - pihole_etc:/etc/pihole
+        - pihole_dnsmasq:/etc/dnsmasq.d
+      environment:
+        - TZ=UTC
+        - WEBPASSWORD=changeme
+  volumes:
+    pihole_etc:
+    pihole_dnsmasq:
+links:
+  home: https://pi-hole.net
+  docs: https://docs.pi-hole.net

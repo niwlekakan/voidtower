@@ -1,0 +1,33 @@
+id: searxng
+name: SearXNG
+description: Privacy-respecting metasearch engine — aggregates 70+ sources, no tracking
+category: utilities
+version_hint: "latest"
+compose:
+  services:
+    searxng:
+      image: searxng/searxng:latest
+      restart: unless-stopped
+      ports:
+        - "8888:8080"
+      volumes:
+        - searxng_data:/etc/searxng
+      environment:
+        - SEARXNG_BASE_URL=http://localhost:8888
+        - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-changeme-use-a-random-string}
+      cap_drop:
+        - ALL
+      cap_add:
+        - CHOWN
+        - SETGID
+        - SETUID
+      logging:
+        driver: "json-file"
+        options:
+          max-size: "1m"
+          max-file: "1"
+  volumes:
+    searxng_data:
+links:
+  home: https://searxng.github.io/searxng
+  docs: https://docs.searxng.org

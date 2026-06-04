@@ -1,0 +1,24 @@
+id: freshrss
+name: FreshRSS
+description: Self-hosted RSS aggregator
+category: productivity
+version_hint: "latest"
+compose:
+  services:
+    freshrss:
+      image: freshrss/freshrss:latest
+      restart: unless-stopped
+      ports:
+        - "8082:80"
+      volumes:
+        - freshrss_data:/var/www/FreshRSS/data
+        - freshrss_ext:/var/www/FreshRSS/extensions
+      environment:
+        - TZ=UTC
+        - CRON_MIN=1,31
+  volumes:
+    freshrss_data:
+    freshrss_ext:
+links:
+  home: https://freshrss.org
+  docs: https://freshrss.github.io/FreshRSS/en

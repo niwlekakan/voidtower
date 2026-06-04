@@ -1,0 +1,60 @@
+id: authentik
+name: Authentik
+description: Open-source Identity Provider — SSO, LDAP, OAuth2
+category: security
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    authentik-db:
+      image: postgres:16-alpine
+      restart: unless-stopped
+      volumes:
+        - authentik_db:/var/lib/postgresql/data
+      environment:
+        - POSTGRES_PASSWORD=changeme
+        - POSTGRES_USER=authentik
+        - POSTGRES_DB=authentik
+    authentik-redis:
+      image: redis:alpine
+      restart: unless-stopped
+    authentik-server:
+      image: ghcr.io/goauthentik/server:latest
+      restart: unless-stopped
+      command: server
+      ports:
+        - "9443:9443"
+        - "9080:9000"
+      volumes:
+        - authentik_media:/media
+        - authentik_certs:/certs
+      environment:
+        - AUTHENTIK_REDIS__HOST=authentik-redis
+        - AUTHENTIK_POSTGRESQL__HOST=authentik-db
+        - AUTHENTIK_POSTGRESQL__USER=authentik
+        - AUTHENTIK_POSTGRESQL__NAME=authentik
+        - AUTHENTIK_POSTGRESQL__PASSWORD=changeme
+        - AUTHENTIK_SECRET_KEY=changeme-to-random-string
+      depends_on: [authentik-db, authentik-redis]
+    authentik-worker:
+      image: ghcr.io/goauthentik/server:latest
+      restart: unless-stopped
+      command: worker
+      volumes:
+        - authentik_media:/media
+        - authentik_certs:/certs
+      environment:
+        - AUTHENTIK_REDIS__HOST=authentik-redis
+        - AUTHENTIK_POSTGRESQL__HOST=authentik-db
+        - AUTHENTIK_POSTGRESQL__USER=authentik
+        - AUTHENTIK_POSTGRESQL__NAME=authentik
+        - AUTHENTIK_POSTGRESQL__PASSWORD=changeme
+        - AUTHENTIK_SECRET_KEY=changeme-to-random-string
+      depends_on: [authentik-db, authentik-redis]
+  volumes:
+    authentik_db:
+    authentik_media:
+    authentik_certs:
+links:
+  home: https://goauthentik.io
+  docs: https://docs.goauthentik.io

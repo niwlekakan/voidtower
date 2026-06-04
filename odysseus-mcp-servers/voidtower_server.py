@@ -194,8 +194,13 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
+            name="vt_list_automations",
+            description="List all configured automation jobs with their schedule, last status, and last run time",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
             name="vt_run_automation_job",
-            description="Trigger an automation job immediately",
+            description="Trigger an automation job immediately and wait for its output",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -203,6 +208,65 @@ async def list_tools() -> list[types.Tool]:
                 },
                 "required": ["id"],
             },
+        ),
+        types.Tool(
+            name="vt_get_container_logs",
+            description="Get recent log lines from a Docker container",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Container ID or short ID"},
+                    "tail": {"type": "integer", "default": 100, "description": "Number of lines to return"},
+                },
+                "required": ["id"],
+            },
+        ),
+        types.Tool(
+            name="vt_acknowledge_alert",
+            description="Acknowledge an active infrastructure alert",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Alert ID"},
+                },
+                "required": ["id"],
+            },
+        ),
+        types.Tool(
+            name="vt_resolve_alert",
+            description="Mark an infrastructure alert as resolved",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Alert ID"},
+                },
+                "required": ["id"],
+            },
+        ),
+        types.Tool(
+            name="vt_get_capabilities",
+            description="Detect which tools are installed and available on this system (Docker, nginx, WireGuard, GPU, restic, etc.)",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_get_storage",
+            description="List block storage devices, mount points, and disk health",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_get_network_neighbors",
+            description="List devices on the local network (ARP/LAN scan)",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_list_secrets",
+            description="List secret names and descriptions (values are never returned)",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_get_status_summary",
+            description="Get a high-level health summary: active alerts, failing status checks, and recent failures",
+            inputSchema={"type": "object", "properties": {}},
         ),
     ]
 
@@ -279,8 +343,54 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             case "vt_list_wireguard_peers":
                 return _text(await vt_get("/api/wireguard"))
 
+            case "vt_list_automations":
+                return _text(await vt_get("/api/automation"))
+
             case "vt_run_automation_job":
                 return _text(await vt_post(f"/api/automation/{arguments['id']}/run"))
+
+            case "vt_get_container_logs":
+                tail = arguments.get("tail", 100)
+                data = await vt_get(f"/api/containers/{arguments['id']}/logs", params={"tail": tail})
+                lines = data.get("lines", [])
+                return [types.TextContent(type="text", text="\n".join(lines))]
+
+            case "vt_acknowledge_alert":
+                return _text(await vt_post(f"/api/alerts/{arguments['id']}/acknowledge"))
+
+            case "vt_resolve_alert":
+                return _text(await vt_post(f"/api/alerts/{arguments['id']}/resolve"))
+
+            case "vt_get_capabilities":
+                return _text(await vt_get("/api/capabilities"))
+
+            case "vt_get_storage":
+                devices, mounts = await asyncio.gather(
+                    vt_get("/api/storage/devices"),
+                    vt_get("/api/storage/mounts"),
+                )
+                return _text({"devices": devices, "mounts": mounts})
+
+            case "vt_get_network_neighbors":
+                return _text(await vt_get("/api/network/neighbors"))
+
+            case "vt_list_secrets":
+                return _text(await vt_get("/api/secrets"))
+
+            case "vt_get_status_summary":
+                alerts, checks = await asyncio.gather(
+                    vt_get("/api/alerts", params={"state": "active"}),
+                    vt_get("/api/status-checks"),
+                )
+                alert_list = alerts.get("alerts", alerts) if isinstance(alerts, dict) else alerts
+                check_list = checks.get("checks", checks) if isinstance(checks, dict) else checks
+                failing = [c for c in check_list if isinstance(c, dict) and c.get("last_status") == "down"]
+                return _text({
+                    "active_alerts": len(alert_list),
+                    "alerts": alert_list,
+                    "failing_checks": len(failing),
+                    "failing": failing,
+                })
 
             case _:
                 return _text({"error": f"Unknown tool: {name}"})

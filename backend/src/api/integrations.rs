@@ -55,20 +55,20 @@ pub const ALL_SCOPES: &[(&str, &str)] = &[
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn unix_now() -> i64 {
+pub fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
 }
 
-fn sha256_hex(s: &str) -> String {
+pub fn sha256_hex(s: &str) -> String {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
     hex::encode(h.finalize())
 }
 
-fn generate_api_token() -> String {
+pub fn generate_api_token() -> String {
     let bytes: [u8; 32] = rand::thread_rng().gen();
     format!("vt_{}", hex::encode(bytes))
 }

@@ -155,6 +155,12 @@ pub async fn bootstrap(
         Some(&addr.ip().to_string()), None,
     ).await;
 
+    // Auto-provision Voidwatch token so Odysseus wires itself up without a second installer run
+    let pending_path = state.config.config_dir.join("voidwatch-pending-token");
+    let db2 = state.db.clone();
+    let uid2 = user.id.clone();
+    tokio::spawn(async move { provision_voidwatch(db2, uid2, pending_path).await });
+
     let cookie = Cookie::build(("vt_session", session.id))
         .http_only(true)
         .same_site(SameSite::Strict)
@@ -163,6 +169,40 @@ pub async fn bootstrap(
         .build();
 
     Ok((jar.add(cookie), Json(AuthResponse { user: user.into() })))
+}
+
+async fn provision_voidwatch(db: sqlx::SqlitePool, user_id: String, token_path: std::path::PathBuf) {
+    use crate::api::integrations::{generate_api_token, sha256_hex, unix_now};
+
+    if !std::path::Path::new("/opt/odysseus/app.py").exists() {
+        return;
+    }
+
+    let raw = generate_api_token();
+    let hash = sha256_hex(&raw);
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = unix_now();
+    let scopes = serde_json::json!([
+        "metrics:read","services:read","services:restart","containers:read",
+        "containers:restart","containers:logs","apps:read","apps:restart",
+        "backups:read","backups:run","alerts:read","alerts:ack",
+        "automation:read","automation:run","timeline:read","network:read",
+        "storage:read","diagnostics:read","proxy:read","tags:read",
+        "secrets:list","vms:read"
+    ]).to_string();
+
+    let ok = sqlx::query(
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id).bind(&user_id).bind("voidwatch-integration")
+    .bind(&hash).bind(&scopes).bind::<Option<i64>>(None).bind(now)
+    .execute(&db).await.is_ok();
+
+    if ok {
+        let _ = tokio::fs::write(&token_path, &raw).await;
+        tracing::info!("Voidwatch token provisioned at {:?}", token_path);
+    }
 }
 
 pub async fn health() -> Json<serde_json::Value> {

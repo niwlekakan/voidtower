@@ -29,8 +29,9 @@ VT_PORT="${VT_PORT:-8743}"
 VT_BIND="${VT_BIND:-127.0.0.1}"
 SYSTEMD_DIR="/etc/systemd/system"
 BINARY_NAME="voidtower"
-REPO="elwla/voidtower"
-ODYSSEUS_REPO="pewdiepie-archdaemon/odysseus"
+REPO="niwlekakan/voidtower"
+ODYSSEUS_REPO="niwlekakan/odysseus"
+ODYSSEUS_BRANCH="odysseus-voidlink"
 
 UNATTENDED=false
 SKIP_SYSTEMD=false
@@ -69,6 +70,7 @@ ODYSSEUS_CONFIG_DIR="${ODYSSEUS_CONFIG_DIR:-/etc/odysseus}"
 ODYSSEUS_USER="${ODYSSEUS_USER:-odysseus}"
 VOIDWATCH_TOKEN=""
 VOIDWATCH_WEBHOOK_SECRET=""
+VOIDWATCH_POLICY_FILE="${ODYSSEUS_CONFIG_DIR:-/etc/odysseus}/voidwatch/policy.json"
 OLLAMA_PORT=11434
 
 # ─── Argument parsing ────────────────────────────────────────────────────────
@@ -577,8 +579,8 @@ install_odysseus() {
     if [[ "$OFFLINE" == true ]]; then
       die "Offline mode: Odysseus not found at ${ODYSSEUS_INSTALL_DIR}. Provide a local clone first."
     fi
-    info "Cloning Odysseus…"
-    git clone --depth 1 "https://github.com/${ODYSSEUS_REPO}" "$ODYSSEUS_INSTALL_DIR"
+    info "Cloning Odysseus (${ODYSSEUS_BRANCH})…"
+    git clone --depth 1 --branch "${ODYSSEUS_BRANCH}" "https://github.com/${ODYSSEUS_REPO}" "$ODYSSEUS_INSTALL_DIR"
     success "Odysseus cloned to ${ODYSSEUS_INSTALL_DIR}"
   fi
 

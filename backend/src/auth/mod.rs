@@ -253,6 +253,60 @@ pub async fn delete_expired_sessions(pool: &SqlitePool) -> Result<u64> {
     Ok(result.rows_affected())
 }
 
+pub async fn find_user_by_id(pool: &SqlitePool, id: &str) -> Result<Option<User>> {
+    Ok(sqlx::query_as::<_, User>(
+        "SELECT id, username, password_hash, role, force_password_change, created_at, updated_at
+         FROM users WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Validate a Bearer token without requiring a specific scope.
+/// Updates last_used_at and returns the owner's user_id.
+pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(raw_token.as_bytes());
+    let token_hash = hex::encode(h.finalize());
+
+    #[derive(sqlx::FromRow)]
+    struct Row { id: String, user_id: String, expires_at: Option<i64> }
+
+    let row = sqlx::query_as::<_, Row>(
+        "SELECT id, user_id, expires_at FROM api_tokens WHERE token_hash = ?",
+    )
+    .bind(&token_hash)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("Invalid token"))?;
+
+    let now = unix_now();
+    if let Some(exp) = row.expires_at {
+        if exp < now { return Err(anyhow::anyhow!("Token expired")); }
+    }
+
+    let _ = sqlx::query("UPDATE api_tokens SET last_used_at = ? WHERE id = ?")
+        .bind(now).bind(&row.id).execute(pool).await;
+
+    Ok(row.user_id)
+}
+
+/// Create a short-lived (1 hour) session for API token requests.
+pub async fn create_temp_session(pool: &SqlitePool, user_id: &str) -> Result<(String, i64)> {
+    let id = generate_session_token();
+    let now = unix_now();
+    let expires_at = now + 3600;
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, expires_at, created_at, user_agent) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&id).bind(user_id).bind(expires_at).bind(now).bind("api-token")
+    .execute(pool)
+    .await?;
+    Ok((id, expires_at))
+}
+
 pub async fn validate_api_token(
     pool: &SqlitePool,
     raw_token: &str,

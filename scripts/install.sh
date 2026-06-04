@@ -328,7 +328,9 @@ Wants=network-online.target
 Type=simple
 User=${VT_USER}
 Group=${VT_GROUP}
-ExecStart=${VT_INSTALL_DIR}/${BINARY_NAME} --bind ${VT_BIND} --port ${VT_PORT} --data-dir ${VT_DATA_DIR} --config-dir ${VT_CONFIG_DIR}${EXTRA_FLAGS}
+ExecStart=${VT_INSTALL_DIR}/${BINARY_NAME} --bind ${VT_BIND} --port ${VT_PORT}${EXTRA_FLAGS}
+Environment=VOIDTOWER_DATA_DIR=${VT_DATA_DIR}
+Environment=VOIDTOWER_CONFIG_DIR=${VT_CONFIG_DIR}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

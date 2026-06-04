@@ -310,8 +310,8 @@ install_catalog() {
     # Download catalog tarball from GitHub (works for binary installs)
     local tmp_cat; tmp_cat=$(mktemp -d)
     if curl -fsSL "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" \
-        | tar -xz -C "$tmp_cat" --strip-components=2 --wildcards "*/app-vault/apps/" 2>/dev/null; then
-      cp "$tmp_cat/"*.yml "$catalog_dir/" 2>/dev/null || true
+        | tar -xz -C "$catalog_dir" --strip-components=3 --wildcards "*/app-vault/apps/*.yml" 2>/dev/null; then
+      true  # files extracted directly into catalog_dir
     fi
     rm -rf "$tmp_cat"
   fi

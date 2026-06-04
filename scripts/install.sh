@@ -1050,15 +1050,15 @@ setup_ai_legacy() {
 
 # ─── Bootstrap token ─────────────────────────────────────────────────────────
 show_token() {
-  local token_file="${VT_DATA_DIR}/bootstrap.token"
+  local token_file="${VT_CONFIG_DIR}/bootstrap-token"
   [[ -f "$token_file" ]] || return 0
   local token; token=$(cat "$token_file")
-  echo; echo -e "${BOLD}${YELLOW}── Bootstrap Token (shown once) ──${RESET}"
+  echo; echo -e "${BOLD}${YELLOW}── Bootstrap Token ──${RESET}"
   echo -e "  ${CYAN}${token}${RESET}"
   echo -e "  Use at: http://localhost:${VT_PORT}/bootstrap"
-  echo -e "  Saved:  /root/voidlink-bootstrap-token"
-  echo "${token}" > /root/voidlink-bootstrap-token
-  chmod 600 /root/voidlink-bootstrap-token
+  echo -e "  Saved:  /root/voidtower-bootstrap-token"
+  echo "${token}" > /root/voidtower-bootstrap-token
+  chmod 600 /root/voidtower-bootstrap-token
 }
 
 # ─── Readiness check ──────────────────────────────────────────────────────────
@@ -1150,7 +1150,7 @@ print_summary() {
   echo -e "    URL:    ${CYAN}http://localhost:${VT_PORT}${RESET}"
   [[ -n "$VOIDTOWER_DOMAIN" ]] && echo -e "    Domain: ${CYAN}http://${VOIDTOWER_DOMAIN}${RESET}"
   echo -e "    Setup:  ${CYAN}http://localhost:${VT_PORT}/bootstrap${RESET}"
-  echo -e "    Creds:  ${CYAN}/root/voidlink-bootstrap-token${RESET}"
+  echo -e "    Creds:  ${CYAN}/root/voidtower-bootstrap-token${RESET}"
   echo -e "    Logs:   ${CYAN}journalctl -u voidtower -f${RESET}"
 
   if [[ "$WITH_ODYSSEUS" == true ]]; then
@@ -1271,11 +1271,12 @@ main() {
   # Offer Odysseus interactively (non-integrated path, AI done, Docker available)
   [[ "$AI_SETUP_DONE" == true && "$WITH_ODYSSEUS" != true ]] && offer_odysseus
 
-  # Generate bootstrap token
+  # Generate bootstrap token (token is created on first run and stored in config_dir)
   info "Generating bootstrap token…"
-  sudo -u "$VT_USER" "${VT_INSTALL_DIR}/${BINARY_NAME}" \
-    --data-dir "$VT_DATA_DIR" --config-dir "$VT_CONFIG_DIR" \
-    --show-token 2>/dev/null || true
+  sudo -u "$VT_USER" env \
+    VOIDTOWER_DATA_DIR="$VT_DATA_DIR" \
+    VOIDTOWER_CONFIG_DIR="$VT_CONFIG_DIR" \
+    "${VT_INSTALL_DIR}/${BINARY_NAME}" --show-token 2>/dev/null || true
 
   # Start services
   if [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]]; then

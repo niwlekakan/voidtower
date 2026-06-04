@@ -146,9 +146,9 @@ download_binary() {
 
   if [[ "$VT_VERSION" == "latest" ]]; then
     info "Fetching latest release info…"
-    VT_VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    VT_VERSION=$(curl -fsSL --max-time 15 "https://api.github.com/repos/${REPO}/releases/latest" \
       | grep '"tag_name"' | sed 's/.*"tag_name": *"v\([^"]*\)".*/\1/')
-    [[ -n "$VT_VERSION" ]] || die "Could not determine latest version"
+    [[ -n "$VT_VERSION" ]] || return 1
   fi
 
   local archive="voidtower-${VT_VERSION}-${ARCH}-unknown-linux-musl.tar.gz"
@@ -159,8 +159,8 @@ download_binary() {
   tmp_dir=$(mktemp -d)
   trap "rm -rf $tmp_dir" EXIT
 
-  curl -fsSL --progress-bar "$download_url" -o "$tmp_dir/$archive" || \
-    die "Download failed. Check https://github.com/${REPO}/releases for available versions."
+  curl -fsSL --max-time 120 --progress-bar "$download_url" -o "$tmp_dir/$archive" || \
+    return 1
 
   tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
   install -m 755 "$tmp_dir/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
@@ -185,6 +185,7 @@ build_from_source() {
 
   install -m 755 "$SRC/backend/target/release/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
   cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend"
+  git -C "$SRC" describe --tags --always 2>/dev/null > "${VT_INSTALL_DIR}/.version" || true
   success "Built and installed from source"
 }
 

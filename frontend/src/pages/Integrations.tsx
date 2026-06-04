@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '@/api/client'
 import type { ApiToken, OdysseusConfig } from '@/api/types'
 import { notify } from '@/store/notifications'
@@ -88,7 +89,7 @@ function CreateTokenModal({ scopes, onClose, onCreated }: CreateTokenModalProps)
     }
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-semibold mb-4">Create API token</h3>
@@ -170,7 +171,8 @@ function CreateTokenModal({ scopes, onClose, onCreated }: CreateTokenModalProps)
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -178,7 +180,7 @@ function CreateTokenModal({ scopes, onClose, onCreated }: CreateTokenModalProps)
 // Reveal-once modal shown after token creation
 // ---------------------------------------------------------------------------
 
-function RevealModal({ token, onClose }: { token: string; onClose: () => void }) {
+function RevealModal({ token, onClose, label, note }: { token: string; onClose: () => void; label?: string; note?: string }) {
   const [copied, setCopied] = useState(false)
 
   const copy = () => {
@@ -187,15 +189,15 @@ function RevealModal({ token, onClose }: { token: string; onClose: () => void })
     setTimeout(() => setCopied(false), 2000)
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
       <div className="bg-zinc-900 border border-amber-500/40 rounded-xl p-6 w-full max-w-lg mx-4">
         <div className="flex items-center gap-2 text-amber-400 mb-3">
           <AlertTriangle size={18} />
-          <h3 className="font-semibold">Copy your token now</h3>
+          <h3 className="font-semibold">{label ?? 'Copy your token now'}</h3>
         </div>
         <p className="text-sm text-zinc-400 mb-4">
-          This token will not be shown again. Store it securely — treat it like a password.
+          {note ?? 'This token will not be shown again. Store it securely — treat it like a password.'}
         </p>
         <div className="bg-zinc-800 rounded-lg p-3 font-mono text-xs break-all text-green-400 mb-4 select-all">
           {token}
@@ -216,7 +218,8 @@ function RevealModal({ token, onClose }: { token: string; onClose: () => void })
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -336,6 +339,7 @@ function OdysseusSection() {
   const [cfg, setCfg] = useState<OdysseusConfig | null>(null)
   const [allowedUrl, setAllowedUrl] = useState('')
   const [saving, setSaving] = useState(false)
+  const [revealSecret, setRevealSecret] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -350,7 +354,8 @@ function OdysseusSection() {
   const save = async (patch: Parameters<typeof api.integrations.saveOdysseusConfig>[0]) => {
     setSaving(true)
     try {
-      await api.integrations.saveOdysseusConfig(patch)
+      const resp = await api.integrations.saveOdysseusConfig(patch)
+      if (resp.webhook_secret) setRevealSecret(resp.webhook_secret)
       await load()
       notify.success('Saved')
     } catch (e: any) {
@@ -363,6 +368,7 @@ function OdysseusSection() {
   if (!cfg) return <div className="card p-5 text-sm text-zinc-500">Loading…</div>
 
   return (
+    <>
     <section className="card p-5 space-y-5">
       <div className="flex items-center gap-2">
         <PlugZap size={16} className="text-violet-400" />
@@ -465,6 +471,16 @@ function OdysseusSection() {
         </div>
       </div>
     </section>
+    {revealSecret && createPortal(
+      <RevealModal
+        token={revealSecret}
+        label="Copy your webhook secret"
+        note="This secret will not be shown again. Use it as the Bearer token in the Authorization header when calling POST /api/integrations/webhooks."
+        onClose={() => setRevealSecret(null)}
+      />,
+      document.body,
+    )}
+    </>
   )
 }
 

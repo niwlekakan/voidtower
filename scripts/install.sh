@@ -625,15 +625,28 @@ install_odysseus() {
     return 0
   fi
 
-  # Check for existing install
+  # Check for existing install — must be the right branch, not just any Odysseus clone
+  local needs_clone=true
   if [[ -d "$ODYSSEUS_INSTALL_DIR" && -f "${ODYSSEUS_INSTALL_DIR}/app.py" ]]; then
-    warn "Odysseus already installed at ${ODYSSEUS_INSTALL_DIR} — skipping clone"
-  else
+    local current_branch
+    current_branch=$(git -C "$ODYSSEUS_INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    if [[ "$current_branch" == "$ODYSSEUS_BRANCH" ]]; then
+      info "Odysseus (${ODYSSEUS_BRANCH}) already installed — pulling latest"
+      git -C "$ODYSSEUS_INSTALL_DIR" pull --quiet 2>/dev/null || true
+      needs_clone=false
+    else
+      warn "Odysseus at ${ODYSSEUS_INSTALL_DIR} is on branch '${current_branch}', need '${ODYSSEUS_BRANCH}' — replacing"
+      rm -rf "$ODYSSEUS_INSTALL_DIR"
+    fi
+  fi
+
+  if [[ "$needs_clone" == true ]]; then
     if [[ "$OFFLINE" == true ]]; then
       die "Offline mode: Odysseus not found at ${ODYSSEUS_INSTALL_DIR}. Provide a local clone first."
     fi
     info "Cloning Odysseus (${ODYSSEUS_BRANCH})…"
-    git clone --depth 1 --branch "${ODYSSEUS_BRANCH}" "https://github.com/${ODYSSEUS_REPO}" "$ODYSSEUS_INSTALL_DIR"
+    git clone --depth 1 --branch "${ODYSSEUS_BRANCH}" "https://github.com/${ODYSSEUS_REPO}" "$ODYSSEUS_INSTALL_DIR" \
+      || die "Failed to clone ${ODYSSEUS_REPO}@${ODYSSEUS_BRANCH}"
     success "Odysseus cloned to ${ODYSSEUS_INSTALL_DIR}"
   fi
 

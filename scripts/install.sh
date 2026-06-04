@@ -1346,7 +1346,7 @@ offer_odysseus() {
   local choice; read -rp "  Choice [1-3]: " choice
   case "${choice:-3}" in
     1) local ODYSSEUS_DIR="${VT_INSTALL_DIR}/odysseus"
-       git clone --depth 1 "https://github.com/${ODYSSEUS_REPO}" "$ODYSSEUS_DIR" 2>/dev/null && \
+       git clone --depth 1 --branch "${ODYSSEUS_BRANCH}" "https://github.com/${ODYSSEUS_REPO}" "$ODYSSEUS_DIR" 2>/dev/null && \
          printf 'APP_PORT=7000\nAPP_BIND=127.0.0.1\nAUTH_ENABLED=true\nOLLAMA_BASE_URL=http://host.docker.internal:${OLLAMA_PORT}\n' > "${ODYSSEUS_DIR}/.env" && \
          docker compose -f "${ODYSSEUS_DIR}/docker-compose.yml" up -d 2>/dev/null && \
          success "Odysseus running at http://localhost:7000" || \

@@ -250,7 +250,7 @@ download_binary() {
     info "Fetching latest release info…"
     VT_VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
       | grep '"tag_name"' | sed 's/.*"tag_name": *"v\([^"]*\)".*/\1/')
-    [[ -n "$VT_VERSION" ]] || die "Could not determine latest version"
+    [[ -n "$VT_VERSION" ]] || { warn "No published release found for ${REPO} — will build from source" >&2; return 1; }
   fi
 
   local archive="voidtower-${VT_VERSION}-${ARCH}-unknown-linux-musl.tar.gz"

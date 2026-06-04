@@ -1219,6 +1219,13 @@ offer_odysseus() {
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
+  # When piped via curl | bash, stdin is the pipe. By the time main() runs
+  # bash has the full script in memory, so we can safely reopen /dev/tty for
+  # interactive prompts. Fall back to unattended mode if no terminal exists.
+  if [[ ! -t 0 ]]; then
+    exec 0</dev/tty 2>/dev/null || UNATTENDED=true
+  fi
+
   echo
   echo -e "${BOLD}${CYAN}▓▓▒░ VoidTower Installer ░▒▓▓${RESET}"
   [[ "$WITH_ODYSSEUS" == true ]] && echo -e "     ${CYAN}+ Odysseus AI Workspace${RESET}"

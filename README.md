@@ -234,41 +234,123 @@ Toolpacks live in `voidwatch/toolpacks/` inside the Odysseus install. Add your o
 
 ## TrueNAS Scale
 
-Two deployment paths:
+Two deployment paths depending on how much access you want. Both store all data on your TrueNAS datasets so nothing is lost across app updates.
 
-### Option A — Custom App UI (no SSH required)
+> **Docker control disclaimer:** The TrueNAS Custom App UI (Option A) runs containers through its own Kubernetes layer (k3s) and does **not** expose `/var/run/docker.sock` to containers. This means VoidTower's built-in container management panel (start/stop/restart containers, view logs, exec shell) and the in-UI self-update feature will be unavailable — those features require direct Docker socket access. Everything else works normally: the dashboard, services, backups, proxies, secrets, Voidwatch AI integration, and all other pages. If you need container management, use Option B.
 
-1. **Create a dataset** — Storage → Add Dataset → name it `voidtower`
-2. **Open Custom App** — Apps → Discover Apps → Custom App
-3. **Paste the YAML** from [`deploy/truenas/custom-app.yml`](deploy/truenas/custom-app.yml)
-4. **Add environment variables** (Apps → Custom App → Environment Variables):
+---
 
-   | Variable | Value |
-   |---|---|
-   | `ODYSSEUS_ADMIN_PASSWORD` | your chosen password |
-   | `TRUENAS_POOL` | your pool name (default: `tank`) |
-   | `VOIDWATCH_TOKEN` | fill in after VoidTower bootstrap |
-   | `VOIDWATCH_WEBHOOK_SECRET` | `openssl rand -hex 32` |
+### Option A — Custom App UI
 
-5. **Deploy** — VoidTower is available at `https://<truenas-ip>:8443`
+No SSH required. Uses TrueNAS's built-in app deployment. VoidTower, Odysseus, SearXNG, ChromaDB, and ntfy all start with one click.
 
-> **Port note:** VoidTower uses `8443`/`8080` instead of `443`/`80` to avoid conflicting with the TrueNAS web UI.
+**1. Create a dataset**
 
-> **Docker socket note:** The TrueNAS Custom App UI does not expose the Docker socket, so the in-UI container management and self-update features won't work via this path. Use Option B if you need those.
+Go to **Storage → Add Dataset**, create a dataset named `voidtower` on your pool (e.g. `tank/voidtower`). This is where all persistent data will live.
 
-### Option B — SSH Docker Compose (full features)
+**2. Open Custom App**
 
-SSH into your TrueNAS host and run:
+Go to **Apps → Discover Apps → Custom App**.
+
+**3. Paste the YAML**
+
+Copy the contents of [`deploy/truenas/custom-app.yml`](deploy/truenas/custom-app.yml) into the YAML editor.
+
+**4. Set environment variables**
+
+In the **Environment Variables** section, add:
+
+| Variable | Value |
+|---|---|
+| `ODYSSEUS_ADMIN_PASSWORD` | your chosen password |
+| `TRUENAS_POOL` | your pool name (e.g. `tank`) |
+| `VOIDWATCH_TOKEN` | leave blank — fill in after first login |
+| `VOIDWATCH_WEBHOOK_SECRET` | generate: run `openssl rand -hex 32` in a shell |
+| `SEARXNG_SECRET` | generate: run `openssl rand -hex 32` in a shell |
+
+**5. Deploy**
+
+Click **Install**. TrueNAS will pull the images and start all services.
+
+**6. First login**
+
+Open `https://<truenas-ip>:8443` in your browser and accept the self-signed certificate warning. You will be redirected to the bootstrap page — find your one-time token in the app logs:
+
+```
+Apps → voidtower → Logs → (select voidtower container)
+```
+
+Complete the setup wizard to create your admin account.
+
+**7. Wire Voidwatch**
+
+Once logged in:
+
+1. Go to **Settings → Integrations → API Tokens → New Token**
+2. Create a token with Voidwatch scopes (see [token scopes](#voidwatch-token-scopes))
+3. Go back to **Apps → voidtower → Edit** and set `VOIDWATCH_TOKEN` to the token value
+4. Click **Save** — TrueNAS will restart the Odysseus container automatically
+5. Open `http://<truenas-ip>:7000` → log in to Odysseus → **Settings → Integrations → Voidwatch** → the status should show green
+
+> **Port note:** VoidTower uses `8443` (HTTPS) and `8080` (HTTP) instead of `443`/`80` to avoid conflicting with the TrueNAS web UI. Odysseus is on port `7000`.
+
+---
+
+### Option B — SSH Docker Compose
+
+Full feature access including container management and self-update. Runs Docker directly on the TrueNAS host, bypassing the k3s layer entirely.
+
+**1. SSH into TrueNAS**
 
 ```bash
-git clone -b voidtower-aio https://github.com/niwlekakan/voidtower
-cd voidtower
+ssh admin@<truenas-ip>
+```
+
+**2. Clone and configure**
+
+```bash
+git clone -b voidtower-aio https://github.com/niwlekakan/voidtower /mnt/tank/voidtower-app
+cd /mnt/tank/voidtower-app
 cp deploy/truenas/.env.example .env
-# Edit .env — set ODYSSEUS_ADMIN_PASSWORD and TRUENAS_POOL
+nano .env  # set ODYSSEUS_ADMIN_PASSWORD and TRUENAS_POOL
+```
+
+**3. Start the stack**
+
+```bash
 docker compose -f deploy/truenas/custom-app.yml up -d
 ```
 
-This path gives you Docker socket access (container management + self-update) by uncommenting the socket line in the YAML.
+**4. Enable Docker socket (optional)**
+
+To unlock container management and self-update, uncomment the socket line in `deploy/truenas/custom-app.yml`:
+
+```yaml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock:ro  # uncomment this line
+```
+
+Then restart: `docker compose -f deploy/truenas/custom-app.yml up -d`
+
+**5. First login and Voidwatch setup**
+
+Same as Option A steps 6–7, replacing `Apps → voidtower → Logs` with:
+
+```bash
+docker logs voidtower
+```
+
+---
+
+### Ollama on TrueNAS
+
+Ollama is commented out in the YAML by default (it's a large download and GPU passthrough requires extra config). To enable it:
+
+**Option A:** Edit the app YAML in TrueNAS and uncomment the `ollama` service block, then save and restart.
+
+**Option B:** Uncomment the `ollama` block in `deploy/truenas/custom-app.yml` and run `docker compose ... up -d` again.
+
+For NVIDIA GPU passthrough on TrueNAS Scale, uncomment the `deploy.resources` block under `ollama` and ensure `nvidia-container-toolkit` is installed on the host. See the [GPU / Ollama](#gpu--ollama) section for full details.
 
 ---
 

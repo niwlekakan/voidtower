@@ -1,0 +1,21 @@
+id: nextcloud
+name: Nextcloud
+description: Self-hosted productivity platform
+category: storage
+version_hint: "latest"
+compose:
+  services:
+    nextcloud:
+      image: nextcloud:latest
+      restart: unless-stopped
+      ports:
+        - "8081:80"
+      volumes:
+        - nextcloud_data:/var/www/html
+      environment:
+        - SQLITE_DATABASE=nextcloud
+  volumes:
+    nextcloud_data:
+links:
+  home: https://nextcloud.com
+  docs: https://docs.nextcloud.com

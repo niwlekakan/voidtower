@@ -1,0 +1,47 @@
+id: odysseus
+name: Odysseus
+description: Self-hosted AI workspace — chat, autonomous agents, deep research, document editor
+category: ai
+version_hint: "latest"
+icon: "🧠"
+compose:
+  services:
+    odysseus:
+      build:
+        context: https://github.com/pewdiepie-archdaemon/odysseus.git#main
+      restart: unless-stopped
+      ports:
+        - "7000:7000"
+      volumes:
+        - odysseus_data:/app/data
+        - odysseus_chroma:/app/chroma
+        # Persist HuggingFace model cache to host so models survive container rebuilds
+        - ~/.cache/huggingface:/root/.cache/huggingface:rw
+        # Also expose VoidTower managed models
+        - ~/.local/share/voidtower/models:/models:rw
+      environment:
+        - ODYSSEUS_HOST=0.0.0.0
+        - ODYSSEUS_PORT=7000
+        - ODYSSEUS_DATA_DIR=/app/data
+        - LLM_API_BASE=${LLM_API_BASE:-http://host.docker.internal:8080/v1}
+        - LLM_MODEL=${LLM_MODEL:-default}
+        # Keep HuggingFace cache in the mounted path
+        - HF_HOME=/root/.cache/huggingface
+        # CUDA / GPU visibility for local embedding models (ChromaDB, sentence-transformers)
+        - NVIDIA_VISIBLE_DEVICES=all
+        - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+      deploy:
+        resources:
+          reservations:
+            devices:
+              - driver: nvidia
+                count: all
+                capabilities: [gpu]
+  volumes:
+    odysseus_data: {}
+    odysseus_chroma: {}
+links:
+  home: https://github.com/pewdiepie-archdaemon/odysseus
+  docs: https://github.com/pewdiepie-archdaemon/odysseus/wiki

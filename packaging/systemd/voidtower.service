@@ -1,0 +1,42 @@
+[Unit]
+Description=VoidTower Infrastructure Management
+Documentation=https://github.com/elwla/voidtower
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=voidtower
+Group=voidtower
+ExecStart=/opt/voidtower/voidtower \
+    --bind 127.0.0.1 \
+    --port 8743 \
+    --data-dir /var/lib/voidtower \
+    --config-dir /etc/voidtower
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=voidtower
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/voidtower /etc/voidtower
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

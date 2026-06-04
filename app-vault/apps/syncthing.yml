@@ -1,0 +1,22 @@
+id: syncthing
+name: Syncthing
+description: Continuous file synchronisation across devices
+category: storage
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    syncthing:
+      image: syncthing/syncthing:latest
+      restart: unless-stopped
+      ports:
+        - "8384:8384"
+        - "22000:22000/tcp"
+        - "22000:22000/udp"
+      volumes:
+        - syncthing_data:/var/syncthing
+  volumes:
+    syncthing_data:
+links:
+  home: https://syncthing.net
+  docs: https://docs.syncthing.net

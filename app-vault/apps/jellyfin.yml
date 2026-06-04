@@ -1,0 +1,22 @@
+id: jellyfin
+name: Jellyfin
+description: Free software media server
+category: media
+version_hint: "latest"
+compose:
+  services:
+    jellyfin:
+      image: jellyfin/jellyfin:latest
+      restart: unless-stopped
+      ports:
+        - "8096:8096"
+      volumes:
+        - jellyfin_config:/config
+        - jellyfin_cache:/cache
+        - /media:/media:ro
+  volumes:
+    jellyfin_config:
+    jellyfin_cache:
+links:
+  home: https://jellyfin.org
+  docs: https://jellyfin.org/docs

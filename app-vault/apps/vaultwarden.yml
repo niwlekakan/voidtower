@@ -1,0 +1,22 @@
+id: vaultwarden
+name: Vaultwarden
+description: Unofficial Bitwarden-compatible server
+category: security
+version_hint: "latest"
+compose:
+  services:
+    vaultwarden:
+      image: vaultwarden/server:latest
+      restart: unless-stopped
+      ports:
+        - "8080:80"
+      volumes:
+        - vaultwarden_data:/data
+      environment:
+        - WEBSOCKET_ENABLED=true
+        - SIGNUPS_ALLOWED=false
+  volumes:
+    vaultwarden_data:
+links:
+  home: https://github.com/dani-garcia/vaultwarden
+  docs: https://github.com/dani-garcia/vaultwarden/wiki

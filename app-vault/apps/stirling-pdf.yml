@@ -1,0 +1,23 @@
+id: stirling-pdf
+name: Stirling PDF
+description: Locally hosted PDF manipulation tools — merge, split, convert
+category: productivity
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    stirling-pdf:
+      image: stirlingtools/stirling-pdf:latest
+      restart: unless-stopped
+      ports:
+        - "8484:8080"
+      volumes:
+        - stirling_data:/usr/share/tessdata
+        - stirling_configs:/configs
+      environment:
+        - DOCKER_ENABLE_SECURITY=false
+  volumes:
+    stirling_data: {}
+    stirling_configs: {}
+links:
+  home: https://github.com/Stirling-Tools/Stirling-PDF

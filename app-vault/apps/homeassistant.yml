@@ -1,0 +1,22 @@
+id: homeassistant
+name: Home Assistant
+description: Open-source home automation platform
+category: home
+icon: ""
+version_hint: "stable"
+compose:
+  services:
+    homeassistant:
+      image: ghcr.io/home-assistant/home-assistant:stable
+      restart: unless-stopped
+      network_mode: host
+      volumes:
+        - homeassistant_config:/config
+      environment:
+        - TZ=UTC
+      privileged: true
+  volumes:
+    homeassistant_config:
+links:
+  home: https://www.home-assistant.io
+  docs: https://www.home-assistant.io/docs

@@ -1,0 +1,347 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── VoidTower Design Tokens ──────────────────────────────────────── */
+:root {
+  /* Backgrounds */
+  --bg-root:       #050509;
+  --bg-panel:      #0b0d14;
+  --bg-card:       #11131d;
+  --bg-elevated:   #171a27;
+
+  /* Borders */
+  --border-subtle: #25283a;
+  --border-default:#2f3347;
+  --border-strong: #3d4160;
+
+  /* Text */
+  --text-primary:  #f4f7ff;
+  --text-secondary:#a8b0c3;
+  --text-muted:    #687086;
+  --text-disabled: #3d4160;
+
+  /* Accents */
+  --accent-primary:       #8b5cf6;
+  --accent-primary-hover: #7c3aed;
+  --accent-primary-subtle:rgba(139,92,246,0.12);
+  --accent-secondary:     #06b6d4;
+  --accent-secondary-subtle:rgba(6,182,212,0.12);
+
+  /* Semantic */
+  --accent-success:        #39ff88;
+  --accent-success-subtle: rgba(57,255,136,0.1);
+  --accent-warning:        #f59e0b;
+  --accent-warning-subtle: rgba(245,158,11,0.1);
+  --accent-danger:         #ef4444;
+  --accent-danger-subtle:  rgba(239,68,68,0.1);
+
+  /* Terminal */
+  --terminal-green:  #00ff9c;
+  --terminal-bg:     #020403;
+  --terminal-cursor: #8b5cf6;
+
+  /* Layout */
+  --sidebar-width:           240px;
+  --sidebar-collapsed-width: 56px;
+  --topbar-height:           52px;
+  --radius:                  4px;
+
+  /* Typography */
+  --font-sans:     system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+  --font-mono:     "JetBrains Mono","Fira Code","Cascadia Code","SF Mono",Consolas,monospace;
+
+  /* Glow */
+  --glow-primary: 0 0 24px rgba(139,92,246,0.15);
+  --glow-danger:  0 0 24px rgba(239,68,68,0.2);
+  --glow-success: 0 0 24px rgba(57,255,136,0.15);
+
+  /* Transitions */
+  --t-fast:   100ms ease;
+  --t-normal: 200ms ease;
+}
+
+/* ─── Built-in Themes ───────────────────────────────────────────────── */
+[data-theme="blacksite"] {
+  --bg-root:        #020202;
+  --bg-panel:       #080808;
+  --bg-card:        #0e0e0e;
+  --bg-elevated:    #141414;
+  --border-subtle:  #1e1e1e;
+  --accent-primary: #dc2626;
+  --accent-primary-hover: #b91c1c;
+  --accent-primary-subtle: rgba(220,38,38,0.1);
+  --glow-primary:   0 0 20px rgba(220,38,38,0.15);
+}
+
+[data-theme="ghost-terminal"] {
+  --bg-root:        #000000;
+  --bg-panel:       #020403;
+  --bg-card:        #040705;
+  --bg-elevated:    #060908;
+  --border-subtle:  #0d1f14;
+  --text-primary:   #d7ffe8;
+  --text-secondary: #7cffb2;
+  --accent-primary: #00ff9c;
+  --accent-primary-hover: #00cc7d;
+  --accent-primary-subtle: rgba(0,255,156,0.1);
+  --accent-secondary: #00b8ff;
+  --accent-danger:  #ff3355;
+  --terminal-bg:    #000000;
+  --terminal-green: #00ff9c;
+}
+
+[data-theme="deep-grid"] {
+  --bg-root:        #030316;
+  --bg-panel:       #080825;
+  --bg-card:        #0d0d35;
+  --bg-elevated:    #111145;
+  --border-subtle:  #1e1e6e;
+  --accent-primary: #6366f1;
+  --accent-secondary: #06b6d4;
+}
+
+[data-theme="solar-breach"] {
+  --bg-root:        #0a0600;
+  --bg-panel:       #130c00;
+  --bg-card:        #1a1100;
+  --bg-elevated:    #231600;
+  --border-subtle:  #3d2800;
+  --accent-primary: #f59e0b;
+  --accent-primary-hover: #d97706;
+  --accent-primary-subtle: rgba(245,158,11,0.1);
+  --accent-secondary: #ef4444;
+  --terminal-green: #fbbf24;
+}
+
+[data-theme="light-ops"] {
+  --bg-root:        #f1f5f9;
+  --bg-panel:       #ffffff;
+  --bg-card:        #f8fafc;
+  --bg-elevated:    #e2e8f0;
+  --border-subtle:  #cbd5e1;
+  --border-default: #94a3b8;
+  --text-primary:   #0f172a;
+  --text-secondary: #475569;
+  --text-muted:     #94a3b8;
+  --accent-primary: #7c3aed;
+  --terminal-bg:    #1e293b;
+}
+
+[data-theme="high-contrast"] {
+  --bg-root:        #000000;
+  --bg-panel:       #000000;
+  --bg-card:        #111111;
+  --bg-elevated:    #222222;
+  --border-subtle:  #ffffff;
+  --border-default: #ffffff;
+  --text-primary:   #ffffff;
+  --text-secondary: #ffffff;
+  --text-muted:     #cccccc;
+  --accent-primary: #ffff00;
+  --accent-secondary: #00ffff;
+  --accent-success: #00ff00;
+  --accent-warning: #ffaa00;
+  --accent-danger:  #ff0000;
+}
+
+/* ─── Base Styles ───────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* html background paints the canvas BEFORE z-index:-1 fixed elements,
+     so AnimatedBackground renders on top of this color rather than being buried under it */
+  background-color: var(--bg-root);
+  -webkit-font-smoothing: antialiased;
+}
+
+body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* transparent so the fixed AnimatedBackground div at z-index:-1 shows through */
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-panel); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Focus ring */
+:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+
+/* Selection */
+::selection { background: var(--accent-primary-subtle); color: var(--text-primary); }
+
+/* ─── Utility Classes ───────────────────────────────────────────────── */
+.font-mono { font-family: var(--font-mono); }
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot.active   { background: var(--accent-success); box-shadow: 0 0 6px var(--accent-success); }
+.status-dot.inactive { background: var(--text-muted); }
+.status-dot.failed   { background: var(--accent-danger); box-shadow: 0 0 6px var(--accent-danger); }
+.status-dot.warning  { background: var(--accent-warning); }
+
+/* Panel */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+
+/* Card */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+/* Glow effects */
+.glow-primary { box-shadow: var(--glow-primary); }
+.glow-danger  { box-shadow: var(--glow-danger); }
+
+/* Animated gradient for loading states */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-card) 25%,
+    var(--bg-elevated) 50%,
+    var(--bg-card) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius);
+}
+
+/* Danger zone */
+.danger-zone {
+  border: 1px solid var(--accent-danger);
+  border-radius: var(--radius);
+  padding: 16px;
+  background: var(--accent-danger-subtle);
+}
+
+/* xterm.js override for VoidTower theme */
+.xterm { padding: 8px; }
+.xterm .xterm-viewport { background-color: var(--terminal-bg) !important; }
+
+/* ─── Glass / Acrylic Effects ─────────────────────────────────────── */
+/* Applied via data-glass attribute on <body> */
+
+/* blur — subtle frosted look */
+body[data-glass="blur"] .panel,
+body[data-glass="blur"] .card,
+body[data-glass="blur"] aside,
+body[data-glass="blur"] header {
+  backdrop-filter: blur(12px) saturate(1.5);
+  -webkit-backdrop-filter: blur(12px) saturate(1.5);
+  background: rgba(11, 13, 20, 0.72) !important;
+  border-color: rgba(255,255,255,0.06) !important;
+}
+
+/* acrylic — Windows-style layered blur with light scatter */
+body[data-glass="acrylic"] .panel,
+body[data-glass="acrylic"] .card,
+body[data-glass="acrylic"] aside,
+body[data-glass="acrylic"] header {
+  backdrop-filter: blur(20px) saturate(1.9) brightness(1.05);
+  -webkit-backdrop-filter: blur(20px) saturate(1.9) brightness(1.05);
+  background: rgba(11, 13, 20, 0.55) !important;
+  border-color: rgba(255,255,255,0.10) !important;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), 0 4px 24px rgba(0,0,0,0.4);
+}
+body[data-glass="acrylic"] .panel::before,
+body[data-glass="acrylic"] .card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") center/200px;
+  opacity: 0.03;
+  pointer-events: none;
+}
+body[data-glass="acrylic"] .panel,
+body[data-glass="acrylic"] .card { position: relative; }
+
+/* frosted — macOS-style heavy diffusion */
+body[data-glass="frosted"] .panel,
+body[data-glass="frosted"] .card,
+body[data-glass="frosted"] aside,
+body[data-glass="frosted"] header {
+  backdrop-filter: blur(40px) saturate(1.2) brightness(0.92);
+  -webkit-backdrop-filter: blur(40px) saturate(1.2) brightness(0.92);
+  background: rgba(11, 13, 20, 0.40) !important;
+  border-color: rgba(255,255,255,0.14) !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+/* All background presets are now canvas-based — no CSS rules needed here */
+
+/* ─── Mobile / Responsive ───────────────────────────────────────────── */
+@media (max-width: 768px) {
+  :root {
+    --sidebar-width: 100vw;
+    --sidebar-collapsed-width: 0px;
+  }
+
+  /* Sidebar becomes an overlay drawer */
+  aside.vt-sidebar {
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    width: 240px !important;
+  }
+  body.mobile-nav-open aside.vt-sidebar {
+    transform: translateX(0);
+    box-shadow: 4px 0 32px rgba(0,0,0,0.6);
+  }
+
+  /* Main content always full width on mobile */
+  .vt-main {
+    width: 100% !important;
+    min-width: 0;
+  }
+
+  /* Compact cards on mobile */
+  .card, .panel {
+    border-radius: 6px;
+  }
+
+  /* Tables scroll horizontally */
+  .overflow-auto table {
+    min-width: 540px;
+  }
+
+  /* Bigger tap targets */
+  button, a {
+    min-height: 36px;
+  }
+
+  /* Hide collapsed sidebar entirely on mobile */
+  aside[style*="--sidebar-collapsed-width"] {
+    display: none;
+  }
+}

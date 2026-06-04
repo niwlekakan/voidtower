@@ -1,0 +1,24 @@
+id: mealie
+name: Mealie
+description: Self-hosted recipe manager with meal planning
+category: home
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    mealie:
+      image: ghcr.io/mealie-recipes/mealie:latest
+      restart: unless-stopped
+      ports:
+        - "9925:9000"
+      volumes:
+        - mealie_data:/app/data
+      environment:
+        - PUID=1000
+        - PGID=1000
+        - TZ=UTC
+  volumes:
+    mealie_data:
+links:
+  home: https://mealie.io
+  docs: https://docs.mealie.io

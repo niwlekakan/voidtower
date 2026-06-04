@@ -1,0 +1,38 @@
+id: immich
+name: Immich
+description: Self-hosted photo and video backup
+category: media
+version_hint: "latest"
+compose:
+  services:
+    immich-server:
+      image: ghcr.io/immich-app/immich-server:release
+      restart: unless-stopped
+      ports:
+        - "2283:3001"
+      volumes:
+        - immich_upload:/usr/src/app/upload
+      environment:
+        - DB_HOSTNAME=immich-db
+        - DB_USERNAME=immich
+        - DB_PASSWORD=immich
+        - DB_DATABASE_NAME=immich
+        - REDIS_HOSTNAME=immich-redis
+    immich-db:
+      image: registry.hub.docker.com/tensorchord/pgvecto-rs:pg14-v0.2.0
+      restart: unless-stopped
+      environment:
+        - POSTGRES_USER=immich
+        - POSTGRES_PASSWORD=immich
+        - POSTGRES_DB=immich
+      volumes:
+        - immich_db:/var/lib/postgresql/data
+    immich-redis:
+      image: redis:6-alpine
+      restart: unless-stopped
+  volumes:
+    immich_upload:
+    immich_db:
+links:
+  home: https://immich.app
+  docs: https://immich.app/docs

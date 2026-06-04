@@ -1,0 +1,39 @@
+# Rust
+/backend/target/
+**/*.rs.bk
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+bootstrap-token
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Editor
+.vscode/settings.json
+.idea/
+*.suo
+*.user
+
+# Build artifacts
+dist/
+build/
+release/
+*.deb
+*.rpm
+*.tar.gz
+*.tar.xz

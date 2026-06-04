@@ -1,0 +1,22 @@
+id: grafana
+name: Grafana
+description: Analytics and monitoring dashboards
+category: monitoring
+icon: ""
+version_hint: "latest"
+compose:
+  services:
+    grafana:
+      image: grafana/grafana:latest
+      restart: unless-stopped
+      ports:
+        - "3001:3000"
+      volumes:
+        - grafana_data:/var/lib/grafana
+      environment:
+        - GF_SECURITY_ADMIN_PASSWORD=changeme
+  volumes:
+    grafana_data:
+links:
+  home: https://grafana.com
+  docs: https://grafana.com/docs

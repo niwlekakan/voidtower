@@ -1,0 +1,19 @@
+id: uptime-kuma
+name: Uptime Kuma
+description: Self-hosted monitoring tool
+category: monitoring
+version_hint: "latest"
+compose:
+  services:
+    uptime-kuma:
+      image: louislam/uptime-kuma:latest
+      restart: unless-stopped
+      ports:
+        - "3001:3001"
+      volumes:
+        - uptime_kuma_data:/app/data
+  volumes:
+    uptime_kuma_data:
+links:
+  home: https://uptime.kuma.pet
+  docs: https://github.com/louislam/uptime-kuma/wiki

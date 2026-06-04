@@ -1,0 +1,24 @@
+id: gitea
+name: Gitea
+description: Self-hosted Git service
+category: dev
+icon: https://gitea.io/images/gitea.png
+version_hint: "latest"
+compose:
+  services:
+    gitea:
+      image: gitea/gitea:latest
+      restart: unless-stopped
+      ports:
+        - "3000:3000"
+        - "2222:22"
+      volumes:
+        - gitea_data:/data
+      environment:
+        - USER_UID=1000
+        - USER_GID=1000
+  volumes:
+    gitea_data:
+links:
+  home: https://gitea.io
+  docs: https://docs.gitea.com

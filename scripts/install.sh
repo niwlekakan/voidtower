@@ -275,10 +275,22 @@ build_from_source() {
   command -v npm   >/dev/null 2>&1 || die "npm not found. Install Node.js: https://nodejs.org"
 
   local SRC; SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+  # When piped via curl | bash, BASH_SOURCE[0] is empty so SRC resolves to the
+  # current directory which has no source tree — clone the repo instead.
+  if [[ ! -d "$SRC/frontend" || ! -d "$SRC/backend" ]]; then
+    info "Cloning VoidTower source…"
+    SRC=$(mktemp -d)
+    git clone --depth 1 --branch voidtower-aio "https://github.com/${REPO}" "$SRC" \
+      || die "Failed to clone ${REPO}"
+  fi
+
   info "Building frontend…"
-  (cd "$SRC/frontend" && npm ci --silent && npm run build --silent)
+  (cd "$SRC/frontend" && npm ci --silent && npm run build --silent) \
+    || die "Frontend build failed"
   info "Building backend…"
-  (cd "$SRC/backend" && cargo build --release --quiet)
+  (cd "$SRC/backend" && cargo build --release --quiet) \
+    || die "Backend build failed"
   install -m 755 "$SRC/backend/target/release/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
   cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend"
   success "Built and installed from source"

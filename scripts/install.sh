@@ -1434,8 +1434,8 @@ main() {
 
   show_token
 
-  # Voidwatch wiring (after both services are up)
-  [[ "$WITH_VOIDWATCH" == true ]] && configure_voidwatch
+  # Voidwatch is auto-wired by voidwatch-configure.service after bootstrap —
+  # no manual configure_voidwatch call needed here.
 
   run_readiness_check
   print_summary

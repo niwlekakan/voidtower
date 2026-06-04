@@ -368,11 +368,175 @@ POST /api/system/restart           Graceful restart (responds before exit)
 POST /api/system/update            git pull + rebuild + restart
 ```
 
+### Integrations
+```
+GET  /api/integrations/scopes                    List all available token scopes
+GET  /api/integrations/tokens                    List API tokens (admin+)
+POST /api/integrations/tokens                    Create token  { name, scopes[], expires_days? }
+DELETE /api/integrations/tokens/:id              Revoke token
+GET  /api/integrations/odysseus/config           Get Odysseus integration config
+POST /api/integrations/odysseus/config           Update config { enabled?, mcp_enabled?, allowed_url?, regenerate_webhook_secret?, emergency_disable? }
+GET  /api/integrations/odysseus/manifest         Tool manifest (public, no auth)
+GET  /api/integrations/events                    SSE event stream (Bearer token or ?token=)
+POST /api/integrations/webhooks                  Webhook receiver (Bearer webhook-secret)
+GET  /api/integrations/actions                   Recent agent-triggered audit entries
+```
+
 ### Capabilities & diagnostics
 ```
 GET /api/capabilities
 GET /api/diagnostics
 ```
+
+---
+
+## Odysseus integration
+
+VoidTower can act as the infrastructure control plane for [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus), giving AI agents scoped, audited access to your homelab.
+
+### 1 — Enable the integration
+
+Open **Settings → Integrations**, toggle **Enable integration**, and save. While disabled, all API tokens and the event stream are rejected.
+
+### 2 — Create an API token
+
+1. Click **New token** in the Integrations page.
+2. Give it a name (e.g. `Odysseus Agent`).
+3. Select the scopes you want to grant. Start with the minimum needed:
+   - `metrics:read` — dashboards and health checks
+   - `services:read` / `services:restart` — service management
+   - `containers:read` / `containers:restart` / `containers:logs` — Docker
+   - `alerts:read` / `alerts:ack` — alert triage
+   - `automation:read` / `automation:run` — trigger automations
+4. Set an expiry (90 days recommended) and click **Create token**.
+5. Copy the token from the reveal dialog — **it is shown only once**.
+
+Tokens are authenticated via the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer vt_<your-token>" \
+  http://localhost:8743/api/metrics/current
+```
+
+All token use is audit-logged under `actor_type = 'agent'` and visible in the **Recent AI-triggered actions** section of the Integrations page.
+
+### 3 — Subscribe to the event stream
+
+The event stream is a standard [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) endpoint. It emits:
+
+| Event | When |
+|---|---|
+| `metrics` | Every metrics broadcast (~1 s) — CPU, RAM totals |
+| `alert` | CPU > 90 % or RAM > 90 % threshold crossed |
+| `audit` | New audit log entries (polled every 10 s) |
+| `ping` | Heartbeat every 10 s |
+
+**Subscribe with curl:**
+
+```bash
+curl -N \
+  -H "Accept: text/event-stream" \
+  -H "Authorization: Bearer vt_<your-token>" \
+  http://localhost:8743/api/integrations/events
+```
+
+**Subscribe with a query-string token** (useful when the client cannot set custom headers, e.g. browser `EventSource`):
+
+```bash
+curl -N "http://localhost:8743/api/integrations/events?token=vt_<your-token>"
+```
+
+```js
+// Browser EventSource
+const es = new EventSource(`/api/integrations/events?token=${TOKEN}`)
+es.addEventListener('metrics', e => console.log(JSON.parse(e.data)))
+es.addEventListener('alert',   e => console.warn('Threshold crossed', JSON.parse(e.data)))
+es.addEventListener('audit',   e => console.log('Audit', JSON.parse(e.data)))
+```
+
+The required scope is `alerts:read`. A session cookie is also accepted instead of a token.
+
+### 4 — Configure the webhook secret
+
+The webhook endpoint lets external systems (including Odysseus) trigger VoidTower automations over HTTP.
+
+1. In **Settings → Integrations**, click **Regenerate** next to *Webhook secret*.
+2. The full secret is shown only once — copy it now.
+3. Use it as a Bearer token in the `Authorization` header of every webhook call.
+
+### 5 — Trigger an automation via webhook
+
+First, find the automation ID from **GET /api/automation** or the Automation page URL.
+
+**Trigger immediately:**
+
+```bash
+curl -X POST http://localhost:8743/api/integrations/webhooks \
+  -H "Authorization: Bearer <webhook-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"automation_id": "<id>"}'
+```
+
+**Dry run** (validates the request and logs the attempt without executing):
+
+```bash
+curl -X POST http://localhost:8743/api/integrations/webhooks \
+  -H "Authorization: Bearer <webhook-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"automation_id": "<id>", "dry_run": true}'
+```
+
+Response:
+
+```json
+{ "ok": true, "dry_run": false, "automation_id": "<id>" }
+```
+
+The automation runs in the background. Check its result via:
+
+```bash
+curl -H "Authorization: Bearer vt_<token>" \
+  http://localhost:8743/api/automation/<id>/runs
+```
+
+Webhook calls are audit-logged with `actor_type = 'agent'` and `action = integrations.webhook.automation_trigger`.
+
+### 6 — Fetch the tool manifest
+
+The manifest describes every action available to AI agents — their required scope, risk level, and API endpoint — so Odysseus (or any agent framework) can discover what VoidTower can do without reading this README:
+
+```bash
+curl http://localhost:8743/api/integrations/odysseus/manifest
+```
+
+This endpoint is public (no authentication required). When the integration is disabled it returns an empty tool list.
+
+### Token scopes reference
+
+| Scope | What it grants |
+|---|---|
+| `metrics:read` | CPU, RAM, disk and network metrics |
+| `services:read` | List systemd services |
+| `services:restart` | Start, stop, restart services |
+| `containers:read` | List Docker containers and images |
+| `containers:restart` | Start, stop, restart containers |
+| `containers:logs` | Read container log output |
+| `apps:read` | List deployed App Vault apps |
+| `apps:deploy` | Deploy apps from the catalog |
+| `backups:read` | List backup jobs and snapshots |
+| `backups:run` | Trigger a backup job |
+| `alerts:read` | List alerts and status checks |
+| `alerts:ack` | Acknowledge or resolve alerts |
+| `automation:read` | List jobs and run history |
+| `automation:run` | Trigger automation jobs |
+| `timeline:read` | Read the audit timeline |
+| `network:read` | Network interfaces and LAN neighbours |
+| `files:read` | Browse and read files |
+| `storage:read` | Storage devices and mounts |
+
+### Emergency disable
+
+If you need to immediately cut all AI agent access without revoking individual tokens, click **Disable all AI access** in the Integrations page. This blocks every API token and SSE connection instantly. Tokens are preserved and can be re-activated by clicking **Re-enable**.
 
 ---
 

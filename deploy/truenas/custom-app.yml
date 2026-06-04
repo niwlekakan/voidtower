@@ -1,0 +1,129 @@
+# VoidTower AIO — TrueNAS Scale Custom App
+#
+# How to deploy:
+#   1. Create a dataset:  Storage → Add Dataset → name it "voidtower"
+#   2. Go to:            Apps → Discover Apps → Custom App
+#   3. Paste this file into the YAML editor
+#   4. Set environment variables below (ODYSSEUS_ADMIN_PASSWORD at minimum)
+#   5. Click Install
+#
+# VoidTower is on port 8443 (HTTPS) and 8080 (HTTP) to avoid conflict
+# with the TrueNAS web UI which owns 443 and 80.
+#
+# ── After first start ────────────────────────────────────────────────────────
+#   1. Open https://<truenas-ip>:8443  (accept the self-signed cert warning)
+#   2. You will be redirected to /bootstrap — check the app logs for your token:
+#      Apps → voidtower → Logs → voidtower
+#   3. Complete setup, then go to Settings → Integrations → API Tokens
+#      to create a Voidwatch token for Odysseus.
+
+networks:
+  voidlink:
+    driver: bridge
+
+services:
+
+  voidtower:
+    image: ${VOIDTOWER_IMAGE:-ghcr.io/niwlekakan/voidtower:aio-latest}
+    container_name: voidtower
+    restart: unless-stopped
+    networks: [voidlink]
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - /mnt/${TRUENAS_POOL:-tank}/voidtower/data:/var/lib/voidtower
+      - /mnt/${TRUENAS_POOL:-tank}/voidtower/config:/etc/voidtower
+    environment:
+      - VOIDTOWER_BIND=0.0.0.0
+      - VOIDTOWER_PORT=8743
+      - VOIDTOWER_DATA_DIR=/var/lib/voidtower
+      - VOIDTOWER_CONFIG_DIR=/etc/voidtower
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  chromadb:
+    image: docker.io/chromadb/chroma:latest
+    container_name: chromadb
+    restart: unless-stopped
+    networks: [voidlink]
+    volumes:
+      - /mnt/${TRUENAS_POOL:-tank}/voidtower/chromadb:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=FALSE
+
+  searxng:
+    image: docker.io/searxng/searxng:2026.5.31-7159b8aed
+    container_name: searxng
+    restart: unless-stopped
+    networks: [voidlink]
+    volumes:
+      - /mnt/${TRUENAS_POOL:-tank}/voidtower/searxng:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-}
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+
+  ntfy:
+    image: docker.io/binwiederhier/ntfy
+    container_name: ntfy
+    command: serve
+    restart: unless-stopped
+    networks: [voidlink]
+    volumes:
+      - /mnt/${TRUENAS_POOL:-tank}/voidtower/ntfy:/var/cache/ntfy
+    environment:
+      - NTFY_BASE_URL=http://localhost
+
+  odysseus:
+    image: ${ODYSSEUS_IMAGE:-ghcr.io/niwlekakan/odysseus:voidlink-latest}
+    container_name: odysseus
+    restart: unless-stopped
+    networks: [voidlink]
+    ports:
+      - "7000:7000"
+    volumes:
+      - /mnt/${TRUENAS_POOL:-tank}/voidtower/odysseus/data:/app/data
+      - /mnt/${TRUENAS_POOL:-tank}/voidtower/odysseus/logs:/app/logs
+      - /mnt/${TRUENAS_POOL:-tank}/voidtower/odysseus/hf:/app/.cache/huggingface
+    environment:
+      - VOIDTOWER_URL=http://voidtower:8743
+      - VOIDTOWER_TOKEN=${VOIDWATCH_TOKEN:-}
+      - VOIDWATCH_WEBHOOK_SECRET=${VOIDWATCH_WEBHOOK_SECRET:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - SEARXNG_INSTANCE=http://searxng:8080
+      - CHROMADB_HOST=chromadb
+      - CHROMADB_PORT=8000
+      - DATABASE_URL=sqlite:///./data/app.db
+      - AUTH_ENABLED=true
+      - ODYSSEUS_ADMIN_USER=${ODYSSEUS_ADMIN_USER:-admin}
+      - ODYSSEUS_ADMIN_PASSWORD=${ODYSSEUS_ADMIN_PASSWORD:?Set ODYSSEUS_ADMIN_PASSWORD}
+      - SECURE_COOKIES=false
+    depends_on:
+      voidtower:
+        condition: service_healthy
+
+  # ── Ollama local AI (optional — uncomment to enable) ─────────────────────
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   restart: unless-stopped
+  #   networks: [voidlink]
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - /mnt/${TRUENAS_POOL:-tank}/voidtower/ollama:/root/.ollama
+  #   # NVIDIA GPU passthrough (requires nvidia-container-toolkit on TrueNAS host):
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: all
+  #   #           capabilities: [gpu]

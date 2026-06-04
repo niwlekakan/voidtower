@@ -32,6 +32,7 @@ pub const ALL_SCOPES: &[(&str, &str)] = &[
     ("containers:logs",   "Read container log output"),
     ("apps:read",         "List deployed App Vault applications"),
     ("apps:deploy",       "Deploy applications from the App Vault catalog"),
+    ("apps:restart",      "Restart deployed App Vault applications"),
     ("backups:read",      "List backup jobs and snapshots"),
     ("backups:run",       "Trigger a backup job to run now"),
     ("alerts:read",       "List active alerts and status checks"),
@@ -42,6 +43,12 @@ pub const ALL_SCOPES: &[(&str, &str)] = &[
     ("network:read",      "List network interfaces and LAN neighbours"),
     ("files:read",        "Browse and read files (read-only)"),
     ("storage:read",      "List storage devices and mount points"),
+    ("proxy:read",        "List nginx reverse proxy rules"),
+    ("proxy:manage",      "Add, toggle and reload nginx proxy rules"),
+    ("diagnostics:read",  "Run and read system diagnostics checks"),
+    ("secrets:list",      "List secret names and descriptions (values never returned)"),
+    ("vms:read",          "List KVM and Proxmox virtual machines"),
+    ("tags:read",         "List resource tags"),
 ];
 
 // ---------------------------------------------------------------------------

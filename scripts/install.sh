@@ -174,8 +174,20 @@ build_from_source() {
   command -v cargo >/dev/null 2>&1 || die "cargo not found. Install Rust: https://rustup.rs"
   command -v npm   >/dev/null 2>&1 || die "npm not found. Install Node.js: https://nodejs.org"
 
-  local SRC
-  SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  local SRC _cloned=false
+  # When run via curl|bash, BASH_SOURCE[0] is empty or /dev/stdin and
+  # doesn't point to the repo — clone instead.
+  local _script_dir
+  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-/dev/stdin}")" 2>/dev/null && pwd || echo "")"
+  if [[ -f "${_script_dir}/../backend/Cargo.toml" ]]; then
+    SRC="$(cd "${_script_dir}/.." && pwd)"
+  else
+    info "Cloning VoidTower source (curl|bash install)…"
+    SRC=$(mktemp -d)
+    git clone --depth 1 "https://github.com/${REPO}.git" "$SRC" \
+      || die "Failed to clone source from github.com/${REPO}"
+    _cloned=true
+  fi
 
   info "Building frontend…"
   (cd "$SRC/frontend" && npm ci --silent && npm run build --silent)
@@ -186,6 +198,7 @@ build_from_source() {
   install -m 755 "$SRC/backend/target/release/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
   cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend"
   git -C "$SRC" describe --tags --always 2>/dev/null > "${VT_INSTALL_DIR}/.version" || true
+  [[ "$_cloned" == true ]] && rm -rf "$SRC"
   success "Built and installed from source"
 }
 

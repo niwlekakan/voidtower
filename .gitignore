@@ -10,6 +10,8 @@ frontend/.vite/
 
 # Dev data (local state, not for VCS)
 backend/dev-data/
+# App catalog is product content — track it
+!backend/dev-data/apps/
 
 # Environment / secrets
 .env

@@ -340,7 +340,8 @@ SyslogIdentifier=voidtower
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=${VT_DATA_DIR} ${VT_CONFIG_DIR}
+ReadWritePaths=${VT_DATA_DIR} ${VT_CONFIG_DIR} /etc/nginx/conf.d /etc/nginx/sites-enabled
+SupplementaryGroups=docker
 PrivateTmp=true
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -348,6 +349,17 @@ AmbientCapabilities=
 [Install]
 WantedBy=multi-user.target
 EOF
+  # Give voidtower docker socket access
+  if getent group docker &>/dev/null; then
+    usermod -aG docker "${VT_USER}" 2>/dev/null || true
+  fi
+
+  # Allow voidtower to reload nginx without a password
+  local sudoers_file="/etc/sudoers.d/voidtower-nginx"
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx, /usr/sbin/nginx -s reload, /usr/bin/nginx -s reload\n' \
+    "${VT_USER}" > "${sudoers_file}"
+  chmod 440 "${sudoers_file}"
+
   systemctl daemon-reload
   systemctl enable voidtower.service
   success "voidtower.service installed and enabled"

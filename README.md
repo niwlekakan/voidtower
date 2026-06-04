@@ -1,8 +1,339 @@
-# VoidTower
+# VoidTower AIO
 
-**Self-hosted Linux infrastructure management — one dashboard to rule your homelab.**
+**Self-hosted Linux infrastructure management — with an AI operator built in.**
 
-VoidTower is an open-source, local-first server control plane. It gives you a polished web UI for everything you'd normally SSH in to do: containers, services, files, backups, monitoring, reverse proxies, and AI integration. One install script, no cloud dependency, no telemetry.
+This is the **all-in-one branch** of VoidTower. It ships VoidTower (the infrastructure control plane) together with [Odysseus](https://github.com/niwlekakan/odysseus/tree/odysseus-voidlink) (the AI workspace) and the **Voidwatch** integration that connects them — so an AI agent can inspect and manage your homelab with scoped, audited, policy-controlled access.
+
+Everything else — Jellyfin, Nextcloud, Gitea, Portainer, and 20+ other apps — is **opt-in** from the VoidTower app catalog inside the UI.
+
+> For the standalone VoidTower without AI integration, see the [`main` branch](https://github.com/niwlekakan/voidtower/tree/main).
+
+---
+
+## What's in this branch
+
+| Component | Role | Port |
+|---|---|---|
+| **VoidTower** | Infrastructure control plane — services, containers, backups, proxies, secrets | 80 / 443 |
+| **Odysseus** | AI workspace — chat, agents, MCP tools | 7000 |
+| **Voidwatch** | Integration layer — connects Odysseus agents to VoidTower via scoped API + webhooks | built-in |
+| **Ollama** *(opt-in)* | Local AI runtime | 11434 |
+
+---
+
+## Quick start — Docker (recommended)
+
+```bash
+# 1. Clone and configure
+git clone -b voidtower-aio https://github.com/niwlekakan/voidtower
+cd voidtower
+cp .env.example .env
+# Edit .env — set ODYSSEUS_ADMIN_PASSWORD at minimum
+
+# 2. Start the full AIO stack
+docker compose --profile aio up -d
+
+# 3. With local AI (Ollama) as well
+docker compose --profile aio --profile ai up -d
+```
+
+Then open `https://localhost` and complete the [first-run setup](#first-run-setup).
+
+### Docker Compose profiles
+
+| Command | What starts |
+|---|---|
+| `docker compose up -d` | VoidTower only |
+| `docker compose --profile aio up -d` | + Odysseus, chromadb, SearXNG, ntfy |
+| `docker compose --profile aio --profile ai up -d` | + Ollama local AI |
+
+Homelab apps (Jellyfin, Nextcloud, etc.) are never started by Compose — deploy them from **VoidTower → App Vault**.
+
+---
+
+## Quick start — system install (bare metal / VM)
+
+```bash
+# VoidTower only
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+  | sudo bash
+
+# Full AIO stack
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+  | sudo bash -s -- --all-in-one --pull-model
+
+# Non-interactive with specific model
+sudo bash install.sh \
+  --all-in-one \
+  --ai-model qwen2.5-coder:7b-instruct \
+  --pull-model \
+  --yes
+```
+
+### Installer flags
+
+| Flag | Description |
+|---|---|
+| `--all-in-one` | Shorthand for `--with-odysseus --with-voidwatch --with-ai` |
+| `--with-odysseus` | Install Odysseus AI workspace |
+| `--with-voidwatch` | Wire Voidwatch integration (implies `--with-odysseus`) |
+| `--with-ai` | Set up Ollama local AI runtime |
+| `--ai-model MODEL` | Model to configure (e.g. `qwen2.5-coder:7b-instruct`) |
+| `--pull-model` | Pull the model during install |
+| `--odysseus-port PORT` | Odysseus port (default: 7000) |
+| `--port PORT` | VoidTower port (default: 8743) |
+| `--yes` | Non-interactive |
+| `--dry-run` | Preview what would happen |
+| `--offline` | Skip network calls |
+| `--no-mcp` | Skip MCP tool registration |
+| `--no-webhooks` | Skip webhook configuration |
+| `--no-toolpacks` | Skip toolpack installation |
+
+### Model auto-selection
+
+| RAM | Recommended model |
+|---|---|
+| ≥ 32 GB | `qwen2.5-coder:14b-instruct` |
+| ≥ 16 GB | `qwen2.5-coder:7b-instruct` |
+| ≥ 8 GB | `qwen2.5-coder:3b-instruct` |
+| < 8 GB | No auto-pull — configure manually or use a remote endpoint |
+
+---
+
+## First-run setup
+
+### Docker path
+
+1. Open `https://localhost` → you will be redirected to `/bootstrap`
+2. Enter the bootstrap token (printed in `docker compose logs voidtower` or stored in the `voidtower-config` volume)
+3. Create your admin account — the token is consumed
+4. Open **Settings → Integrations → API Tokens → New Token**
+5. Create a token with the [Voidwatch scopes](#voidwatch-token-scopes)
+6. Add it to `.env`:
+   ```
+   VOIDWATCH_TOKEN=vt_your_token_here
+   VOIDWATCH_WEBHOOK_SECRET=  # generate: openssl rand -hex 32
+   ```
+7. Restart Odysseus:
+   ```bash
+   docker compose --profile aio restart odysseus
+   ```
+8. Open `http://localhost:7000` → log in to Odysseus → **Settings → Integrations → Voidwatch** → verify connection shows green
+
+### System install path
+
+Bootstrap credentials are saved to `/root/odysseus-bootstrap-token` and `/root/voidwatch-recovery-info`. The Voidwatch token is created automatically if VoidTower is reachable during install. If it was not (bootstrap not yet complete), run:
+
+```bash
+sudo bash scripts/install.sh --with-voidwatch --yes
+```
+
+after completing the VoidTower bootstrap.
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` before starting. Key variables:
+
+| Variable | Description |
+|---|---|
+| `ODYSSEUS_ADMIN_PASSWORD` | Odysseus web UI password (required before first start) |
+| `ODYSSEUS_ADMIN_USER` | Odysseus admin username (default: `admin`) |
+| `VOIDWATCH_TOKEN` | VoidTower API token for Odysseus (set after VoidTower bootstrap) |
+| `VOIDWATCH_WEBHOOK_SECRET` | Shared webhook signing secret (generate: `openssl rand -hex 32`) |
+| `OLLAMA_BASE_URL` | Override Ollama URL (default: `http://ollama:11434` for Docker, `http://localhost:11434` for bare metal) |
+| `ODYSSEUS_PORT` | Host port for Odysseus (default: `7000`) |
+| `PUID` / `PGID` | File ownership for Odysseus data mounts (match your host user) |
+
+---
+
+## Voidwatch — AI ops integration
+
+Voidwatch is the integration layer between Odysseus and VoidTower. It gives AI agents structured, policy-controlled access to your infrastructure.
+
+### What agents can do by default (read-only policy)
+
+- Inspect services, containers, metrics, alerts, backups, network, proxies
+- Run diagnostics
+- Acknowledge low-severity alerts
+- Trigger backup jobs
+- Run approved automations
+- Summarize infrastructure state
+
+### What requires your confirmation
+
+- Restarting any service or container
+- Config edits
+- Exposing a service publicly via nginx
+- Deploying or removing apps
+
+### What is always blocked
+
+- Shell command execution
+- Deleting anything
+- Rotating secrets
+- Modifying firewall rules
+- Touching resources tagged `critical`, `database`, `prod`, or `ai-no-touch`
+
+Policy is configurable in **Odysseus → Settings → Integrations → Voidwatch → Policy** or by editing `/etc/odysseus/voidwatch/policy.json`.
+
+### Emergency disable
+
+```bash
+# Immediately block all Voidwatch automation
+curl -X POST http://localhost:7000/api/voidwatch/emergency-disable
+
+# Or from VoidTower UI: Settings → Integrations → Disable all AI access
+```
+
+### Example agent prompts
+
+Once running, try these in the Odysseus chat:
+
+```
+Check my servers and tell me what is unhealthy.
+Restart failed non-critical containers only.
+Inspect nginx routes and tell me what is publicly exposed.
+Run backups on all configured backup jobs.
+Investigate why Jellyfin is unhealthy.
+Summarize all active alerts from the last 24 hours.
+Dry-run an image update for FreshRSS and ask before applying.
+Check whether any containers are using outdated images.
+```
+
+### Voidwatch token scopes
+
+Minimum scopes for a Voidwatch token:
+
+```
+metrics:read  services:read  containers:read  containers:logs
+apps:read  backups:read  backups:run  alerts:read  alerts:ack
+automation:read  timeline:read  network:read  storage:read
+diagnostics:read  proxy:read  tags:read
+```
+
+Add for action permissions: `services:restart  containers:restart  apps:restart  automation:run`
+
+---
+
+## Toolpacks
+
+Voidwatch ships 20 pre-built toolpacks for common homelab apps. These define the safe operations Odysseus can perform per-app:
+
+`authentik` · `docker` · `freshrss` · `gitea` · `grafana` · `homeassistant` · `immich` · `jellyfin` · `minio` · `n8n` · `nextcloud` · `nginx` · `ollama` · `open-webui` · `paperless` · `pihole` · `portainer` · `syncthing` · `uptime-kuma` · `vaultwarden`
+
+Toolpacks live in `voidwatch/toolpacks/` inside the Odysseus install. Add your own by dropping a YAML file there — see any existing toolpack as a template.
+
+---
+
+## GPU / Ollama
+
+### Docker — NVIDIA
+
+Uncomment the `deploy` block in `docker-compose.yml` under the `ollama` service:
+
+```yaml
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [gpu]
+```
+
+Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the host.
+
+### Docker — AMD (ROCm / Vulkan)
+
+Uncomment the `devices` and `environment` block under `ollama`:
+
+```yaml
+devices:
+  - /dev/dri:/dev/dri
+environment:
+  - OLLAMA_VULKAN=1
+```
+
+### Pulling a model
+
+```bash
+# Docker
+docker exec ollama ollama pull qwen2.5-coder:7b-instruct
+
+# Bare metal
+ollama pull qwen2.5-coder:7b-instruct
+```
+
+### Using a remote Ollama instance
+
+Set in `.env` (Docker) or Odysseus `.env` (bare metal):
+
+```
+OLLAMA_BASE_URL=http://192.168.1.5:11434
+```
+
+---
+
+## Service management
+
+### Docker
+
+```bash
+# Status
+docker compose ps
+
+# Logs
+docker compose logs -f voidtower
+docker compose logs -f odysseus
+docker compose logs -f ollama
+
+# Restart a service
+docker compose restart odysseus
+
+# Stop everything
+docker compose --profile aio --profile ai down
+```
+
+### Bare metal (systemd)
+
+```bash
+systemctl status voidtower odysseus ollama
+
+journalctl -u voidtower -f
+journalctl -u odysseus -f
+journalctl -u ollama -f
+
+systemctl restart odysseus
+```
+
+---
+
+## Uninstall
+
+### Docker
+
+```bash
+# Stop and remove containers (preserves volumes)
+docker compose --profile aio --profile ai down
+
+# Also remove all data
+docker compose --profile aio --profile ai down -v
+```
+
+### Bare metal
+
+```bash
+# VoidTower only
+sudo bash scripts/uninstall.sh
+
+# VoidTower + Odysseus
+sudo bash scripts/uninstall.sh --remove-odysseus
+
+# Everything including Ollama and all data
+sudo bash scripts/uninstall.sh --all --purge
+```
 
 ---
 
@@ -25,126 +356,19 @@ VoidTower is an open-source, local-first server control plane. It gives you a po
 | **WireGuard** | Peer management — generate Curve25519 keypairs natively, allocate IPs from existing interface subnet, add/remove peers live, client config shown once with copy button. |
 | **Storage** | Block device tree, mount manager, fstab editor, format disks, SMART health, software RAID (mdadm) status and creation. Configurable storage paths for containers/VMs/backups. |
 | **Network** | Real-time interface stats, LAN neighbour table (ARP cache), bandwidth charts. |
-| **Backups** | Restic-powered jobs — init, run now, list snapshots, integrity check, dry-run restore test, confidence scoring (high/medium/low/critical). |
+| **Backups** | Restic-powered jobs — init, run now, list snapshots, integrity check, dry-run restore test, confidence scoring. |
 | **Alerts** | Metric threshold alerts + TCP/HTTP status checks, ack/resolve flow, public `/status` page (no auth). |
-| **Automation** | Scheduled shell jobs — cron-style schedules (`@hourly`, `*/N` minutes), run history with output, enable/disable toggle. |
+| **Automation** | Scheduled shell jobs — cron-style schedules, run history with output, enable/disable toggle. |
 | **Secrets** | AES-256-GCM encrypted secrets store — values never appear in list responses, reveal-on-demand with audit logging. |
 | **Resource tags** | Create colour-coded tags, assign to services and containers, filter any page by tag. |
 | **Timeline** | Global audit timeline — category chips, free-text search, outcome filter, paginated infinite scroll. |
 | **Capabilities** | Detect installed tools (Docker, libvirt, WireGuard, restic, nginx, GPU, …) with version strings and install hints. |
-| **Diagnostics** | 12 system health checks — config/data dirs, DB, frontend assets, disk space, Docker daemon, nginx config, port bind. `voidtower --doctor` at the CLI. |
+| **Diagnostics** | 12 system health checks — config/data dirs, DB, frontend assets, disk space, Docker daemon, nginx config, port bind. |
 | **Security** | Session list for all users, revoke individual sessions or all-others, full audit log. |
 | **Themes** | 7 built-in themes + custom token editor with live color pickers, 14-param animation editor, randomise button. |
-| **Animated backgrounds** | 7 canvas-based presets (Void, Grid, Aurora, Pulse, Noise, Hex, Circuit) + 4 glass levels (Solid, Blur, Acrylic, Frosted). |
-| **System** | In-app updater — checks GitHub for new commits, pulls latest, rebuilds, and restarts automatically. Safe restart button with live reconnect polling. |
+| **Animated backgrounds** | 7 canvas-based presets (Void, Grid, Aurora, Pulse, Noise, Hex, Circuit) + 4 glass levels. |
+| **System** | In-app updater — checks GitHub for new commits, pulls latest, rebuilds, and restarts automatically. |
 | **Mobile** | Responsive layout — hamburger sidebar on small screens, touch-friendly targets. |
-
----
-
-## Quick install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh | bash
-```
-
-The installer will:
-
-1. Detect your distro and install dependencies (Rust, Node.js, Docker).
-2. Build the backend and frontend.
-3. Install a systemd service (`voidtower.service`).
-4. Prompt for network setup: localhost, mDNS (`hostname.local`), custom hostname, or public domain + nginx.
-5. Optionally detect your GPU, download a matching GGUF model, set up llama.cpp, and offer to install Odysseus AI workspace.
-
-**Variables you can override:**
-
-```bash
-VT_PORT=8743 VT_DATA_DIR=/var/lib/voidtower bash install.sh
-```
-
----
-
-## Manual setup
-
-### Prerequisites
-
-- Rust 1.75+ (`rustup`)
-- Node.js 20+
-- Docker (optional — containers / app vault)
-- nginx (optional — reverse proxy manager)
-- restic (optional — backups)
-- nvidia-container-toolkit (optional — GPU passthrough to Ollama)
-
-### Build
-
-```bash
-# Backend
-cd backend && cargo build --release
-
-# Frontend
-cd ../frontend && npm install && npm run build
-```
-
-### Run (development)
-
-```bash
-bash start-dev.sh
-# Frontend HMR dev server (optional, proxies API to :8743)
-cd frontend && npm run dev
-```
-
-### Configuration
-
-`/etc/voidtower/config.toml` (production) or via environment variables (dev):
-
-```bash
-VOIDTOWER_DATA_DIR=backend/dev-data \
-VOIDTOWER_CONFIG_DIR=backend/dev-config \
-VOIDTOWER_FRONTEND_DIR=frontend/dist \
-VOIDTOWER_CATALOG_DIR=app-vault/apps \
-./backend/target/release/voidtower
-```
-
----
-
-## First login
-
-1. Open `http://localhost:8743`.
-2. You'll be redirected to `/bootstrap`.
-3. Enter the **bootstrap token** (printed by the installer, stored in your config dir).
-4. Choose a username and password — the owner account is created and the token is consumed.
-
----
-
-## Pages
-
-| Route | Description |
-|---|---|
-| `/dashboard` | Customizable widget grid |
-| `/services` | systemd service management |
-| `/containers` | Docker containers; click a row → detail page |
-| `/containers/:id` | Compose editor, exec shell, logs |
-| `/apps` | App Vault catalog + Deployed list + AI Discover |
-| `/vms` | Local KVM/QEMU VMs + Proxmox integration |
-| `/models` | GGUF download, Ollama pull, load into llama.cpp or Ollama |
-| `/ai` | Embedded AI workspace + GPU controls panel |
-| `/files` | Filesystem browser, Monaco editor, image/PDF viewer |
-| `/terminal` | Browser PTY + SSH session manager |
-| `/proxies` | nginx reverse proxy rules |
-| `/firewall` | UFW rule management |
-| `/wireguard` | WireGuard peer management |
-| `/storage` | Disks, mounts, fstab, SMART, RAID |
-| `/network` | Interface stats + LAN neighbours |
-| `/backups` | Restic backup jobs with integrity checks |
-| `/alerts` | Active alerts + status checks |
-| `/automation` | Scheduled shell jobs |
-| `/secrets` | Encrypted secrets store |
-| `/tags` | Resource tag management |
-| `/timeline` | Global audit timeline |
-| `/capabilities` | Detected system capabilities |
-| `/diagnostics` | System health checks |
-| `/security` | Sessions + audit log |
-| `/settings` | Theme, users, AI endpoints, system updater |
-| `/status` | **Public** status page (no login required) |
 
 ---
 
@@ -202,14 +426,14 @@ DELETE /api/apps/:name
 ```
 GET  /api/models
 POST /api/models/download          { url, filename? }
-GET  /api/models/download/:id      Download progress
+GET  /api/models/download/:id
 GET  /api/models/active
 POST /api/models/load              { filename }
 DELETE /api/models/:filename
 POST /api/models/ollama/pull       { model }
-GET  /api/models/ollama/pull/:id   Pull progress
-POST /api/models/ollama/create     { filename }   Import GGUF into Ollama
-GET  /api/models/ollama/create/:id Import progress
+GET  /api/models/ollama/pull/:id
+POST /api/models/ollama/create     { filename }
+GET  /api/models/ollama/create/:id
 ```
 
 ### AI / GPU
@@ -362,24 +586,36 @@ DELETE /api/security/sessions/:id
 
 ### System
 ```
-GET  /api/system/version           { commit, branch, commit_date, dirty }
-GET  /api/system/update-check      Fetches origin, returns behind/ahead counts
-POST /api/system/restart           Graceful restart (responds before exit)
-POST /api/system/update            git pull + rebuild + restart
+GET  /api/system/version
+GET  /api/system/update-check
+POST /api/system/restart
+POST /api/system/update
 ```
 
 ### Integrations
 ```
-GET  /api/integrations/scopes                    List all available token scopes
-GET  /api/integrations/tokens                    List API tokens (admin+)
-POST /api/integrations/tokens                    Create token  { name, scopes[], expires_days? }
-DELETE /api/integrations/tokens/:id              Revoke token
-GET  /api/integrations/odysseus/config           Get Odysseus integration config
-POST /api/integrations/odysseus/config           Update config { enabled?, mcp_enabled?, allowed_url?, regenerate_webhook_secret?, emergency_disable? }
-GET  /api/integrations/odysseus/manifest         Tool manifest (public, no auth)
-GET  /api/integrations/events                    SSE event stream (Bearer token or ?token=)
-POST /api/integrations/webhooks                  Webhook receiver (Bearer webhook-secret)
-GET  /api/integrations/actions                   Recent agent-triggered audit entries
+GET  /api/integrations/scopes
+GET  /api/integrations/tokens
+POST /api/integrations/tokens                    { name, scopes[], expires_days? }
+DELETE /api/integrations/tokens/:id
+GET  /api/integrations/odysseus/config
+POST /api/integrations/odysseus/config           { enabled?, mcp_enabled?, allowed_url?, webhook_secret?, emergency_disable? }
+GET  /api/integrations/odysseus/manifest
+GET  /api/integrations/events                    SSE stream
+POST /api/integrations/webhooks                  { automation_id, dry_run? }
+GET  /api/integrations/actions
+```
+
+### Voidwatch (Odysseus-side)
+```
+GET  /api/voidwatch/config
+POST /api/voidwatch/config         { enabled, base_url, api_token, webhook_secret, auto_action_policy }
+POST /api/voidwatch/emergency-disable
+POST /api/voidwatch/test
+GET  /api/voidwatch/manifest
+GET  /api/voidwatch/toolpacks
+GET  /api/voidwatch/actions
+POST /api/voidwatch/webhook
 ```
 
 ### Capabilities & diagnostics
@@ -387,156 +623,6 @@ GET  /api/integrations/actions                   Recent agent-triggered audit en
 GET /api/capabilities
 GET /api/diagnostics
 ```
-
----
-
-## Odysseus integration
-
-VoidTower can act as the infrastructure control plane for [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus), giving AI agents scoped, audited access to your homelab.
-
-### 1 — Enable the integration
-
-Open **Settings → Integrations**, toggle **Enable integration**, and save. While disabled, all API tokens and the event stream are rejected.
-
-### 2 — Create an API token
-
-1. Click **New token** in the Integrations page.
-2. Give it a name (e.g. `Odysseus Agent`).
-3. Select the scopes you want to grant. Start with the minimum needed:
-   - `metrics:read` — dashboards and health checks
-   - `services:read` / `services:restart` — service management
-   - `containers:read` / `containers:restart` / `containers:logs` — Docker
-   - `alerts:read` / `alerts:ack` — alert triage
-   - `automation:read` / `automation:run` — trigger automations
-4. Set an expiry (90 days recommended) and click **Create token**.
-5. Copy the token from the reveal dialog — **it is shown only once**.
-
-Tokens are authenticated via the `Authorization` header:
-
-```bash
-curl -H "Authorization: Bearer vt_<your-token>" \
-  http://localhost:8743/api/metrics/current
-```
-
-All token use is audit-logged under `actor_type = 'agent'` and visible in the **Recent AI-triggered actions** section of the Integrations page.
-
-### 3 — Subscribe to the event stream
-
-The event stream is a standard [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) endpoint. It emits:
-
-| Event | When |
-|---|---|
-| `metrics` | Every metrics broadcast (~1 s) — CPU, RAM totals |
-| `alert` | CPU > 90 % or RAM > 90 % threshold crossed |
-| `audit` | New audit log entries (polled every 10 s) |
-| `ping` | Heartbeat every 10 s |
-
-**Subscribe with curl:**
-
-```bash
-curl -N \
-  -H "Accept: text/event-stream" \
-  -H "Authorization: Bearer vt_<your-token>" \
-  http://localhost:8743/api/integrations/events
-```
-
-**Subscribe with a query-string token** (useful when the client cannot set custom headers, e.g. browser `EventSource`):
-
-```bash
-curl -N "http://localhost:8743/api/integrations/events?token=vt_<your-token>"
-```
-
-```js
-// Browser EventSource
-const es = new EventSource(`/api/integrations/events?token=${TOKEN}`)
-es.addEventListener('metrics', e => console.log(JSON.parse(e.data)))
-es.addEventListener('alert',   e => console.warn('Threshold crossed', JSON.parse(e.data)))
-es.addEventListener('audit',   e => console.log('Audit', JSON.parse(e.data)))
-```
-
-The required scope is `alerts:read`. A session cookie is also accepted instead of a token.
-
-### 4 — Configure the webhook secret
-
-The webhook endpoint lets external systems (including Odysseus) trigger VoidTower automations over HTTP.
-
-1. In **Settings → Integrations**, click **Regenerate** next to *Webhook secret*.
-2. The full secret is shown only once — copy it now.
-3. Use it as a Bearer token in the `Authorization` header of every webhook call.
-
-### 5 — Trigger an automation via webhook
-
-First, find the automation ID from **GET /api/automation** or the Automation page URL.
-
-**Trigger immediately:**
-
-```bash
-curl -X POST http://localhost:8743/api/integrations/webhooks \
-  -H "Authorization: Bearer <webhook-secret>" \
-  -H "Content-Type: application/json" \
-  -d '{"automation_id": "<id>"}'
-```
-
-**Dry run** (validates the request and logs the attempt without executing):
-
-```bash
-curl -X POST http://localhost:8743/api/integrations/webhooks \
-  -H "Authorization: Bearer <webhook-secret>" \
-  -H "Content-Type: application/json" \
-  -d '{"automation_id": "<id>", "dry_run": true}'
-```
-
-Response:
-
-```json
-{ "ok": true, "dry_run": false, "automation_id": "<id>" }
-```
-
-The automation runs in the background. Check its result via:
-
-```bash
-curl -H "Authorization: Bearer vt_<token>" \
-  http://localhost:8743/api/automation/<id>/runs
-```
-
-Webhook calls are audit-logged with `actor_type = 'agent'` and `action = integrations.webhook.automation_trigger`.
-
-### 6 — Fetch the tool manifest
-
-The manifest describes every action available to AI agents — their required scope, risk level, and API endpoint — so Odysseus (or any agent framework) can discover what VoidTower can do without reading this README:
-
-```bash
-curl http://localhost:8743/api/integrations/odysseus/manifest
-```
-
-This endpoint is public (no authentication required). When the integration is disabled it returns an empty tool list.
-
-### Token scopes reference
-
-| Scope | What it grants |
-|---|---|
-| `metrics:read` | CPU, RAM, disk and network metrics |
-| `services:read` | List systemd services |
-| `services:restart` | Start, stop, restart services |
-| `containers:read` | List Docker containers and images |
-| `containers:restart` | Start, stop, restart containers |
-| `containers:logs` | Read container log output |
-| `apps:read` | List deployed App Vault apps |
-| `apps:deploy` | Deploy apps from the catalog |
-| `backups:read` | List backup jobs and snapshots |
-| `backups:run` | Trigger a backup job |
-| `alerts:read` | List alerts and status checks |
-| `alerts:ack` | Acknowledge or resolve alerts |
-| `automation:read` | List jobs and run history |
-| `automation:run` | Trigger automation jobs |
-| `timeline:read` | Read the audit timeline |
-| `network:read` | Network interfaces and LAN neighbours |
-| `files:read` | Browse and read files |
-| `storage:read` | Storage devices and mounts |
-
-### Emergency disable
-
-If you need to immediately cut all AI agent access without revoking individual tokens, click **Disable all AI access** in the Integrations page. This blocks every API token and SSE connection instantly. Tokens are preserved and can be re-activated by clicking **Re-enable**.
 
 ---
 
@@ -548,40 +634,6 @@ If you need to immediately cut all AI agent access without revoking individual t
 | `admin` | Create/delete users (not owner), all actions |
 | `operator` | Start/stop services, deploy apps, write files, terminal |
 | `viewer` | Read-only access to all pages |
-
----
-
-## Upgrading
-
-Use the in-app updater in **Settings → System**, or manually:
-
-```bash
-cd /opt/voidtower
-git pull origin main
-cd backend && cargo build --release
-cd ../frontend && npm ci && npm run build
-sudo systemctl restart voidtower
-```
-
----
-
-## Uninstalling
-
-```bash
-sudo systemctl disable --now voidtower
-sudo rm /etc/systemd/system/voidtower.service
-sudo rm -rf /var/lib/voidtower
-sudo rm -rf /opt/voidtower
-sudo systemctl daemon-reload
-```
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). The project follows AGPL-3.0 — contributions welcome.
-
-Bug reports and feature requests: [GitHub Issues](https://github.com/niwlekakan/voidtower/issues).
 
 ---
 

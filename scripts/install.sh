@@ -770,7 +770,14 @@ Password: ${odysseus_admin_pass}
 Generated: $(date -u)
 EOF
     chmod 600 "$creds_file"
-    success "Odysseus credentials saved to ${creds_file}"
+
+    echo
+    echo -e "${BOLD}${YELLOW}── Odysseus Credentials ──${RESET}"
+    echo -e "  URL:      ${CYAN}http://localhost:${ODYSSEUS_PORT}${RESET}"
+    echo -e "  Username: ${CYAN}admin${RESET}"
+    echo -e "  Password: ${CYAN}${odysseus_admin_pass}${RESET}"
+    echo -e "  Saved to: ${creds_file}"
+    echo
   fi
 
   # Symlink data dir

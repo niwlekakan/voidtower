@@ -18,9 +18,11 @@ services:
 
   # ── VoidTower ─────────────────────────────────────────────────────────────────
   voidtower:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${VOIDTOWER_IMAGE:-ghcr.io/niwlekakan/voidtower:aio-latest}
+    # To build from source instead: docker compose build voidtower
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     container_name: voidtower
     restart: unless-stopped
     networks:
@@ -35,8 +37,8 @@ services:
       # Mount your own TLS cert/key to skip the self-signed cert:
       # - ./tls/cert.pem:/etc/voidtower/tls/cert.pem:ro
       # - ./tls/key.pem:/etc/voidtower/tls/key.pem:ro
-      # Uncomment to let VoidTower manage Docker containers directly:
-      # - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Required for Docker container management and self-update:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - VOIDTOWER_BIND=0.0.0.0
       - VOIDTOWER_PORT=8743

@@ -386,6 +386,82 @@ EOF
     "${VT_USER}" > "${sudoers_file}"
   chmod 440 "${sudoers_file}"
 
+  # Drop the Voidwatch auto-configure helper (triggered by path unit after bootstrap)
+  cat > /opt/voidtower/configure-voidwatch.sh <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+TOKEN_FILE="/etc/voidtower/voidwatch-pending-token"
+ODYSSEUS_DATA_DIR="${ODYSSEUS_DATA_DIR:-/var/lib/odysseus}"
+ODYSSEUS_USER="${ODYSSEUS_USER:-odysseus}"
+VT_PORT="${VT_PORT:-8743}"
+ODYSSEUS_PORT="${ODYSSEUS_PORT:-7000}"
+
+[[ -f "$TOKEN_FILE" ]] || exit 0
+token=$(cat "$TOKEN_FILE")
+[[ -n "$token" ]] || exit 0
+
+webhook_secret=$(openssl rand -hex 32 2>/dev/null || cat /proc/sys/kernel/random/uuid | tr -d '-')
+
+mkdir -p "$ODYSSEUS_DATA_DIR"
+cat > "${ODYSSEUS_DATA_DIR}/voidwatch.json" <<EOF
+{
+  "enabled": true,
+  "base_url": "http://localhost:${VT_PORT}",
+  "api_token": "${token}",
+  "webhook_secret": "${webhook_secret}",
+  "allowed_scopes": [
+    "metrics:read","services:read","services:restart","containers:read",
+    "containers:restart","containers:logs","apps:read","apps:restart",
+    "backups:read","backups:run","alerts:read","alerts:ack",
+    "automation:read","automation:run","timeline:read","network:read",
+    "storage:read","diagnostics:read","proxy:read","tags:read"
+  ],
+  "auto_action_policy": "read_only",
+  "require_dry_run_before_apply": true,
+  "webhook_enabled": true,
+  "create_tasks_from_events": true,
+  "emergency_disabled": false
+}
+EOF
+chown "${ODYSSEUS_USER}:${ODYSSEUS_USER}" "${ODYSSEUS_DATA_DIR}/voidwatch.json" 2>/dev/null || true
+chmod 600 "${ODYSSEUS_DATA_DIR}/voidwatch.json"
+
+# Register Odysseus in VoidTower
+curl -fsSL --max-time 8 --retry 3 \
+  -H "Authorization: Bearer ${token}" \
+  -H "Content-Type: application/json" \
+  -d "{\"enabled\":true,\"mcp_enabled\":true,\"allowed_url\":\"http://localhost:${ODYSSEUS_PORT}\",\"webhook_secret\":\"${webhook_secret}\"}" \
+  "http://localhost:${VT_PORT}/api/integrations/odysseus/config" >/dev/null 2>&1 || true
+
+systemctl restart odysseus.service 2>/dev/null || true
+rm -f "$TOKEN_FILE"
+SCRIPT
+  chmod 755 /opt/voidtower/configure-voidwatch.sh
+
+  # Path unit watches for the pending token written by VoidTower after bootstrap
+  cat > "${SYSTEMD_DIR}/voidwatch-configure.path" <<EOF
+[Unit]
+Description=Watch for VoidTower bootstrap completion
+ConditionPathExists=/opt/odysseus/app.py
+
+[Path]
+PathExists=/etc/voidtower/voidwatch-pending-token
+Unit=voidwatch-configure.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat > "${SYSTEMD_DIR}/voidwatch-configure.service" <<EOF
+[Unit]
+Description=Auto-configure Voidwatch after VoidTower bootstrap
+After=voidtower.service odysseus.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/voidtower/configure-voidwatch.sh
+EOF
+
   systemctl daemon-reload
   systemctl enable voidtower.service
   success "voidtower.service installed and enabled"
@@ -732,6 +808,8 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable odysseus.service
+    systemctl enable voidwatch-configure.path
+    systemctl start voidwatch-configure.path
     success "odysseus.service installed and enabled"
   else
     warn "systemd not available — start Odysseus manually:"

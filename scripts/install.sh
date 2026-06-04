@@ -1320,14 +1320,14 @@ main() {
   # Start services
   if [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]]; then
     info "Starting VoidTower…"
-    systemctl start voidtower.service
+    systemctl restart voidtower.service
     sleep 2
     systemctl is-active --quiet voidtower.service && success "VoidTower running" || \
       warn "VoidTower did not start cleanly — check: journalctl -u voidtower -e"
 
     if [[ "$WITH_ODYSSEUS" == true ]]; then
       info "Starting Odysseus…"
-      systemctl start odysseus.service
+      systemctl restart odysseus.service
       sleep 3
       systemctl is-active --quiet odysseus.service && success "Odysseus running" || \
         warn "Odysseus did not start cleanly — check: journalctl -u odysseus -e"

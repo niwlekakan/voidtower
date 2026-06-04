@@ -232,6 +232,46 @@ Toolpacks live in `voidwatch/toolpacks/` inside the Odysseus install. Add your o
 
 ---
 
+## TrueNAS Scale
+
+Two deployment paths:
+
+### Option A — Custom App UI (no SSH required)
+
+1. **Create a dataset** — Storage → Add Dataset → name it `voidtower`
+2. **Open Custom App** — Apps → Discover Apps → Custom App
+3. **Paste the YAML** from [`deploy/truenas/custom-app.yml`](deploy/truenas/custom-app.yml)
+4. **Add environment variables** (Apps → Custom App → Environment Variables):
+
+   | Variable | Value |
+   |---|---|
+   | `ODYSSEUS_ADMIN_PASSWORD` | your chosen password |
+   | `TRUENAS_POOL` | your pool name (default: `tank`) |
+   | `VOIDWATCH_TOKEN` | fill in after VoidTower bootstrap |
+   | `VOIDWATCH_WEBHOOK_SECRET` | `openssl rand -hex 32` |
+
+5. **Deploy** — VoidTower is available at `https://<truenas-ip>:8443`
+
+> **Port note:** VoidTower uses `8443`/`8080` instead of `443`/`80` to avoid conflicting with the TrueNAS web UI.
+
+> **Docker socket note:** The TrueNAS Custom App UI does not expose the Docker socket, so the in-UI container management and self-update features won't work via this path. Use Option B if you need those.
+
+### Option B — SSH Docker Compose (full features)
+
+SSH into your TrueNAS host and run:
+
+```bash
+git clone -b voidtower-aio https://github.com/niwlekakan/voidtower
+cd voidtower
+cp deploy/truenas/.env.example .env
+# Edit .env — set ODYSSEUS_ADMIN_PASSWORD and TRUENAS_POOL
+docker compose -f deploy/truenas/custom-app.yml up -d
+```
+
+This path gives you Docker socket access (container management + self-update) by uncommenting the socket line in the YAML.
+
+---
+
 ## GPU / Ollama
 
 ### Docker — NVIDIA

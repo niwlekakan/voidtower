@@ -34,6 +34,7 @@ import TagsPage from '@/pages/Tags'
 import ThemesPage from '@/pages/Themes'
 import ModelsPage from '@/pages/Models'
 import UpdatesPage from '@/pages/Updates'
+import IntegrationsPage from '@/pages/Integrations'
 import NotFoundPage from '@/pages/NotFound'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -72,7 +73,8 @@ export default function App() {
             <Route path="network"    element={<NetworkPage />} />
             <Route path="ai"         element={<AIPage />} />
             <Route path="models"     element={<ModelsPage />} />
-            <Route path="updates"    element={<UpdatesPage />} />
+            <Route path="updates"        element={<UpdatesPage />} />
+            <Route path="integrations"   element={<IntegrationsPage />} />
             <Route path="files"      element={<FilesPage />} />
             <Route path="proxies"    element={<ProxiesPage />} />
             <Route path="security"   element={<SecurityPage />} />

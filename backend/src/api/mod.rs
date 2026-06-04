@@ -31,6 +31,7 @@ pub mod wireguard;
 pub mod vms;
 pub mod tags;
 pub mod ai;
+pub mod integrations;
 pub mod models;
 pub mod storage;
 pub mod system;
@@ -202,6 +203,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/storage/raid/stop",    post(storage::stop_raid))
         .route("/api/storage/format",       post(storage::format_device))
         .route("/api/storage/paths",        get(storage::get_storage_paths).post(storage::set_storage_paths))
+        // Integrations (API tokens, Odysseus config, manifest, SSE, webhooks)
+        .route("/api/integrations/scopes",                  get(integrations::scopes_list))
+        .route("/api/integrations/tokens",                  get(integrations::list_tokens).post(integrations::create_token))
+        .route("/api/integrations/tokens/:id",              delete(integrations::revoke_token))
+        .route("/api/integrations/odysseus/config",         get(integrations::get_config).post(integrations::save_config))
+        .route("/api/integrations/odysseus/manifest",       get(integrations::manifest))
+        .route("/api/integrations/events",                  get(integrations::event_stream))
+        .route("/api/integrations/webhooks",                post(integrations::webhook))
+        .route("/api/integrations/actions",                 get(integrations::recent_actions))
         .route("/api/system/version",       get(system::version))
         .route("/api/system/update-check",  get(system::update_check))
         .route("/api/system/restart",       post(system::restart))

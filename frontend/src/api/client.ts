@@ -343,4 +343,26 @@ export const api = {
     testProxmox: () =>
       request<{ ok: boolean; nodes?: string[]; message?: string }>('/api/vms/proxmox/test', { method: 'POST' }),
   },
+
+  integrations: {
+    scopes: () => request<{ scopes: { name: string; description: string }[] }>('/api/integrations/scopes'),
+    listTokens: () => request<{ tokens: import('./types').ApiToken[] }>('/api/integrations/tokens'),
+    createToken: (name: string, scopes: string[], expires_days?: number) =>
+      request<{ id: string; token: string; name: string; scopes: string[]; created_at: number }>(
+        '/api/integrations/tokens', { method: 'POST', body: JSON.stringify({ name, scopes, expires_days }) },
+      ),
+    revokeToken: (id: string) =>
+      request<{ ok: boolean }>(`/api/integrations/tokens/${id}`, { method: 'DELETE' }),
+    getOdysseusConfig: () => request<import('./types').OdysseusConfig>('/api/integrations/odysseus/config'),
+    saveOdysseusConfig: (cfg: {
+      enabled?: boolean; mcp_enabled?: boolean; allowed_url?: string;
+      regenerate_webhook_secret?: boolean; emergency_disable?: boolean;
+    }) => request<{ ok: boolean }>('/api/integrations/odysseus/config', { method: 'POST', body: JSON.stringify(cfg) }),
+    manifest: () => request<import('./types').OdysseusManifest>('/api/integrations/odysseus/manifest'),
+    recentActions: () => request<{ actions: import('./types').AuditAction[] }>('/api/integrations/actions'),
+    eventsUrl: (token?: string) => {
+      const base = (import.meta.env.VITE_API_BASE ?? '')
+      return token ? `${base}/api/integrations/events?token=${encodeURIComponent(token)}` : `${base}/api/integrations/events`
+    },
+  },
 }

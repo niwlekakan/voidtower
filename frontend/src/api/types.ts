@@ -492,3 +492,44 @@ export interface StoragePaths {
   vms: string | null
   backups: string | null
 }
+
+export interface ApiToken {
+  id: string
+  name: string
+  scopes: string[]
+  last_used_at: number | null
+  expires_at: number | null
+  created_at: number
+}
+
+export interface OdysseusConfig {
+  enabled: boolean
+  mcp_enabled: boolean
+  allowed_url: string
+  webhook_secret_hint: string
+  emergency_disabled: boolean
+}
+
+export interface OdysseusManifest {
+  voidtower_version: string
+  integration_enabled: boolean
+  tools: {
+    name: string
+    description: string
+    required_scope: string
+    risk: string
+    destructive: boolean
+    requires_confirmation?: boolean
+  }[]
+}
+
+export interface AuditAction {
+  id: string
+  timestamp: number
+  action: string
+  resource_type: string | null
+  resource_id: string | null
+  outcome: string
+  ip_address: string | null
+  details: string | null
+}

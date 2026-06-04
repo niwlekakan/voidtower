@@ -357,7 +357,7 @@ export const api = {
     saveOdysseusConfig: (cfg: {
       enabled?: boolean; mcp_enabled?: boolean; allowed_url?: string;
       regenerate_webhook_secret?: boolean; emergency_disable?: boolean;
-    }) => request<{ ok: boolean }>('/api/integrations/odysseus/config', { method: 'POST', body: JSON.stringify(cfg) }),
+    }) => request<{ ok: boolean; webhook_secret?: string }>('/api/integrations/odysseus/config', { method: 'POST', body: JSON.stringify(cfg) }),
     manifest: () => request<import('./types').OdysseusManifest>('/api/integrations/odysseus/manifest'),
     recentActions: () => request<{ actions: import('./types').AuditAction[] }>('/api/integrations/actions'),
     eventsUrl: (token?: string) => {

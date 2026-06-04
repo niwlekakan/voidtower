@@ -343,8 +343,11 @@ pub async fn save_config(
     if let Some(url) = &req.allowed_url {
         set_setting(&state, "odysseus.allowed_url", url).await;
     }
+    let mut new_webhook_secret: Option<String> = None;
     if req.regenerate_webhook_secret == Some(true) {
-        set_setting(&state, "odysseus.webhook_secret", &generate_webhook_secret()).await;
+        let secret = generate_webhook_secret();
+        set_setting(&state, "odysseus.webhook_secret", &secret).await;
+        new_webhook_secret = Some(secret);
     }
     if let Some(disable) = req.emergency_disable {
         set_setting(
@@ -371,7 +374,10 @@ pub async fn save_config(
         .await;
     }
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "webhook_secret": new_webhook_secret,
+    })))
 }
 
 // ---------------------------------------------------------------------------

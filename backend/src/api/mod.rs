@@ -34,6 +34,7 @@ pub mod ai;
 pub mod models;
 pub mod storage;
 pub mod system;
+pub mod updates;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -205,6 +206,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/system/update-check",  get(system::update_check))
         .route("/api/system/restart",       post(system::restart))
         .route("/api/system/update",        post(system::update))
+        // Updates page
+        .route("/api/updates/voidtower",           get(updates::vt_info))
+        .route("/api/updates/voidtower/apply",     post(updates::apply_vt))
+        .route("/api/updates/voidtower/rollback",  post(updates::rollback_vt))
+        .route("/api/updates/docker",              get(updates::docker_info))
+        .route("/api/updates/docker/check",        post(updates::docker_check))
+        .route("/api/updates/docker/:id/apply",    post(updates::docker_apply))
+        .route("/api/updates/os",                  get(updates::os_info))
+        .route("/api/updates/os/apply",            post(updates::apply_os))
         .layer(cors)
         .with_state(state)
 }

@@ -1,0 +1,430 @@
+import { useCallback, useEffect, useState } from 'react'
+import {
+  ArrowUpCircle, CheckCircle, RefreshCw, RotateCcw, Server,
+  Package, Loader2, XCircle, ChevronDown, ChevronUp, AlertTriangle, Container,
+} from 'lucide-react'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface CommitInfo { hash: string; subject: string; author: string; date: string }
+interface VtInfo {
+  current_commit: string; remote_commit: string
+  behind: number; ahead: number
+  commits: CommitInfo[]; backup_tags: string[]
+  fetch_error: string | null
+}
+interface DockerRow {
+  container_id: string; container_name: string; image: string
+  status: 'unknown' | 'checking' | 'up-to-date' | 'update-available' | 'error'
+  detail: string | null
+}
+interface OsInfo {
+  package_manager: string; available: boolean; count: number
+  packages: string[]; error: string | null
+}
+
+// ─── Shared ───────────────────────────────────────────────────────────────────
+
+const card: React.CSSProperties = {
+  background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)',
+  borderRadius: 10, padding: '20px 24px',
+}
+
+function SectionHeader({ icon: Icon, title, badge }: { icon: React.ElementType; title: string; badge?: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 mb-4">
+      <Icon size={16} style={{ color: 'var(--accent-primary)' }} />
+      <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</h2>
+      {badge}
+    </div>
+  )
+}
+
+function Badge({ label, color }: { label: string; color: string }) {
+  return (
+    <span className="px-2 py-0.5 rounded text-xs font-medium" style={{ background: `${color}22`, color, border: `1px solid ${color}44` }}>
+      {label}
+    </span>
+  )
+}
+
+function Btn({ onClick, disabled, variant = 'primary', children }: {
+  onClick: () => void; disabled?: boolean; variant?: 'primary' | 'secondary' | 'danger'; children: React.ReactNode
+}) {
+  const bg = variant === 'primary' ? 'var(--accent-primary)' : variant === 'danger' ? 'var(--accent-danger)' : 'var(--bg-elevated)'
+  const color = variant === 'secondary' ? 'var(--text-primary)' : '#fff'
+  const border = variant === 'secondary' ? '1px solid var(--border-default)' : undefined
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
+      style={{ background: bg, color, border }}>
+      {children}
+    </button>
+  )
+}
+
+// ─── VoidTower section ────────────────────────────────────────────────────────
+
+function VoidTowerSection() {
+  const [info, setInfo] = useState<VtInfo | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [applying, setApplying] = useState(false)
+  const [rollingBack, setRollingBack] = useState(false)
+  const [showLog, setShowLog] = useState(false)
+  const [notification, setNotification] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
+      if (r.ok) setInfo(await r.json())
+    } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const apply = async () => {
+    if (!confirm('Pull latest from GitHub, rebuild, and restart? A backup tag will be created for rollback.')) return
+    setApplying(true)
+    setNotification('Update started — VoidTower will restart when done (may take a few minutes).')
+    await fetch('/api/updates/voidtower/apply', { method: 'POST', credentials: 'include' })
+    // Poll until back up
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
+        if (r.ok) { clearInterval(poll); setApplying(false); load() }
+      } catch {}
+    }, 3000)
+  }
+
+  const rollback = async (tag: string) => {
+    if (!confirm(`Roll back to ${tag} and rebuild? This will restart VoidTower.`)) return
+    setRollingBack(true)
+    setNotification(`Rolling back to ${tag}…`)
+    await fetch('/api/updates/voidtower/rollback', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag }),
+    })
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
+        if (r.ok) { clearInterval(poll); setRollingBack(false); load() }
+      } catch {}
+    }, 3000)
+  }
+
+  const riskColor = (behind: number) =>
+    behind === 0 ? 'var(--accent-success)' : behind <= 3 ? 'var(--accent-warning, #f59e0b)' : 'var(--accent-danger)'
+
+  return (
+    <div style={card} className="space-y-3">
+      <SectionHeader icon={ArrowUpCircle} title="VoidTower Application" badge={
+        !loading && info ? (
+          info.behind > 0
+            ? <Badge label={`${info.behind} update${info.behind !== 1 ? 's' : ''} available`} color="var(--accent-warning, #f59e0b)" />
+            : <Badge label="Up to date" color="var(--accent-success)" />
+        ) : null
+      } />
+
+      {loading && <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}><Loader2 size={13} className="animate-spin" />Fetching from origin…</div>}
+
+      {notification && (
+        <div className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-primary)18', border: '1px solid var(--accent-primary)44', color: 'var(--accent-primary)' }}>
+          {notification}
+        </div>
+      )}
+
+      {info && (
+        <>
+          <div className="flex flex-wrap gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+            <span>Current: <code style={{ color: 'var(--text-primary)' }}>{info.current_commit}</code></span>
+            <span>Remote: <code style={{ color: 'var(--text-primary)' }}>{info.remote_commit}</code></span>
+            {info.behind > 0 && <span style={{ color: riskColor(info.behind) }}>Risk: {info.behind <= 3 ? 'Low' : info.behind <= 10 ? 'Medium' : 'High'}</span>}
+          </div>
+
+          {info.commits.length > 0 && (
+            <div>
+              <button onClick={() => setShowLog(s => !s)} className="flex items-center gap-1 text-xs mb-2" style={{ color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                {showLog ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                {showLog ? 'Hide' : 'Show'} changelog ({info.commits.length} commit{info.commits.length !== 1 ? 's' : ''})
+              </button>
+              {showLog && (
+                <div className="rounded overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
+                  {info.commits.map(c => (
+                    <div key={c.hash} className="flex items-start gap-3 px-3 py-2" style={{ borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+                      <code style={{ color: 'var(--accent-primary)', flexShrink: 0 }}>{c.hash}</code>
+                      <span style={{ color: 'var(--text-primary)', flex: 1 }}>{c.subject}</span>
+                      <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{c.author} · {c.date}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <Btn onClick={load} variant="secondary" disabled={loading}>
+              <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />Refresh
+            </Btn>
+            {info.behind > 0 && (
+              <Btn onClick={apply} disabled={applying}>
+                {applying ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
+                {applying ? 'Updating…' : 'Apply update'}
+              </Btn>
+            )}
+          </div>
+
+          {info.backup_tags.length > 0 && (
+            <details className="mt-1">
+              <summary className="text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
+                Rollback points ({info.backup_tags.length})
+              </summary>
+              <div className="mt-2 space-y-1">
+                {info.backup_tags.map(tag => (
+                  <div key={tag} className="flex items-center justify-between px-3 py-1.5 rounded" style={{ background: 'var(--bg-elevated)' }}>
+                    <code className="text-xs" style={{ color: 'var(--text-primary)' }}>{tag}</code>
+                    <Btn onClick={() => rollback(tag)} variant="danger" disabled={rollingBack}>
+                      <RotateCcw size={11} />Roll back
+                    </Btn>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Docker images section ────────────────────────────────────────────────────
+
+function DockerSection() {
+  const [rows, setRows] = useState<DockerRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [checking, setChecking] = useState(false)
+  const [applying, setApplying] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch('/api/updates/docker', { credentials: 'include' })
+      if (r.ok) setRows(await r.json())
+    } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  // Poll while any row is checking
+  useEffect(() => {
+    const isChecking = rows.some(r => r.status === 'checking')
+    if (!isChecking) return
+    const t = setInterval(load, 2000)
+    return () => clearInterval(t)
+  }, [rows, load])
+
+  const check = async () => {
+    setChecking(true)
+    await fetch('/api/updates/docker/check', { method: 'POST', credentials: 'include' })
+    setTimeout(() => { setChecking(false); load() }, 500)
+  }
+
+  const apply = async (containerId: string) => {
+    setApplying(containerId)
+    try {
+      await fetch(`/api/updates/docker/${containerId}/apply`, { method: 'POST', credentials: 'include' })
+      await load()
+    } finally { setApplying(null) }
+  }
+
+  const statusIcon = (s: DockerRow['status']) => {
+    if (s === 'up-to-date')       return <CheckCircle size={13} style={{ color: 'var(--accent-success)' }} />
+    if (s === 'update-available') return <ArrowUpCircle size={13} style={{ color: 'var(--accent-warning, #f59e0b)' }} />
+    if (s === 'checking')         return <Loader2 size={13} className="animate-spin" style={{ color: 'var(--text-muted)' }} />
+    if (s === 'error')            return <XCircle size={13} style={{ color: 'var(--accent-danger)' }} />
+    return <span style={{ color: 'var(--text-disabled)', fontSize: 11 }}>—</span>
+  }
+
+  const updatesAvailable = rows.filter(r => r.status === 'update-available').length
+
+  return (
+    <div style={card} className="space-y-3">
+      <SectionHeader icon={Container} title="Docker Images" badge={
+        updatesAvailable > 0
+          ? <Badge label={`${updatesAvailable} update${updatesAvailable !== 1 ? 's' : ''}`} color="var(--accent-warning, #f59e0b)" />
+          : rows.length > 0 && rows.every(r => r.status === 'up-to-date')
+            ? <Badge label="All up to date" color="var(--accent-success)" />
+            : null
+      } />
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}><Loader2 size={13} className="animate-spin" />Loading…</div>
+      ) : rows.length === 0 ? (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No running containers found.</p>
+      ) : (
+        <div className="rounded overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
+          <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+                {['Container', 'Image', 'Status', ''].map(h => (
+                  <th key={h} className="px-3 py-2 text-left font-medium" style={{ color: 'var(--text-muted)' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => (
+                <tr key={row.container_id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-primary)' }}>{row.container_name}</td>
+                  <td className="px-3 py-2 font-mono" style={{ color: 'var(--text-secondary)' }}>{row.image}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-1.5">
+                      {statusIcon(row.status)}
+                      <span style={{ color: 'var(--text-muted)' }}>
+                        {row.status === 'unknown' ? 'Not checked' : row.status.replace('-', ' ')}
+                        {row.detail && ` — ${row.detail}`}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    {row.status === 'update-available' && (
+                      <Btn onClick={() => apply(row.container_id)} disabled={applying === row.container_id}>
+                        {applying === row.container_id ? <Loader2 size={11} className="animate-spin" /> : <ArrowUpCircle size={11} />}
+                        {applying === row.container_id ? 'Updating…' : 'Pull & recreate'}
+                      </Btn>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <Btn onClick={check} variant="secondary" disabled={checking || rows.some(r => r.status === 'checking')}>
+          <RefreshCw size={12} className={checking ? 'animate-spin' : ''} />
+          {checking ? 'Checking…' : 'Check all images'}
+        </Btn>
+        <Btn onClick={load} variant="secondary"><RefreshCw size={12} />Refresh</Btn>
+      </div>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Checking images pulls the latest manifest from the registry. If a newer image is found it will be downloaded automatically.
+      </p>
+    </div>
+  )
+}
+
+// ─── OS packages section ──────────────────────────────────────────────────────
+
+function OsSection() {
+  const [info, setInfo] = useState<OsInfo | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [applying, setApplying] = useState(false)
+  const [output, setOutput] = useState<string | null>(null)
+  const [showPkgs, setShowPkgs] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await fetch('/api/updates/os', { credentials: 'include' })
+      if (r.ok) setInfo(await r.json())
+    } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const applyOs = async (dryRun: boolean) => {
+    if (!dryRun && !confirm('Apply all OS package updates? This may take a while.')) return
+    setApplying(true)
+    setOutput(null)
+    try {
+      const r = await fetch('/api/updates/os/apply', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: dryRun }),
+      })
+      if (r.ok) { const d = await r.json(); setOutput(d.output) }
+    } finally { setApplying(false) }
+  }
+
+  return (
+    <div style={card} className="space-y-3">
+      <SectionHeader icon={Package} title="OS Packages" badge={
+        !loading && info ? (
+          info.error ? <Badge label="Error" color="var(--accent-danger)" />
+          : info.available ? <Badge label={`${info.count} upgradable`} color="var(--accent-warning, #f59e0b)" />
+          : <Badge label="Up to date" color="var(--accent-success)" />
+        ) : null
+      } />
+
+      {loading && <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}><Loader2 size={13} className="animate-spin" />Checking packages…</div>}
+
+      {info && (
+        <>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Package manager: <code style={{ color: 'var(--text-primary)' }}>{info.package_manager}</code>
+          </p>
+
+          {info.error && (
+            <div className="flex items-center gap-2 text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-danger)18', color: 'var(--accent-danger)' }}>
+              <AlertTriangle size={13} />{info.error}
+            </div>
+          )}
+
+          {info.packages.length > 0 && (
+            <div>
+              <button onClick={() => setShowPkgs(s => !s)} className="flex items-center gap-1 text-xs mb-2" style={{ color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                {showPkgs ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                {showPkgs ? 'Hide' : 'Show'} packages ({info.count})
+              </button>
+              {showPkgs && (
+                <div className="rounded p-3 font-mono text-xs overflow-auto max-h-48" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                  {info.packages.map((p, i) => <div key={i}>{p}</div>)}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <Btn onClick={load} variant="secondary" disabled={loading}><RefreshCw size={12} />Refresh</Btn>
+            {!info.error && (
+              <>
+                <Btn onClick={() => applyOs(true)} variant="secondary" disabled={applying}>
+                  {applying ? <Loader2 size={12} className="animate-spin" /> : <Server size={12} />}
+                  Dry run
+                </Btn>
+                {info.available && (
+                  <Btn onClick={() => applyOs(false)} disabled={applying}>
+                    {applying ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
+                    {applying ? 'Applying…' : `Apply ${info.count} update${info.count !== 1 ? 's' : ''}`}
+                  </Btn>
+                )}
+              </>
+            )}
+          </div>
+
+          {output && (
+            <pre className="rounded p-3 text-xs overflow-auto max-h-64" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              {output}
+            </pre>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+export default function UpdatesPage() {
+  return (
+    <div className="p-6 space-y-6 max-w-4xl mx-auto">
+      <div className="flex items-center gap-3">
+        <ArrowUpCircle size={22} style={{ color: 'var(--accent-primary)' }} />
+        <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Updates</h1>
+      </div>
+      <VoidTowerSection />
+      <DockerSection />
+      <OsSection />
+    </div>
+  )
+}

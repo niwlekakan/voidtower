@@ -31,6 +31,7 @@ pub mod wireguard;
 pub mod vms;
 pub mod tags;
 pub mod ai;
+pub mod bearer_auth;
 pub mod integrations;
 pub mod models;
 pub mod storage;
@@ -226,5 +227,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/updates/os",                  get(updates::os_info))
         .route("/api/updates/os/apply",            post(updates::apply_os))
         .layer(cors)
+        .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
         .with_state(state)
 }

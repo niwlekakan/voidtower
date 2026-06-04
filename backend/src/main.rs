@@ -21,7 +21,7 @@ use anyhow::Result;
 use clap::Parser;
 use monitoring::{MetricsBroadcaster, MetricsCollector, MetricsSnapshot};
 use sqlx::SqlitePool;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -32,6 +32,8 @@ pub struct AppState {
     pub metrics_tx: MetricsBroadcaster,
     pub latest_metrics: Arc<RwLock<Option<MetricsSnapshot>>>,
     pub secrets_key: Arc<[u8; 32]>,
+    // token_hash -> (session_id, expires_at_unix) — avoids a DB write on every Bearer request
+    pub token_sessions: Arc<RwLock<HashMap<String, (String, i64)>>>,
 }
 
 #[derive(Parser, Debug)]
@@ -157,6 +159,7 @@ async fn main() -> Result<()> {
         metrics_tx: metrics_tx.clone(),
         latest_metrics: latest_metrics.clone(),
         secrets_key,
+        token_sessions: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // Spawn metrics collector

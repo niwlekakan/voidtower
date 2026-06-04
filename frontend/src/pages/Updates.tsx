@@ -1,17 +1,23 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   ArrowUpCircle, CheckCircle, RefreshCw, RotateCcw, Server,
-  Package, Loader2, XCircle, ChevronDown, ChevronUp, AlertTriangle, Container,
+  Package, Loader2, XCircle, ChevronDown, ChevronUp, AlertTriangle, Container, Box,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface CommitInfo { hash: string; subject: string; author: string; date: string }
 interface VtInfo {
+  mode: 'git' | 'docker'
+  // git mode
   current_commit: string; remote_commit: string
   behind: number; ahead: number
   commits: CommitInfo[]; backup_tags: string[]
   fetch_error: string | null
+  // docker mode
+  current_image: string | null
+  update_status: 'unknown' | 'checking' | 'up-to-date' | 'update-available' | 'error' | null
+  update_detail: string | null
 }
 interface DockerRow {
   container_id: string; container_name: string; image: string
@@ -63,36 +69,125 @@ function Btn({ onClick, disabled, variant = 'primary', children }: {
   )
 }
 
-// ─── VoidTower section ────────────────────────────────────────────────────────
+// ─── VoidTower — Docker mode ──────────────────────────────────────────────────
 
-function VoidTowerSection() {
-  const [info, setInfo] = useState<VtInfo | null>(null)
-  const [loading, setLoading] = useState(true)
+function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }) {
+  const [checking, setChecking] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [notification, setNotification] = useState<string | null>(null)
+
+  // Poll while checking
+  useEffect(() => {
+    if (info.update_status !== 'checking') return
+    const t = setInterval(onRefresh, 2000)
+    return () => clearInterval(t)
+  }, [info.update_status, onRefresh])
+
+  const check = async () => {
+    setChecking(true)
+    await fetch('/api/updates/voidtower/check', { method: 'POST', credentials: 'include' })
+    // status switches to "checking" on next poll
+    setTimeout(() => { setChecking(false); onRefresh() }, 500)
+  }
+
+  const apply = async () => {
+    if (!confirm('Pull the latest image and recreate the VoidTower container? The UI will be briefly unavailable.')) return
+    setApplying(true)
+    setNotification('Update triggered — VoidTower will restart momentarily.')
+    await fetch('/api/updates/voidtower/apply', { method: 'POST', credentials: 'include' })
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
+        if (r.ok) { clearInterval(poll); setApplying(false); onRefresh() }
+      } catch { /* container restarting */ }
+    }, 3000)
+  }
+
+  const statusColor = () => {
+    switch (info.update_status) {
+      case 'update-available': return 'var(--accent-warning, #f59e0b)'
+      case 'up-to-date':       return 'var(--accent-success)'
+      case 'error':            return 'var(--accent-danger)'
+      default:                 return 'var(--text-muted)'
+    }
+  }
+  const statusLabel = () => {
+    switch (info.update_status) {
+      case 'update-available': return 'Update available'
+      case 'up-to-date':       return 'Up to date'
+      case 'checking':         return 'Checking…'
+      case 'error':            return 'Check failed'
+      default:                 return 'Not checked'
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {notification && (
+        <div className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-primary)18', border: '1px solid var(--accent-primary)44', color: 'var(--accent-primary)' }}>
+          {notification}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+        <span>Image: <code style={{ color: 'var(--text-primary)' }}>{info.current_image ?? 'unknown'}</code></span>
+        <span style={{ color: statusColor() }}>
+          {info.update_status === 'checking' && <Loader2 size={11} className="animate-spin inline mr-1" />}
+          {statusLabel()}
+        </span>
+      </div>
+
+      {info.update_detail && (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{info.update_detail}</p>
+      )}
+      {info.update_status === 'error' && info.update_detail && (
+        <div className="flex items-center gap-2 text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-danger)18', color: 'var(--accent-danger)' }}>
+          <AlertTriangle size={13} />{info.update_detail}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <Btn onClick={onRefresh} variant="secondary"><RefreshCw size={12} />Refresh</Btn>
+        <Btn onClick={check} variant="secondary"
+          disabled={checking || info.update_status === 'checking'}>
+          {checking || info.update_status === 'checking'
+            ? <Loader2 size={12} className="animate-spin" />
+            : <RefreshCw size={12} />}
+          {info.update_status === 'checking' ? 'Checking…' : 'Check for update'}
+        </Btn>
+        {info.update_status === 'update-available' && (
+          <Btn onClick={apply} disabled={applying}>
+            {applying ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
+            {applying ? 'Updating…' : 'Apply update'}
+          </Btn>
+        )}
+      </div>
+
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Running in Docker. Check pulls the latest image manifest; Apply recreates the container with it.
+        Requires <code>/var/run/docker.sock</code> to be mounted.
+      </p>
+    </div>
+  )
+}
+
+// ─── VoidTower — git mode ─────────────────────────────────────────────────────
+
+function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }) {
   const [applying, setApplying] = useState(false)
   const [rollingBack, setRollingBack] = useState(false)
   const [showLog, setShowLog] = useState(false)
   const [notification, setNotification] = useState<string | null>(null)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
-      if (r.ok) setInfo(await r.json())
-    } finally { setLoading(false) }
-  }, [])
-
-  useEffect(() => { load() }, [load])
 
   const apply = async () => {
     if (!confirm('Pull latest from GitHub, rebuild, and restart? A backup tag will be created for rollback.')) return
     setApplying(true)
     setNotification('Update started — VoidTower will restart when done (may take a few minutes).')
     await fetch('/api/updates/voidtower/apply', { method: 'POST', credentials: 'include' })
-    // Poll until back up
     const poll = setInterval(async () => {
       try {
         const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
-        if (r.ok) { clearInterval(poll); setApplying(false); load() }
+        if (r.ok) { clearInterval(poll); setApplying(false); onRefresh() }
       } catch {}
     }, 3000)
   }
@@ -108,7 +203,7 @@ function VoidTowerSection() {
     const poll = setInterval(async () => {
       try {
         const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
-        if (r.ok) { clearInterval(poll); setRollingBack(false); load() }
+        if (r.ok) { clearInterval(poll); setRollingBack(false); onRefresh() }
       } catch {}
     }, 3000)
   }
@@ -117,82 +212,114 @@ function VoidTowerSection() {
     behind === 0 ? 'var(--accent-success)' : behind <= 3 ? 'var(--accent-warning, #f59e0b)' : 'var(--accent-danger)'
 
   return (
-    <div style={card} className="space-y-3">
-      <SectionHeader icon={ArrowUpCircle} title="VoidTower Application" badge={
-        !loading && info ? (
-          info.behind > 0
-            ? <Badge label={`${info.behind} update${info.behind !== 1 ? 's' : ''} available`} color="var(--accent-warning, #f59e0b)" />
-            : <Badge label="Up to date" color="var(--accent-success)" />
-        ) : null
-      } />
-
-      {loading && <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}><Loader2 size={13} className="animate-spin" />Fetching from origin…</div>}
-
+    <div className="space-y-3">
       {notification && (
         <div className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-primary)18', border: '1px solid var(--accent-primary)44', color: 'var(--accent-primary)' }}>
           {notification}
         </div>
       )}
 
-      {info && (
-        <>
-          <div className="flex flex-wrap gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
-            <span>Current: <code style={{ color: 'var(--text-primary)' }}>{info.current_commit}</code></span>
-            <span>Remote: <code style={{ color: 'var(--text-primary)' }}>{info.remote_commit}</code></span>
-            {info.behind > 0 && <span style={{ color: riskColor(info.behind) }}>Risk: {info.behind <= 3 ? 'Low' : info.behind <= 10 ? 'Medium' : 'High'}</span>}
-          </div>
+      <div className="flex flex-wrap gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+        <span>Current: <code style={{ color: 'var(--text-primary)' }}>{info.current_commit}</code></span>
+        <span>Remote: <code style={{ color: 'var(--text-primary)' }}>{info.remote_commit}</code></span>
+        {info.behind > 0 && <span style={{ color: riskColor(info.behind) }}>Risk: {info.behind <= 3 ? 'Low' : info.behind <= 10 ? 'Medium' : 'High'}</span>}
+      </div>
 
-          {info.commits.length > 0 && (
-            <div>
-              <button onClick={() => setShowLog(s => !s)} className="flex items-center gap-1 text-xs mb-2" style={{ color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>
-                {showLog ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                {showLog ? 'Hide' : 'Show'} changelog ({info.commits.length} commit{info.commits.length !== 1 ? 's' : ''})
-              </button>
-              {showLog && (
-                <div className="rounded overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
-                  {info.commits.map(c => (
-                    <div key={c.hash} className="flex items-start gap-3 px-3 py-2" style={{ borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
-                      <code style={{ color: 'var(--accent-primary)', flexShrink: 0 }}>{c.hash}</code>
-                      <span style={{ color: 'var(--text-primary)', flex: 1 }}>{c.subject}</span>
-                      <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{c.author} · {c.date}</span>
-                    </div>
-                  ))}
+      {info.fetch_error && (
+        <div className="flex items-center gap-2 text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-danger)18', color: 'var(--accent-danger)' }}>
+          <AlertTriangle size={13} />git fetch failed: {info.fetch_error}
+        </div>
+      )}
+
+      {info.commits.length > 0 && (
+        <div>
+          <button onClick={() => setShowLog(s => !s)} className="flex items-center gap-1 text-xs mb-2" style={{ color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>
+            {showLog ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {showLog ? 'Hide' : 'Show'} changelog ({info.commits.length} commit{info.commits.length !== 1 ? 's' : ''})
+          </button>
+          {showLog && (
+            <div className="rounded overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
+              {info.commits.map(c => (
+                <div key={c.hash} className="flex items-start gap-3 px-3 py-2" style={{ borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+                  <code style={{ color: 'var(--accent-primary)', flexShrink: 0 }}>{c.hash}</code>
+                  <span style={{ color: 'var(--text-primary)', flex: 1 }}>{c.subject}</span>
+                  <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{c.author} · {c.date}</span>
                 </div>
-              )}
+              ))}
             </div>
           )}
-
-          <div className="flex flex-wrap gap-2">
-            <Btn onClick={load} variant="secondary" disabled={loading}>
-              <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />Refresh
-            </Btn>
-            {info.behind > 0 && (
-              <Btn onClick={apply} disabled={applying}>
-                {applying ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
-                {applying ? 'Updating…' : 'Apply update'}
-              </Btn>
-            )}
-          </div>
-
-          {info.backup_tags.length > 0 && (
-            <details className="mt-1">
-              <summary className="text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
-                Rollback points ({info.backup_tags.length})
-              </summary>
-              <div className="mt-2 space-y-1">
-                {info.backup_tags.map(tag => (
-                  <div key={tag} className="flex items-center justify-between px-3 py-1.5 rounded" style={{ background: 'var(--bg-elevated)' }}>
-                    <code className="text-xs" style={{ color: 'var(--text-primary)' }}>{tag}</code>
-                    <Btn onClick={() => rollback(tag)} variant="danger" disabled={rollingBack}>
-                      <RotateCcw size={11} />Roll back
-                    </Btn>
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
-        </>
+        </div>
       )}
+
+      <div className="flex flex-wrap gap-2">
+        <Btn onClick={onRefresh} variant="secondary"><RefreshCw size={12} />Refresh</Btn>
+        {info.behind > 0 && (
+          <Btn onClick={apply} disabled={applying}>
+            {applying ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
+            {applying ? 'Updating…' : 'Apply update'}
+          </Btn>
+        )}
+      </div>
+
+      {info.backup_tags.length > 0 && (
+        <details className="mt-1">
+          <summary className="text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
+            Rollback points ({info.backup_tags.length})
+          </summary>
+          <div className="mt-2 space-y-1">
+            {info.backup_tags.map(tag => (
+              <div key={tag} className="flex items-center justify-between px-3 py-1.5 rounded" style={{ background: 'var(--bg-elevated)' }}>
+                <code className="text-xs" style={{ color: 'var(--text-primary)' }}>{tag}</code>
+                <Btn onClick={() => rollback(tag)} variant="danger" disabled={rollingBack}>
+                  <RotateCcw size={11} />Roll back
+                </Btn>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+// ─── VoidTower section (mode-aware) ──────────────────────────────────────────
+
+function VoidTowerSection() {
+  const [info, setInfo] = useState<VtInfo | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
+      if (r.ok) setInfo(await r.json())
+    } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const statusBadge = () => {
+    if (!info) return null
+    if (info.mode === 'docker') {
+      if (info.update_status === 'update-available') return <Badge label="Update available" color="var(--accent-warning, #f59e0b)" />
+      if (info.update_status === 'up-to-date')       return <Badge label="Up to date" color="var(--accent-success)" />
+      return null
+    }
+    if (info.behind > 0) return <Badge label={`${info.behind} update${info.behind !== 1 ? 's' : ''} available`} color="var(--accent-warning, #f59e0b)" />
+    if (info.behind === 0 && !loading) return <Badge label="Up to date" color="var(--accent-success)" />
+    return null
+  }
+
+  return (
+    <div style={card} className="space-y-3">
+      <SectionHeader
+        icon={info?.mode === 'docker' ? Box : ArrowUpCircle}
+        title="VoidTower Application"
+        badge={!loading ? statusBadge() : null}
+      />
+      {loading && <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}><Loader2 size={13} className="animate-spin" />Loading…</div>}
+      {info && info.mode === 'docker' && <VtDockerPanel info={info} onRefresh={load} />}
+      {info && info.mode === 'git'    && <VtGitPanel    info={info} onRefresh={load} />}
     </div>
   )
 }
@@ -214,7 +341,6 @@ function DockerSection() {
 
   useEffect(() => { load() }, [load])
 
-  // Poll while any row is checking
   useEffect(() => {
     const isChecking = rows.some(r => r.status === 'checking')
     if (!isChecking) return

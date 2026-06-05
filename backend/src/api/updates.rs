@@ -24,6 +24,33 @@ fn is_docker() -> bool {
     std::path::Path::new("/.dockerenv").exists()
 }
 
+fn is_dev_install() -> bool {
+    std::env::current_exe().ok()
+        .map(|p| p.to_string_lossy().contains("/target/"))
+        .unwrap_or(false)
+}
+
+fn install_dir() -> std::path::PathBuf {
+    std::env::current_exe().ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("/opt/voidtower"))
+}
+
+fn github_latest_commit(repo: &str, branch: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{repo}/commits/{branch}");
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "10", "-A", "voidtower-update",
+               "-H", "Accept: application/vnd.github.sha", &url])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(sha[..7].to_string())
+    } else {
+        None
+    }
+}
+
 // ─── VoidTower updates ────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -84,6 +111,31 @@ pub async fn vt_info(State(state): State<AppState>, jar: CookieJar) -> Result<Js
             current_image: Some(current_image),
             update_status: Some(cached.status),
             update_detail: cached.detail,
+        }));
+    }
+
+    if !is_dev_install() {
+        // prod bare-metal: binary at /opt/voidtower, no git repo
+        let dir = install_dir();
+        let commit_hash = std::fs::read_to_string(dir.join(".commit"))
+            .unwrap_or_default().trim().to_string();
+        let current_commit = if commit_hash.len() >= 7 {
+            commit_hash[..7].to_string()
+        } else if !commit_hash.is_empty() {
+            commit_hash
+        } else {
+            std::fs::read_to_string(dir.join(".version"))
+                .unwrap_or_else(|_| "unknown".into()).trim().to_string()
+        };
+        let remote_commit = github_latest_commit("niwlekakan/voidtower", "voidtower-aio")
+            .unwrap_or_else(|| "unknown".into());
+        let behind = if remote_commit != "unknown" && !current_commit.is_empty()
+            && remote_commit != current_commit { 1 } else { 0 };
+        return Ok(Json(VtUpdateInfo {
+            mode: "git".into(),
+            current_commit, remote_commit, behind, ahead: 0,
+            commits: vec![], backup_tags: vec![], fetch_error: None,
+            current_image: None, update_status: None, update_detail: None,
         }));
     }
 
@@ -188,7 +240,37 @@ pub async fn apply_vt(State(state): State<AppState>, jar: CookieJar) -> Result<J
         return Ok(Json(serde_json::json!({ "ok": true })));
     }
 
-    // bare-metal: git pull + rebuild + restart
+    if !is_dev_install() {
+        // prod bare-metal: download latest release binary, replace in place, let systemd restart
+        let dir_s = install_dir().to_string_lossy().to_string();
+        let pid = std::process::id();
+        let script = format!(
+            "#!/bin/sh\nset -e\n\
+             ARCH=$(uname -m)\n\
+             INSTALL_DIR={dir_s}\n\
+             LATEST=$(curl -fsSL --max-time 30 -A voidtower-update \
+             'https://api.github.com/repos/niwlekakan/voidtower/releases/latest' \
+             | grep '\"tag_name\"' | sed 's/.*\"v\\([^\"]*\\)\".*/\\1/')\n\
+             [ -z \"$LATEST\" ] && {{ echo 'Failed to fetch latest version' >&2; exit 1; }}\n\
+             ARCHIVE=\"voidtower-$LATEST-$ARCH-unknown-linux-musl.tar.gz\"\n\
+             curl -fsSL --max-time 120 \
+             \"https://github.com/niwlekakan/voidtower/releases/download/v$LATEST/$ARCHIVE\" \
+             -o /tmp/vt-update.tar.gz\n\
+             cd /tmp && tar -xzf /tmp/vt-update.tar.gz voidtower\n\
+             mv /tmp/voidtower \"$INSTALL_DIR/voidtower\"\n\
+             chmod +x \"$INSTALL_DIR/voidtower\"\n\
+             echo \"$LATEST\" > \"$INSTALL_DIR/.version\"\n\
+             sleep 1\n\
+             kill -TERM {pid}\n"
+        );
+        std::fs::write("/tmp/voidtower-update.sh", script).map_err(|e| AppError::Internal(e.into()))?;
+        std::process::Command::new("sh").args(["/tmp/voidtower-update.sh"])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .spawn().map_err(|e| AppError::Internal(e.into()))?;
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
+
+    // dev: git pull + rebuild + restart
     let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
     let pid  = std::process::id();
     let ts   = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -377,6 +459,67 @@ pub async fn docker_apply(
     }
 
     Ok(Json(serde_json::json!({ "ok": true, "output": output.trim(), "image": image })))
+}
+
+// ─── Odysseus bare-metal updates ─────────────────────────────────────────────
+
+const ODYSSEUS_INSTALL_DIR: &str = "/opt/odysseus";
+const ODYSSEUS_REPO: &str = "niwlekakan/odysseus";
+const ODYSSEUS_BRANCH: &str = "odysseus-voidlink";
+
+#[derive(Serialize)]
+pub struct OdyInfo {
+    pub installed: bool,
+    pub mode: String,
+    pub current_commit: String,
+    pub remote_commit: String,
+    pub behind: usize,
+    pub ahead: usize,
+    pub fetch_error: Option<String>,
+}
+
+pub async fn odysseus_info(State(state): State<AppState>, jar: CookieJar) -> Result<Json<OdyInfo>> {
+    require_admin(&state, &jar).await?;
+    let ody = std::path::Path::new(ODYSSEUS_INSTALL_DIR);
+    if !ody.join("app.py").exists() {
+        return Ok(Json(OdyInfo {
+            installed: false, mode: "none".into(),
+            current_commit: String::new(), remote_commit: String::new(),
+            behind: 0, ahead: 0, fetch_error: None,
+        }));
+    }
+    let current_commit = run(ody, "git", &["rev-parse", "--short", "HEAD"]);
+    let remote_ref = format!("origin/{ODYSSEUS_BRANCH}");
+    let fetch_err = std::process::Command::new("git")
+        .args(["fetch", "origin"]).current_dir(ody)
+        .output().err().map(|e| e.to_string());
+    let remote_commit = run(ody, "git", &["rev-parse", "--short", &remote_ref]);
+    let behind: usize = run(ody, "git", &["rev-list", &format!("HEAD..{remote_ref}"), "--count"])
+        .parse().unwrap_or(0);
+    let ahead: usize = run(ody, "git", &["rev-list", &format!("{remote_ref}..HEAD"), "--count"])
+        .parse().unwrap_or(0);
+    Ok(Json(OdyInfo { installed: true, mode: "git".into(), current_commit, remote_commit, behind, ahead, fetch_error: fetch_err }))
+}
+
+pub async fn apply_odysseus(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    let ody = std::path::Path::new(ODYSSEUS_INSTALL_DIR);
+    if !ody.join("app.py").exists() {
+        return Err(AppError::FeatureUnavailable("Odysseus is not installed at /opt/odysseus".into()));
+    }
+    let script = format!(
+        "#!/bin/sh\nset -e\n\
+         cd {dir}\n\
+         git pull origin {branch}\n\
+         {dir}/venv/bin/pip install --quiet -r {dir}/requirements.txt\n\
+         sudo systemctl restart odysseus.service\n",
+        dir = ODYSSEUS_INSTALL_DIR, branch = ODYSSEUS_BRANCH
+    );
+    std::fs::write("/tmp/odysseus-update.sh", script).map_err(|e| AppError::Internal(e.into()))?;
+    std::process::Command::new("sh").args(["/tmp/odysseus-update.sh"])
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .spawn().map_err(|e| AppError::Internal(e.into()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ─── OS package updates ───────────────────────────────────────────────────────

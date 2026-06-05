@@ -405,6 +405,12 @@ EOF
   printf '%s ALL=(root) NOPASSWD: /usr/bin/tail -n 100 /var/log/nginx/access.log\n' "${VT_USER}"   >> "${sudoers_file}"
   chmod 440 "${sudoers_file}"
 
+  local ody_sudoers="/etc/sudoers.d/voidtower-odysseus"
+  local sc
+  sc=$(command -v systemctl 2>/dev/null || echo /bin/systemctl)
+  printf '%s ALL=(root) NOPASSWD: %s restart odysseus.service\n' "${VT_USER}" "$sc" > "${ody_sudoers}"
+  chmod 440 "${ody_sudoers}"
+
   # Drop the Voidwatch auto-configure helper (triggered by path unit after bootstrap)
   cat > /opt/voidtower/configure-voidwatch.sh <<'SCRIPT'
 #!/usr/bin/env bash

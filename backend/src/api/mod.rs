@@ -223,6 +223,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/updates/voidtower/check",     post(updates::check_vt))
         .route("/api/updates/voidtower/apply",     post(updates::apply_vt))
         .route("/api/updates/voidtower/rollback",  post(updates::rollback_vt))
+        .route("/api/updates/odysseus",            get(updates::odysseus_info))
+        .route("/api/updates/odysseus/apply",      post(updates::apply_odysseus))
         .route("/api/updates/docker",              get(updates::docker_info))
         .route("/api/updates/docker/check",        post(updates::docker_check))
         .route("/api/updates/docker/:id/apply",    post(updates::docker_apply))

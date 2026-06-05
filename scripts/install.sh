@@ -302,11 +302,26 @@ build_from_source() {
   info "Building frontend…"
   (cd "$SRC/frontend" && npm ci && npm run build) \
     || die "Frontend build failed"
+  success "Frontend built"
+
   info "Building backend (this can take 10–15 min on first build)…"
-  (cd "$SRC/backend" && cargo build --release) \
-    || die "Backend build failed"
-  install -m 755 "$SRC/backend/target/release/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
-  cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend"
+  info "Source dir: $SRC"
+  [[ -d "$SRC/backend" ]] || die "Backend source directory not found at $SRC/backend"
+  (cd "$SRC/backend" && cargo build --release 2>&1) \
+    || die "Backend build failed (exit $?)"
+  success "Backend compiled"
+
+  local bin="$SRC/backend/target/release/${BINARY_NAME}"
+  [[ -f "$bin" ]] || die "Binary not found after build: $bin"
+  install -m 755 "$bin" "${VT_INSTALL_DIR}/${BINARY_NAME}" \
+    || die "Failed to install binary to ${VT_INSTALL_DIR}"
+  success "Binary installed"
+
+  [[ -d "$SRC/frontend/dist" ]] || die "Frontend dist not found at $SRC/frontend/dist"
+  cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend" \
+    || die "Failed to copy frontend dist"
+  success "Frontend assets installed"
+
   git -C "$SRC" rev-parse HEAD 2>/dev/null > "${VT_INSTALL_DIR}/.commit" || true
   success "Built and installed from source"
 }

@@ -291,15 +291,12 @@ build_from_source() {
   # When piped via curl | bash, BASH_SOURCE[0] is empty so SRC resolves to the
   # current directory which has no source tree — clone the repo instead.
   if [[ ! -d "$SRC/frontend" || ! -d "$SRC/backend" ]]; then
-    info "Cloning VoidTower source…"
+    info "Downloading VoidTower source…"
     SRC=$(mktemp -d)
-    info "Clone target: ${SRC}"
-    git clone --depth 1 --progress --branch voidtower-aio "https://github.com/${REPO}" "$SRC"
-    _clone_exit=$?
-    if [[ $_clone_exit -ne 0 ]]; then
-      die "git clone failed (exit ${_clone_exit})"
-    fi
-    success "Source cloned"
+    curl -fsSL "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" \
+      | tar -xz --strip-components=1 -C "$SRC" \
+      || die "Failed to download source from ${REPO}"
+    success "Source downloaded"
   fi
 
   info "Building frontend…"

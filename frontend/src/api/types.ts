@@ -534,3 +534,20 @@ export interface AuditAction {
   ip_address: string | null
   details: string | null
 }
+
+export interface ModStatus {
+  config: { url: string; branch: string } | null
+  applied: boolean
+  applied_at: number | null
+  rollback_ref: string | null
+  is_git_install: boolean
+}
+
+export interface ModFetchResult {
+  mod_name: string
+  branch: string
+  commits: { hash: string; subject: string; author: string; date: string }[]
+  changed_files: { path: string; status: 'added' | 'modified' | 'deleted' | 'renamed' }[]
+  diff_preview: string
+  commits_ahead: number
+}

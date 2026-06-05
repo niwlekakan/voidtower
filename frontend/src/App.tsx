@@ -35,6 +35,7 @@ import ThemesPage from '@/pages/Themes'
 import ModelsPage from '@/pages/Models'
 import UpdatesPage from '@/pages/Updates'
 import IntegrationsPage from '@/pages/Integrations'
+import ModsPage from '@/pages/Mods'
 import NotFoundPage from '@/pages/NotFound'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -74,6 +75,7 @@ export default function App() {
             <Route path="ai"         element={<AIPage />} />
             <Route path="models"     element={<ModelsPage />} />
             <Route path="updates"        element={<UpdatesPage />} />
+            <Route path="mods"           element={<ModsPage />} />
             <Route path="integrations"   element={<IntegrationsPage />} />
             <Route path="files"      element={<FilesPage />} />
             <Route path="proxies"    element={<ProxiesPage />} />

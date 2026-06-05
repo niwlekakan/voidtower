@@ -62,6 +62,7 @@ pub mod storage;
 pub mod system;
 pub mod updates;
 pub mod totp;
+pub mod mods;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -259,6 +260,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/updates/docker/:id/apply",    post(updates::docker_apply))
         .route("/api/updates/os",                  get(updates::os_info))
         .route("/api/updates/os/apply",            post(updates::apply_os))
+        // Mods
+        .route("/api/mods",              get(mods::get_status))
+        .route("/api/mods/config",       post(mods::save_config))
+        .route("/api/mods/fetch",        post(mods::fetch_mod))
+        .route("/api/mods/diff",         get(mods::get_diff))
+        .route("/api/mods/apply",        post(mods::apply_mod))
+        .route("/api/mods/rollback",     post(mods::rollback_mod))
         .layer(cors)
         .layer(middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))

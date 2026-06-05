@@ -1,7 +1,7 @@
 import { useEffect, useCallback, Component } from 'react'
 import type { ReactNode, ErrorInfo } from 'react'
 import { useMetrics } from '@/hooks/useMetrics'
-import { useAiosStore, newPanelId } from '@/aios/store/aios'
+import { useAiosStore } from '@/aios/store/aios'
 import { useDeviceTier } from '@/aios/hooks/useDeviceTier'
 import { LABEL_MAP } from '@/aios/AiosDock'
 import AiosStatusBar from '@/aios/AiosStatusBar'
@@ -184,7 +184,6 @@ export default function AiosLayout() {
     const mode = isPhone ? 'sheet' : 'floating'
 
     openPanel({
-      id: newPanelId(),
       type: key.startsWith('http') ? 'embed' : 'app',
       component: key,
       title: LABEL_MAP[key] ?? key,

@@ -141,6 +141,12 @@ pub async fn acknowledge(
     )
     .await;
 
+    crate::api::webhooks::fire_webhooks(
+        &state.db,
+        "alert.acked",
+        &format!("Alert {id} acknowledged by {}", user.username),
+    ).await;
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -177,6 +183,12 @@ pub async fn resolve(
     )
     .await;
 
+    crate::api::webhooks::fire_webhooks(
+        &state.db,
+        "alert.resolved",
+        &format!("Alert {id} resolved by {}", user.username),
+    ).await;
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -212,7 +224,7 @@ pub async fn create_alert(
 ) {
     let id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
-    let _ = sqlx::query(
+    let result = sqlx::query(
         "INSERT OR IGNORE INTO alerts (id, title, message, severity, category, resource_type, resource_id, state, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)"
     )
@@ -227,4 +239,12 @@ pub async fn create_alert(
     .bind(now)
     .execute(pool)
     .await;
+
+    // Fire webhooks for alert.created (only if insert actually happened — not a duplicate)
+    if let Ok(r) = result {
+        if r.rows_affected() > 0 {
+            let msg = format!("[{severity}] {title}: {message}");
+            crate::api::webhooks::fire_webhooks(pool, "alert.created", &msg).await;
+        }
+    }
 }

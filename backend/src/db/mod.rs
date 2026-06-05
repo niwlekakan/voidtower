@@ -21,6 +21,21 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
 
     run_migrations(&pool).await?;
 
+    // Webhook configs table (added post-initial schema)
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS webhook_configs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL,
+            url         TEXT NOT NULL,
+            type        TEXT NOT NULL DEFAULT 'generic',
+            events      TEXT NOT NULL DEFAULT '["alert.created"]',
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            created_at  INTEGER NOT NULL
+        )"#,
+    )
+    .execute(&pool)
+    .await;
+
     // Add columns introduced after initial schema — safe to ignore if already present
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN allow_embed INTEGER NOT NULL DEFAULT 0").execute(&pool).await;

@@ -1,9 +1,33 @@
 use crate::AppState;
 use axum::{
+    extract::Request,
+    http::HeaderValue,
+    middleware::{self, Next},
+    response::Response,
     routing::{delete, get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
+
+async fn security_headers(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let h = res.headers_mut();
+    h.insert("x-frame-options",        HeaderValue::from_static("DENY"));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert("referrer-policy",        HeaderValue::from_static("strict-origin-when-cross-origin"));
+    h.insert("content-security-policy", HeaderValue::from_static(
+        "default-src 'self'; \
+         script-src 'self' 'unsafe-inline' 'unsafe-eval'; \
+         style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data: blob:; \
+         connect-src 'self' ws: wss:; \
+         font-src 'self' data:; \
+         worker-src blob:; \
+         frame-src *; \
+         frame-ancestors 'none';"
+    ));
+    res
+}
 
 pub mod alerts;
 pub mod apps;
@@ -37,6 +61,7 @@ pub mod models;
 pub mod storage;
 pub mod system;
 pub mod updates;
+pub mod totp;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -48,10 +73,14 @@ pub fn router(state: AppState) -> Router {
         // Health
         .route("/api/health", get(auth::health))
         // Auth
-        .route("/api/auth/login", post(auth::login))
-        .route("/api/auth/logout", post(auth::logout))
-        .route("/api/auth/me", get(auth::me))
+        .route("/api/auth/login",     post(auth::login))
+        .route("/api/auth/logout",    post(auth::logout))
+        .route("/api/auth/me",        get(auth::me))
         .route("/api/auth/bootstrap", post(auth::bootstrap))
+        // TOTP
+        .route("/api/auth/totp/setup",   post(totp::setup))
+        .route("/api/auth/totp/enable",  post(totp::enable))
+        .route("/api/auth/totp/disable", post(totp::disable))
         // Metrics
         .route("/api/metrics/current", get(metrics::get_current))
         .route("/api/metrics/ws", get(metrics::ws_handler))
@@ -231,6 +260,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/updates/os",                  get(updates::os_info))
         .route("/api/updates/os/apply",            post(updates::apply_os))
         .layer(cors)
+        .layer(middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
         .with_state(state)
 }

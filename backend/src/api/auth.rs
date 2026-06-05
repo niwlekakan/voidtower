@@ -17,6 +17,7 @@ use time::Duration;
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    pub totp_code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -31,18 +32,67 @@ pub struct AuthResponse {
     pub user: PublicUser,
 }
 
+fn check_rate_limit(state: &AppState, ip: std::net::IpAddr) -> Result<()> {
+    use crate::LoginAttempts;
+    let mut map = state.login_limiter.lock().unwrap();
+    let now = std::time::Instant::now();
+    let entry = map.entry(ip).or_insert(LoginAttempts {
+        count: 0,
+        window_start: now,
+        locked_until: None,
+    });
+    if let Some(locked_until) = entry.locked_until {
+        if now < locked_until {
+            return Err(AppError::TooManyRequests);
+        }
+        // Lock expired — reset
+        entry.count = 0;
+        entry.locked_until = None;
+        entry.window_start = now;
+    }
+    // Reset window after 10 minutes
+    if now.duration_since(entry.window_start).as_secs() > 600 {
+        entry.count = 0;
+        entry.window_start = now;
+    }
+    Ok(())
+}
+
+fn record_failed_attempt(state: &AppState, ip: std::net::IpAddr) {
+    use crate::LoginAttempts;
+    let mut map = state.login_limiter.lock().unwrap();
+    let now = std::time::Instant::now();
+    let entry = map.entry(ip).or_insert(LoginAttempts {
+        count: 0,
+        window_start: now,
+        locked_until: None,
+    });
+    entry.count += 1;
+    if entry.count >= 5 {
+        entry.locked_until = Some(now + std::time::Duration::from_secs(900));
+    }
+}
+
+fn clear_rate_limit(state: &AppState, ip: std::net::IpAddr) {
+    state.login_limiter.lock().unwrap().remove(&ip);
+}
+
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     jar: CookieJar,
     Json(req): Json<LoginRequest>,
 ) -> Result<(CookieJar, Json<AuthResponse>)> {
+    let ip = addr.ip();
+    check_rate_limit(&state, ip)?;
+
     let user = auth::find_user_by_username(&state.db, &req.username)
         .await
         .map_err(AppError::Internal)?
-        .ok_or(AppError::Unauthorized)?;
+        .ok_or_else(|| { record_failed_attempt(&state, ip); AppError::Unauthorized })?;
 
     if !auth::verify_password(&req.password, &user.password_hash) {
+        record_failed_attempt(&state, ip);
         audit::log(
             &state.db, None, "human", "auth.login.failed",
             Some("user"), Some(&user.id), "failure",
@@ -50,6 +100,27 @@ pub async fn login(
         ).await;
         return Err(AppError::Unauthorized);
     }
+
+    // TOTP check
+    if user.totp_enabled {
+        match &req.totp_code {
+            None => return Err(AppError::TotpRequired),
+            Some(code) => {
+                let secret = user.totp_secret.as_deref().unwrap_or("");
+                if !crate::api::totp::verify_totp(secret, code) {
+                    record_failed_attempt(&state, ip);
+                    audit::log(
+                        &state.db, None, "human", "auth.login.totp_failed",
+                        Some("user"), Some(&user.id), "failure",
+                        Some(&addr.ip().to_string()), None,
+                    ).await;
+                    return Err(AppError::Unauthorized);
+                }
+            }
+        }
+    }
+
+    clear_rate_limit(&state, ip);
 
     let session = auth::create_session(
         &state.db,

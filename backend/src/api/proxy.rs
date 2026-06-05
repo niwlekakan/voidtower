@@ -56,6 +56,11 @@ fn validate_upstream(u: &str) -> Result<()> {
             "Upstream must start with http:// or https://".into(),
         ));
     }
+    // Block cloud metadata endpoints and unspecified addresses
+    let lower = u.to_lowercase();
+    if lower.contains("169.254.") || lower.contains("//0.0.0.0") || lower.contains("[::ffff:0]") {
+        return Err(AppError::BadRequest("Upstream address is not permitted".into()));
+    }
     Ok(())
 }
 

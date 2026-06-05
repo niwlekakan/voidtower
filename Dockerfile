@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
 RUN useradd -r -s /bin/false voidtower
 COPY --from=backend-builder /build/backend/target/release/voidtower /usr/local/bin/voidtower
 COPY --from=frontend-builder /build/frontend/dist /usr/share/voidtower/frontend
+COPY app-vault/apps /usr/share/voidtower/apps
 COPY nginx/voidtower.conf /etc/nginx/conf.d/voidtower.conf
 COPY docker/supervisord.conf /etc/supervisor/conf.d/voidtower.conf
 COPY docker/entrypoint.sh /entrypoint.sh

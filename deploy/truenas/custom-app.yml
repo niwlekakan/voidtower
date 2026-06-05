@@ -42,7 +42,7 @@ services:
       - VOIDTOWER_CONFIG_DIR=/etc/voidtower
       - RUST_LOG=info
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/api/health"]
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8743/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3

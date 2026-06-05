@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Profiles:
 #   (none)       — VoidTower only
 #   --profile aio — + Odysseus + Voidwatch + companion services (chromadb, searxng, ntfy)
@@ -38,7 +36,7 @@ services:
       # - ./tls/cert.pem:/etc/voidtower/tls/cert.pem:ro
       # - ./tls/key.pem:/etc/voidtower/tls/key.pem:ro
       # Required for Docker container management and self-update:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - VOIDTOWER_BIND=0.0.0.0
       - VOIDTOWER_PORT=8743
@@ -46,7 +44,7 @@ services:
       - VOIDTOWER_CONFIG_DIR=/etc/voidtower
       - RUST_LOG=info
     healthcheck:
-      test: ["CMD", "curl", "-fk", "https://localhost/api/health"]
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8743/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3

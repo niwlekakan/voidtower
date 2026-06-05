@@ -65,7 +65,12 @@ fn detect_docker() -> Capability {
 }
 
 fn detect_docker_compose() -> Capability {
-    let v2 = std::process::Command::new("docker")
+    let docker = ["/usr/bin/docker", "/usr/local/bin/docker", "docker"]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists() || **p == "docker")
+        .copied()
+        .unwrap_or("docker");
+    let v2 = std::process::Command::new(docker)
         .args(["compose", "version"])
         .output()
         .map(|o| o.status.success())

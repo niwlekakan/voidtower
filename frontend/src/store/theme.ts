@@ -4,6 +4,7 @@ import {
   type Theme, type GlassLevel, type BgPreset, type AnimConfig,
   BUILTIN_THEMES, BG_PRESETS, DEFAULT_ANIM_CONFIG, randomizeAnimConfig, importTheme, applyTheme,
 } from '@/theme/themes'
+import { type DeviceTier } from '../aios/store/aios'
 
 export type UiMode = 'tower' | 'void'
 
@@ -14,6 +15,7 @@ interface ThemeStore {
   bgPreset: BgPreset
   animConfig: AnimConfig
   uiMode: UiMode
+  deviceMode: DeviceTier | 'auto'
   setTheme: (id: string) => void
   setGlass: (level: GlassLevel) => void
   setBgPreset: (preset: BgPreset) => void
@@ -26,6 +28,7 @@ interface ThemeStore {
   importFromJson: (json: string) => void
   allThemes: () => Theme[]
   setUiMode: (mode: UiMode) => void
+  setDeviceMode: (mode: DeviceTier | 'auto') => void
 }
 
 const GLASS_LEVELS: GlassLevel[] = ['none', 'blur', 'acrylic', 'frosted']
@@ -42,6 +45,7 @@ export const useThemeStore = create<ThemeStore>()(
       bgPreset: 'none',
       animConfig: { ...DEFAULT_ANIM_CONFIG },
       uiMode: 'tower' as UiMode,
+      deviceMode: 'auto' as DeviceTier | 'auto',
 
       setTheme: (id) => {
         const all = [...BUILTIN_THEMES, ...get().customThemes]
@@ -90,6 +94,8 @@ export const useThemeStore = create<ThemeStore>()(
       allThemes: () => [...BUILTIN_THEMES, ...get().customThemes],
 
       setUiMode: (mode) => set({ uiMode: mode }),
+
+      setDeviceMode: (mode) => set({ deviceMode: mode }),
     }),
     {
       name: 'vt-theme',
@@ -100,6 +106,7 @@ export const useThemeStore = create<ThemeStore>()(
         bgPreset: s.bgPreset,
         animConfig: s.animConfig,
         uiMode: s.uiMode,
+        deviceMode: s.deviceMode,
       }),
     },
   ),

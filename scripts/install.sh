@@ -47,6 +47,7 @@ MDNS_ENABLED=false
 HAVE_SYSTEMD=false
 HAVE_DOCKER=false
 HAVE_COMPOSE=false
+MUSL_BUILD="${MUSL_BUILD:-false}"
 
 # Integrated-stack flags
 WITH_ODYSSEUS=false
@@ -90,6 +91,7 @@ Core:
   --skip-systemd         Skip systemd service install
   --skip-ai              Skip AI setup
   --version VER          Specific VoidTower version (default: latest)
+  --musl                 Build a fully-static musl binary (TrueNAS Scale, Alpine)
 
 Integrated stack:
   --with-odysseus        Install Odysseus AI workspace
@@ -141,6 +143,7 @@ while [[ $# -gt 0 ]]; do
     --skip-model-pull)  SKIP_MODEL_PULL=true ;;
     --odysseus-port)    ODYSSEUS_PORT="$2"; shift ;;
     --no-ai)            WITH_AI=false; SKIP_AI=true ;;
+    --musl)             MUSL_BUILD=true ;;
     --no-mcp)           NO_MCP=true ;;
     --no-webhooks)      NO_WEBHOOKS=true ;;
     --no-toolpacks)     NO_TOOLPACKS=true ;;
@@ -311,11 +314,42 @@ build_from_source() {
   info "Building backend (this can take 10–15 min on first build)…"
   info "Source dir: $SRC"
   [[ -d "$SRC/backend" ]] || die "Backend source directory not found at $SRC/backend"
-  (cd "$SRC/backend" && cargo build --release 2>&1) \
-    || die "Backend build failed (exit $?)"
+
+  # Detect if we should build a musl static binary (TrueNAS, Alpine, or user-requested)
+  local _use_musl=false
+  if grep -qi "truenas\|alpine" /etc/os-release 2>/dev/null; then
+    _use_musl=true
+  fi
+  [[ "${MUSL_BUILD:-}" == "true" ]] && _use_musl=true
+
+  local CARGO_BUILD_TARGET="" RUSTFLAGS=""
+  if [[ "$_use_musl" == "true" ]]; then
+    info "Building musl static binary (x86_64-unknown-linux-musl)…"
+    rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
+    # musl-gcc is required to link any C deps (e.g. libsqlite3 bundled build)
+    if ! command -v musl-gcc >/dev/null 2>&1; then
+      case "$PKG_MGR" in
+        apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq musl-tools ;;
+        apk)    apk add --no-cache musl-dev ;;
+        dnf)    dnf install -y -q musl-gcc musl-libc-static 2>/dev/null || warn "musl-gcc not available in dnf repos — install manually" ;;
+        *)      warn "Cannot auto-install musl-gcc for pkg manager: $PKG_MGR — ensure musl-tools is installed" ;;
+      esac
+    fi
+    CARGO_BUILD_TARGET="x86_64-unknown-linux-musl"
+    RUSTFLAGS="-C target-feature=+crt-static"
+  fi
+
+  if [[ -n "$CARGO_BUILD_TARGET" ]]; then
+    (cd "$SRC/backend" && RUSTFLAGS="$RUSTFLAGS" cargo build --release --target "$CARGO_BUILD_TARGET" 2>&1) \
+      || die "Backend build failed"
+    local bin="$SRC/backend/target/${CARGO_BUILD_TARGET}/release/${BINARY_NAME}"
+  else
+    (cd "$SRC/backend" && cargo build --release 2>&1) \
+      || die "Backend build failed (exit $?)"
+    local bin="$SRC/backend/target/release/${BINARY_NAME}"
+  fi
   success "Backend compiled"
 
-  local bin="$SRC/backend/target/release/${BINARY_NAME}"
   [[ -f "$bin" ]] || die "Binary not found after build: $bin"
   install -m 755 "$bin" "${VT_INSTALL_DIR}/${BINARY_NAME}" \
     || die "Failed to install binary to ${VT_INSTALL_DIR}"

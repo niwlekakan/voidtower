@@ -8,6 +8,8 @@ export type LayoutMode =
 
 export type PanelType = 'app' | 'stream' | 'odysseus' | 'embed'
 
+export type DeviceTier = 'phone' | 'tablet' | 'desktop' | 'large' | 'tv' | 'kiosk'
+
 export interface PanelState {
   id: string
   type: PanelType
@@ -29,30 +31,46 @@ export type SnapZone =
   | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
   | 'fullscreen'
 
+const PANEL_CAPS: Record<DeviceTier, number> = {
+  phone: 1,
+  tablet: 3,
+  desktop: 5,
+  large: 8,
+  tv: 5,
+  kiosk: 5,
+}
+
 interface AiosStore {
   panels: PanelState[]
   focusedId: string | null
   activeWorkspace: 0 | 1 | 2 | 3
   splitPair: [string, string] | null
   splitRatio: number
+  deviceTier: DeviceTier
   _zCounter: number
 
-  openPanel: (panel: Omit<PanelState, 'zIndex'>) => void
+  openPanel: (panel: Omit<PanelState, 'id' | 'zIndex'>) => void
   closePanel: (id: string) => void
   focusPanel: (id: string) => void
+  updatePanel: (id: string, updates: Partial<PanelState>) => void
   movePanel: (id: string, x: number, y: number) => void
   resizePanel: (id: string, x: number, y: number, w: number, h: number) => void
-  snapPanel: (id: string, zone: SnapZone) => void
+  snapPanel: (id: string, mode: LayoutMode) => void
   minimizePanel: (id: string) => void
+  maximizePanel: (id: string) => void
   restorePanel: (id: string) => void
   togglePinned: (id: string) => void
-  setWorkspace: (i: 0 | 1 | 2 | 3) => void
+  setWorkspace: (index: 0 | 1 | 2 | 3) => void
   sendToWorkspace: (id: string, i: number) => void
+  setSplitPair: (pair: [string, string] | null) => void
   coupleAsSplit: (leftId: string, rightId: string) => void
   uncoupleSplit: () => void
-  setSplitRatio: (r: number) => void
+  setSplitRatio: (ratio: number) => void
+  setDeviceTier: (tier: DeviceTier) => void
   closeAll: () => void
 }
+
+export const newPanelId = () => `panel-${crypto.randomUUID()}`
 
 let zCounter = 100
 
@@ -82,11 +100,33 @@ export const useAiosStore = create<AiosStore>()(
       activeWorkspace: 0,
       splitPair: null,
       splitRatio: 0.5,
+      deviceTier: 'desktop' as DeviceTier,
       _zCounter: 100,
 
-      openPanel: (panel) => {
+      openPanel: (panelData) => {
         const z = ++zCounter
-        set((s) => ({ panels: [...s.panels, { ...panel, zIndex: z }], focusedId: panel.id }))
+        const { panels, deviceTier } = get()
+        const cap = PANEL_CAPS[deviceTier]
+        const newId = newPanelId()
+        const newPanel: PanelState = { ...panelData, id: newId, zIndex: z }
+
+        let updatedPanels = [...panels]
+
+        // If at or above cap, minimize the oldest non-pinned visible panel
+        const visible = updatedPanels.filter(
+          (p) => p.layoutMode !== 'minimized' && !p.pinned
+        )
+        if (visible.length >= cap) {
+          const oldest = visible.reduce(
+            (min, p) => (p.zIndex < min.zIndex ? p : min),
+            visible[0]
+          )
+          updatedPanels = updatedPanels.map((p) =>
+            p.id === oldest.id ? { ...p, layoutMode: 'minimized' as LayoutMode } : p
+          )
+        }
+
+        set({ panels: [...updatedPanels, newPanel], focusedId: newId })
       },
 
       closePanel: (id) => set((s) => {
@@ -106,6 +146,10 @@ export const useAiosStore = create<AiosStore>()(
         }))
       },
 
+      updatePanel: (id, updates) => set((s) => ({
+        panels: s.panels.map((p) => (p.id === id ? { ...p, ...updates } : p)),
+      })),
+
       movePanel: (id, x, y) => set((s) => ({
         panels: s.panels.map((p) => p.id === id ? { ...p, x, y, layoutMode: 'floating' } : p),
       })),
@@ -114,25 +158,44 @@ export const useAiosStore = create<AiosStore>()(
         panels: s.panels.map((p) => p.id === id ? { ...p, x, y, w, h, layoutMode: 'floating' } : p),
       })),
 
-      snapPanel: (id, zone) => {
-        const vw = window.innerWidth
-        const vh = window.innerHeight
-        const geo = snapGeometry(zone, vw, vh)
+      snapPanel: (id, mode) => {
+        // For snap zones that have geometry, compute it
+        const snapZones: SnapZone[] = [
+          'left-half', 'right-half', 'top-half', 'bottom-half',
+          'top-left', 'top-right', 'bottom-left', 'bottom-right', 'fullscreen',
+        ]
+        const isSnapZone = snapZones.includes(mode as SnapZone)
+        const geo = isSnapZone
+          ? snapGeometry(mode as SnapZone, window.innerWidth, window.innerHeight)
+          : undefined
+
         set((s) => ({
           panels: s.panels.map((p) => {
             if (p.id !== id) return p
-            return { ...p, layoutMode: zone, ...geo, savedX: p.x, savedY: p.y, savedW: p.w, savedH: p.h }
+            const isCurrentlyFloating = p.layoutMode === 'floating'
+            return {
+              ...p,
+              savedX: isCurrentlyFloating ? p.x : p.savedX,
+              savedY: isCurrentlyFloating ? p.y : p.savedY,
+              savedW: isCurrentlyFloating ? p.w : p.savedW,
+              savedH: isCurrentlyFloating ? p.h : p.savedH,
+              layoutMode: mode,
+              ...(geo ?? {}),
+            }
           }),
         }))
-        // Auto-couple split
-        const { panels, splitPair } = get()
-        const other = panels.find((p) =>
-          p.id !== id &&
-          !splitPair &&
-          ((zone === 'left-half' && p.layoutMode === 'right-half') ||
-           (zone === 'right-half' && p.layoutMode === 'left-half'))
-        )
-        if (other) get().coupleAsSplit(zone === 'left-half' ? id : other.id, zone === 'left-half' ? other.id : id)
+
+        // Auto-couple split when two panels are snapped left/right
+        if (mode === 'left-half' || mode === 'right-half') {
+          const { panels, splitPair } = get()
+          const counterMode = mode === 'left-half' ? 'right-half' : 'left-half'
+          const other = panels.find((p) => p.id !== id && !splitPair && p.layoutMode === counterMode)
+          if (other) {
+            const leftId = mode === 'left-half' ? id : other.id
+            const rightId = mode === 'left-half' ? other.id : id
+            get().coupleAsSplit(leftId, rightId)
+          }
+        }
       },
 
       minimizePanel: (id) => set((s) => ({
@@ -140,14 +203,28 @@ export const useAiosStore = create<AiosStore>()(
         focusedId: s.focusedId === id ? null : s.focusedId,
       })),
 
+      maximizePanel: (id) => set((s) => ({
+        panels: s.panels.map((p) => {
+          if (p.id !== id) return p
+          const isCurrentlyFloating = p.layoutMode === 'floating'
+          return {
+            ...p,
+            savedX: isCurrentlyFloating ? p.x : p.savedX,
+            savedY: isCurrentlyFloating ? p.y : p.savedY,
+            savedW: isCurrentlyFloating ? p.w : p.savedW,
+            savedH: isCurrentlyFloating ? p.h : p.savedH,
+            layoutMode: 'fullscreen' as LayoutMode,
+          }
+        }),
+      })),
+
       restorePanel: (id) => {
         const panel = get().panels.find((p) => p.id === id)
         if (!panel) return
-        const mode = panel.savedW > 0 ? 'floating' : 'floating'
         get().focusPanel(id)
         set((s) => ({
           panels: s.panels.map((p) => p.id === id
-            ? { ...p, layoutMode: mode, x: p.savedX || p.x, y: p.savedY || p.y, w: p.savedW || p.w, h: p.savedH || p.h }
+            ? { ...p, layoutMode: 'floating', x: p.savedX || p.x, y: p.savedY || p.y, w: p.savedW || p.w, h: p.savedH || p.h }
             : p),
         }))
       },
@@ -162,16 +239,20 @@ export const useAiosStore = create<AiosStore>()(
         panels: s.panels.map((p) => p.id === id ? { ...p, workspaceIndex: i } : p),
       })),
 
+      setSplitPair: (pair) => set({ splitPair: pair }),
+
       coupleAsSplit: (leftId, rightId) => set({ splitPair: [leftId, rightId] }),
 
       uncoupleSplit: () => set({ splitPair: null }),
 
       setSplitRatio: (r) => set({ splitRatio: Math.max(0.15, Math.min(0.85, r)) }),
 
+      setDeviceTier: (tier) => set({ deviceTier: tier }),
+
       closeAll: () => set({ panels: [], focusedId: null, splitPair: null }),
     }),
     {
-      name: 'vt-aios',
+      name: 'aios-panels',
       version: 2,
       storage: createJSONStorage(() => sessionStorage),
       partialize: (s) => ({
@@ -179,9 +260,8 @@ export const useAiosStore = create<AiosStore>()(
         activeWorkspace: s.activeWorkspace,
         splitPair: s.splitPair,
         splitRatio: s.splitRatio,
+        deviceTier: s.deviceTier,
       }),
     },
   ),
 )
-
-export const newPanelId = () => `panel-${crypto.randomUUID()}`

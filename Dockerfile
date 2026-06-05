@@ -1,4 +1,4 @@
-FROM rust:1.86-slim AS backend-builder
+FROM rust:latest AS backend-builder
 WORKDIR /build
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY backend/ ./backend/

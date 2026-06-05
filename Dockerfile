@@ -14,8 +14,16 @@ RUN npm run build
 
 FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y \
-        ca-certificates curl openssl \
+        ca-certificates curl openssl gnupg lsb-release \
         nginx supervisor \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+       https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=backend-builder /build/backend/target/release/voidtower /usr/local/bin/voidtower
 COPY --from=frontend-builder /build/frontend/dist /usr/share/voidtower/frontend

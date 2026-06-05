@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
@@ -13,6 +13,7 @@ interface NavItem {
   to: string
   icon: React.ElementType
   label: string
+  requires?: string  // capability id — item hidden when capability is absent
 }
 
 interface NavGroup {
@@ -32,9 +33,9 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Infrastructure',
     items: [
-      { to: '/services',   icon: Server,      label: 'Services'   },
+      { to: '/services',   icon: Server,      label: 'Services',   requires: 'systemd'   },
       { to: '/containers', icon: Container,   label: 'Containers' },
-      { to: '/vms',        icon: Monitor,     label: 'VMs'        },
+      { to: '/vms',        icon: Monitor,     label: 'VMs',        requires: 'kvm'       },
       { to: '/apps',       icon: Package,     label: 'App Vault'  },
       { to: '/ai',         icon: BrainCircuit,label: 'AI'         },
       { to: '/models',     icon: HardDrive,   label: 'Models'     },
@@ -45,8 +46,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/network',   icon: Network, label: 'Network'   },
       { to: '/proxies',   icon: Globe,   label: 'Proxies'   },
-      { to: '/wireguard', icon: Wifi,    label: 'WireGuard' },
-      { to: '/firewall',  icon: Flame,   label: 'Firewall'  },
+      { to: '/wireguard', icon: Wifi,    label: 'WireGuard', requires: 'wireguard' },
+      { to: '/firewall',  icon: Flame,   label: 'Firewall',  requires: 'ufw'       },
     ],
   },
   {
@@ -83,8 +84,23 @@ const NAV_GROUPS: NavGroup[] = [
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
+  const [available, setAvailable] = useState<Set<string> | null>(null)
   const { user, logout } = useAuthStore()
   const navigate = useNavigate()
+
+  useEffect(() => {
+    fetch('/api/capabilities', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d?.capabilities) return
+        setAvailable(new Set(
+          (d.capabilities as { id: string; detected: boolean }[])
+            .filter(c => c.detected)
+            .map(c => c.id)
+        ))
+      })
+      .catch(() => {})
+  }, [])
 
   const handleLogout = async () => {
     try {
@@ -133,7 +149,9 @@ export default function Sidebar() {
               <div className="mx-2 mb-2 mt-1" style={{ height: 1, background: 'var(--border-subtle)' }} />
             )}
             <div className="space-y-0.5">
-              {group.items.map(({ to, icon: Icon, label }) => (
+              {group.items.filter(({ requires }) =>
+                !requires || available === null || available.has(requires)
+              ).map(({ to, icon: Icon, label }) => (
                 <NavLink
                   key={to}
                   to={to}

@@ -263,7 +263,7 @@ In the **Environment Variables** section, add:
 | Variable | Value |
 |---|---|
 | `ODYSSEUS_ADMIN_PASSWORD` | your chosen password |
-| `TRUENAS_POOL` | your pool name (e.g. `tank`) |
+| `TRUENAS_POOL` | your ZFS pool name (e.g. `tank`) — run `zpool list` in the TrueNAS shell to find yours |
 | `VOIDWATCH_TOKEN` | leave blank — fill in after first login |
 | `VOIDWATCH_WEBHOOK_SECRET` | generate: run `openssl rand -hex 32` in a shell |
 | `SEARXNG_SECRET` | generate: run `openssl rand -hex 32` in a shell |

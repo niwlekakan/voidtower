@@ -353,6 +353,16 @@ export const api = {
       request<{ ok: boolean; nodes?: string[]; message?: string }>('/api/vms/proxmox/test', { method: 'POST' }),
   },
 
+  mods: {
+    getStatus: () => request<import('./types').ModStatus>('/api/mods'),
+    saveConfig: (body: { url: string; branch: string }) =>
+      request<{ ok: boolean }>('/api/mods/config', { method: 'POST', body: JSON.stringify(body) }),
+    fetch: () => request<import('./types').ModFetchResult>('/api/mods/fetch', { method: 'POST' }),
+    getDiff: () => request<{ diff: string }>('/api/mods/diff'),
+    apply: () => request<{ ok: boolean; output: string }>('/api/mods/apply', { method: 'POST' }),
+    rollback: () => request<{ ok: boolean }>('/api/mods/rollback', { method: 'POST' }),
+  },
+
   integrations: {
     scopes: () => request<{ scopes: { name: string; description: string }[] }>('/api/integrations/scopes'),
     listTokens: () => request<{ tokens: import('./types').ApiToken[] }>('/api/integrations/tokens'),

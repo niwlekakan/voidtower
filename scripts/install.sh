@@ -339,11 +339,11 @@ build_from_source() {
   fi
 
   if [[ -n "$CARGO_BUILD_TARGET" ]]; then
-    (cd "$SRC/backend" && RUSTFLAGS="$RUSTFLAGS" cargo build --release --target "$CARGO_BUILD_TARGET" 2>&1) \
+    (cd "$SRC/backend" && TMPDIR=/var/tmp RUSTFLAGS="$RUSTFLAGS" cargo build --release --target "$CARGO_BUILD_TARGET" 2>&1) \
       || die "Backend build failed"
     local bin="$SRC/backend/target/${CARGO_BUILD_TARGET}/release/${BINARY_NAME}"
   else
-    (cd "$SRC/backend" && cargo build --release 2>&1) \
+    (cd "$SRC/backend" && TMPDIR=/var/tmp cargo build --release 2>&1) \
       || die "Backend build failed (exit $?)"
     local bin="$SRC/backend/target/release/${BINARY_NAME}"
   fi

@@ -172,6 +172,7 @@ export const useAiosStore = create<AiosStore>()(
     }),
     {
       name: 'vt-aios',
+      version: 2,
       storage: createJSONStorage(() => sessionStorage),
       partialize: (s) => ({
         panels: s.panels,

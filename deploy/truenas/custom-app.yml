@@ -34,6 +34,7 @@ services:
     volumes:
       - /mnt/${TRUENAS_POOL:-tank}/voidtower/data:/var/lib/voidtower
       - /mnt/${TRUENAS_POOL:-tank}/voidtower/config:/etc/voidtower
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - VOIDTOWER_BIND=0.0.0.0
       - VOIDTOWER_PORT=8743

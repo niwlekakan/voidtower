@@ -4,6 +4,8 @@ import { ThemeProvider } from '@/theme/ThemeProvider'
 import { useAuthStore } from '@/store/auth'
 import { api } from '@/api/client'
 import AppLayout from '@/components/layout/AppLayout'
+import AiosLayout from '@/aios/AiosLayout'
+import { useThemeStore } from '@/store/theme'
 import LoginPage from '@/pages/Login'
 import BootstrapPage from '@/pages/Bootstrap'
 import DashboardPage from '@/pages/Dashboard'
@@ -45,6 +47,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+function AuthedShell() {
+  const uiMode = useThemeStore((s) => s.uiMode)
+  if (uiMode === 'void') return <AiosLayout />
+  return <AppLayout />
+}
+
 export default function App() {
   const { setUser, setStatus } = useAuthStore()
 
@@ -61,7 +69,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/bootstrap" element={<BootstrapPage />} />
-          <Route path="/" element={<RequireAuth><AppLayout /></RequireAuth>}>
+          <Route path="/" element={<RequireAuth><AuthedShell /></RequireAuth>}>
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="services"   element={<ServicesPage />} />

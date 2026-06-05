@@ -2,6 +2,7 @@ import { Search, Bell, Menu } from 'lucide-react'
 import { useMetricsStore } from '@/store/metrics'
 import { useCmdPaletteStore } from '@/store/cmdpalette'
 import { useKeyboard } from '@/hooks/useKeyboard'
+import UiModeToggle from '@/components/ui/UiModeToggle'
 
 export default function TopBar() {
   const connected = useMetricsStore((s) => s.connected)
@@ -49,6 +50,7 @@ export default function TopBar() {
       </button>
 
       <div className="flex items-center gap-3 ml-auto">
+        <UiModeToggle />
         {/* WS status */}
         <span
           className="status-dot"

@@ -276,7 +276,10 @@ fn detect_restic() -> Capability {
 }
 
 fn detect_nginx() -> Capability {
-    let detected = which("nginx");
+    let detected = which("nginx")
+        || path_exists("/usr/sbin/nginx")
+        || path_exists("/usr/bin/nginx")
+        || path_exists("/usr/local/sbin/nginx");
     let version = if detected {
         cmd_version("nginx", &["-v"])
             .or_else(|| {

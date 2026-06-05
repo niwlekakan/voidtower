@@ -313,7 +313,16 @@ fn can_reload_nginx() -> bool {
 fn current_username() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
-        .unwrap_or_else(|_| "$(whoami)".into())
+        .unwrap_or_else(|_| {
+            std::process::Command::new("id")
+                .arg("-un")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "voidtower".to_string())
+        })
 }
 
 struct NginxSetupStatus {

@@ -103,14 +103,14 @@ export default function ContainersPage() {
     try {
       const data = await api.containers.images()
       setImages(data.images)
-    } catch {}
+    } catch { /* empty */ }
   }, [])
 
   const loadTags = useCallback(async () => {
     try {
       const [tags, map] = await Promise.all([api.tags.list(), api.tags.map('container')])
       setAllTags(tags); setTagMap(map)
-    } catch {}
+    } catch { /* empty */ }
   }, [])
 
   useEffect(() => {

@@ -41,7 +41,7 @@ function LlamaPanel() {
     try {
       const res = await fetch('/api/ai/llama', { credentials: 'include' })
       if (res.ok) setStatus(await res.json())
-    } catch {}
+    } catch { /* ignore */ }
   }, [])
 
   useEffect(() => {
@@ -56,7 +56,7 @@ function LlamaPanel() {
       await fetch('/api/ai/llama/unload', { method: 'POST', credentials: 'include' })
       setTimeout(refresh, 1000)
       setStatus(s => s ? { ...s, processes: [] } : s)
-    } catch {} finally { setUnloading(false) }
+    } catch { /* empty */ } finally { setUnloading(false) }
   }
 
   if (!status) return null

@@ -294,7 +294,7 @@ function animAurora(canvas: HTMLCanvasElement, ctx: Ctx, cfg: AnimConfig) {
       ctx.beginPath()
       for (let x = 0; x <= W; x += STEP) {
         const y = cy + Math.sin(x / W * Math.PI * 2 * l.freq + t * l.speed * 40 + l.offset) * H * l.amp
-        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
       }
       ctx.globalAlpha = l.alpha * 1.6
       ctx.strokeStyle = col
@@ -500,7 +500,7 @@ function animHex(canvas: HTMLCanvasElement, ctx: Ctx, cfg: AnimConfig) {
       const a = Math.PI / 180 * (60 * i - 30)
       const px = cx + r * Math.cos(a)
       const py = cy + r * Math.sin(a)
-      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py)
     }
     ctx.closePath()
   }
@@ -574,9 +574,8 @@ function animHexClassic(canvas: HTMLCanvasElement, ctx: Ctx, cfg: AnimConfig) {
     ctx.beginPath()
     for (let i = 0; i < 6; i++) {
       const a = Math.PI / 180 * (60 * i - 30)
-      i === 0
-        ? ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
-        : ctx.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
+      if (i === 0) ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
+      else ctx.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
     }
     ctx.closePath()
   }

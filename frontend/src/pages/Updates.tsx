@@ -188,7 +188,7 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
       try {
         const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
         if (r.ok) { clearInterval(poll); setApplying(false); onRefresh() }
-      } catch {}
+      } catch { /* empty */ }
     }, 3000)
   }
 
@@ -204,7 +204,7 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
       try {
         const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
         if (r.ok) { clearInterval(poll); setRollingBack(false); onRefresh() }
-      } catch {}
+      } catch { /* empty */ }
     }, 3000)
   }
 

@@ -49,7 +49,7 @@ export default function MiniTerminal({ height = 220, initialCommand }: Props) {
         const msg = JSON.parse(e.data)
         if (msg.type === 'Output') term.write(msg.data)
         if (msg.type === 'Closed') term.writeln('\r\n\x1b[31m[session closed]\x1b[0m')
-      } catch {}
+      } catch { /* ignore parse errors */ }
     }
     ws.onclose = () => term.writeln('\r\n\x1b[33m[disconnected]\x1b[0m')
     ws.onerror = () => term.writeln('\r\n\x1b[31m[connection error]\x1b[0m')
@@ -71,7 +71,7 @@ export default function MiniTerminal({ height = 220, initialCommand }: Props) {
       xtermRef.current = null
       wsRef.current = null
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, []) // intentionally empty deps — runs once on mount
 
   return (
     <div

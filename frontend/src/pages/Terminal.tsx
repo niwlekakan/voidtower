@@ -49,7 +49,7 @@ function PtyTerminal({ wsUrl, onClose }: { wsUrl: string; onClose?: () => void }
         const msg = JSON.parse(e.data)
         if (msg.type === 'Output') term.write(msg.data)
         if (msg.type === 'Closed') term.writeln('\r\n\x1b[31m[session closed]\x1b[0m')
-      } catch {}
+      } catch { /* empty */ }
     }
     ws.onclose = () => term.writeln('\r\n\x1b[33m[disconnected]\x1b[0m')
     ws.onerror = () => term.writeln('\r\n\x1b[31m[connection error]\x1b[0m')
@@ -196,7 +196,7 @@ export default function TerminalPage() {
   const [showNewForm, setShowNewForm] = useState(false)
 
   const loadSessions = useCallback(async () => {
-    try { setSessions(await api.terminal.listSshSessions()) } catch {}
+    try { setSessions(await api.terminal.listSshSessions()) } catch { /* empty */ }
   }, [])
 
   useEffect(() => { loadSessions() }, [loadSessions])

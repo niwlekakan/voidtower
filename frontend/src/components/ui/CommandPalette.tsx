@@ -39,7 +39,7 @@ export default function CommandPalette() {
   }
 
   const handleLogout = async () => {
-    try { await api.auth.logout() } catch {}
+    try { await api.auth.logout() } catch { /* ignore */ }
     logout()
     navigate('/login')
   }

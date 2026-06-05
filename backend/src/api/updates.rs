@@ -534,7 +534,7 @@ pub struct OsUpdateInfo {
 }
 
 fn detect_pm() -> Option<&'static str> {
-    ["apt-get", "pacman", "dnf", "yum", "zypper"].iter().find(|&pm| std::process::Command::new("which").arg(pm).output().map(|o| o.status.success()).unwrap_or(false)).map(|v| v as _)
+    ["apt-get", "pacman", "dnf", "yum", "zypper", "apk", "xbps-install"].iter().find(|&pm| std::process::Command::new("which").arg(pm).output().map(|o| o.status.success()).unwrap_or(false)).map(|v| v as _)
 }
 
 pub async fn os_info(State(state): State<AppState>, jar: CookieJar) -> Result<Json<OsUpdateInfo>> {
@@ -599,6 +599,28 @@ pub async fn os_info(State(state): State<AppState>, jar: CookieJar) -> Result<Js
                 Err(e) => (vec![], Some(e.to_string())),
             }
         }
+        "apk" => {
+            let _ = std::process::Command::new("apk").args(["update", "-q"]).output();
+            match std::process::Command::new("apk").args(["list", "--upgradable"]).output() {
+                Ok(o) => {
+                    let pkgs: Vec<String> = String::from_utf8_lossy(&o.stdout).lines()
+                        .filter(|l| !l.is_empty()).map(String::from).collect();
+                    (pkgs, None)
+                }
+                Err(e) => (vec![], Some(e.to_string())),
+            }
+        }
+        "xbps-install" => {
+            let _ = std::process::Command::new("xbps-install").args(["-S"]).output();
+            match std::process::Command::new("xbps-install").args(["-nu"]).output() {
+                Ok(o) => {
+                    let pkgs: Vec<String> = String::from_utf8_lossy(&o.stdout).lines()
+                        .filter(|l| !l.is_empty()).map(String::from).collect();
+                    (pkgs, None)
+                }
+                Err(e) => (vec![], Some(e.to_string())),
+            }
+        }
         _ => (vec![], Some("Unsupported package manager".into())),
     };
 
@@ -642,6 +664,39 @@ pub async fn apply_os(
             std::process::Command::new("sudo").args([pm, "upgrade", flag])
                 .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_else(|e| e.to_string())
+        }
+        "zypper" => {
+            if req.dry_run {
+                std::process::Command::new("zypper").args(["list-updates"])
+                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_else(|e| e.to_string())
+            } else {
+                std::process::Command::new("sudo").args(["zypper", "--non-interactive", "update"])
+                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_else(|e| e.to_string())
+            }
+        }
+        "apk" => {
+            if req.dry_run {
+                std::process::Command::new("apk").args(["list", "--upgradable"])
+                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_else(|e| e.to_string())
+            } else {
+                std::process::Command::new("sudo").args(["apk", "upgrade"])
+                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_else(|e| e.to_string())
+            }
+        }
+        "xbps-install" => {
+            if req.dry_run {
+                std::process::Command::new("xbps-install").args(["-nu"])
+                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_else(|e| e.to_string())
+            } else {
+                std::process::Command::new("sudo").args(["xbps-install", "-Syu"])
+                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_else(|e| e.to_string())
+            }
         }
         _ => "Unsupported package manager".into(),
     };

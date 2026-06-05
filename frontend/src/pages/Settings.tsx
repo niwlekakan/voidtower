@@ -4,7 +4,7 @@ import { api, ApiClientError } from '@/api/client'
 import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
-import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor } from 'lucide-react'
+import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight } from 'lucide-react'
 import { useThemeStore, type UiMode } from '@/store/theme'
 import { setDeviceTierOverride, type DeviceTier } from '@/aios/hooks/useDeviceTier'
 
@@ -97,8 +97,11 @@ export default function SettingsPage() {
       {/* AI integrations */}
       <AIIntegrationsSection />
 
-      {/* Notification webhooks — admin/owner only */}
+      {/* Notification webhooks (simple per-channel) — admin/owner only */}
       {isAdmin && <NotificationsSection />}
+
+      {/* Advanced webhook configs — admin/owner only */}
+      {isAdmin && <WebhooksSection />}
 
       {/* System — update + restart */}
       {isAdmin && <SystemSection />}
@@ -795,6 +798,323 @@ function UsersSection({ currentUserId }: { currentUserId: string }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Webhooks section ─────────────────────────────────────────────────────────
+
+const ALL_EVENTS = ['alert.created', 'alert.acked', 'alert.resolved', 'backup.failed', 'service.down'] as const
+type WebhookEvent = typeof ALL_EVENTS[number]
+type WebhookType = 'ntfy' | 'discord' | 'slack' | 'generic'
+
+interface WebhookConfig {
+  id: number
+  name: string
+  url: string
+  type: WebhookType
+  events: string  // JSON array
+  enabled: boolean
+  created_at: number
+}
+
+const TYPE_COLORS: Record<WebhookType, string> = {
+  ntfy:    'var(--accent-primary)',
+  discord: '#5865F2',
+  slack:   '#4A154B',
+  generic: 'var(--text-muted)',
+}
+
+function WebhooksSection() {
+  const [webhooks, setWebhooks] = useState<WebhookConfig[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showModal, setShowModal] = useState(false)
+  const [testing, setTesting] = useState<number | null>(null)
+  const [deleting, setDeleting] = useState<number | null>(null)
+
+  // Form state
+  const [formName, setFormName] = useState('')
+  const [formUrl, setFormUrl] = useState('')
+  const [formType, setFormType] = useState<WebhookType>('generic')
+  const [formEvents, setFormEvents] = useState<WebhookEvent[]>(['alert.created'])
+  const [formEnabled, setFormEnabled] = useState(true)
+  const [formSaving, setFormSaving] = useState(false)
+
+  const refresh = () => {
+    setLoading(true)
+    fetch('/api/webhooks', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : { webhooks: [] })
+      .then((d: { webhooks: WebhookConfig[] }) => setWebhooks(d.webhooks))
+      .catch(() => notify.error('Failed to load webhooks'))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { refresh() }, [])
+
+  const openModal = () => {
+    setFormName(''); setFormUrl(''); setFormType('generic')
+    setFormEvents(['alert.created']); setFormEnabled(true)
+    setShowModal(true)
+  }
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setFormSaving(true)
+    try {
+      const r = await fetch('/api/webhooks', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formName.trim(),
+          url: formUrl.trim(),
+          type: formType,
+          events: formEvents,
+          enabled: formEnabled,
+        }),
+      })
+      if (!r.ok) {
+        const d = await r.json() as { error?: { message?: string } }
+        throw new Error(d.error?.message ?? 'Failed to create')
+      }
+      notify.success('Webhook created')
+      setShowModal(false)
+      refresh()
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : 'Failed to create webhook')
+    } finally {
+      setFormSaving(false)
+    }
+  }
+
+  const toggleEnabled = async (wh: WebhookConfig) => {
+    try {
+      await fetch(`/api/webhooks/${wh.id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !wh.enabled }),
+      })
+      refresh()
+    } catch {
+      notify.error('Failed to update webhook')
+    }
+  }
+
+  const handleTest = async (id: number) => {
+    setTesting(id)
+    try {
+      const r = await fetch(`/api/webhooks/${id}/test`, {
+        method: 'POST',
+        credentials: 'include',
+      }).then(res => res.json()) as { ok: boolean; error?: string }
+      if (r.ok) notify.success('Test notification sent')
+      else notify.error(`Test failed: ${r.error ?? 'unknown'}`)
+    } catch {
+      notify.error('Request failed')
+    } finally {
+      setTesting(null)
+    }
+  }
+
+  const handleDelete = async (wh: WebhookConfig) => {
+    if (!confirm(`Delete webhook "${wh.name}"?`)) return
+    setDeleting(wh.id)
+    try {
+      await fetch(`/api/webhooks/${wh.id}`, { method: 'DELETE', credentials: 'include' })
+      notify.success('Webhook deleted')
+      refresh()
+    } catch {
+      notify.error('Failed to delete webhook')
+    } finally {
+      setDeleting(null)
+    }
+  }
+
+  const toggleEvent = (ev: WebhookEvent) => {
+    setFormEvents(prev =>
+      prev.includes(ev) ? prev.filter(e => e !== ev) : [...prev, ev]
+    )
+  }
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Webhook size={14} style={{ color: 'var(--accent-primary)' }} />
+          <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Webhook Targets</h2>
+        </div>
+        <button
+          onClick={openModal}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs transition-colors hover:opacity-80"
+          style={{ background: 'var(--accent-primary-subtle)', color: 'var(--accent-primary)', border: '1px solid var(--accent-primary)' }}
+        >
+          <Plus size={12} />
+          Add Webhook
+        </button>
+      </div>
+
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Per-event webhook targets for ntfy, Discord, Slack, or any HTTP endpoint.
+      </p>
+
+      {loading ? (
+        <p className="text-xs py-2" style={{ color: 'var(--text-muted)' }}>Loading…</p>
+      ) : webhooks.length === 0 ? (
+        <p className="text-xs py-2" style={{ color: 'var(--text-muted)' }}>No webhooks configured.</p>
+      ) : (
+        <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+          {webhooks.map(wh => {
+            const events: string[] = (() => { try { return JSON.parse(wh.events) } catch { return [] } })()
+            return (
+              <div key={wh.id} className="flex items-start gap-3 py-2.5">
+                {/* Enable toggle */}
+                <button
+                  onClick={() => toggleEnabled(wh)}
+                  className="mt-0.5 flex-shrink-0"
+                  title={wh.enabled ? 'Disable' : 'Enable'}
+                  style={{ color: wh.enabled ? 'var(--accent-success)' : 'var(--text-muted)' }}
+                >
+                  {wh.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+                </button>
+
+                {/* Details */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{wh.name}</span>
+                    <span className="text-xs px-1.5 py-0.5 rounded font-mono"
+                      style={{ background: `${TYPE_COLORS[wh.type] ?? '#888'}22`, color: TYPE_COLORS[wh.type] ?? 'var(--text-muted)', border: `1px solid ${TYPE_COLORS[wh.type] ?? '#888'}44` }}>
+                      {wh.type}
+                    </span>
+                  </div>
+                  <div className="text-xs mt-0.5 truncate font-mono" style={{ color: 'var(--text-muted)' }}>{wh.url}</div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {events.map(ev => (
+                      <span key={ev} className="text-xs px-1.5 py-0.5 rounded"
+                        style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
+                        {ev}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    disabled={testing === wh.id}
+                    onClick={() => handleTest(wh.id)}
+                    className="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors disabled:opacity-40"
+                    style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
+                  >
+                    <Send size={11} />
+                    {testing === wh.id ? '…' : 'Test'}
+                  </button>
+                  <button
+                    disabled={deleting === wh.id}
+                    onClick={() => handleDelete(wh)}
+                    className="p-1 rounded transition-colors hover:opacity-80 disabled:opacity-40"
+                    style={{ color: 'var(--accent-danger)' }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Add Webhook Modal */}
+      {showModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.6)' }}
+          onClick={e => { if (e.target === e.currentTarget) setShowModal(false) }}
+        >
+          <form
+            onSubmit={handleCreate}
+            className="card w-full max-w-md space-y-4"
+            style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-default)' }}
+          >
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Add Webhook</h3>
+
+            <div>
+              <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Name</label>
+              <input
+                value={formName}
+                onChange={e => setFormName(e.target.value)}
+                placeholder="My Discord webhook"
+                required
+                className="w-full px-3 py-2 rounded text-sm outline-none"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>URL</label>
+              <input
+                type="url"
+                value={formUrl}
+                onChange={e => setFormUrl(e.target.value)}
+                placeholder="https://discord.com/api/webhooks/…"
+                required
+                className="w-full px-3 py-2 rounded text-sm outline-none font-mono"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Type</label>
+              <select
+                value={formType}
+                onChange={e => setFormType(e.target.value as WebhookType)}
+                className="w-full px-3 py-2 rounded text-sm outline-none"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              >
+                <option value="ntfy">ntfy</option>
+                <option value="discord">Discord</option>
+                <option value="slack">Slack</option>
+                <option value="generic">Generic (JSON)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>Events</label>
+              <div className="space-y-1.5">
+                {ALL_EVENTS.map(ev => (
+                  <label key={ev} className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={formEvents.includes(ev)}
+                      onChange={() => toggleEvent(ev)}
+                      className="rounded"
+                    />
+                    <span className="text-xs font-mono" style={{ color: 'var(--text-primary)' }}>{ev}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={formEnabled}
+                onChange={e => setFormEnabled(e.target.checked)}
+              />
+              <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Enabled</span>
+            </label>
+
+            <div className="flex gap-2 pt-1">
+              <Button size="sm" variant="primary" type="submit" loading={formSaving} disabled={formSaving || formEvents.length === 0}>
+                Create
+              </Button>
+              <Button size="sm" variant="ghost" type="button" onClick={() => setShowModal(false)}>
+                Cancel
+              </Button>
+            </div>
+          </form>
         </div>
       )}
     </div>

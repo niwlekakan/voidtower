@@ -40,10 +40,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   auth: {
-    login:     (username: string, password: string) =>
+    login: (username: string, password: string, totp_code?: string) =>
       request<{ user: import('./types').User }>('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, totp_code }),
       }),
     logout:    () => request('/api/auth/logout', { method: 'POST' }),
     me:        () => request<{ user: import('./types').User }>('/api/auth/me'),
@@ -52,6 +52,15 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ token, username, password }),
       }),
+  },
+
+  totp: {
+    setup:   () =>
+      request<{ secret: string; uri: string }>('/api/auth/totp/setup', { method: 'POST' }),
+    enable:  (code: string) =>
+      request('/api/auth/totp/enable',  { method: 'POST', body: JSON.stringify({ code }) }),
+    disable: (code: string) =>
+      request('/api/auth/totp/disable', { method: 'POST', body: JSON.stringify({ code }) }),
   },
 
   metrics: {

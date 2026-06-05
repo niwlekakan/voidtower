@@ -23,6 +23,13 @@ use monitoring::{MetricsBroadcaster, MetricsCollector, MetricsSnapshot};
 use sqlx::SqlitePool;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
+
+#[derive(Debug)]
+pub struct LoginAttempts {
+    pub count: u32,
+    pub window_start: std::time::Instant,
+    pub locked_until: Option<std::time::Instant>,
+}
 use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Debug, Clone)]
@@ -34,6 +41,7 @@ pub struct AppState {
     pub secrets_key: Arc<[u8; 32]>,
     // token_hash -> (session_id, expires_at_unix) — avoids a DB write on every Bearer request
     pub token_sessions: Arc<RwLock<HashMap<String, (String, i64)>>>,
+    pub login_limiter: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, LoginAttempts>>>,
 }
 
 #[derive(Parser, Debug)]
@@ -177,6 +185,7 @@ async fn main() -> Result<()> {
         latest_metrics: latest_metrics.clone(),
         secrets_key,
         token_sessions: Arc::new(RwLock::new(HashMap::new())),
+        login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
 
     // Spawn metrics collector

@@ -17,6 +17,9 @@ pub struct User {
     pub password_hash: String,
     pub role: String,
     pub force_password_change: bool,
+    pub totp_enabled: bool,
+    #[serde(skip_serializing)]
+    pub totp_secret: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -37,6 +40,7 @@ pub struct PublicUser {
     pub username: String,
     pub role: String,
     pub force_password_change: bool,
+    pub totp_enabled: bool,
 }
 
 impl From<User> for PublicUser {
@@ -46,6 +50,7 @@ impl From<User> for PublicUser {
             username: u.username,
             role: u.role,
             force_password_change: u.force_password_change,
+            totp_enabled: u.totp_enabled,
         }
     }
 }
@@ -148,6 +153,8 @@ pub async fn create_user(
         password_hash: hash,
         role: role.to_string(),
         force_password_change: force_change,
+        totp_enabled: false,
+        totp_secret: None,
         created_at: now,
         updated_at: now,
     })
@@ -179,13 +186,37 @@ pub async fn change_password(
 
 pub async fn find_user_by_username(pool: &SqlitePool, username: &str) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, username, password_hash, role, force_password_change, created_at, updated_at
+        "SELECT id, username, password_hash, role, force_password_change,
+                totp_enabled, totp_secret, created_at, updated_at
          FROM users WHERE username = ?",
     )
     .bind(username)
     .fetch_optional(pool)
     .await?;
     Ok(user)
+}
+
+pub async fn find_user_by_id(pool: &SqlitePool, user_id: &str) -> Result<Option<User>> {
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, username, password_hash, role, force_password_change,
+                totp_enabled, totp_secret, created_at, updated_at
+         FROM users WHERE id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(user)
+}
+
+pub async fn set_totp(pool: &SqlitePool, user_id: &str, secret: Option<&str>, enabled: bool) -> Result<()> {
+    sqlx::query("UPDATE users SET totp_secret = ?, totp_enabled = ?, updated_at = ? WHERE id = ?")
+        .bind(secret)
+        .bind(enabled)
+        .bind(unix_now())
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn create_session(
@@ -224,7 +255,8 @@ pub async fn create_session(
 pub async fn validate_session(pool: &SqlitePool, session_id: &str) -> Result<Option<User>> {
     let now = unix_now();
     let row = sqlx::query_as::<_, User>(
-        "SELECT u.id, u.username, u.password_hash, u.role, u.force_password_change, u.created_at, u.updated_at
+        "SELECT u.id, u.username, u.password_hash, u.role, u.force_password_change,
+                u.totp_enabled, u.totp_secret, u.created_at, u.updated_at
          FROM sessions s
          JOIN users u ON u.id = s.user_id
          WHERE s.id = ? AND s.expires_at > ?",
@@ -253,16 +285,6 @@ pub async fn delete_expired_sessions(pool: &SqlitePool) -> Result<u64> {
     Ok(result.rows_affected())
 }
 
-#[allow(dead_code)]
-pub async fn find_user_by_id(pool: &SqlitePool, id: &str) -> Result<Option<User>> {
-    Ok(sqlx::query_as::<_, User>(
-        "SELECT id, username, password_hash, role, force_password_change, created_at, updated_at
-         FROM users WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?)
-}
 
 /// Validate a Bearer token without requiring a specific scope.
 /// Updates last_used_at and returns the owner's user_id.

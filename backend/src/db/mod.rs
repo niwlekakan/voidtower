@@ -29,6 +29,8 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_restore_test_at INTEGER").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_restore_test_status TEXT").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN primary_port INTEGER").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_secret TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
 
     Ok(pool)
 }

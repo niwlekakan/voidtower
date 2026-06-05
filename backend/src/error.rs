@@ -20,6 +20,10 @@ pub enum AppError {
     Conflict(String),
     #[error("Feature unavailable: {0}")]
     FeatureUnavailable(String),
+    #[error("Too many requests")]
+    TooManyRequests,
+    #[error("TOTP code required")]
+    TotpRequired,
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("Internal error: {0}")]
@@ -38,6 +42,16 @@ impl IntoResponse for AppError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "feature_unavailable",
                 m.clone(),
+            ),
+            AppError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_requests",
+                "Too many failed login attempts. Try again later.".to_string(),
+            ),
+            AppError::TotpRequired => (
+                StatusCode::FORBIDDEN,
+                "totp_required",
+                "TOTP code required".to_string(),
             ),
             AppError::Database(e) => {
                 tracing::error!("Database error: {e}");

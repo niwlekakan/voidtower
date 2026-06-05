@@ -42,6 +42,8 @@ serde_yaml = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 aes-gcm = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
+totp-lite = "2"
+data-encoding = "2"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["fs", "user", "process", "signal"] }

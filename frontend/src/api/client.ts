@@ -130,6 +130,10 @@ export const api = {
     getCompose:    (p: string) => request<{ compose_path: string; content: string }>(`/api/apps/${p}/compose`),
     updateCompose: (p: string, content: string) =>
       request<{ ok: boolean }>(`/api/apps/${p}/compose`, { method: 'POST', body: JSON.stringify({ content }) }),
+    deployCustom: (body: { name: string; image: string; ports: string[]; volumes: string[]; env: string[] }) =>
+      request<{ ok: boolean; project_name: string }>('/api/apps/deploy-custom', {
+        method: 'POST', body: JSON.stringify(body),
+      }),
   },
 
   alerts: {

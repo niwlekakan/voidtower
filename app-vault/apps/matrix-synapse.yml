@@ -1,0 +1,23 @@
+id: matrix-synapse
+name: Matrix Synapse
+description: Self-hosted encrypted chat server — bridges to WhatsApp, Telegram, Discord
+category: productivity
+version_hint: "latest"
+compose:
+  services:
+    synapse:
+      image: matrixdotorg/synapse:latest
+      restart: unless-stopped
+      ports:
+        - "8448:8448"
+        - "8008:8008"
+      volumes:
+        - synapse_data:/data
+      environment:
+        - SYNAPSE_SERVER_NAME=matrix.home
+        - SYNAPSE_REPORT_STATS=no
+  volumes:
+    synapse_data:
+links:
+  home: https://matrix.org
+  docs: https://element-hq.github.io/synapse/latest

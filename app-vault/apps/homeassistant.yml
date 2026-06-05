@@ -17,6 +17,9 @@ compose:
       privileged: true
   volumes:
     homeassistant_config:
+ai_integration:
+  level: native
+  description: "Odysseus can control devices, read sensors, and trigger automations"
 links:
   home: https://www.home-assistant.io
   docs: https://www.home-assistant.io/docs

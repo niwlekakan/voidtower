@@ -436,6 +436,7 @@ Useful questions this enables:
 - Which services have no backups?
 - Which nodes are out of date?
 - Which resources are tagged `ai-no-touch`?
+- Possibly viewing all devices on the entire local network? And being connected?
 
 ---
 
@@ -746,6 +747,145 @@ Benefits:
 - Safer testing of destructive-action UX.
 
 ---
+## 21. FINAL GOAL
+VoidTower as a universal hosting hub. Here's how each piece fits:
+
+  ---
+  AI integration badges in App Vault
+
+  Each app card gets a tiered badge:
+
+  ┌───────────┬───────────────────────────────────────────────────────────────────────────┐
+  │   Badge   │                                  Meaning                                  │
+  ├───────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ AI Native │ Full Odysseus tool definitions — AI can deploy, configure, query, control │
+  ├───────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ AI Aware  │ AI can read status and logs but can't act                                 │
+  ├───────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ AI Ready  │ No integration yet but a template exists — one click to wire it up        │
+  ├───────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ (none)    │ Unknown / community app                                                   │
+  └───────────┴───────────────────────────────────────────────────────────────────────────┘
+
+  Defined in the YAML catalog entry:
+  ai_integration:
+    level: native        # native / aware / ready / none
+    tools: [read_repos, create_repo, list_issues]
+    description: "Odysseus can manage repos and issues"
+
+  Shown as a colored chip on the card — cyan for native, blue for aware, grey outline for ready.
+
+  ---
+  Custom app deployment — any Docker image
+
+  A "Deploy custom" button opens a minimal form:
+
+  Image:    [nginx:latest              ]
+  Name:     [my-nginx                  ]
+  Port:     [8080 → 80                 ] + Add port
+  Volumes:  [/mnt/tank/data → /data    ] + Add volume
+  Env vars: [KEY=value                 ] + Add var
+            [Deploy]
+
+  VoidTower generates and saves a compose file from those inputs, deploys it, and it appears in the running apps list like any other App Vault deployment. No YAML knowledge needed.
+
+  ---
+  VM hosting
+
+  KVM/QEMU (already partially in VoidTower):
+  - Linux VMs — fully supported via libvirt
+  - Windows VMs — same, just needs a Windows ISO
+  - macOS VMs — technically possible via KVM with OpenCore bootloader (OSX-KVM project), legal grey area but widely used for development
+  - GPU passthrough UI — assign a physical GPU to a VM with a toggle
+
+  Proxmox integration (already in the codebase):
+  - Create/start/stop VMs remotely via Proxmox API
+  - ISO library browser — upload or link ISOs for new VMs
+  - Snapshot management UI
+
+  ---
+  Android / mobile VMs
+
+  Android:
+  - Waydroid — runs Android in a container on Linux, near-native performance, full Play Store access. VoidTower could manage Waydroid instances, expose them via a browser stream (scrcpy →
+  WebRTC)
+  - Android-x86 in QEMU — heavier but more isolated, good for testing
+  - Redroid — Docker-based Android, multiple instances, accessible via ADB or scrcpy stream embedded in the UI
+
+  iPhone:
+  - No true iPhone VM exists legally — Apple Silicon only runs iOS natively
+  - Corellium is the only real option but it's a paid enterprise service
+  - Best alternative: iOS Simulator via macOS VM — run a macOS VM (OSX-KVM), install Xcode inside it, expose the simulator via screen sharing
+
+  ---
+  More "host anything" ideas
+
+  Media & entertainment:
+  - Jellyfin / Plex — already in App Vault
+  - ROM library + EmulatorJS — browser-based retro gaming, no client needed
+  - Kavita (manga/books), Navidrome (music), Immich (photos)
+
+  Communication independence:
+  - Matrix/Synapse — self-hosted encrypted chat, bridges to WhatsApp/Telegram/Discord
+  - Jitsi — self-hosted video calls
+  - SimpleX — no phone number required
+  - Ntfy — push notifications to your own devices
+
+  Development:
+  - Gitea (already planned) — full GitHub replacement
+  - Drone CI / Woodpecker CI — CI/CD pipelines
+  - Registry — private Docker image registry
+  - code-server (already in Dev Studio plan) — VS Code in the browser
+
+  Security & privacy:
+  - AdGuard Home / Pi-hole — DNS-level ad blocking for the whole network
+  - Vaultwarden — self-hosted Bitwarden (password manager)
+  - Authentik / Keycloak — SSO for all your self-hosted apps, one login for everything
+  - WireGuard (already in VoidTower) — VPN back into your homelab from anywhere
+
+  AI / local compute:
+  - Ollama (already integrated)
+  - Stable Diffusion WebUI / ComfyUI — local image generation
+  - Whisper — local speech-to-text
+  - LocalAI — OpenAI-compatible API layer over local models
+
+  Home automation:
+  - Home Assistant (already in catalog)
+  - Node-RED — visual automation flows
+  - Zigbee2MQTT — direct Zigbee device control without a cloud
+
+  Business / productivity:
+  - Nextcloud (already planned) — files, calendar, contacts, Office suite
+  - Vikunja / Plane — project management
+  - Outline — team wiki / knowledge base
+  - Baserow / NocoDB — self-hosted Airtable
+
+  Network infrastructure:
+  - Nginx Proxy Manager (already in VoidTower as core feature)
+  - Cloudflare Tunnel — expose services without port forwarding
+  - Tailscale — mesh VPN, easier than WireGuard
+  - Technitium DNS — full DNS server with web UI
+
+  ---
+  The vision in one sentence
+
+  VoidTower becomes the operating system layer above the OS — you never need to SSH, edit configs, or know what Docker is. Everything from a VM to an Android instance to a Matrix server is one
+  - Vikunja / Plane — project management
+  - Outline — team wiki / knowledge base
+  - Baserow / NocoDB — self-hosted Airtable
+
+  Network infrastructure:
+  - Nginx Proxy Manager (already in VoidTower as core feature)
+  - Cloudflare Tunnel — expose services without port forwarding
+  - Tailscale — mesh VPN, easier than WireGuard
+  - Technitium DNS — full DNS server with web UI
+
+  ---
+  The vision in one sentence
+
+  VoidTower becomes the operating system layer above the OS — you never need to SSH, edit configs, or know what Docker is. Everything from a VM to an Android instance to a Matrix server is one
+  click, AI-manageable, and accessible from your phone.
+
 
 ## Recommended must-have additions
 

@@ -42,6 +42,9 @@ compose:
   volumes:
     odysseus_data: {}
     odysseus_chroma: {}
+ai_integration:
+  level: native
+  description: "This IS the AI — Odysseus is the VoidTower AI agent itself"
 links:
   home: https://github.com/pewdiepie-archdaemon/odysseus
   docs: https://github.com/pewdiepie-archdaemon/odysseus/wiki

@@ -1,0 +1,39 @@
+id: outline
+name: Outline
+description: Team wiki and knowledge base — self-hosted Notion alternative
+category: productivity
+version_hint: "latest"
+compose:
+  services:
+    outline:
+      image: outlinewiki/outline:latest
+      restart: unless-stopped
+      ports:
+        - "3000:3000"
+      volumes:
+        - outline_data:/var/lib/outline/data
+      environment:
+        - SECRET_KEY=changeme-generate-a-long-random-string
+        - UTILS_SECRET=changeme-another-random-string
+        - DATABASE_URL=postgres://outline:outline@postgres/outline
+        - REDIS_URL=redis://redis:6379
+        - URL=http://localhost:3000
+        - PORT=3000
+    postgres:
+      image: postgres:15
+      restart: unless-stopped
+      volumes:
+        - outline_postgres:/var/lib/postgresql/data
+      environment:
+        - POSTGRES_USER=outline
+        - POSTGRES_PASSWORD=outline
+        - POSTGRES_DB=outline
+    redis:
+      image: redis:7
+      restart: unless-stopped
+  volumes:
+    outline_data:
+    outline_postgres:
+links:
+  home: https://www.getoutline.com
+  docs: https://docs.getoutline.com/s/hosting

@@ -1,0 +1,23 @@
+id: vikunja
+name: Vikunja
+description: Self-hosted project management and to-do app — Trello/Jira alternative
+category: productivity
+version_hint: "latest"
+compose:
+  services:
+    vikunja:
+      image: vikunja/vikunja:latest
+      restart: unless-stopped
+      ports:
+        - "3456:3456"
+      volumes:
+        - vikunja_data:/app/vikunja/files
+      environment:
+        - VIKUNJA_DATABASE_TYPE=sqlite
+        - VIKUNJA_SERVICE_JWTSECRET=changeme-random-secret
+        - VIKUNJA_SERVICE_FRONTENDURL=http://localhost:3456
+  volumes:
+    vikunja_data:
+links:
+  home: https://vikunja.io
+  docs: https://vikunja.io/docs

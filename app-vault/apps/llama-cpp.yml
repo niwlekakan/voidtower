@@ -50,6 +50,9 @@ compose:
               - driver: nvidia
                 count: all
                 capabilities: [gpu]
+ai_integration:
+  level: native
+  description: "Odysseus uses llama.cpp as its primary local inference backend"
 links:
   home: https://github.com/ggml-org/llama.cpp
   docs: https://github.com/ggml-org/llama.cpp/blob/master/examples/server/README.md

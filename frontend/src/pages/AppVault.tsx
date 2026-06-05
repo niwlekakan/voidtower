@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   BrainCircuit, Send, ExternalLink, Loader2, Play, Square, RotateCw,
   Trash2, ChevronDown, ChevronUp, Terminal, FileCode, Layers, RefreshCw,
+  Plus, X, Zap, Eye, Box,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
 import type { AppDef, DeployedApp, ComposeContainer } from '@/api/types'
@@ -19,6 +20,134 @@ const CATEGORY_LABELS: Record<string, string> = {
   home:        'Home',
   ai:          'AI',
   security:    'Security',
+  vm:          'Virtual Machines',
+}
+
+// ─── AI Integration Badge ─────────────────────────────────────────────────────
+
+function AiBadge({ level, description }: { level: 'native' | 'aware'; description: string }) {
+  const isNative = level === 'native'
+  const color = isNative ? '#06b6d4' : '#818cf8'
+  const Icon = isNative ? Zap : Eye
+  const label = isNative ? 'AI Native' : 'AI Aware'
+  return (
+    <span
+      title={description}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium cursor-help"
+      style={{ background: `${color}18`, color, border: `1px solid ${color}44` }}
+    >
+      <Icon size={10} />
+      {label}
+    </span>
+  )
+}
+
+// ─── Custom Deploy Tab ────────────────────────────────────────────────────────
+
+function ListInput({ label, placeholder, items, onChange }: {
+  label: string; placeholder: string; items: string[]; onChange: (items: string[]) => void
+}) {
+  const update = (i: number, val: string) => {
+    const next = [...items]; next[i] = val; onChange(next)
+  }
+  const remove = (i: number) => onChange(items.filter((_, idx) => idx !== i))
+  const add    = () => onChange([...items, ''])
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>{label}</label>
+        <button onClick={add} className="flex items-center gap-1 text-xs hover:opacity-80" style={{ color: 'var(--accent-primary)' }}>
+          <Plus size={11} /> Add
+        </button>
+      </div>
+      {items.map((val, i) => (
+        <div key={i} className="flex gap-1 mb-1">
+          <input
+            value={val} onChange={e => update(i, e.target.value)}
+            placeholder={placeholder}
+            className="flex-1 px-2 py-1 rounded text-xs font-mono"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}
+          />
+          <button onClick={() => remove(i)} className="px-1 hover:opacity-70" style={{ color: 'var(--text-muted)' }}>
+            <X size={12} />
+          </button>
+        </div>
+      ))}
+      {items.length === 0 && (
+        <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None — click Add to set one</p>
+      )}
+    </div>
+  )
+}
+
+function CustomDeployTab({ onDeployed }: { onDeployed: () => void }) {
+  const [image,   setImage]   = useState('')
+  const [name,    setName]    = useState('')
+  const [ports,   setPorts]   = useState<string[]>([])
+  const [volumes, setVolumes] = useState<string[]>([])
+  const [env,     setEnv]     = useState<string[]>([])
+  const [busy,    setBusy]    = useState(false)
+  const [err,     setErr]     = useState<string | null>(null)
+  const [done,    setDone]    = useState<string | null>(null)
+
+  const deploy = async () => {
+    if (!image.trim() || !name.trim()) { setErr('Image and name are required'); return }
+    setBusy(true); setErr(null); setDone(null)
+    try {
+      const res = await api.apps.deployCustom({
+        name: name.trim(), image: image.trim(),
+        ports: ports.filter(Boolean),
+        volumes: volumes.filter(Boolean),
+        env: env.filter(Boolean),
+      })
+      setDone(res.project_name)
+      onDeployed()
+    } catch (e: any) { setErr(e.message) }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div className="max-w-xl space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Deploy any Docker image</h2>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Paste any Docker Hub image and configure ports, volumes, and env vars. VoidTower generates the compose file and deploys it instantly.
+        </p>
+      </div>
+
+      <div className="space-y-3 p-4 rounded-lg" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)' }}>
+        <div>
+          <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Image <span style={{ color: 'var(--accent-danger)' }}>*</span></label>
+          <input value={image} onChange={e => setImage(e.target.value)}
+            placeholder="nginx:latest"
+            className="w-full px-3 py-2 rounded text-sm font-mono"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Name <span style={{ color: 'var(--accent-danger)' }}>*</span></label>
+          <input value={name} onChange={e => setName(e.target.value)}
+            placeholder="my-nginx"
+            className="w-full px-3 py-2 rounded text-sm"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+          />
+        </div>
+        <ListInput label="Ports"    placeholder="8080:80"       items={ports}   onChange={setPorts}   />
+        <ListInput label="Volumes"  placeholder="/data:/data"   items={volumes} onChange={setVolumes} />
+        <ListInput label="Env vars" placeholder="KEY=value"     items={env}     onChange={setEnv}     />
+      </div>
+
+      {err  && <p className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-danger)18', color: 'var(--accent-danger)', border: '1px solid var(--accent-danger)44' }}>{err}</p>}
+      {done && <p className="text-xs px-3 py-2 rounded" style={{ background: '#22c55e18', color: '#22c55e', border: '1px solid #22c55e44' }}>Deployed as <code>{done}</code> — check the Deployed tab.</p>}
+
+      <button onClick={deploy} disabled={busy || !image.trim() || !name.trim()}
+        className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
+        style={{ background: 'var(--accent-primary)', color: '#fff' }}>
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <Box size={14} />}
+        Deploy
+      </button>
+    </div>
+  )
 }
 
 // ─── AI Discover Tab ──────────────────────────────────────────────────────────
@@ -577,7 +706,7 @@ export default function AppVaultPage() {
   const [deploying, setDeploying]       = useState<string | null>(null)
   const [search, setSearch]             = useState('')
   const [category, setCategory]         = useState<string>('all')
-  const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover'>('catalog')
+  const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover' | 'custom'>('catalog')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -638,6 +767,7 @@ export default function AppVaultPage() {
           { id: 'catalog',  label: `Catalog (${apps.length})` },
           { id: 'deployed', label: `Deployed (${deployed.length})` },
           { id: 'discover', label: '✦ AI Discover' },
+          { id: 'custom',   label: '⊕ Custom Deploy' },
         ] as const).map(({ id, label }) => (
           <button
             key={id}
@@ -691,11 +821,16 @@ export default function AppVaultPage() {
                         {CATEGORY_LABELS[app.category] ?? app.category}
                       </div>
                     </div>
-                    {isDeployed && (
-                      <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--accent-success)' }}>
-                        Running
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {app.ai_integration && (
+                        <AiBadge level={app.ai_integration.level} description={app.ai_integration.description} />
+                      )}
+                      {isDeployed && (
+                        <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--accent-success)' }}>
+                          Running
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <p className="text-xs flex-1" style={{ color: 'var(--text-secondary)' }}>{app.description}</p>
                   <div className="flex items-center gap-2 mt-auto pt-1">
@@ -751,6 +886,10 @@ export default function AppVaultPage() {
 
       {tab === 'deployed' && (
         <DeployedTab deployed={deployed} onRefresh={load} />
+      )}
+
+      {tab === 'custom' && (
+        <CustomDeployTab onDeployed={() => { load(); setTab('deployed') }} />
       )}
 
       {tab === 'discover' && (

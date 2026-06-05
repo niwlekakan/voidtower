@@ -22,6 +22,9 @@ compose:
   volumes:
     pihole_etc:
     pihole_dnsmasq:
+ai_integration:
+  level: aware
+  description: "Odysseus can read DNS query stats and manage blocklists"
 links:
   home: https://pi-hole.net
   docs: https://docs.pi-hole.net

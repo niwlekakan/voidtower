@@ -1,0 +1,29 @@
+id: redroid
+name: Redroid (Android VM)
+description: Docker-based Android instance — run Android apps in your browser via scrcpy
+category: vm
+version_hint: "12.0.0"
+compose:
+  services:
+    redroid:
+      image: redroid/redroid:12.0.0-latest
+      restart: unless-stopped
+      privileged: true
+      ports:
+        - "5555:5555"
+      volumes:
+        - redroid_data:/data
+      environment:
+        - ro.product.cpu.abilist=x86_64,arm64-v8a
+    scrcpy-web:
+      image: accetto/ubuntu-vnc-xfce-chromium-g3:latest
+      restart: unless-stopped
+      ports:
+        - "6080:6080"
+      depends_on:
+        - redroid
+  volumes:
+    redroid_data:
+links:
+  home: https://github.com/remote-android/redroid-doc
+  docs: https://github.com/remote-android/redroid-doc/blob/master/README.md

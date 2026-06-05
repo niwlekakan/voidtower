@@ -1,0 +1,23 @@
+id: navidrome
+name: Navidrome
+description: Self-hosted music server with Subsonic/Airsonic API — stream your music anywhere
+category: media
+version_hint: "latest"
+compose:
+  services:
+    navidrome:
+      image: deluan/navidrome:latest
+      restart: unless-stopped
+      ports:
+        - "4533:4533"
+      volumes:
+        - navidrome_data:/data
+        - /music:/music:ro
+      environment:
+        - ND_SCANSCHEDULE=1h
+        - ND_LOGLEVEL=info
+  volumes:
+    navidrome_data:
+links:
+  home: https://www.navidrome.org
+  docs: https://www.navidrome.org/docs

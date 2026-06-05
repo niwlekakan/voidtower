@@ -15,6 +15,13 @@ use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiIntegration {
+    pub level: String,       // "native" | "aware"
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppDef {
     pub id: String,
     pub name: String,
@@ -27,6 +34,8 @@ pub struct AppDef {
     pub compose: Value,
     #[serde(default)]
     pub links: HashMap<String, String>,
+    #[serde(default)]
+    pub ai_integration: Option<AiIntegration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -472,6 +481,108 @@ pub async fn deploy(
         "project_name": project_name,
         "detected_llm": detected_llm,
     })))
+}
+
+#[derive(Deserialize)]
+pub struct CustomDeployRequest {
+    pub name: String,
+    pub image: String,
+    #[serde(default)]
+    pub ports: Vec<String>,
+    #[serde(default)]
+    pub volumes: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<String>,
+}
+
+pub async fn deploy_custom(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(req): Json<CustomDeployRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+    let ip = addr.ip().to_string();
+
+    if !containers::is_docker_available() {
+        return Err(AppError::FeatureUnavailable("Docker is not available".into()));
+    }
+
+    let name = req.name.trim().to_string();
+    if name.is_empty() || req.image.trim().is_empty() {
+        return Err(AppError::BadRequest("name and image are required".into()));
+    }
+    // Sanitise project name — alphanumeric + hyphens only
+    let project_name = format!("vt-custom-{}",
+        name.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect::<String>()
+    );
+
+    // Build compose YAML manually
+    let mut svc = serde_json::json!({
+        "image": req.image.trim(),
+        "restart": "unless-stopped",
+    });
+    if !req.ports.is_empty() {
+        svc["ports"] = Value::Array(req.ports.iter().map(|p| Value::String(p.clone())).collect());
+    }
+    if !req.volumes.is_empty() {
+        svc["volumes"] = Value::Array(req.volumes.iter().map(|v| Value::String(v.clone())).collect());
+    }
+    if !req.env.is_empty() {
+        svc["environment"] = Value::Array(req.env.iter().map(|e| Value::String(e.clone())).collect());
+    }
+
+    let mut compose_val = serde_json::json!({
+        "services": { &name: svc }
+    });
+
+    // Extract primary port before writing
+    let primary_port = extract_primary_port(&compose_val).map(|p| p as i64);
+
+    // Ensure any bind-mount host paths exist
+    ensure_volume_dirs(&compose_val);
+
+    // Write compose file
+    let app_dir = state.config.apps_dir().join(&project_name);
+    std::fs::create_dir_all(&app_dir).map_err(|e| AppError::Internal(e.into()))?;
+
+    // Replace null volumes
+    if let Some(vols) = compose_val.get_mut("volumes") {
+        if let Some(obj) = vols.as_object_mut() {
+            for v in obj.values_mut() {
+                if v.is_null() { *v = serde_json::json!({}); }
+            }
+        }
+    }
+
+    let compose_str = serde_yaml::to_string(&compose_val).map_err(|e| AppError::Internal(e.into()))?;
+    let compose_path = app_dir.join("docker-compose.yml");
+    std::fs::write(&compose_path, &compose_str).map_err(|e| AppError::Internal(e.into()))?;
+
+    containers::deploy_compose(&project_name, &compose_path)
+        .await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO deployed_apps \
+         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port) \
+         VALUES (?, 'custom', ?, ?, 'running', ?, ?, ?)"
+    )
+    .bind(&id).bind(&name).bind(&project_name)
+    .bind(now).bind(compose_path.to_string_lossy().as_ref()).bind(primary_port)
+    .execute(&state.db).await.map_err(AppError::Database)?;
+
+    audit::log(
+        &state.db, Some(&user.id), &user.username,
+        "app.deploy_custom", Some("app"), Some(&project_name),
+        "success", Some(&ip), Some(&format!("image={}", req.image.trim())),
+    ).await;
+
+    Ok(Json(serde_json::json!({ "ok": true, "project_name": project_name })))
 }
 
 pub async fn start_app(

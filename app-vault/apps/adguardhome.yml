@@ -1,0 +1,23 @@
+id: adguardhome
+name: AdGuard Home
+description: Network-wide DNS ad blocker with per-device rules and query logging
+category: networking
+version_hint: "latest"
+compose:
+  services:
+    adguardhome:
+      image: adguard/adguardhome:latest
+      restart: unless-stopped
+      network_mode: host
+      volumes:
+        - adguard_work:/opt/adguardhome/work
+        - adguard_conf:/opt/adguardhome/conf
+  volumes:
+    adguard_work:
+    adguard_conf:
+ai_integration:
+  level: aware
+  description: "Odysseus can read DNS query logs, blocked domains, and filter stats"
+links:
+  home: https://adguard.com/en/adguard-home/overview.html
+  docs: https://github.com/AdguardTeam/AdGuardHome/wiki

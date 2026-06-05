@@ -1,30 +1,29 @@
-id: ollama
-name: Ollama
-description: Run large language models locally
+id: comfyui
+name: ComfyUI
+description: Node-based Stable Diffusion UI for local AI image generation
 category: ai
 version_hint: "latest"
 compose:
   services:
-    ollama:
-      image: ollama/ollama:latest
+    comfyui:
+      image: yanwk/comfyui-boot:latest
       restart: unless-stopped
       ports:
-        - "11434:11434"
+        - "8188:8188"
       volumes:
-        - ollama_data:/root/.ollama
+        - comfyui_data:/root
         - ${HOME}/.local/share/voidtower/models:/vt-models:ro
       runtime: nvidia
       environment:
         - NVIDIA_VISIBLE_DEVICES=all
         - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-        - OLLAMA_VULKAN=1
       devices:
         - /dev/dri:/dev/dri
   volumes:
-    ollama_data:
+    comfyui_data:
 ai_integration:
   level: native
-  description: "Odysseus can list, pull, delete, and query Ollama models directly"
+  description: "Odysseus can generate images, queue prompts, and read generation history"
 links:
-  home: https://ollama.com
-  docs: https://github.com/ollama/ollama/blob/main/docs/api.md
+  home: https://github.com/comfyanonymous/ComfyUI
+  docs: https://docs.comfy.org

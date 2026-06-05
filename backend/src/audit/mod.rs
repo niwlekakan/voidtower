@@ -17,6 +17,7 @@ pub struct AuditEntry {
     pub details: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn log(
     pool: &SqlitePool,
     user_id: Option<&str>,

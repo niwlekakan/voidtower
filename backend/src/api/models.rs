@@ -162,7 +162,7 @@ pub async fn list_models(State(state): State<AppState>, jar: CookieJar) -> Resul
         }
     }
 
-    models.sort_by(|a, b| b.modified.cmp(&a.modified));
+    models.sort_by_key(|m| std::cmp::Reverse(m.modified));
     Ok(Json(models))
 }
 
@@ -186,7 +186,7 @@ pub async fn start_download(
     let filename = req.filename
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| {
-            req.url.split('/').last()
+            req.url.split('/').next_back()
                 .unwrap_or("model.gguf")
                 .split('?').next().unwrap_or("model.gguf")
                 .to_string()
@@ -330,7 +330,7 @@ pub async fn load_model(
             if let Some(cmd) = svc.get("command").and_then(|c| c.as_str()).map(|s| s.to_string()) {
                 let new_cmd = if cmd.contains("--model ") {
                     let parts: Vec<&str> = cmd.splitn(2, "--model ").collect();
-                    let rest = parts[1].splitn(2, ' ').nth(1).map(|s| format!(" {s}")).unwrap_or_default();
+                    let rest = parts[1].split_once(' ').map(|x| x.1).map(|s| format!(" {s}")).unwrap_or_default();
                     format!("{}--model /models/{}{}", parts[0], req.filename, rest)
                 } else {
                     format!("{} --model /models/{}", cmd.trim(), req.filename)

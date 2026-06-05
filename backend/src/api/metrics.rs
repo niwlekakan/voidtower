@@ -72,7 +72,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<()> {
         .ok_or(AppError::Unauthorized)?;
     auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
     Ok(())
 }

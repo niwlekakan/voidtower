@@ -56,7 +56,7 @@ pub async fn get(
 ) -> Result<Json<ServiceInfo>> {
     require_user(&state, &jar).await?;
     services::get_service(&name)
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::NotFound)
         .map(Json)
 }
@@ -77,7 +77,7 @@ pub async fn action(
 
     let action_str = format!("{:?}", req.action).to_lowercase();
     services::run_service_action(&name, req.action)
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     audit::log(
         &state.db,
@@ -101,7 +101,7 @@ pub async fn logs(
 ) -> Result<Json<LogsResponse>> {
     require_user(&state, &jar).await?;
     let lines = services::get_service_logs(&name, 200)
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
     Ok(Json(LogsResponse { lines }))
 }
 
@@ -112,6 +112,6 @@ async fn require_user(state: &AppState, jar: &CookieJar) -> Result<crate::auth::
         .ok_or(AppError::Unauthorized)?;
     auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)
 }

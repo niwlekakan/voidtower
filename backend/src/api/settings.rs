@@ -23,7 +23,7 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
         .ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
     if !matches!(user.role.as_str(), "owner" | "admin") {
         return Err(AppError::Forbidden);

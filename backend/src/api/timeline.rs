@@ -118,7 +118,7 @@ pub async fn list(
     let user_ids: Vec<String> = rows.iter().filter_map(|(_, _, uid, ..)| uid.clone()).collect::<std::collections::HashSet<_>>().into_iter().collect();
     let mut username_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if !user_ids.is_empty() {
-        let placeholders = user_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+        let _placeholders = user_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
         // Use a simpler approach: fetch all users and filter
         let all_users = sqlx::query_as::<_, (String, String)>("SELECT id, username FROM users")
             .fetch_all(&state.db).await.unwrap_or_default();

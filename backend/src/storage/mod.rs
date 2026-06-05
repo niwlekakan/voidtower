@@ -354,7 +354,7 @@ pub async fn list_raid() -> Vec<RaidArray> {
                 array.state = val.trim().to_string();
             } else if let Some(val) = line.strip_prefix("Array Size :") {
                 // "1953382400 (1862.89 GiB)" — extract the numeric part
-                if let Some(num_str) = val.trim().split_whitespace().next() {
+                if let Some(num_str) = val.split_whitespace().next() {
                     // Array Size is in kibibytes
                     array.size_bytes = num_str.parse::<u64>().unwrap_or(0) * 1024;
                 }
@@ -534,14 +534,13 @@ pub async fn smart_info(dev: &str) -> SmartInfo {
             if let Some(h) = parts.get(3) {
                 info.power_on_hours = h.replace(',', "").parse().ok();
             }
-        } else if line.starts_with("  5 ") || line.starts_with("5 ") {
-            if line.contains("Reallocated_Sector") {
+        } else if (line.starts_with("  5 ") || line.starts_with("5 "))
+            && line.contains("Reallocated_Sector") {
                 let cols: Vec<&str> = line.split_whitespace().collect();
                 if let Some(raw) = cols.get(9) {
                     info.reallocated_sectors = raw.parse().ok();
                 }
             }
-        }
     }
 
     info

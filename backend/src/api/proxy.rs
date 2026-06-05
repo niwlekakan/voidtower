@@ -18,7 +18,7 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
         .ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
     if !matches!(user.role.as_str(), "owner" | "admin") {
         return Err(AppError::Forbidden);
@@ -245,6 +245,7 @@ fn which(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(dead_code)]
 fn detect_package_manager() -> Option<(&'static str, Vec<&'static str>)> {
     if which("pacman") {
         Some(("pacman", vec!["-S", "--noconfirm", "nginx"]))
@@ -763,7 +764,6 @@ pub async fn nginx_status(
             if trimmed.starts_with("Active:") {
                 state_str = trimmed
                     .trim_start_matches("Active:")
-                    .trim()
                     .split_whitespace()
                     .take(3)
                     .collect::<Vec<_>>()
@@ -772,7 +772,6 @@ pub async fn nginx_status(
             if trimmed.starts_with("Main PID:") {
                 pid = trimmed
                     .trim_start_matches("Main PID:")
-                    .trim()
                     .split_whitespace()
                     .next()
                     .and_then(|s| s.parse().ok());

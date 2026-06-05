@@ -17,6 +17,7 @@ pub enum ClientMessage {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[allow(dead_code)]
 pub enum ServerMessage {
     Output { data: String },
     Pong,
@@ -65,7 +66,7 @@ pub async fn handle_terminal_ws(
     }
 }
 
-async fn run_terminal(mut socket: WebSocket, shell: Option<String>) -> Result<()> {
+async fn run_terminal(socket: WebSocket, shell: Option<String>) -> Result<()> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
 
@@ -154,7 +155,7 @@ pub async fn handle_ssh_ws(
     }
 }
 
-async fn run_ssh(mut socket: WebSocket, host: String, port: u16, username: String) -> Result<()> {
+async fn run_ssh(socket: WebSocket, host: String, port: u16, username: String) -> Result<()> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
 

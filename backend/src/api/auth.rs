@@ -39,7 +39,7 @@ pub async fn login(
 ) -> Result<(CookieJar, Json<AuthResponse>)> {
     let user = auth::find_user_by_username(&state.db, &req.username)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
 
     if !auth::verify_password(&req.password, &user.password_hash) {
@@ -58,7 +58,7 @@ pub async fn login(
         None,
     )
     .await
-    .map_err(|e| AppError::Internal(e))?;
+    .map_err(AppError::Internal)?;
 
     audit::log(
         &state.db, Some(&user.id), "human", "auth.login",
@@ -101,7 +101,7 @@ pub async fn me(
 
     let user = auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
 
     Ok(Json(AuthResponse { user: user.into() }))
@@ -116,14 +116,14 @@ pub async fn bootstrap(
     // Only allowed when no users exist
     if auth::has_any_user(&state.db)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
     {
         return Err(AppError::Forbidden);
     }
 
     let expected = auth::read_bootstrap_token(&state.config.bootstrap_token_path())
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::BadRequest("No bootstrap token found".to_string()))?;
 
     if req.token != expected {
@@ -138,7 +138,7 @@ pub async fn bootstrap(
 
     let user = auth::create_user(&state.db, &req.username, &req.password, "owner", false)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     let session = auth::create_session(
         &state.db,
@@ -147,7 +147,7 @@ pub async fn bootstrap(
         None,
     )
     .await
-    .map_err(|e| AppError::Internal(e))?;
+    .map_err(AppError::Internal)?;
 
     audit::log(
         &state.db, Some(&user.id), "human", "auth.bootstrap",

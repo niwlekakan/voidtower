@@ -70,7 +70,7 @@ pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(body): J
     if body.name.trim().is_empty() { return Err(AppError::BadRequest("name required".into())); }
     if body.value.is_empty() { return Err(AppError::BadRequest("value required".into())); }
     let enc = encrypt(&state.secrets_key, &body.value)
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
     sqlx::query("INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) VALUES (?,?,?,?,?,?)")
@@ -84,7 +84,7 @@ pub async fn update(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
     let user = auth_user(&state, &jar, true).await?;
     let now = now_ts();
     if let Some(v) = &body.value {
-        let enc = encrypt(&state.secrets_key, v).map_err(|e| AppError::Internal(e))?;
+        let enc = encrypt(&state.secrets_key, v).map_err(AppError::Internal)?;
         sqlx::query("UPDATE secrets SET value_enc=?, updated_at=? WHERE id=?")
             .bind(&enc).bind(now).bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
     }
@@ -112,7 +112,7 @@ pub async fn reveal(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
     let row = sqlx::query_as::<_, (String, String)>("SELECT name, value_enc FROM secrets WHERE id=?")
         .bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?
         .ok_or(AppError::NotFound)?;
-    let value = decrypt(&state.secrets_key, &row.1).map_err(|e| AppError::Internal(e))?;
+    let value = decrypt(&state.secrets_key, &row.1).map_err(AppError::Internal)?;
     let now = now_ts();
     let _ = sqlx::query("UPDATE secrets SET last_used_at=? WHERE id=?").bind(now).bind(&id).execute(&state.db).await;
     audit::log(&state.db, Some(&user.id), "human", "reveal_secret", Some("secret"), Some(&id), "success", None, Some(&format!("name={}", row.0))).await;

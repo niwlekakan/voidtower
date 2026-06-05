@@ -3,6 +3,7 @@
 // Main node polls agents, proxies actions, manages join tokens
 // No external consensus (etcd/Consul/K8s) required
 
+#[allow(dead_code)]
 pub fn is_agent_mode() -> bool {
     std::env::args().any(|a| a == "--agent")
 }

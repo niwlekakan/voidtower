@@ -50,6 +50,7 @@ pub fn is_docker_available() -> bool {
     std::path::Path::new("/var/run/docker.sock").exists()
 }
 
+#[allow(dead_code)]
 pub fn is_lxc_available() -> bool {
     std::process::Command::new("which")
         .arg("lxc-ls")
@@ -97,8 +98,8 @@ pub async fn list_containers() -> Result<Vec<ContainerInfo>> {
                         .map(|t| format!("{:?}", t).to_lowercase())
                         .unwrap_or_else(|| "tcp".into());
                     PortMapping {
-                        host_port: p.public_port.map(|v| v as u16),
-                        container_port: p.private_port as u16,
+                        host_port: p.public_port,
+                        container_port: p.private_port,
                         protocol,
                     }
                 })

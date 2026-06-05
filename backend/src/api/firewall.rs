@@ -37,7 +37,7 @@ fn parse_ufw_status(output: &str) -> (bool, Vec<FirewallRule>, Option<String>) {
         if l.starts_with("Status: active")   { enabled = true; }
         if l.starts_with("Status: inactive") { enabled = false; }
         if l.starts_with("Logging:") {
-            logging = l.splitn(2, ':').nth(1).map(|s| s.trim().to_string());
+            logging = l.split_once(':').map(|x| x.1).map(|s| s.trim().to_string());
         }
 
         // Parse numbered rules: "[ 1] 22/tcp    ALLOW IN    Anywhere"

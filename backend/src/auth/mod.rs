@@ -253,6 +253,7 @@ pub async fn delete_expired_sessions(pool: &SqlitePool) -> Result<u64> {
     Ok(result.rows_affected())
 }
 
+#[allow(dead_code)]
 pub async fn find_user_by_id(pool: &SqlitePool, id: &str) -> Result<Option<User>> {
     Ok(sqlx::query_as::<_, User>(
         "SELECT id, username, password_hash, role, force_password_change, created_at, updated_at

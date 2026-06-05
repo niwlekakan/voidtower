@@ -4,7 +4,78 @@ import { api, ApiClientError } from '@/api/client'
 import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
-import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch } from 'lucide-react'
+import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor } from 'lucide-react'
+import { useThemeStore, type UiMode } from '@/store/theme'
+import { setDeviceTierOverride, type DeviceTier } from '@/aios/hooks/useDeviceTier'
+
+function AppearanceSection() {
+  const { uiMode, setUiMode } = useThemeStore()
+  const [deviceOverride, setDeviceOverride] = useState<DeviceTier | ''>(() =>
+    (localStorage.getItem('vt-device-tier') as DeviceTier | null) ?? ''
+  )
+
+  const handleDeviceOverride = (val: DeviceTier | '') => {
+    setDeviceOverride(val)
+    setDeviceTierOverride(val || null)
+  }
+
+  return (
+    <div className="card space-y-4">
+      <div className="flex items-center gap-2">
+        <Monitor size={14} style={{ color: 'var(--accent-primary)' }} />
+        <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Appearance</h2>
+      </div>
+
+      {/* UI Mode toggle */}
+      <div>
+        <label className="block text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>Interface mode</label>
+        <div className="flex gap-2">
+          {(['tower', 'void'] as UiMode[]).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setUiMode(mode)}
+              className="px-4 py-2 rounded text-xs font-medium transition-colors capitalize"
+              style={{
+                background: uiMode === mode ? 'var(--accent-primary)' : 'var(--bg-elevated)',
+                color: uiMode === mode ? '#fff' : 'var(--text-secondary)',
+                border: `1px solid ${uiMode === mode ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+              }}
+            >
+              {mode === 'void' ? 'Void Mode' : 'Tower Mode'}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+          {uiMode === 'void'
+            ? 'Floating panels, spatial layout, always-on AI command bar.'
+            : 'Standard sidebar navigation.'}
+        </p>
+      </div>
+
+      {/* Device tier override */}
+      <div>
+        <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Device mode override</label>
+        <select
+          value={deviceOverride}
+          onChange={(e) => handleDeviceOverride(e.target.value as DeviceTier | '')}
+          className="px-3 py-2 rounded text-sm outline-none"
+          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+        >
+          <option value="">Auto-detect</option>
+          <option value="phone">Phone</option>
+          <option value="tablet">Tablet</option>
+          <option value="desktop">Desktop</option>
+          <option value="large">Large display</option>
+          <option value="tv">TV</option>
+          <option value="kiosk">Kiosk</option>
+        </select>
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+          Override automatic tier detection. Takes effect after page reload.
+        </p>
+      </div>
+    </div>
+  )
+}
 
 export default function SettingsPage() {
   const currentUser = useAuthStore((s) => s.user)
@@ -16,6 +87,9 @@ export default function SettingsPage() {
 
       {/* General / instance */}
       {isAdmin && <GeneralSection />}
+
+      {/* Appearance — UI mode + device override */}
+      <AppearanceSection />
 
       {/* Dashboard / Weather */}
       <WeatherLocationSection />

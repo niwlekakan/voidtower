@@ -7,7 +7,7 @@ import { api } from '@/api/client'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type WidgetId = 'clock' | 'weather' | 'system' | 'charts' | 'containers' | 'alerts' | 'disks' | 'network' | 'processes'
+type WidgetId = 'clock' | 'weather' | 'system' | 'charts' | 'containers' | 'alerts' | 'disks' | 'network' | 'processes' | 'gpu'
 
 interface WidgetDef { id: WidgetId; label: string; icon: React.ReactNode; defaultOn: boolean }
 

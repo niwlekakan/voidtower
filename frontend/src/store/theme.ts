@@ -5,12 +5,15 @@ import {
   BUILTIN_THEMES, BG_PRESETS, DEFAULT_ANIM_CONFIG, randomizeAnimConfig, importTheme, applyTheme,
 } from '@/theme/themes'
 
+export type UiMode = 'tower' | 'void'
+
 interface ThemeStore {
   activeTheme: Theme
   customThemes: Theme[]
   glassLevel: GlassLevel
   bgPreset: BgPreset
   animConfig: AnimConfig
+  uiMode: UiMode
   setTheme: (id: string) => void
   setGlass: (level: GlassLevel) => void
   setBgPreset: (preset: BgPreset) => void
@@ -22,6 +25,7 @@ interface ThemeStore {
   removeCustomTheme: (id: string) => void
   importFromJson: (json: string) => void
   allThemes: () => Theme[]
+  setUiMode: (mode: UiMode) => void
 }
 
 const GLASS_LEVELS: GlassLevel[] = ['none', 'blur', 'acrylic', 'frosted']
@@ -37,6 +41,7 @@ export const useThemeStore = create<ThemeStore>()(
       glassLevel: 'none',
       bgPreset: 'none',
       animConfig: { ...DEFAULT_ANIM_CONFIG },
+      uiMode: 'tower' as UiMode,
 
       setTheme: (id) => {
         const all = [...BUILTIN_THEMES, ...get().customThemes]
@@ -83,6 +88,8 @@ export const useThemeStore = create<ThemeStore>()(
       },
 
       allThemes: () => [...BUILTIN_THEMES, ...get().customThemes],
+
+      setUiMode: (mode) => set({ uiMode: mode }),
     }),
     {
       name: 'vt-theme',
@@ -92,6 +99,7 @@ export const useThemeStore = create<ThemeStore>()(
         glassLevel: s.glassLevel,
         bgPreset: s.bgPreset,
         animConfig: s.animConfig,
+        uiMode: s.uiMode,
       }),
     },
   ),

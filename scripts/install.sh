@@ -293,9 +293,13 @@ build_from_source() {
   if [[ ! -d "$SRC/frontend" || ! -d "$SRC/backend" ]]; then
     info "Downloading VoidTower source…"
     SRC=$(mktemp -d)
-    curl -fsSL "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" \
-      | tar -xz --strip-components=1 -C "$SRC" \
-      || die "Failed to download source from ${REPO}"
+    local _tarball="$SRC/source.tar.gz"
+    curl -fsSL -o "$_tarball" \
+      "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" \
+      || die "Failed to download source tarball from ${REPO}"
+    tar -xz --strip-components=1 -C "$SRC" -f "$_tarball" \
+      || die "Failed to extract source tarball"
+    rm -f "$_tarball"
     success "Source downloaded"
   fi
 
@@ -1636,6 +1640,10 @@ prompt_reinstall() {
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
+  # Ensure we have a valid working directory — the caller's cwd may not exist
+  # (e.g. curl|bash started from a deleted directory), which corrupts subprocesses.
+  cd / 2>/dev/null || true
+
   # When piped via curl | bash, stdin is the pipe. By the time main() runs
   # bash has the full script in memory, so we can safely reopen /dev/tty for
   # interactive prompts. Fall back to unattended mode if no terminal exists.

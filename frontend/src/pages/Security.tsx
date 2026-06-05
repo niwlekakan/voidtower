@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Monitor, Trash2, LogOut, KeyRound, ShieldCheck, ShieldOff, Copy } from 'lucide-react'
+import QRCode from 'react-qr-code'
 import { api, ApiClientError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { notify } from '@/store/notifications'
@@ -124,14 +125,8 @@ function TotpPanel() {
             Scan the QR code with your authenticator app, then enter the 6-digit code to confirm.
           </p>
 
-          {/* QR via Google Charts — no external JS dependency */}
-          <div className="flex justify-center">
-            <img
-              src={`https://chart.googleapis.com/chart?chs=180x180&cht=qr&chl=${encodeURIComponent(uri)}&choe=UTF-8`}
-              alt="TOTP QR code"
-              className="rounded"
-              width={180} height={180}
-            />
+          <div className="flex justify-center p-3 rounded" style={{ background: '#fff' }}>
+            <QRCode value={uri} size={180} />
           </div>
 
           <div className="flex items-center gap-2 px-3 py-2 rounded font-mono text-xs" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>

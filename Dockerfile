@@ -1,11 +1,11 @@
-FROM rust:1.80-slim AS backend-builder
+FROM rust:1.85-slim AS backend-builder
 WORKDIR /build
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY backend/ ./backend/
 WORKDIR /build/backend
 RUN cargo build --release
 
-FROM node:20-slim AS frontend-builder
+FROM node:22-slim AS frontend-builder
 WORKDIR /build/frontend
 COPY frontend/package*.json ./
 RUN npm ci

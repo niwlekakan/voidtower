@@ -36,7 +36,7 @@ export default function AiosStatusBar({ tier }: Props) {
 
   const isPhone = tier === 'phone'
   const isTv = tier === 'tv'
-  const h = isPhone ? 24 : isTv ? 48 : 28
+  const h = isPhone ? 28 : isTv ? 52 : 36
 
   const net = snapshot?.networks?.reduce(
     (acc, n) => ({ rx: acc.rx + n.rx_bytes_per_sec, tx: acc.tx + n.tx_bytes_per_sec }),

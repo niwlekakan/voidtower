@@ -294,13 +294,14 @@ build_from_source() {
     SRC=$(mktemp -d)
     git clone --depth 1 --branch voidtower-aio "https://github.com/${REPO}" "$SRC" \
       || die "Failed to clone ${REPO}"
+    success "Source cloned"
   fi
 
   info "Building frontend…"
   (cd "$SRC/frontend" && npm ci --silent && npm run build --silent) \
     || die "Frontend build failed"
-  info "Building backend…"
-  (cd "$SRC/backend" && cargo build --release --quiet) \
+  info "Building backend (this can take 10–15 min on first build)…"
+  (cd "$SRC/backend" && cargo build --release) \
     || die "Backend build failed"
   install -m 755 "$SRC/backend/target/release/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
   cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend"

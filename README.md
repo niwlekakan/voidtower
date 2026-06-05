@@ -93,6 +93,15 @@ sudo bash install.sh \
 | `--no-webhooks` | Skip webhook configuration |
 | `--no-toolpacks` | Skip toolpack installation |
 
+### Maintenance flags
+
+| Flag | Description |
+|---|---|
+| `--uninstall` | Remove VoidTower — interactively choose what to keep (data, config, system user) |
+| `--reset` | Wipe state (database, config, secrets, bootstrap token) and restart — binary and service unit kept |
+| `--repair` | Re-download binary, reinstall service unit, fix ownership/permissions, restart |
+| `--update` | Pull latest (or `--version`) binary, refresh app catalog, restart — data and config untouched |
+
 ### Model auto-selection
 
 | RAM | Recommended model |
@@ -543,14 +552,11 @@ docker compose --profile aio --profile ai down -v
 ### Bare metal
 
 ```bash
-# VoidTower only
-sudo bash scripts/uninstall.sh
+# Interactive — choose what to remove
+sudo bash scripts/install.sh --uninstall
 
-# VoidTower + Odysseus
-sudo bash scripts/uninstall.sh --remove-odysseus
-
-# Everything including Ollama and all data
-sudo bash scripts/uninstall.sh --all --purge
+# Non-interactive full purge
+sudo bash scripts/install.sh --uninstall --yes
 ```
 
 ---

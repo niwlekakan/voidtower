@@ -3,6 +3,8 @@ use axum::{extract::State, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
+const GITHUB_REPO: &str = "elwla/voidtower";
+
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &sid).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
@@ -10,11 +12,24 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
     Ok(user)
 }
 
-// Binary lives at <root>/backend/target/debug/voidtower
+// Dev binary lives at <root>/backend/target/{profile}/voidtower.
+// Prod binary lives at /opt/voidtower/voidtower (no "target/" segment).
+fn is_dev_install() -> bool {
+    std::env::current_exe().ok()
+        .map(|p| p.to_string_lossy().contains("/target/"))
+        .unwrap_or(false)
+}
+
+// Dev: traverse target/debug/ → backend/ → project root
 fn project_root() -> Option<std::path::PathBuf> {
     std::env::current_exe().ok()?
         .parent()?.parent()?.parent()?.parent()
         .map(|p| p.to_path_buf())
+}
+
+// Prod: directory that contains the binary (e.g. /opt/voidtower)
+fn install_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
 }
 
 fn git(root: &std::path::Path, args: &[&str]) -> std::result::Result<String, String> {
@@ -22,6 +37,26 @@ fn git(root: &std::path::Path, args: &[&str]) -> std::result::Result<String, Str
         .args(args).current_dir(root)
         .output().map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn installed_version(dir: &std::path::Path) -> String {
+    std::fs::read_to_string(dir.join(".version"))
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn github_latest_tag() -> Option<String> {
+    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "10", "-A", "voidtower-update", &url])
+        .output().ok()?;
+    if !out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Parse: "tag_name": "v1.2.3"
+    let after = text.split("\"tag_name\"").nth(1)?;
+    let tag = after.split('"').nth(2)?.trim_start_matches('v').to_string();
+    if tag.is_empty() { None } else { Some(tag) }
 }
 
 // ─── Version ──────────────────────────────────────────────────────────────────
@@ -35,12 +70,19 @@ pub struct VersionInfo {
 }
 
 pub async fn version() -> Result<Json<VersionInfo>> {
-    let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
-    let commit      = git(&root, &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|_| "unknown".into());
-    let branch      = git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "unknown".into());
-    let commit_date = git(&root, &["log", "-1", "--format=%ci"]).unwrap_or_default();
-    let status      = git(&root, &["status", "--porcelain"]).unwrap_or_default();
-    Ok(Json(VersionInfo { commit, branch, commit_date, dirty: !status.is_empty() }))
+    if is_dev_install() {
+        let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
+        let commit      = git(&root, &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|_| "unknown".into());
+        let branch      = git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "unknown".into());
+        let commit_date = git(&root, &["log", "-1", "--format=%ci"]).unwrap_or_default();
+        let status      = git(&root, &["status", "--porcelain"]).unwrap_or_default();
+        Ok(Json(VersionInfo { commit, branch, commit_date, dirty: !status.is_empty() }))
+    } else {
+        let dir = install_dir().ok_or_else(|| AppError::FeatureUnavailable("cannot locate install dir".into()))?;
+        let ver = installed_version(&dir);
+        let commit = if ver.is_empty() { "unknown".to_string() } else { format!("v{ver}") };
+        Ok(Json(VersionInfo { commit, branch: "main".to_string(), commit_date: String::new(), dirty: false }))
+    }
 }
 
 // ─── Update check ─────────────────────────────────────────────────────────────
@@ -56,34 +98,54 @@ pub struct UpdateCheck {
 
 pub async fn update_check(State(state): State<AppState>, jar: CookieJar) -> Result<Json<UpdateCheck>> {
     require_admin(&state, &jar).await?;
-    let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
 
-    // fetch quietly; tolerate network errors
-    let fetch_err = std::process::Command::new("git")
-        .args(["fetch", "origin"]).current_dir(&root)
-        .output().err().map(|e| e.to_string());
-
-    let behind = git(&root, &["rev-list", "HEAD..origin/main", "--count"])
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let ahead = git(&root, &["rev-list", "origin/main..HEAD", "--count"])
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let remote_commit = git(&root, &["rev-parse", "--short", "origin/main"]).unwrap_or_default();
-
-    Ok(Json(UpdateCheck { behind, ahead, can_update: behind > 0, remote_commit, error: fetch_err }))
+    if is_dev_install() {
+        let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
+        let fetch_err = std::process::Command::new("git")
+            .args(["fetch", "origin"]).current_dir(&root)
+            .output().err().map(|e| e.to_string());
+        let behind = git(&root, &["rev-list", "HEAD..origin/main", "--count"])
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let ahead = git(&root, &["rev-list", "origin/main..HEAD", "--count"])
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let remote_commit = git(&root, &["rev-parse", "--short", "origin/main"]).unwrap_or_default();
+        Ok(Json(UpdateCheck { behind, ahead, can_update: behind > 0, remote_commit, error: fetch_err }))
+    } else {
+        let dir = install_dir().ok_or_else(|| AppError::FeatureUnavailable("cannot locate install dir".into()))?;
+        let current = installed_version(&dir);
+        let latest = github_latest_tag();
+        let can_update = latest.as_deref().map(|l| !l.is_empty() && l != current).unwrap_or(false);
+        let remote_commit = latest.clone().unwrap_or_else(|| "unknown".to_string());
+        let error = if latest.is_none() { Some("Could not reach GitHub releases API".to_string()) } else { None };
+        Ok(Json(UpdateCheck {
+            behind: if can_update { 1 } else { 0 },
+            ahead: 0,
+            can_update,
+            remote_commit,
+            error,
+        }))
+    }
 }
 
 // ─── Restart ──────────────────────────────────────────────────────────────────
 
 pub async fn restart(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
-    let pid  = std::process::id();
-    let script = format!(
-        "#!/bin/sh\nsleep 1\nkill -TERM {pid}\nsleep 1\nexec bash {root}/start-dev.sh >> /tmp/voidtower.log 2>&1\n",
-        root = root.display()
-    );
+    let pid = std::process::id();
+
+    let script = if is_dev_install() {
+        let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
+        format!(
+            "#!/bin/sh\nsleep 1\nkill -TERM {pid}\nsleep 1\nexec bash {root}/start-dev.sh >> /tmp/voidtower.log 2>&1\n",
+            root = root.display()
+        )
+    } else {
+        // systemd Restart=on-failure restarts after SIGTERM — no need for systemctl
+        format!("#!/bin/sh\nsleep 1\nkill -TERM {pid}\n")
+    };
+
     let script_path = "/tmp/voidtower-restart.sh";
-    std::fs::write(script_path, script).map_err(|e| AppError::Internal(e.into()))?;
+    std::fs::write(script_path, &script).map_err(|e| AppError::Internal(e.into()))?;
     std::process::Command::new("bash")
         .args([script_path])
         .stdout(std::process::Stdio::null())
@@ -96,14 +158,44 @@ pub async fn restart(State(state): State<AppState>, jar: CookieJar) -> Result<Js
 
 pub async fn update(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
-    let pid  = std::process::id();
-    let script = format!(
-        "#!/bin/sh\nset -e\ncd {root}\ngit pull origin main\ncargo build --manifest-path backend/Cargo.toml\nnpm --prefix frontend run build\nsleep 1\nkill -TERM {pid}\nsleep 1\nexec bash {root}/start-dev.sh >> /tmp/voidtower.log 2>&1\n",
-        root = root.display()
-    );
+    let pid = std::process::id();
+
+    let script = if is_dev_install() {
+        let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
+        format!(
+            "#!/bin/sh\nset -e\ncd {root}\ngit pull origin main\ncargo build --manifest-path backend/Cargo.toml\nnpm --prefix frontend run build\nsleep 1\nkill -TERM {pid}\nsleep 1\nexec bash {root}/start-dev.sh >> /tmp/voidtower.log 2>&1\n",
+            root = root.display()
+        )
+    } else {
+        let dir = install_dir()
+            .ok_or_else(|| AppError::FeatureUnavailable("cannot locate install dir".into()))?;
+        let dir_s = dir.to_string_lossy().to_string();
+        let repo  = GITHUB_REPO;
+        // Download the latest release binary, replace in-place, then let systemd restart us.
+        format!(
+            "#!/bin/sh\n\
+set -e\n\
+ARCH=$(uname -m)\n\
+INSTALL_DIR={dir_s}\n\
+LATEST=$(curl -fsSL --max-time 30 -A voidtower-update \
+'https://api.github.com/repos/{repo}/releases/latest' \
+| grep '\"tag_name\"' | sed 's/.*\"v\\([^\"]*\\)\".*/\\1/')\n\
+[ -z \"$LATEST\" ] && {{ echo 'Failed to fetch latest version' >&2; exit 1; }}\n\
+ARCHIVE=\"voidtower-$LATEST-$ARCH-unknown-linux-musl.tar.gz\"\n\
+curl -fsSL --max-time 120 \
+\"https://github.com/{repo}/releases/download/v$LATEST/$ARCHIVE\" \
+-o /tmp/vt-update.tar.gz\n\
+cd /tmp && tar -xzf /tmp/vt-update.tar.gz voidtower\n\
+mv /tmp/voidtower \"$INSTALL_DIR/voidtower\"\n\
+chmod +x \"$INSTALL_DIR/voidtower\"\n\
+echo \"$LATEST\" > \"$INSTALL_DIR/.version\"\n\
+sleep 1\n\
+kill -TERM {pid}\n"
+        )
+    };
+
     let script_path = "/tmp/voidtower-update.sh";
-    std::fs::write(script_path, script).map_err(|e| AppError::Internal(e.into()))?;
+    std::fs::write(script_path, &script).map_err(|e| AppError::Internal(e.into()))?;
     std::process::Command::new("bash")
         .args([script_path])
         .stdout(std::process::Stdio::null())

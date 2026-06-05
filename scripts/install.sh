@@ -292,13 +292,13 @@ build_from_source() {
   if [[ ! -d "$SRC/frontend" || ! -d "$SRC/backend" ]]; then
     info "Cloning VoidTower source…"
     SRC=$(mktemp -d)
-    git clone --depth 1 --branch voidtower-aio "https://github.com/${REPO}" "$SRC" \
+    git clone --depth 1 --progress --branch voidtower-aio "https://github.com/${REPO}" "$SRC" \
       || die "Failed to clone ${REPO}"
     success "Source cloned"
   fi
 
   info "Building frontend…"
-  (cd "$SRC/frontend" && npm ci --silent && npm run build --silent) \
+  (cd "$SRC/frontend" && npm ci && npm run build) \
     || die "Frontend build failed"
   info "Building backend (this can take 10–15 min on first build)…"
   (cd "$SRC/backend" && cargo build --release) \

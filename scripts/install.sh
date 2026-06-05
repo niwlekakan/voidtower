@@ -341,11 +341,15 @@ install_catalog() {
   if [[ -d "$src_catalog" ]]; then
     cp "$src_catalog/"*.yml "$catalog_dir/" 2>/dev/null || true
   else
-    # Download catalog tarball from GitHub (works for binary installs)
+    # Download catalog tarball from GitHub (works for binary installs).
+    # Two-step: download to file first, then extract — avoids SIGPIPE from
+    # nested pipe-within-pipe when this script is itself run via curl|bash.
     local tmp_cat; tmp_cat=$(mktemp -d)
-    if curl -fsSL "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" \
-        | tar -xz -C "$catalog_dir" --strip-components=3 --wildcards "*/app-vault/apps/*.yml" 2>/dev/null; then
-      true  # files extracted directly into catalog_dir
+    local _cat_tarball="$tmp_cat/catalog.tar.gz"
+    if curl -fsSL -o "$_cat_tarball" \
+        "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" 2>/dev/null; then
+      tar -xz -C "$catalog_dir" --strip-components=3 --wildcards \
+        "*/app-vault/apps/*.yml" -f "$_cat_tarball" 2>/dev/null || true
     fi
     rm -rf "$tmp_cat"
   fi
@@ -520,8 +524,8 @@ Type=oneshot
 ExecStart=/opt/voidtower/configure-voidwatch.sh
 EOF
 
-  systemctl daemon-reload
-  systemctl enable voidtower.service
+  systemctl daemon-reload || die "systemctl daemon-reload failed"
+  systemctl enable voidtower.service || die "Failed to enable voidtower.service"
   success "voidtower.service installed and enabled"
 }
 
@@ -795,9 +799,12 @@ install_odysseus() {
 
   # Python venv
   info "Setting up Python virtual environment…"
-  python3 -m venv "${ODYSSEUS_INSTALL_DIR}/venv"
-  "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
-  "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt"
+  python3 -m venv "${ODYSSEUS_INSTALL_DIR}/venv" \
+    || die "Failed to create Python venv at ${ODYSSEUS_INSTALL_DIR}/venv"
+  "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip \
+    || die "Failed to upgrade pip in Odysseus venv"
+  "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt" \
+    || die "Failed to install Odysseus Python dependencies"
 
   # Create .env if missing
   local env_file="${ODYSSEUS_INSTALL_DIR}/.env"
@@ -871,10 +878,10 @@ ReadWritePaths=${ODYSSEUS_DATA_DIR} ${ODYSSEUS_INSTALL_DIR}/data
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable odysseus.service
-    systemctl enable voidwatch-configure.path
-    systemctl start voidwatch-configure.path
+    systemctl daemon-reload || die "systemctl daemon-reload failed"
+    systemctl enable odysseus.service || die "Failed to enable odysseus.service"
+    systemctl enable voidwatch-configure.path || true
+    systemctl start voidwatch-configure.path 2>/dev/null || true
     success "odysseus.service installed and enabled"
   else
     warn "systemd not available — start Odysseus manually:"

@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/containers/images", get(containers::images))
         .route("/api/containers/:id/action", post(containers::action))
         .route("/api/containers/:id/logs", get(containers::logs))
+        .route("/api/containers/:id/logs/stream", get(containers::logs_ws))
         .route("/api/containers/:id/exec", get(containers::exec_ws))
         .route("/api/containers/:id/compose", get(containers::get_compose))
         .route("/api/containers/:id/compose/propose", post(containers::propose_compose))

@@ -71,9 +71,19 @@ async fn run_terminal(socket: WebSocket, shell: Option<String>) -> Result<()> {
     let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
 
     let info = detect_user_info();
-    let shell_cmd = shell.unwrap_or(info.shell);
+    let shell_cmd = shell.unwrap_or(info.shell.clone());
 
-    let mut cmd = CommandBuilder::new(&shell_cmd);
+    // Split "docker exec -it <id> sh" style commands into binary + args.
+    // CommandBuilder::new() takes only the binary name, not a full command string.
+    let parts: Vec<&str> = shell_cmd.split_whitespace().collect();
+    let (binary, args) = parts.split_first()
+        .map(|(b, a)| (*b, a.to_vec()))
+        .unwrap_or((&info.shell, vec![]));
+
+    let mut cmd = CommandBuilder::new(binary);
+    if !args.is_empty() {
+        cmd.args(&args);
+    }
     cmd.env("HOME",    &info.home);
     cmd.env("USER",    &info.name);
     cmd.env("LOGNAME", &info.name);

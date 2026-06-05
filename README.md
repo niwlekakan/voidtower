@@ -306,31 +306,30 @@ Full feature access including container management and self-update. Runs Docker 
 ssh admin@<truenas-ip>
 ```
 
-**2. Clone and configure**
+**2. Set your pool name**
 
 ```bash
-git clone -b voidtower-aio https://github.com/niwlekakan/voidtower /mnt/tank/voidtower-app
-cd /mnt/tank/voidtower-app
-cp deploy/truenas/.env.example .env
-nano .env  # set ODYSSEUS_ADMIN_PASSWORD and TRUENAS_POOL
+export POOL=tank   # replace with your ZFS pool name — run: zpool list
 ```
 
-**3. Start the stack**
+All commands below use `$POOL`. Set it once and copy-paste freely.
+
+**3. Clone and configure**
 
 ```bash
-docker compose -f deploy/truenas/custom-app.yml up -d
+mkdir -p /mnt/$POOL/voidtower-app
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/custom-app.yml \
+  -o /mnt/$POOL/voidtower-app/custom-app.yml
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/.env.example \
+  -o /mnt/$POOL/voidtower-app/.env
+nano /mnt/$POOL/voidtower-app/.env  # set ODYSSEUS_ADMIN_PASSWORD and TRUENAS_POOL=$POOL
 ```
 
-**4. Enable Docker socket (optional)**
+**4. Start the stack**
 
-To unlock container management and self-update, uncomment the socket line in `deploy/truenas/custom-app.yml`:
-
-```yaml
-volumes:
-  - /var/run/docker.sock:/var/run/docker.sock:ro  # uncomment this line
+```bash
+TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
 ```
-
-Then restart: `docker compose -f deploy/truenas/custom-app.yml up -d`
 
 **5. First login and Voidwatch setup**
 
@@ -344,10 +343,14 @@ docker logs voidtower
 
 Use this when you need a clean slate: new image, fresh data, fresh config.
 
+```bash
+export POOL=tank   # replace with your pool name
+```
+
 **1. Stop and remove all containers**
 
 ```bash
-docker compose -f /mnt/tank/voidtower-app/custom-app.yml down
+docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
 ```
 
 Or by name if the compose file is gone:
@@ -365,8 +368,8 @@ docker rmi ghcr.io/niwlekakan/voidtower:aio-latest
 **3. Wipe persistent data**
 
 ```bash
-rm -rf /mnt/tank/voidtower/data \
-       /mnt/tank/voidtower/config
+rm -rf /mnt/$POOL/voidtower/data \
+       /mnt/$POOL/voidtower/config
 ```
 
 > Skip this step if you want to keep your existing users, proxies, and settings.
@@ -374,27 +377,27 @@ rm -rf /mnt/tank/voidtower/data \
 **4. Pull the latest image**
 
 ```bash
-docker pull ghcr.io/niwlekanan/voidtower:aio-latest
+docker pull ghcr.io/niwlekakan/voidtower:aio-latest
 ```
 
 **5. Fetch the latest compose file**
 
 ```bash
-mkdir -p /mnt/tank/voidtower-app
+mkdir -p /mnt/$POOL/voidtower-app
 curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/custom-app.yml \
-  -o /mnt/tank/voidtower-app/custom-app.yml
+  -o /mnt/$POOL/voidtower-app/custom-app.yml
 ```
 
 **6. Start**
 
 ```bash
-docker compose -f /mnt/tank/voidtower-app/custom-app.yml up -d
+TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
 ```
 
 **7. Get the bootstrap token**
 
 ```bash
-cat /mnt/tank/voidtower/config/bootstrap-token
+cat /mnt/$POOL/voidtower/config/bootstrap-token
 ```
 
 Then open `https://<truenas-ip>:8443` and enter the token to complete setup.

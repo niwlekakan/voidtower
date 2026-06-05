@@ -7,6 +7,7 @@
 #   sudo bash install.sh --with-odysseus          # + Odysseus AI workspace
 #   sudo bash install.sh --all-in-one --pull-model # full stack with model
 set -euo pipefail
+trap 'echo -e "\033[0;31m[ERROR]\033[0m Unexpected exit at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # ─── Colours ────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
@@ -292,8 +293,12 @@ build_from_source() {
   if [[ ! -d "$SRC/frontend" || ! -d "$SRC/backend" ]]; then
     info "Cloning VoidTower source…"
     SRC=$(mktemp -d)
-    git clone --depth 1 --progress --branch voidtower-aio "https://github.com/${REPO}" "$SRC" \
-      || die "Failed to clone ${REPO}"
+    info "Clone target: ${SRC}"
+    git clone --depth 1 --progress --branch voidtower-aio "https://github.com/${REPO}" "$SRC"
+    _clone_exit=$?
+    if [[ $_clone_exit -ne 0 ]]; then
+      die "git clone failed (exit ${_clone_exit})"
+    fi
     success "Source cloned"
   fi
 

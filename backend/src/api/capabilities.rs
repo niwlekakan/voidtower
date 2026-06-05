@@ -418,6 +418,41 @@ fn detect_pacman() -> Capability {
     }
 }
 
+fn detect_wireguard() -> Capability {
+    let detected = std::process::Command::new("which").arg("wg").output()
+        .map(|o| o.status.success()).unwrap_or(false);
+    let version = if detected {
+        std::process::Command::new("wg").arg("--version").output().ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().map(|l| l.to_string()).unwrap_or_default())
+            .filter(|s| !s.is_empty())
+    } else { None };
+    Capability {
+        id: "wireguard",
+        name: "WireGuard",
+        category: "Networking",
+        detected,
+        version,
+        description: "WireGuard VPN kernel module and tools.",
+        required_dep: "wireguard-tools",
+        how_to_enable: "Install wireguard-tools (apt/pacman/dnf) and ensure the kernel module is loaded.",
+    }
+}
+
+fn detect_ufw() -> Capability {
+    let detected = std::process::Command::new("which").arg("ufw").output()
+        .map(|o| o.status.success()).unwrap_or(false);
+    Capability {
+        id: "ufw",
+        name: "UFW Firewall",
+        category: "Networking",
+        detected,
+        version: None,
+        description: "Uncomplicated Firewall (UFW) for managing iptables rules.",
+        required_dep: "ufw",
+        how_to_enable: "Install ufw (apt install ufw) and enable it with: sudo ufw enable",
+    }
+}
+
 pub async fn get_capabilities(_state: State<AppState>) -> Json<serde_json::Value> {
     let capabilities: Vec<Capability> = vec![
         detect_docker(),
@@ -438,6 +473,8 @@ pub async fn get_capabilities(_state: State<AppState>) -> Json<serde_json::Value
         detect_apt(),
         detect_dnf(),
         detect_pacman(),
+        detect_wireguard(),
+        detect_ufw(),
     ];
 
     let total = capabilities.len();

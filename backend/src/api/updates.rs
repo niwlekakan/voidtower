@@ -464,7 +464,6 @@ pub async fn docker_apply(
 // ─── Odysseus bare-metal updates ─────────────────────────────────────────────
 
 const ODYSSEUS_INSTALL_DIR: &str = "/opt/odysseus";
-const ODYSSEUS_REPO: &str = "niwlekakan/odysseus";
 const ODYSSEUS_BRANCH: &str = "odysseus-voidlink";
 
 #[derive(Serialize)]

@@ -196,6 +196,7 @@ pub async fn find_user_by_username(pool: &SqlitePool, username: &str) -> Result<
     Ok(user)
 }
 
+#[allow(dead_code)]
 pub async fn find_user_by_id(pool: &SqlitePool, user_id: &str) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
         "SELECT id, username, password_hash, role, force_password_change,

@@ -159,7 +159,7 @@ pub async fn logs_ws(
         use futures_util::{SinkExt, StreamExt};
 
         let (mut sink, mut stream) = socket.split();
-        let Ok(docker) = (|| bollard::Docker::connect_with_unix_defaults())() else { return };
+        let Ok(docker) = bollard::Docker::connect_with_unix_defaults() else { return };
         let opts = LogsOptions::<String> {
             stdout: true, stderr: true, follow: true, tail: "200".into(),
             ..Default::default()

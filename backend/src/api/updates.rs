@@ -164,7 +164,12 @@ pub async fn apply_vt(State(state): State<AppState>, jar: CookieJar) -> Result<J
         let (image, hostname, compose_project, compose_file) = vt_own_info()
             .ok_or_else(|| AppError::FeatureUnavailable("Docker socket not available — mount /var/run/docker.sock".into()))?;
 
-        let cmd = if !compose_file.is_empty() && !compose_project.is_empty() {
+        // compose_file is a HOST path baked into the container label — it won't
+        // exist inside the container unless explicitly volume-mounted. Fall back
+        // to pull + restart when the file isn't accessible from here.
+        let cmd = if !compose_file.is_empty() && !compose_project.is_empty()
+            && std::path::Path::new(&compose_file).exists()
+        {
             format!(
                 "docker compose -p {proj} -f {file} pull voidtower && docker compose -p {proj} -f {file} up -d voidtower",
                 proj = compose_project, file = compose_file,
@@ -341,7 +346,13 @@ pub async fn docker_apply(
     let compose_project = parts.get(1).unwrap_or(&"").to_string();
     let compose_file    = parts.get(2).unwrap_or(&"").to_string();
 
-    let output = if !compose_file.is_empty() && !compose_project.is_empty() {
+    // compose_file is a HOST path from the container label — only use it if
+    // it's accessible from inside this container (i.e. volume-mounted).
+    let use_compose = !compose_file.is_empty()
+        && !compose_project.is_empty()
+        && std::path::Path::new(&compose_file).exists();
+
+    let output = if use_compose {
         let pull = std::process::Command::new("docker")
             .args(["compose", "-p", &compose_project, "-f", &compose_file, "pull"])
             .output().map_err(|e| AppError::Internal(e.into()))?;

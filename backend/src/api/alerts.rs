@@ -55,7 +55,7 @@ async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
         .ok_or(AppError::Unauthorized)?;
     auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)
 }
 
@@ -74,7 +74,7 @@ pub async fn list(
     require_user(&state, &jar).await?;
 
     let state_filter = q.state.as_deref().unwrap_or("active");
-    let limit = q.limit.min(500).max(1);
+    let limit = q.limit.clamp(1, 500);
 
     let alerts = if let Some(sev) = &q.severity {
         sqlx::query_as::<_, Alert>(

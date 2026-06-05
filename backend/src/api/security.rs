@@ -17,7 +17,7 @@ async fn require_user(state: &AppState, jar: &CookieJar) -> Result<(auth::User, 
         .ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
     Ok((user, session_id))
 }
@@ -102,7 +102,7 @@ pub async fn revoke_session(
 
     auth::delete_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

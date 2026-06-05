@@ -144,7 +144,7 @@ impl MetricsCollector {
         }).collect();
 
         // Top processes by memory
-        procs.sort_by(|a, b| b.memory().cmp(&a.memory()));
+        procs.sort_by_key(|p| std::cmp::Reverse(p.memory()));
         let top_mem_procs: Vec<ProcessInfo> = procs.iter().take(5).map(|p| ProcessInfo {
             pid: p.pid().as_u32(),
             name: p.name().to_string(),

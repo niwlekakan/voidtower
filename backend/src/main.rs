@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
 
     // Ensure directories exist
     std::fs::create_dir_all(&cfg.data_dir)?;
-    std::fs::create_dir_all(&cfg.apps_dir())?;
+    std::fs::create_dir_all(cfg.apps_dir())?;
     if std::path::Path::new("/etc").exists() {
         let _ = std::fs::create_dir_all(&cfg.config_dir);
         #[cfg(unix)]
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
             use rand::RngCore;
             let mut arr = [0u8; 32];
             rand::thread_rng().fill_bytes(&mut arr);
-            std::fs::write(&key_path, &arr)?;
+            std::fs::write(&key_path, arr)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;

@@ -536,7 +536,7 @@ pub async fn event_stream(
                                 });
                                 if tx.send(Event::default().event("alert").data(alert.to_string())).await.is_err() { break; }
                             }
-                            let ram_pct = if snap.ram_total > 0 { snap.ram_used * 100 / snap.ram_total } else { 0 };
+                            let ram_pct = (snap.ram_used * 100).checked_div(snap.ram_total).unwrap_or(0);
                             if ram_pct > 90 {
                                 let alert = serde_json::json!({
                                     "type": "threshold", "metric": "ram",

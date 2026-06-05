@@ -40,7 +40,7 @@ async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
         .ok_or(AppError::Unauthorized)?;
     auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)
 }
 
@@ -306,7 +306,7 @@ mod reqwest_like {
     impl Url {
         pub fn host_str(&self) -> Option<&str> { Some(&self.host) }
         pub fn port_or_known_default(&self) -> Option<u16> {
-            self.port.or_else(|| match self.scheme.as_str() {
+            self.port.or(match self.scheme.as_str() {
                 "https" => Some(443),
                 "http"  => Some(80),
                 _ => None,

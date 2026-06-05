@@ -88,7 +88,7 @@ pub async fn mount_device(
 
     // Validate paths — no shell metacharacters
     for s in [&req.device, &req.mountpoint, &req.fstype] {
-        if s.contains(|c: char| matches!(c, ';' | '&' | '|' | '`' | '$' | '>' | '<' | '\n')) {
+        if s.contains([';', '&', '|', '`', '$', '>', '<', '\n']) {
             return Err(AppError::BadRequest("Invalid characters in request".into()));
         }
     }
@@ -157,7 +157,7 @@ pub async fn umount_device(
 
     if req
         .mountpoint
-        .contains(|c: char| matches!(c, ';' | '&' | '|' | '`' | '$' | '>' | '<' | '\n'))
+        .contains([';', '&', '|', '`', '$', '>', '<', '\n'])
     {
         return Err(AppError::BadRequest("Invalid characters in mountpoint".into()));
     }
@@ -224,7 +224,7 @@ pub async fn add_fstab(
     let user = require_admin(&state, &jar).await?;
 
     for s in [&req.device, &req.mountpoint, &req.fstype, &req.options] {
-        if s.contains(|c: char| matches!(c, ';' | '&' | '|' | '`' | '$' | '>' | '<' | '\n')) {
+        if s.contains([';', '&', '|', '`', '$', '>', '<', '\n']) {
             return Err(AppError::BadRequest("Invalid characters in fstab entry".into()));
         }
     }
@@ -433,7 +433,7 @@ pub async fn create_raid(
 
     // Validate device paths
     for dev in &req.devices {
-        if dev.contains(|c: char| matches!(c, ';' | '&' | '|' | '`' | '$' | '\n' | ' ')) {
+        if dev.contains([';', '&', '|', '`', '$', '\n', ' ']) {
             return Err(AppError::BadRequest(
                 "Invalid characters in device path".into(),
             ));
@@ -508,7 +508,7 @@ pub async fn stop_raid(
 
     if req
         .path
-        .contains(|c: char| matches!(c, ';' | '&' | '|' | '`' | '$' | '\n'))
+        .contains([';', '&', '|', '`', '$', '\n'])
     {
         return Err(AppError::BadRequest("Invalid path".into()));
     }
@@ -561,7 +561,7 @@ pub async fn format_device(
     let user = require_admin(&state, &jar).await?;
 
     for s in [&req.device, &req.fstype] {
-        if s.contains(|c: char| matches!(c, ';' | '&' | '|' | '`' | '$' | '>' | '<' | '\n' | ' ')) {
+        if s.contains([';', '&', '|', '`', '$', '>', '<', '\n', ' ']) {
             return Err(AppError::BadRequest("Invalid characters in request".into()));
         }
     }
@@ -706,7 +706,7 @@ pub async fn set_storage_paths(
             if !v.starts_with('/') {
                 return Err(AppError::BadRequest(format!("{key}: path must be absolute")));
             }
-            if v.contains(|c: char| matches!(c, ';' | '&' | '|' | '`' | '$' | '\n')) {
+            if v.contains([';', '&', '|', '`', '$', '\n']) {
                 return Err(AppError::BadRequest(format!("{key}: invalid characters")));
             }
             db_set_path(&state, key, v).await?;

@@ -63,7 +63,7 @@ fn read_ip_neigh() -> Vec<LanNeighbor> {
 }
 
 // Reverse-DNS lookup for hostnames (best-effort, non-blocking)
-fn lookup_hostnames(neighbors: &mut Vec<LanNeighbor>) {
+fn lookup_hostnames(neighbors: &mut [LanNeighbor]) {
     for n in neighbors.iter_mut() {
         // Quick timeout lookup via `getent hosts` — synchronous but fast on LAN
         if let Ok(out) = std::process::Command::new("getent")
@@ -99,7 +99,7 @@ pub async fn neighbors(
 
     // Sort: by last octet so 192.168.1.1 comes before 192.168.1.100
     neighbors.sort_by(|a, b| {
-        let parse_last = |ip: &str| ip.split('.').last().and_then(|s| s.parse::<u32>().ok()).unwrap_or(999);
+        let parse_last = |ip: &str| ip.split('.').next_back().and_then(|s| s.parse::<u32>().ok()).unwrap_or(999);
         parse_last(&a.ip).cmp(&parse_last(&b.ip))
     });
 

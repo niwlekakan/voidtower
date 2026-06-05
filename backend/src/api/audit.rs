@@ -39,17 +39,17 @@ pub async fn list(
         .ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
 
     if user.role == "viewer" {
         return Err(AppError::Forbidden);
     }
 
-    let limit = query.limit.min(500).max(1);
+    let limit = query.limit.clamp(1, 500);
     let entries = audit::list(&state.db, limit, query.offset)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     Ok(Json(AuditResponse {
         entries,

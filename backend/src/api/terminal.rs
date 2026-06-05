@@ -27,7 +27,7 @@ pub async fn ws_handler(
 
     let user = auth::validate_session(&state.db, &session_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
 
     // Require operator or higher for terminal

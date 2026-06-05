@@ -380,12 +380,7 @@ pub struct OsUpdateInfo {
 }
 
 fn detect_pm() -> Option<&'static str> {
-    for pm in &["apt-get", "pacman", "dnf", "yum", "zypper"] {
-        if std::process::Command::new("which").arg(pm).output().map(|o| o.status.success()).unwrap_or(false) {
-            return Some(pm);
-        }
-    }
-    None
+    ["apt-get", "pacman", "dnf", "yum", "zypper"].iter().find(|&pm| std::process::Command::new("which").arg(pm).output().map(|o| o.status.success()).unwrap_or(false)).map(|v| v as _)
 }
 
 pub async fn os_info(State(state): State<AppState>, jar: CookieJar) -> Result<Json<OsUpdateInfo>> {

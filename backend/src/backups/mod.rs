@@ -156,6 +156,7 @@ pub async fn init_repo(repo_path: &str, password: &str) -> Result<()> {
 }
 
 /// List snapshots for a repo.
+#[allow(dead_code)]
 pub async fn list_snapshots(repo_path: &str, password: &str) -> Result<Vec<serde_json::Value>> {
     let out = tokio::process::Command::new("restic")
         .args(["-r", repo_path, "snapshots", "--json"])

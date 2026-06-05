@@ -297,11 +297,21 @@ build_from_source() {
     info "Downloading VoidTower source…"
     SRC=$(mktemp -d)
     local _tarball="$SRC/source.tar.gz"
-    curl -fsSL -o "$_tarball" \
-      "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" \
-      || die "Failed to download source tarball from ${REPO}"
-    tar -xz --strip-components=1 -C "$SRC" -f "$_tarball" \
-      || die "Failed to extract source tarball"
+    info "SRC dir: $SRC"
+    info "Tarball path: $_tarball"
+    info "Testing network..."
+    curl -fsSL --max-time 10 -o /dev/null "https://github.com" 2>&1 || info "Network test failed: $?"
+    info "Downloading tarball..."
+    curl -fsSL --max-time 120 -o "$_tarball" \
+      "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" 2>&1
+    _curl_exit=$?
+    info "curl exit: $_curl_exit"
+    [[ $_curl_exit -ne 0 ]] && die "curl failed with exit $_curl_exit"
+    info "Tarball size: $(du -sh "$_tarball" 2>/dev/null || echo 'unknown')"
+    tar -xz --strip-components=1 -C "$SRC" -f "$_tarball" 2>&1
+    _tar_exit=$?
+    info "tar exit: $_tar_exit"
+    [[ $_tar_exit -ne 0 ]] && die "tar failed with exit $_tar_exit"
     rm -f "$_tarball"
     success "Source downloaded"
   fi
@@ -1622,23 +1632,23 @@ _selective_wipe() {
   echo -e "\n  ${BOLD}Select components to wipe before reinstall:${RESET}"
   local ans
 
-  read -rp "  Wipe database (${VT_DATA_DIR}/voidtower.db)? [y/N]: " ans
+  read -rp "  Wipe database (${VT_DATA_DIR}/voidtower.db)? [y/N]: " ans </dev/tty
   [[ "${ans,,}" == "y" ]] && rm -f "${VT_DATA_DIR}/voidtower.db" && success "Wiped database" || true
 
-  read -rp "  Wipe config env files (${VT_CONFIG_DIR}/*.env)? [y/N]: " ans
+  read -rp "  Wipe config env files (${VT_CONFIG_DIR}/*.env)? [y/N]: " ans </dev/tty
   [[ "${ans,,}" == "y" ]] && rm -f "${VT_CONFIG_DIR}"/*.env 2>/dev/null && success "Wiped config env files" || true
 
-  read -rp "  Wipe secrets key (${VT_CONFIG_DIR}/secrets.key)? [y/N]: " ans
+  read -rp "  Wipe secrets key (${VT_CONFIG_DIR}/secrets.key)? [y/N]: " ans </dev/tty
   [[ "${ans,,}" == "y" ]] && rm -f "${VT_CONFIG_DIR}/secrets.key" && success "Wiped secrets key" || true
 
-  read -rp "  Remove bootstrap token (${VT_CONFIG_DIR}/bootstrap-token)? [y/N]: " ans
+  read -rp "  Remove bootstrap token (${VT_CONFIG_DIR}/bootstrap-token)? [y/N]: " ans </dev/tty
   [[ "${ans,,}" == "y" ]] && rm -f "${VT_CONFIG_DIR}/bootstrap-token" && success "Removed bootstrap token" || true
 
-  read -rp "  Remove deployed apps data (${VT_DATA_DIR}/apps)? [y/N]: " ans
+  read -rp "  Remove deployed apps data (${VT_DATA_DIR}/apps)? [y/N]: " ans </dev/tty
   [[ "${ans,,}" == "y" ]] && rm -rf "${VT_DATA_DIR}/apps" && success "Wiped deployed apps" || true
 
   if [[ -d "$ODYSSEUS_INSTALL_DIR" ]]; then
-    read -rp "  Remove Odysseus install (${ODYSSEUS_INSTALL_DIR})? [y/N]: " ans
+    read -rp "  Remove Odysseus install (${ODYSSEUS_INSTALL_DIR})? [y/N]: " ans </dev/tty
     if [[ "${ans,,}" == "y" ]]; then
       [[ "$HAVE_SYSTEMD" == true ]] && {
         systemctl stop    odysseus.service 2>/dev/null || true
@@ -1669,7 +1679,7 @@ prompt_reinstall() {
   echo -e "  [4] Abort"
   echo
   local choice
-  read -rp "  Choice [1-4]: " choice
+  read -rp "  Choice [1-4]: " choice </dev/tty
   case "${choice:-1}" in
     1) info "Upgrading binary only — data and config preserved." ;;
     2) _selective_wipe ;;

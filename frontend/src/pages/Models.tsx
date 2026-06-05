@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  CheckCircle, Download, HardDrive, Loader2, Play, Trash2, XCircle, CloudDownload,
+  CheckCircle, Download, HardDrive, Loader2, Play, Trash2, XCircle, CloudDownload, RefreshCw,
 } from 'lucide-react'
 import { api } from '@/api/client'
-import type { DownloadStatus, ModelFile, OllamaPullStatus } from '@/api/types'
+import type { DownloadStatus, ModelFile, OllamaModelInfo, OllamaPullStatus } from '@/api/types'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -224,6 +224,100 @@ const OLLAMA_PRESETS = [
   { label: 'nomic-embed',    model: 'nomic-embed-text',    size: '~274 MB' },
   { label: 'DeepSeek-R1 7B', model: 'deepseek-r1:7b',     size: '~4.7 GB' },
 ]
+
+// ─── Ollama Models section ────────────────────────────────────────────────────
+
+function OllamaModelsSection() {
+  const [data, setData] = useState<{ available: boolean; models: OllamaModelInfo[] } | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const resp = await api.models.ollamaTags()
+      setData(resp)
+    } catch {
+      setData({ available: false, models: [] })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  return (
+    <div className="card" style={{ padding: 0 }}>
+      <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+        <div className="flex items-center gap-2">
+          <CloudDownload size={15} style={{ color: 'var(--accent-warning, #f59e0b)' }} />
+          <h2 className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>Ollama Models</h2>
+        </div>
+        <button
+          onClick={refresh}
+          disabled={loading}
+          className="flex items-center gap-1.5 text-xs transition-opacity hover:opacity-70 disabled:opacity-40"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+          title="Refresh"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center gap-2 py-8" style={{ color: 'var(--text-muted)' }}>
+          <Loader2 size={14} className="animate-spin" />
+          <span className="text-sm">Checking Ollama…</span>
+        </div>
+      ) : !data?.available ? (
+        <div className="flex flex-col items-center justify-center gap-2 py-10" style={{ color: 'var(--text-muted)' }}>
+          <XCircle size={24} style={{ opacity: 0.4 }} />
+          <p className="text-sm">Ollama is not running.</p>
+          <p className="text-xs" style={{ color: 'var(--text-disabled)' }}>
+            Deploy it from the{' '}
+            <a href="/apps" style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>App Vault</a>.
+          </p>
+        </div>
+      ) : data.models.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 py-10" style={{ color: 'var(--text-muted)' }}>
+          <HardDrive size={24} style={{ opacity: 0.3 }} />
+          <p className="text-sm">Ollama is running but no models are installed.</p>
+          <p className="text-xs" style={{ color: 'var(--text-disabled)' }}>Use the "Pull via Ollama" section below to add one.</p>
+        </div>
+      ) : (
+        <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              {['Model', 'Size', 'Modified'].map(h => (
+                <th
+                  key={h}
+                  className="px-5 py-2 text-left text-xs font-medium uppercase tracking-wide"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data.models.map(m => {
+              const modDate = m.modified_at
+                ? new Date(m.modified_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+                : '—'
+              return (
+                <tr key={m.name} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <td className="px-5 py-3 font-mono text-xs" style={{ color: 'var(--text-primary)' }}>{m.name}</td>
+                  <td className="px-5 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{formatBytes(m.size)}</td>
+                  <td className="px-5 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{modDate}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
@@ -525,6 +619,9 @@ export default function ModelsPage() {
           </table>
         )}
       </div>
+
+      {/* Ollama Models */}
+      <OllamaModelsSection />
 
       {/* Active Ollama imports */}
       {activeCreates.length > 0 && (

@@ -4,7 +4,7 @@ use axum::{
     http::HeaderValue,
     middleware::{self, Next},
     response::Response,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -63,6 +63,7 @@ pub mod system;
 pub mod updates;
 pub mod totp;
 pub mod mods;
+pub mod webhooks;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -149,6 +150,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/models/download/:id", get(models::download_status))
         .route("/api/models/active",          get(models::get_active))
         .route("/api/models/load",            post(models::load_model))
+        .route("/api/models/ollama",            get(models::get_ollama_tags))
         .route("/api/models/ollama/pull",       post(models::start_ollama_pull))
         .route("/api/models/ollama/pull/:id",   get(models::get_ollama_pull_status))
         .route("/api/models/ollama/create",     post(models::start_ollama_create))
@@ -268,6 +270,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mods/diff",         get(mods::get_diff))
         .route("/api/mods/apply",        post(mods::apply_mod))
         .route("/api/mods/rollback",     post(mods::rollback_mod))
+        // Notification webhooks
+        .route("/api/webhooks",           get(webhooks::list).post(webhooks::create))
+        .route("/api/webhooks/:id",       patch(webhooks::update).delete(webhooks::delete))
+        .route("/api/webhooks/:id/test",  post(webhooks::test_webhook))
         .layer(cors)
         .layer(middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))

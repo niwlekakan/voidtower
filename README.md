@@ -340,6 +340,65 @@ Same as Option A steps 6–7, replacing `Apps → voidtower → Logs` with:
 docker logs voidtower
 ```
 
+### Option B — Manual reinstall
+
+Use this when you need a clean slate: new image, fresh data, fresh config.
+
+**1. Stop and remove all containers**
+
+```bash
+docker compose -f /mnt/tank/voidtower-app/custom-app.yml down
+```
+
+Or by name if the compose file is gone:
+
+```bash
+docker rm -f voidtower chromadb searxng ntfy odysseus
+```
+
+**2. Remove the old image**
+
+```bash
+docker rmi ghcr.io/niwlekakan/voidtower:aio-latest
+```
+
+**3. Wipe persistent data**
+
+```bash
+rm -rf /mnt/tank/voidtower/data \
+       /mnt/tank/voidtower/config
+```
+
+> Skip this step if you want to keep your existing users, proxies, and settings.
+
+**4. Pull the latest image**
+
+```bash
+docker pull ghcr.io/niwlekanan/voidtower:aio-latest
+```
+
+**5. Fetch the latest compose file**
+
+```bash
+mkdir -p /mnt/tank/voidtower-app
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/custom-app.yml \
+  -o /mnt/tank/voidtower-app/custom-app.yml
+```
+
+**6. Start**
+
+```bash
+docker compose -f /mnt/tank/voidtower-app/custom-app.yml up -d
+```
+
+**7. Get the bootstrap token**
+
+```bash
+cat /mnt/tank/voidtower/config/bootstrap-token
+```
+
+Then open `https://<truenas-ip>:8443` and enter the token to complete setup.
+
 ---
 
 ### Ollama on TrueNAS

@@ -92,6 +92,7 @@ sudo bash install.sh \
 | `--no-mcp` | Skip MCP tool registration |
 | `--no-webhooks` | Skip webhook configuration |
 | `--no-toolpacks` | Skip toolpack installation |
+| `--musl` | Build a fully-static musl binary — use on TrueNAS Scale, Alpine, or any platform with an old glibc |
 
 ### Maintenance flags
 

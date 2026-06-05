@@ -381,10 +381,23 @@ EOF
     usermod -aG docker "${VT_USER}" 2>/dev/null || true
   fi
 
-  # Allow voidtower to reload nginx without a password
+  # Grant voidtower write access to nginx conf.d so it can manage proxy configs
+  if [[ -d /etc/nginx/conf.d ]]; then
+    chown -R "${VT_USER}:${VT_GROUP}" /etc/nginx/conf.d || true
+  fi
+
+  # Allow voidtower to manage nginx without a password
   local sudoers_file="/etc/sudoers.d/voidtower-nginx"
-  printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx, /usr/sbin/nginx -s reload, /usr/bin/nginx -s reload\n' \
-    "${VT_USER}" > "${sudoers_file}"
+  local ng; ng=$(command -v nginx || echo /usr/sbin/nginx)
+  local sc; sc=$(command -v systemctl || echo /usr/bin/systemctl)
+  printf '%s ALL=(root) NOPASSWD: %s start nginx\n'                              "${VT_USER}" "$sc"  > "${sudoers_file}"
+  printf '%s ALL=(root) NOPASSWD: %s stop nginx\n'                               "${VT_USER}" "$sc" >> "${sudoers_file}"
+  printf '%s ALL=(root) NOPASSWD: %s restart nginx\n'                            "${VT_USER}" "$sc" >> "${sudoers_file}"
+  printf '%s ALL=(root) NOPASSWD: %s reload nginx\n'                             "${VT_USER}" "$sc" >> "${sudoers_file}"
+  printf '%s ALL=(root) NOPASSWD: %s -t\n'                                       "${VT_USER}" "$ng" >> "${sudoers_file}"
+  printf '%s ALL=(root) NOPASSWD: %s -s reload\n'                                "${VT_USER}" "$ng" >> "${sudoers_file}"
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/tail -n 100 /var/log/nginx/error.log\n'  "${VT_USER}"    >> "${sudoers_file}"
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/tail -n 100 /var/log/nginx/access.log\n' "${VT_USER}"   >> "${sudoers_file}"
   chmod 440 "${sudoers_file}"
 
   # Drop the Voidwatch auto-configure helper (triggered by path unit after bootstrap)

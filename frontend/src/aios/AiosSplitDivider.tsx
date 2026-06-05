@@ -3,6 +3,8 @@ import { useAiosStore } from '@/aios/store/aios'
 
 export interface AiosSplitDividerProps {
   orientation?: 'vertical' | 'horizontal'
+  statusBarH?: number
+  dockH?: number
 }
 
 /**
@@ -14,7 +16,7 @@ export interface AiosSplitDividerProps {
  * - Vertical orientation (default): col-resize, positioned at `splitRatio * vw`.
  * - Horizontal orientation: row-resize, positioned at `splitRatio * vh`.
  */
-export default function AiosSplitDivider({ orientation = 'vertical' }: AiosSplitDividerProps) {
+export default function AiosSplitDivider({ orientation = 'vertical', statusBarH: _statusBarH, dockH: _dockH }: AiosSplitDividerProps) {
   const { splitPair, splitRatio, setSplitRatio } = useAiosStore()
   const draggingRef = useRef(false)
 

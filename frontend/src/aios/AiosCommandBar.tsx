@@ -13,6 +13,10 @@ export interface AiosCommandBarProps {
   dockH?: number
   /** Status bar height in px (default 28) */
   statusBarH?: number
+  /** Called when user selects an app to open */
+  onOpen?: (key: string) => void
+  /** Called when user sends an Odysseus query */
+  onOdysseus?: (query: string) => void
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -28,7 +32,7 @@ function fuzzyMatch(item: DockItem, query: string): boolean {
 
 // ── AiosCommandBar ────────────────────────────────────────────────────────────
 
-export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28 }: AiosCommandBarProps) {
+export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOpen: _onOpen, onOdysseus: _onOdysseus }: AiosCommandBarProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)

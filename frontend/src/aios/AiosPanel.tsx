@@ -12,6 +12,8 @@ export interface AiosPanelProps {
   panel: PanelState
   tier: DeviceTier
   children: React.ReactNode
+  statusBarH?: number
+  dockH?: number
 }
 
 // ---------------------------------------------------------------------------

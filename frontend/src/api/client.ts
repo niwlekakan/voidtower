@@ -26,7 +26,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     let body: ApiError | null = null
-    try { body = await res.json() } catch {}
+    try { body = await res.json() } catch { /* ignore */ }
     throw new ApiClientError(
       body?.error?.message ?? res.statusText,
       body?.error?.code ?? 'unknown',

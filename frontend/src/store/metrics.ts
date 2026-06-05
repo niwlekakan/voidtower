@@ -27,7 +27,7 @@ export const useMetricsStore = create<MetricsStore>()((set, get) => ({
       try {
         const data = JSON.parse(e.data) as MetricsSnapshot
         set({ snapshot: data })
-      } catch {}
+      } catch { /* empty */ }
     }
 
     ws.onerror = () => set({ error: 'WebSocket error', connected: false })

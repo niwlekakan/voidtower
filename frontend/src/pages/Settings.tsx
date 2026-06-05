@@ -200,10 +200,8 @@ function AIIntegrationsSection() {
     const url = workspaceUrl.trim() || null
     const port = parseInt(proxyPort, 10) || 7001
 
-    url ? localStorage.setItem(AI_WORKSPACE_KEY, url) : localStorage.removeItem(AI_WORKSPACE_KEY)
-    llmEndpoint.trim()
-      ? localStorage.setItem(AI_LLM_KEY, llmEndpoint.trim())
-      : localStorage.removeItem(AI_LLM_KEY)
+    if (url) localStorage.setItem(AI_WORKSPACE_KEY, url); else localStorage.removeItem(AI_WORKSPACE_KEY)
+    if (llmEndpoint.trim()) localStorage.setItem(AI_LLM_KEY, llmEndpoint.trim()); else localStorage.removeItem(AI_LLM_KEY)
 
     try {
       const r = await fetch('/api/settings/ai-url', {
@@ -449,7 +447,7 @@ function SystemSection() {
         try {
           const r = await fetch('/api/system/version', { credentials: 'include' })
           if (r.ok) { clearInterval(poll); setRestarting(false); notify.success('VoidTower restarted.') }
-        } catch {}
+        } catch { /* empty */ }
       }, 1500)
     } catch { setRestarting(false) }
   }
@@ -464,7 +462,7 @@ function SystemSection() {
         try {
           const r = await fetch('/api/system/version', { credentials: 'include' })
           if (r.ok) { clearInterval(poll); setUpdating(false); setCheck(null); const v = await r.json(); setVersion(v); notify.success('Update complete.') }
-        } catch {}
+        } catch { /* empty */ }
       }, 3000)
     } catch { setUpdating(false) }
   }

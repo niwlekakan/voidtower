@@ -84,7 +84,7 @@ export default function ServicesPage() {
       const [tags, map] = await Promise.all([api.tags.list(), api.tags.map('service')])
       setAllTags(tags)
       setTagMap(map)
-    } catch {}
+    } catch { /* empty */ }
   }, [])
 
   useEffect(() => { load(); loadTags() }, [load, loadTags])

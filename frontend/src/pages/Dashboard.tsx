@@ -27,7 +27,7 @@ function loadWidgetConfig(): Record<WidgetId, boolean> {
   try {
     const raw = localStorage.getItem('vt-dashboard-widgets')
     if (raw) return JSON.parse(raw)
-  } catch {}
+  } catch { /* empty */ }
   return Object.fromEntries(WIDGET_DEFS.map((w) => [w.id, w.defaultOn])) as Record<WidgetId, boolean>
 }
 
@@ -62,7 +62,7 @@ function loadSectionOrder(): SectionId[] {
       DEFAULT_SECTION_ORDER.forEach(id => { if (!valid.includes(id)) valid.push(id) })
       return valid
     }
-  } catch {}
+  } catch { /* empty */ }
   return [...DEFAULT_SECTION_ORDER]
 }
 

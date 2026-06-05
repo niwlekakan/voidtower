@@ -239,7 +239,7 @@ function TokensSection() {
       const [tr, sr] = await Promise.all([api.integrations.listTokens(), api.integrations.scopes()])
       setTokens(tr.tokens)
       setScopes(sr.scopes)
-    } catch {}
+    } catch { /* empty */ }
     setLoading(false)
   }, [])
 
@@ -346,7 +346,7 @@ function OdysseusSection() {
       const c = await api.integrations.getOdysseusConfig()
       setCfg(c)
       setAllowedUrl(c.allowed_url)
-    } catch {}
+    } catch { /* empty */ }
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -500,7 +500,7 @@ function ManifestSection() {
       const m = await api.integrations.manifest()
       setTools(m.tools ?? [])
       setOpen(true)
-    } catch {}
+    } catch { /* empty */ }
     setLoading(false)
   }
 
@@ -634,7 +634,7 @@ function RecentActionsSection() {
       const r = await api.integrations.recentActions()
       setActions(r.actions)
       setOpen(true)
-    } catch {}
+    } catch { /* empty */ }
     setLoading(false)
   }
 

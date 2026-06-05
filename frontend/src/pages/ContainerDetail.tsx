@@ -111,7 +111,7 @@ function ComposeTab({ containerId }: { containerId: string }) {
       }).then((r) => r.json())
       setDiff(r)
       notify.success(`Staged: +${r.added} -${r.removed} lines`)
-    } catch (err) {
+    } catch {
       notify.error('Failed to stage changes')
     } finally {
       setProposing(false)

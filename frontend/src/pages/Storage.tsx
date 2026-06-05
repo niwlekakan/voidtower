@@ -270,13 +270,13 @@ function DevicesTab() {
 
   const load = async () => {
     setLoading(true)
-    try { const r = await api.storage.devices(); setDevices(r.devices) } catch {}
+    try { const r = await api.storage.devices(); setDevices(r.devices) } catch { /* empty */ }
     setLoading(false)
   }
   useEffect(() => { load() }, [])
 
   const fetchSmart = async (name: string) => {
-    try { const info = await api.storage.smart(name); setSmartData(p => ({ ...p, [name]: info })) } catch {}
+    try { const info = await api.storage.smart(name); setSmartData(p => ({ ...p, [name]: info })) } catch { /* empty */ }
   }
 
   return (
@@ -939,7 +939,7 @@ export default function StoragePage() {
 
   useEffect(() => {
     const loadRaid = async () => {
-      try { const r = await api.storage.raid(); setRaids(r.arrays) } catch {}
+      try { const r = await api.storage.raid(); setRaids(r.arrays) } catch { /* empty */ }
     }
     loadRaid()
     if (tab === 'overview' || tab === 'mounts') {

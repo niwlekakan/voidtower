@@ -17,7 +17,6 @@ RUN apt-get update && apt-get install -y \
         ca-certificates curl openssl \
         nginx supervisor \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd -r -s /bin/false voidtower
 COPY --from=backend-builder /build/backend/target/release/voidtower /usr/local/bin/voidtower
 COPY --from=frontend-builder /build/frontend/dist /usr/share/voidtower/frontend
 COPY app-vault/apps /usr/share/voidtower/apps
@@ -26,8 +25,6 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/voidtower.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN rm -f /etc/nginx/sites-enabled/default && \
     mkdir -p /etc/voidtower/tls /var/lib/voidtower && \
-    chown -R voidtower:voidtower /var/lib/voidtower && \
-    chmod 700 /etc/voidtower && \
     chmod +x /entrypoint.sh
 EXPOSE 80 443 8745
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1,12 +1,7 @@
 #!/bin/sh
 set -e
 
-# Fix ownership of bind-mounted volumes before dropping to voidtower user.
-# On TrueNAS (and other hosts), mounted dirs are owned by root — the voidtower
-# process runs as the voidtower user (supervisord user=voidtower) so it can't
-# write unless we chown here while still running as root.
 mkdir -p /var/lib/voidtower /etc/voidtower
-chown -R voidtower:voidtower /var/lib/voidtower /etc/voidtower
 
 TLS_DIR=/etc/voidtower/tls
 NGINX_CONF=/etc/nginx/conf.d/voidtower.conf

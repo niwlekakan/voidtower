@@ -273,13 +273,15 @@ download_binary() {
 
   info "Downloading VoidTower v${VT_VERSION} for ${ARCH}…"
   local tmp_dir; tmp_dir=$(mktemp -d)
-  trap "rm -rf $tmp_dir" EXIT
 
-  curl -fsSL --progress-bar "$download_url" -o "$tmp_dir/$archive" || \
+  curl -fsSL --progress-bar "$download_url" -o "$tmp_dir/$archive" || {
+    rm -rf "$tmp_dir"
     die "Download failed. Check https://github.com/${REPO}/releases"
+  }
 
   tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
   install -m 755 "$tmp_dir/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
+  rm -rf "$tmp_dir"
   success "Binary installed to ${VT_INSTALL_DIR}/${BINARY_NAME}"
 }
 
@@ -297,21 +299,9 @@ build_from_source() {
     info "Downloading VoidTower source…"
     SRC=$(mktemp -d -p /var/tmp 2>/dev/null || mktemp -d)
     local _tarball="$SRC/source.tar.gz"
-    info "SRC dir: $SRC"
-    info "Tarball path: $_tarball"
-    info "Testing network..."
-    curl -fsSL --max-time 10 -o /dev/null "https://github.com" 2>&1 || info "Network test failed: $?"
-    info "Downloading tarball..."
     curl -fsSL --max-time 120 -o "$_tarball" \
       "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" 2>&1
-    _curl_exit=$?
-    info "curl exit: $_curl_exit"
-    [[ $_curl_exit -ne 0 ]] && die "curl failed with exit $_curl_exit"
-    info "Tarball size: $(du -sh "$_tarball" 2>/dev/null || echo 'unknown')"
-    tar -xz --strip-components=1 -C "$SRC" -f "$_tarball" 2>&1
-    _tar_exit=$?
-    info "tar exit: $_tar_exit"
-    [[ $_tar_exit -ne 0 ]] && die "tar failed with exit $_tar_exit"
+    tar -xz --strip-components=1 -C "$SRC" -f "$_tarball"
     rm -f "$_tarball"
     success "Source downloaded"
   fi
@@ -322,7 +312,6 @@ build_from_source() {
   success "Frontend built"
 
   info "Building backend (this can take 10–15 min on first build)…"
-  info "Source dir: $SRC"
   [[ -d "$SRC/backend" ]] || die "Backend source directory not found at $SRC/backend"
 
   # Detect if we should build a musl static binary (TrueNAS, Alpine, or user-requested)
@@ -487,7 +476,6 @@ EOF
   chmod 440 "${sudoers_file}"
 
   local ody_sudoers="/etc/sudoers.d/voidtower-odysseus"
-  local sc
   sc=$(command -v systemctl 2>/dev/null || echo /bin/systemctl)
   printf '%s ALL=(root) NOPASSWD: %s restart odysseus.service\n' "${VT_USER}" "$sc" > "${ody_sudoers}"
   chmod 440 "${ody_sudoers}"

@@ -197,7 +197,15 @@ fn strip_gpu_requirements(compose: &mut Value) {
 
 /// Ensure host directories referenced by volume mounts actually exist so Docker
 /// doesn't create them as root-owned. Only expands `~` in simple `~/…` paths.
+fn in_docker() -> bool {
+    std::path::Path::new("/.dockerenv").exists()
+}
+
 fn ensure_volume_dirs(compose: &Value) {
+    // In Docker the compose runs against the host daemon via socket — the daemon
+    // creates bind-mount dirs on the host automatically. Creating them here would
+    // land inside the container filesystem, not on the host.
+    if in_docker() { return; }
     let Some(services) = compose.get("services").and_then(|s| s.as_object()) else {
         return;
     };

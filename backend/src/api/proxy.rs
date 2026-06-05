@@ -286,13 +286,14 @@ fn nginx_conf_path() -> &'static str {
 
 fn conf_d_has_include() -> bool {
     let conf = std::fs::read_to_string(nginx_conf_path()).unwrap_or_default();
-    conf.contains("conf.d")
+    // sites-enabled and conf.d are both valid include targets
+    conf.contains("conf.d") || conf.contains("sites-enabled")
 }
 
 fn conf_d_writable() -> bool {
-    let dir = std::path::Path::new("/etc/nginx/conf.d");
+    // Test the directory we actually write proxy configs to, not a hardcoded path
+    let dir = std::path::Path::new(nginx_sites_dir());
     if !dir.exists() { return false; }
-    // Try creating and removing a temp file
     let tmp = dir.join(".voidtower-write-test");
     if std::fs::write(&tmp, b"").is_ok() {
         let _ = std::fs::remove_file(&tmp);
@@ -386,9 +387,10 @@ pub async fn nginx_setup_status(
         }));
     }
     if !s.conf_d_writable {
+        let sites_dir = nginx_sites_dir();
         steps.push(serde_json::json!({
-            "label": "Grant write access to conf.d",
-            "cmd": format!("sudo chown -R {user}:{user} /etc/nginx/conf.d")
+            "label": format!("Grant write access to {sites_dir}"),
+            "cmd": format!("sudo chown -R {user}:{user} {sites_dir}")
         }));
     }
     if !s.can_reload {

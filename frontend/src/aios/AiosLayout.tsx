@@ -1,5 +1,6 @@
-import { useEffect, useCallback } from 'react'
-import { MemoryRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect, useCallback, Component } from 'react'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import type { ReactNode, ErrorInfo } from 'react'
 import { useMetrics } from '@/hooks/useMetrics'
 import { useAiosStore, newPanelId } from '@/aios/store/aios'
 import { useDeviceTier } from '@/aios/hooks/useDeviceTier'
@@ -49,6 +50,31 @@ import UpdatesPage from '@/pages/Updates'
 import IntegrationsPage from '@/pages/Integrations'
 import ModsPage from '@/pages/Mods'
 
+// ── Error boundary — prevents one bad panel from blanking the whole page ─────
+
+class PanelErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error('[AiosPanel]', error, info) }
+  render() {
+    if (this.state.error) {
+      const err = this.state.error as Error
+      return (
+        <div style={{ padding: 24, color: 'var(--accent-danger)', fontSize: 13 }}>
+          <strong>Panel error</strong>
+          <pre style={{ marginTop: 8, fontSize: 11, opacity: 0.7, whiteSpace: 'pre-wrap' }}>{err.message}</pre>
+          <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>Check the browser console (F12) for details.</p>
+          <button onClick={() => this.setState({ error: null })}
+            style={{ marginTop: 12, padding: '4px 12px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', cursor: 'pointer', color: 'var(--text-primary)', fontSize: 12 }}>
+            Retry
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 // ── Panel content renderer ───────────────────────────────────────────────────
 // Each panel gets its own MemoryRouter so in-panel navigation (e.g. Containers
 // → ContainerDetail) works independently without changing the browser URL.
@@ -56,9 +82,9 @@ import ModsPage from '@/pages/Mods'
 function PanelContent({ component }: { component: string }) {
   const initialPath = component.startsWith('http') ? '/' : `/${component}`
   return (
+    <PanelErrorBoundary>
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
-        <Route index element={<Navigate to={initialPath} replace />} />
         <Route path="/dashboard"     element={<DashboardPage />} />
         <Route path="/services"      element={<ServicesPage />} />
         <Route path="/containers"    element={<ContainersPage />} />
@@ -91,6 +117,7 @@ function PanelContent({ component }: { component: string }) {
         <Route path="/mods"          element={<ModsPage />} />
       </Routes>
     </MemoryRouter>
+    </PanelErrorBoundary>
   )
 }
 
@@ -117,8 +144,8 @@ function defaultGeometry(tier: string, index: number): { x: number; y: number; w
 
   if (tier === 'phone') return { x: 0, y: statusH, w: vw, h: canvas }
 
-  const w = tier === 'tablet' ? Math.min(vw * 0.85, 680) : 680
-  const h = tier === 'tablet' ? Math.min(canvas * 0.85, 520) : 520
+  const w = tier === 'tablet' ? Math.min(vw * 0.9, 860) : Math.min(vw * 0.65, 960)
+  const h = tier === 'tablet' ? Math.min(canvas * 0.9, 620) : Math.min(canvas * 0.75, 680)
   const offset = index * 28
   const x = Math.min((vw - w) / 2 + offset, vw - w - 20)
   const y = Math.min(statusH + 40 + offset, vh - h - dockH - 20)
@@ -139,8 +166,8 @@ export default function AiosLayout() {
   const isPhone = tier === 'phone'
   const isTv = tier === 'tv'
   const isKiosk = tier === 'kiosk'
-  const statusBarH = isPhone ? 24 : isTv ? 48 : 28
-  const dockH = isPhone ? 64 : 56
+  const statusBarH = isPhone ? 28 : isTv ? 52 : 36
+  const dockH = isPhone ? 68 : 62
   const isVerticalDock = !isPhone && window.innerWidth >= 1400
 
   // Panels visible on current workspace

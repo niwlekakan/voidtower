@@ -380,6 +380,11 @@ EOF
   if getent group docker &>/dev/null; then
     usermod -aG docker "${VT_USER}" 2>/dev/null || true
   fi
+  # Give voidtower read access to system logs and common directories
+  # (adm group = /var/log access on Debian/Ubuntu/Arch)
+  if getent group adm &>/dev/null; then
+    usermod -aG adm "${VT_USER}" 2>/dev/null || true
+  fi
 
   # Grant voidtower write access to nginx conf.d so it can manage proxy configs
   if [[ -d /etc/nginx/conf.d ]]; then

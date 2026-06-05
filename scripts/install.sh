@@ -1532,8 +1532,8 @@ cmd_reset() {
     [[ "${ans,,}" == "y" ]] && wipe_envs=true
     read -rp "  Wipe secrets encryption key (${VT_CONFIG_DIR}/secrets.key)? [y/N]: " ans
     [[ "${ans,,}" == "y" ]] && wipe_secrets=true
-    read -rp "  Remove bootstrap token (forces re-login)? [y/N]: " ans
-    [[ "${ans,,}" == "y" ]] && wipe_token=true
+    read -rp "  Remove bootstrap token — generates a fresh one on restart? [Y/n]: " ans
+    [[ "${ans,,}" != "n" ]] && wipe_token=true
     read -rp "  Remove deployed apps data (${VT_DATA_DIR}/apps)? [y/N]: " ans
     [[ "${ans,,}" == "y" ]] && wipe_apps=true
   fi
@@ -1545,11 +1545,17 @@ cmd_reset() {
   $wipe_token   && rm -f  "${VT_CONFIG_DIR}/bootstrap-token"          && success "Removed bootstrap token" || true
   $wipe_apps    && rm -rf "${VT_DATA_DIR}/apps"                       && success "Wiped deployed apps"   || true
 
-  [[ "$HAVE_SYSTEMD" == true ]] && {
+  if [[ "$HAVE_SYSTEMD" == true ]]; then
     systemctl start voidtower.service 2>/dev/null \
       && success "VoidTower restarted" \
       || warn "Failed to restart — check: journalctl -u voidtower -e"
-  }
+    # Wait up to 15 s for VoidTower to write the new bootstrap token
+    local _t=0
+    until [[ -f "${VT_CONFIG_DIR}/bootstrap-token" || $_t -ge 15 ]]; do
+      sleep 1; ((_t++)) || true
+    done
+  fi
+  show_token
 }
 
 # ─── Repair ───────────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Monitor, Trash2, LogOut } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Monitor, Trash2, LogOut, KeyRound, ShieldCheck, ShieldOff, Copy } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { notify } from '@/store/notifications'
@@ -20,6 +20,181 @@ function parseUA(ua: string | null) {
   if (ua.includes('curl')) return 'curl'
   return ua.slice(0, 40)
 }
+
+// ── TOTP panel ────────────────────────────────────────────────────────────────
+
+type TotpView = 'idle' | 'setup' | 'disable'
+
+function TotpPanel() {
+  const user = useAuthStore((s) => s.user)
+  const setUser = useAuthStore((s) => s.setUser)
+  const [view, setView] = useState<TotpView>('idle')
+  const [secret, setSecret] = useState('')
+  const [uri, setUri] = useState('')
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const codeRef = useRef<HTMLInputElement>(null)
+
+  const startSetup = async () => {
+    setBusy(true)
+    try {
+      const r = await api.totp.setup()
+      setSecret(r.secret)
+      setUri(r.uri)
+      setView('setup')
+      setCode('')
+      setTimeout(() => codeRef.current?.focus(), 50)
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to start TOTP setup')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmEnable = async () => {
+    if (code.length !== 6) return
+    setBusy(true)
+    try {
+      await api.totp.enable(code)
+      if (user) setUser({ ...user, totp_enabled: true })
+      notify.success('Two-factor authentication enabled')
+      setView('idle')
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Invalid code')
+      setCode('')
+      codeRef.current?.focus()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmDisable = async () => {
+    if (code.length !== 6) return
+    setBusy(true)
+    try {
+      await api.totp.disable(code)
+      if (user) setUser({ ...user, totp_enabled: false })
+      notify.success('Two-factor authentication disabled')
+      setView('idle')
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Invalid code')
+      setCode('')
+      codeRef.current?.focus()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const inputStyle = {
+    background: 'var(--bg-elevated)',
+    border: '1px solid var(--border-default)',
+    color: 'var(--text-primary)',
+  }
+
+  const enabled = user?.totp_enabled ?? false
+
+  return (
+    <div className="panel p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <KeyRound size={15} style={{ color: 'var(--accent-primary)' }} />
+          <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+            Two-factor authentication
+          </span>
+          {enabled ? (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs" style={{ background: 'var(--accent-success-subtle)', color: 'var(--accent-success)' }}>
+              <ShieldCheck size={11} /> Enabled
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs" style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+              <ShieldOff size={11} /> Disabled
+            </span>
+          )}
+        </div>
+        {view === 'idle' && (
+          enabled
+            ? <Button size="sm" variant="ghost" onClick={() => { setView('disable'); setCode(''); setTimeout(() => codeRef.current?.focus(), 50) }}>Disable</Button>
+            : <Button size="sm" variant="primary" onClick={startSetup} loading={busy}>Enable</Button>
+        )}
+      </div>
+
+      {view === 'setup' && (
+        <div className="space-y-3 pt-1">
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            Scan the QR code with your authenticator app, then enter the 6-digit code to confirm.
+          </p>
+
+          {/* QR via Google Charts — no external JS dependency */}
+          <div className="flex justify-center">
+            <img
+              src={`https://chart.googleapis.com/chart?chs=180x180&cht=qr&chl=${encodeURIComponent(uri)}&choe=UTF-8`}
+              alt="TOTP QR code"
+              className="rounded"
+              width={180} height={180}
+            />
+          </div>
+
+          <div className="flex items-center gap-2 px-3 py-2 rounded font-mono text-xs" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
+            <span className="flex-1 break-all">{secret}</span>
+            <button onClick={() => { navigator.clipboard.writeText(secret); notify.success('Secret copied') }} style={{ color: 'var(--text-muted)' }}>
+              <Copy size={13} />
+            </button>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Can't scan? Enter the secret manually in your app.
+          </p>
+
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Verification code</label>
+            <input
+              ref={codeRef}
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              className="w-full px-3 py-2 rounded text-sm font-mono text-center tracking-widest outline-none"
+              style={inputStyle}
+              placeholder="000000"
+              inputMode="numeric"
+              maxLength={6}
+            />
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <Button size="sm" variant="ghost" onClick={() => setView('idle')}>Cancel</Button>
+            <Button size="sm" variant="primary" onClick={confirmEnable} loading={busy} disabled={code.length !== 6}>
+              Confirm &amp; enable
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {view === 'disable' && (
+        <div className="space-y-3 pt-1">
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            Enter your current authenticator code to disable two-factor authentication.
+          </p>
+          <input
+            ref={codeRef}
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            className="w-full px-3 py-2 rounded text-sm font-mono text-center tracking-widest outline-none"
+            style={inputStyle}
+            placeholder="000000"
+            inputMode="numeric"
+            maxLength={6}
+          />
+          <div className="flex gap-2 justify-end">
+            <Button size="sm" variant="ghost" onClick={() => setView('idle')}>Cancel</Button>
+            <Button size="sm" variant="danger" onClick={confirmDisable} loading={busy} disabled={code.length !== 6}>
+              Disable 2FA
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function SecurityPage() {
   const user = useAuthStore((s) => s.user)
@@ -72,6 +247,8 @@ export default function SecurityPage() {
   return (
     <div className="space-y-5">
       <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Security</h1>
+
+      <TotpPanel />
 
       {/* Active sessions */}
       <div className="panel overflow-hidden">

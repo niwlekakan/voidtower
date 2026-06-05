@@ -3,6 +3,7 @@ export interface User {
   username: string
   role: 'owner' | 'admin' | 'operator' | 'viewer'
   force_password_change: boolean
+  totp_enabled: boolean
 }
 
 export interface UserRecord {

@@ -145,10 +145,21 @@ fn remove_nginx_conf(domain: &str) {
     let _ = std::fs::remove_file(conf_path(domain));
 }
 
+fn is_root() -> bool {
+    std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim() == "0")
+        .unwrap_or(false)
+}
+
 // nginx -t outputs "syntax is ok" to stderr even when it exits non-zero due to
 // permission errors on the PID file. Check the output text instead of exit code.
 fn nginx_test_ok() -> bool {
-    let Ok(out) = std::process::Command::new("nginx").args(["-t"]).output() else {
+    let nginx = nginx_bin();
+    let Ok(out) = std::process::Command::new(&nginx).args(["-t"]).output() else {
         return false;
     };
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -168,9 +179,9 @@ fn nginx_available() -> bool {
 }
 
 fn reload_nginx() -> std::result::Result<String, String> {
+    let nginx = nginx_bin();
     if !nginx_test_ok() {
-        // Config test failed — try to get stderr for the error message
-        let msg = std::process::Command::new("nginx")
+        let msg = std::process::Command::new(&nginx)
             .args(["-t"])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
@@ -178,15 +189,16 @@ fn reload_nginx() -> std::result::Result<String, String> {
         return Err(msg);
     }
 
-    // -n = non-interactive, never prompts for password
-    let attempts: &[&[&str]] = &[
-        &["sudo", "-n", "systemctl", "reload", "nginx"],
-        &["systemctl", "reload", "nginx"],
-        &["sudo", "-n", "nginx", "-s", "reload"],
-        &["nginx", "-s", "reload"],
+    let systemctl = systemctl_bin();
+    // Try direct reload first (works as root in Docker), then sudo/systemctl for bare-metal
+    let attempts: Vec<Vec<&str>> = vec![
+        vec![nginx.as_str(), "-s", "reload"],
+        vec!["sudo", "-n", "systemctl", "reload", "nginx"],
+        vec![systemctl.as_str(), "reload", "nginx"],
+        vec!["sudo", "-n", nginx.as_str(), "-s", "reload"],
     ];
 
-    for args in attempts {
+    for args in &attempts {
         let Ok(out) = std::process::Command::new(args[0]).args(&args[1..]).output() else { continue };
         if out.status.success() {
             return Ok("nginx reloaded".into());
@@ -291,9 +303,12 @@ fn conf_d_writable() -> bool {
 }
 
 fn can_reload_nginx() -> bool {
+    // Root can always reload nginx directly (Docker container case)
+    if is_root() {
+        return true;
+    }
     let sc = systemctl_bin();
     // sudo -n -l <cmd> exits 0 if <cmd> is allowed without a password.
-    // This detects access regardless of which sudoers file/method was used.
     if let Ok(o) = std::process::Command::new("sudo")
         .args(["-n", "-l", &sc, "reload", "nginx"])
         .output()

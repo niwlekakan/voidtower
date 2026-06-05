@@ -295,7 +295,7 @@ build_from_source() {
   # current directory which has no source tree — clone the repo instead.
   if [[ ! -d "$SRC/frontend" || ! -d "$SRC/backend" ]]; then
     info "Downloading VoidTower source…"
-    SRC=$(mktemp -d)
+    SRC=$(mktemp -d -p /var/tmp 2>/dev/null || mktemp -d)
     local _tarball="$SRC/source.tar.gz"
     info "SRC dir: $SRC"
     info "Tarball path: $_tarball"

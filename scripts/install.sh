@@ -62,6 +62,7 @@ YES_MODE=false
 PULL_MODEL=false
 SKIP_MODEL_PULL=false
 AI_PROVIDER="ollama"
+INSTALL_MODE="install"  # install | uninstall | reset | repair | update
 AI_MODEL=""
 ODYSSEUS_PORT="${ODYSSEUS_PORT:-7000}"
 ODYSSEUS_INSTALL_DIR="${ODYSSEUS_INSTALL_DIR:-/opt/odysseus}"
@@ -106,6 +107,12 @@ Integrated stack:
   --offline              No network calls (use local pkg manager only)
   --dry-run              Print what would be done, make no changes
   --help                 Show this help
+
+Maintenance:
+  --uninstall            Remove VoidTower (interactive: choose what to keep)
+  --reset                Wipe VoidTower state (data/config), keep binary & service
+  --repair               Re-install binary + service unit, fix permissions
+  --update               Download & apply latest VoidTower binary
 EOF
   exit 0
 }
@@ -138,6 +145,10 @@ while [[ $# -gt 0 ]]; do
     --no-toolpacks)     NO_TOOLPACKS=true ;;
     --offline)          OFFLINE=true ;;
     --dry-run)          DRY_RUN=true ;;
+    --uninstall)        INSTALL_MODE="uninstall" ;;
+    --reset)            INSTALL_MODE="reset" ;;
+    --repair)           INSTALL_MODE="repair" ;;
+    --update)           INSTALL_MODE="update" ;;
     --help|-h)     usage ;;
     *) die "Unknown option: $1" ;;
   esac
@@ -1381,6 +1392,230 @@ offer_odysseus() {
   esac
 }
 
+# ─── Uninstall ────────────────────────────────────────────────────────────────
+cmd_uninstall() {
+  step "Uninstall VoidTower"
+
+  if [[ "$HAVE_SYSTEMD" == true ]]; then
+    for unit in voidtower odysseus; do
+      systemctl stop    "${unit}.service" 2>/dev/null || true
+      systemctl disable "${unit}.service" 2>/dev/null || true
+    done
+    for unit in voidwatch-configure; do
+      systemctl stop    "${unit}.service" "${unit}.path" 2>/dev/null || true
+      systemctl disable "${unit}.service" "${unit}.path" 2>/dev/null || true
+    done
+    systemctl daemon-reload
+  fi
+
+  rm -f "${VT_INSTALL_DIR}/${BINARY_NAME}" "${VT_INSTALL_DIR}/configure-voidwatch.sh"
+  rm -f "${SYSTEMD_DIR}/voidtower.service" \
+        "${SYSTEMD_DIR}/voidwatch-configure.service" \
+        "${SYSTEMD_DIR}/voidwatch-configure.path"
+  rm -f /etc/sudoers.d/voidtower-nginx
+  rm -f /etc/nginx/conf.d/voidtower.conf \
+        /etc/nginx/sites-enabled/voidtower \
+        /etc/nginx/sites-available/voidtower 2>/dev/null || true
+  command -v nginx &>/dev/null && nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true
+  [[ "$HAVE_SYSTEMD" == true ]] && systemctl daemon-reload
+
+  local ans
+  if [[ "$UNATTENDED" == false ]]; then
+    read -rp "  Remove data directory ${VT_DATA_DIR}? [y/N]: " ans
+  else
+    ans="y"
+  fi
+  if [[ "${ans,,}" == "y" ]]; then
+    rm -rf "$VT_DATA_DIR"; success "Removed $VT_DATA_DIR"
+  else
+    info "Keeping $VT_DATA_DIR"
+  fi
+
+  if [[ "$UNATTENDED" == false ]]; then
+    read -rp "  Remove config directory ${VT_CONFIG_DIR}? [y/N]: " ans
+  else
+    ans="y"
+  fi
+  if [[ "${ans,,}" == "y" ]]; then
+    rm -rf "$VT_CONFIG_DIR"; success "Removed $VT_CONFIG_DIR"
+  else
+    info "Keeping $VT_CONFIG_DIR"
+  fi
+
+  rmdir "${VT_INSTALL_DIR}" 2>/dev/null || true
+
+  if [[ "$UNATTENDED" == false ]]; then
+    read -rp "  Remove system user '${VT_USER}'? [y/N]: " ans
+  else
+    ans="n"
+  fi
+  [[ "${ans,,}" == "y" ]] && { userdel "$VT_USER" 2>/dev/null || true; success "Removed user $VT_USER"; }
+
+  success "VoidTower uninstalled."
+}
+
+# ─── Reset ────────────────────────────────────────────────────────────────────
+cmd_reset() {
+  step "Reset VoidTower State"
+  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+
+  local ans wipe_db=false wipe_envs=false wipe_secrets=false wipe_token=false wipe_apps=false
+
+  if [[ "$UNATTENDED" == true ]]; then
+    wipe_db=true; wipe_envs=true; wipe_secrets=true; wipe_token=true; wipe_apps=true
+  else
+    echo
+    read -rp "  Wipe database (${VT_DATA_DIR}/voidtower.db)? [y/N]: " ans
+    [[ "${ans,,}" == "y" ]] && wipe_db=true
+    read -rp "  Wipe config env files (${VT_CONFIG_DIR}/*.env, *.json)? [y/N]: " ans
+    [[ "${ans,,}" == "y" ]] && wipe_envs=true
+    read -rp "  Wipe secrets encryption key (${VT_CONFIG_DIR}/secrets.key)? [y/N]: " ans
+    [[ "${ans,,}" == "y" ]] && wipe_secrets=true
+    read -rp "  Remove bootstrap token (forces re-login)? [y/N]: " ans
+    [[ "${ans,,}" == "y" ]] && wipe_token=true
+    read -rp "  Remove deployed apps data (${VT_DATA_DIR}/apps)? [y/N]: " ans
+    [[ "${ans,,}" == "y" ]] && wipe_apps=true
+  fi
+
+  $wipe_db      && rm -f  "${VT_DATA_DIR}/voidtower.db"              && success "Wiped database"        || true
+  $wipe_envs    && rm -f  "${VT_CONFIG_DIR}"/*.env "${VT_CONFIG_DIR}"/*.json 2>/dev/null \
+                && success "Wiped config env files"                                                      || true
+  $wipe_secrets && rm -f  "${VT_CONFIG_DIR}/secrets.key"              && success "Wiped secrets key"     || true
+  $wipe_token   && rm -f  "${VT_CONFIG_DIR}/bootstrap-token"          && success "Removed bootstrap token" || true
+  $wipe_apps    && rm -rf "${VT_DATA_DIR}/apps"                       && success "Wiped deployed apps"   || true
+
+  [[ "$HAVE_SYSTEMD" == true ]] && {
+    systemctl start voidtower.service 2>/dev/null \
+      && success "VoidTower restarted" \
+      || warn "Failed to restart — check: journalctl -u voidtower -e"
+  }
+}
+
+# ─── Repair ───────────────────────────────────────────────────────────────────
+cmd_repair() {
+  step "Repair VoidTower"
+  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+
+  if ! download_binary 2>/dev/null; then
+    warn "Pre-built binary not found, building from source"
+    build_from_source
+  fi
+
+  install_catalog
+  install_service
+
+  chown -R "${VT_USER}:${VT_GROUP}" "$VT_DATA_DIR" "$VT_CONFIG_DIR" "$VT_INSTALL_DIR" 2>/dev/null || true
+  chmod 750 "$VT_INSTALL_DIR"
+  chmod 700 "$VT_DATA_DIR" "$VT_CONFIG_DIR"
+  [[ -f "${VT_CONFIG_DIR}/secrets.key"     ]] && chmod 600 "${VT_CONFIG_DIR}/secrets.key"
+  [[ -f "${VT_CONFIG_DIR}/bootstrap-token" ]] && chmod 600 "${VT_CONFIG_DIR}/bootstrap-token"
+
+  [[ "$HAVE_SYSTEMD" == true ]] && {
+    systemctl daemon-reload
+    systemctl restart voidtower.service
+    sleep 2
+    systemctl is-active --quiet voidtower.service \
+      && success "VoidTower running" \
+      || warn "VoidTower did not start — check: journalctl -u voidtower -e"
+  }
+  success "Repair complete."
+}
+
+# ─── Update ───────────────────────────────────────────────────────────────────
+cmd_update() {
+  step "Update VoidTower"
+
+  local current_ver=""
+  [[ -x "${VT_INSTALL_DIR}/${BINARY_NAME}" ]] && \
+    current_ver=$("${VT_INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+  info "Current: ${current_ver:-unknown}  →  Target: ${VT_VERSION}"
+
+  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+
+  if ! download_binary 2>/dev/null; then
+    warn "Pre-built binary not found, building from source"
+    build_from_source
+  fi
+
+  install_catalog
+
+  [[ "$HAVE_SYSTEMD" == true ]] && {
+    systemctl daemon-reload
+    systemctl restart voidtower.service
+    sleep 2
+    systemctl is-active --quiet voidtower.service \
+      && success "VoidTower running" \
+      || warn "VoidTower did not start — check: journalctl -u voidtower -e"
+  }
+
+  local new_ver=""
+  [[ -x "${VT_INSTALL_DIR}/${BINARY_NAME}" ]] && \
+    new_ver=$("${VT_INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+  success "Updated: ${current_ver:-?} → ${new_ver:-?}"
+}
+
+# ─── Selective wipe (used by prompt_reinstall) ────────────────────────────────
+_selective_wipe() {
+  echo -e "\n  ${BOLD}Select components to wipe before reinstall:${RESET}"
+  local ans
+
+  read -rp "  Wipe database (${VT_DATA_DIR}/voidtower.db)? [y/N]: " ans
+  [[ "${ans,,}" == "y" ]] && rm -f "${VT_DATA_DIR}/voidtower.db" && success "Wiped database" || true
+
+  read -rp "  Wipe config env files (${VT_CONFIG_DIR}/*.env)? [y/N]: " ans
+  [[ "${ans,,}" == "y" ]] && rm -f "${VT_CONFIG_DIR}"/*.env 2>/dev/null && success "Wiped config env files" || true
+
+  read -rp "  Wipe secrets key (${VT_CONFIG_DIR}/secrets.key)? [y/N]: " ans
+  [[ "${ans,,}" == "y" ]] && rm -f "${VT_CONFIG_DIR}/secrets.key" && success "Wiped secrets key" || true
+
+  read -rp "  Remove bootstrap token (${VT_CONFIG_DIR}/bootstrap-token)? [y/N]: " ans
+  [[ "${ans,,}" == "y" ]] && rm -f "${VT_CONFIG_DIR}/bootstrap-token" && success "Removed bootstrap token" || true
+
+  read -rp "  Remove deployed apps data (${VT_DATA_DIR}/apps)? [y/N]: " ans
+  [[ "${ans,,}" == "y" ]] && rm -rf "${VT_DATA_DIR}/apps" && success "Wiped deployed apps" || true
+
+  if [[ -d "$ODYSSEUS_INSTALL_DIR" ]]; then
+    read -rp "  Remove Odysseus install (${ODYSSEUS_INSTALL_DIR})? [y/N]: " ans
+    if [[ "${ans,,}" == "y" ]]; then
+      [[ "$HAVE_SYSTEMD" == true ]] && {
+        systemctl stop    odysseus.service 2>/dev/null || true
+        systemctl disable odysseus.service 2>/dev/null || true
+      }
+      rm -rf "$ODYSSEUS_INSTALL_DIR"
+      rm -f "${SYSTEMD_DIR}/odysseus.service"
+      [[ "$HAVE_SYSTEMD" == true ]] && systemctl daemon-reload
+      success "Removed Odysseus"
+    fi
+  fi
+  echo
+}
+
+# ─── Interactive reinstall prompt ─────────────────────────────────────────────
+prompt_reinstall() {
+  [[ -x "${VT_INSTALL_DIR}/${BINARY_NAME}" ]] || return 0
+  [[ "$UNATTENDED" == true ]] && return 0
+
+  local existing_ver=""
+  existing_ver=$("${VT_INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+  echo
+  warn "Existing VoidTower install detected (${existing_ver:-?}) at ${VT_INSTALL_DIR}"
+  echo -e "  ${BOLD}How would you like to proceed?${RESET}"
+  echo -e "  [1] Upgrade / overwrite binary only (keep all data)"
+  echo -e "  [2] Full reinstall — choose what to wipe"
+  echo -e "  [3] Repair (fix permissions + reinstall service unit)"
+  echo -e "  [4] Abort"
+  echo
+  local choice
+  read -rp "  Choice [1-4]: " choice
+  case "${choice:-1}" in
+    1) info "Upgrading binary only — data and config preserved." ;;
+    2) _selective_wipe ;;
+    3) cmd_repair; exit 0 ;;
+    4) info "Aborted."; exit 0 ;;
+    *) info "Upgrading binary only — data and config preserved." ;;
+  esac
+}
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
   # When piped via curl | bash, stdin is the pipe. By the time main() runs
@@ -1401,6 +1636,14 @@ main() {
   detect_os
   detect_arch
 
+  # Dispatch maintenance modes — these exit when done
+  case "$INSTALL_MODE" in
+    uninstall) cmd_uninstall; exit 0 ;;
+    reset)     cmd_reset;     exit 0 ;;
+    repair)    cmd_repair;    exit 0 ;;
+    update)    cmd_update;    exit 0 ;;
+  esac
+
   if [[ "$DRY_RUN" == true ]]; then
     info "[DRY-RUN] Would install VoidTower to ${VT_INSTALL_DIR}, port ${VT_PORT}"
     [[ "$WITH_ODYSSEUS" == true ]] && info "[DRY-RUN] Would install Odysseus to ${ODYSSEUS_INSTALL_DIR}, port ${ODYSSEUS_PORT}"
@@ -1408,6 +1651,8 @@ main() {
     [[ "$WITH_VOIDWATCH" == true ]] && info "[DRY-RUN] Would configure Voidwatch integration"
     exit 0
   fi
+
+  prompt_reinstall
 
   install_deps
   setup_system

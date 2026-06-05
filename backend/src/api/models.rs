@@ -582,3 +582,59 @@ pub async fn get_ollama_create_status(
     let map = ollama_creates().lock().unwrap();
     map.get(&id).cloned().map(Json).ok_or(AppError::NotFound)
 }
+
+// ─── GET /api/models/ollama — installed Ollama models proxy ──────────────────
+
+#[derive(Serialize)]
+pub struct OllamaTagsResponse {
+    pub available: bool,
+    pub models: Vec<OllamaModelInfo>,
+}
+
+#[derive(Serialize)]
+pub struct OllamaModelInfo {
+    pub name: String,
+    pub size: u64,
+    pub modified_at: String,
+}
+
+pub async fn get_ollama_tags(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<OllamaTagsResponse>> {
+    require_admin(&state, &jar).await?;
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(2000))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Ok(Json(OllamaTagsResponse { available: false, models: vec![] })),
+    };
+
+    let resp = match client.get("http://127.0.0.1:11434/api/tags").send().await {
+        Ok(r) => r,
+        Err(_) => return Ok(Json(OllamaTagsResponse { available: false, models: vec![] })),
+    };
+
+    if !resp.status().is_success() {
+        return Ok(Json(OllamaTagsResponse { available: false, models: vec![] }));
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return Ok(Json(OllamaTagsResponse { available: false, models: vec![] })),
+    };
+
+    let models = body.get("models")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|m| {
+            let name = m.get("name")?.as_str()?.to_string();
+            let size = m.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let modified_at = m.get("modified_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            Some(OllamaModelInfo { name, size, modified_at })
+        }).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    Ok(Json(OllamaTagsResponse { available: true, models }))
+}

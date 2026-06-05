@@ -368,6 +368,17 @@ export interface DownloadStatus {
   error: string | null
 }
 
+export interface OllamaModelInfo {
+  name: string
+  size: number
+  modified_at: string
+}
+
+export interface OllamaTagsResponse {
+  available: boolean
+  models: OllamaModelInfo[]
+}
+
 export interface OllamaPullStatus {
   id: string
   model: string

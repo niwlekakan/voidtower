@@ -335,6 +335,7 @@ export const api = {
     ollamaCreate:       (filename: string) =>
       request<{ id: string; model_name: string }>('/api/models/ollama/create', { method: 'POST', body: JSON.stringify({ filename }) }),
     ollamaCreateStatus: (id: string) => request<import('./types').OllamaPullStatus>(`/api/models/ollama/create/${id}`),
+    ollamaTags:         () => request<import('./types').OllamaTagsResponse>('/api/models/ollama'),
   },
 
   vms: {

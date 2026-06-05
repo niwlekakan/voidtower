@@ -149,6 +149,23 @@ async fn main() -> Result<()> {
     // Database
     let pool = db::init_pool(&cfg.db_path()).await?;
 
+    // Re-log bootstrap token on every restart while setup is still pending.
+    // Covers Docker deployments where the first-run log line was missed.
+    if bootstrap_result.is_none() {
+        let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&pool).await.unwrap_or(0);
+        if user_count == 0 {
+            if let Some(token) = auth::read_bootstrap_token(&cfg.bootstrap_token_path()).await? {
+                tracing::info!("╔══════════════════════════════════════════════════╗");
+                tracing::info!("║        VoidTower setup not yet complete          ║");
+                tracing::info!("║                                                  ║");
+                tracing::info!("║  Bootstrap token: {:<31}║", token);
+                tracing::info!("║  Visit http://{}:{} to complete setup   ║", cfg.bind, cfg.port);
+                tracing::info!("╚══════════════════════════════════════════════════╝");
+            }
+        }
+    }
+
     // Metrics broadcaster
     let (metrics_tx, _) = broadcast::channel::<MetricsSnapshot>(16);
     let latest_metrics: Arc<RwLock<Option<MetricsSnapshot>>> = Arc::new(RwLock::new(None));

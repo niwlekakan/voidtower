@@ -1,0 +1,26 @@
+id: tailscale
+name: Tailscale
+description: Mesh VPN — access all your devices from anywhere, zero config
+category: networking
+version_hint: "latest"
+compose:
+  services:
+    tailscale:
+      image: tailscale/tailscale:latest
+      restart: unless-stopped
+      network_mode: host
+      cap_add:
+        - NET_ADMIN
+        - NET_RAW
+      volumes:
+        - tailscale_data:/var/lib/tailscale
+        - /dev/net/tun:/dev/net/tun
+      environment:
+        - TS_AUTHKEY=your-tailscale-auth-key
+        - TS_EXTRA_ARGS=--advertise-exit-node
+        - TS_STATE_DIR=/var/lib/tailscale
+  volumes:
+    tailscale_data:
+links:
+  home: https://tailscale.com
+  docs: https://tailscale.com/kb/1282/docker

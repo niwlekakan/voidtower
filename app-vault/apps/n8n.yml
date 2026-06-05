@@ -19,6 +19,9 @@ compose:
         - N8N_BASIC_AUTH_PASSWORD=changeme
   volumes:
     n8n_data:
+ai_integration:
+  level: aware
+  description: "Odysseus can trigger n8n workflows via webhook"
 links:
   home: https://n8n.io
   docs: https://docs.n8n.io

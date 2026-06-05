@@ -55,6 +55,9 @@ compose:
     authentik_db:
     authentik_media:
     authentik_certs:
+ai_integration:
+  level: aware
+  description: "Odysseus can read user sessions and authentication events"
 links:
   home: https://goauthentik.io
   docs: https://docs.goauthentik.io

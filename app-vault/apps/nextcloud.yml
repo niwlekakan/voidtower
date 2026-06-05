@@ -16,6 +16,9 @@ compose:
         - SQLITE_DATABASE=nextcloud
   volumes:
     nextcloud_data:
+ai_integration:
+  level: aware
+  description: "Odysseus can read file metadata, calendar events, and contacts"
 links:
   home: https://nextcloud.com
   docs: https://docs.nextcloud.com

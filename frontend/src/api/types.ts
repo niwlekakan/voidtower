@@ -132,6 +132,7 @@ export interface AppDef {
   icon: string
   version_hint: string
   links: Record<string, string>
+  ai_integration?: { level: 'native' | 'aware'; description: string }
 }
 
 export interface DeployedApp {

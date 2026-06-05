@@ -33,6 +33,9 @@ compose:
   volumes:
     immich_upload:
     immich_db:
+ai_integration:
+  level: aware
+  description: "Odysseus can read photo library stats and recent uploads"
 links:
   home: https://immich.app
   docs: https://immich.app/docs

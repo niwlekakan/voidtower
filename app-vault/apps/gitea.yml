@@ -19,6 +19,9 @@ compose:
         - USER_GID=1000
   volumes:
     gitea_data:
+ai_integration:
+  level: native
+  description: "Odysseus can manage repositories, issues, branches, and webhooks"
 links:
   home: https://gitea.io
   docs: https://docs.gitea.com

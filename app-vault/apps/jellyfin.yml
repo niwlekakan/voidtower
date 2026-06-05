@@ -17,6 +17,9 @@ compose:
   volumes:
     jellyfin_config:
     jellyfin_cache:
+ai_integration:
+  level: aware
+  description: "Odysseus can read library stats and active playback sessions"
 links:
   home: https://jellyfin.org
   docs: https://jellyfin.org/docs

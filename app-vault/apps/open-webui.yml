@@ -22,6 +22,9 @@ compose:
         - "host-gateway:host-gateway"
   volumes:
     open_webui_data:
+ai_integration:
+  level: native
+  description: "Odysseus can read chat history and route queries through Open WebUI"
 links:
   home: https://openwebui.com
   docs: https://docs.openwebui.com

@@ -17,6 +17,9 @@ compose:
         - GF_SECURITY_ADMIN_PASSWORD=changeme
   volumes:
     grafana_data:
+ai_integration:
+  level: aware
+  description: "Odysseus can read dashboard alerts and annotation history"
 links:
   home: https://grafana.com
   docs: https://grafana.com/docs

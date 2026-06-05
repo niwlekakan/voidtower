@@ -105,6 +105,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps/detect-env", get(apps::detect_env))
         .route("/api/apps/deployed",   get(apps::deployed))
         .route("/api/apps/deploy", post(apps::deploy))
+        .route("/api/apps/deploy-custom", post(apps::deploy_custom))
         .route("/api/apps/:project_name", delete(apps::remove_app))
         .route("/api/apps/:project_name/start",   post(apps::start_app))
         .route("/api/apps/:project_name/stop",    post(apps::stop_app))

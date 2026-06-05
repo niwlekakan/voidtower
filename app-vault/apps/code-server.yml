@@ -1,0 +1,29 @@
+id: code-server
+name: code-server
+description: VS Code in the browser — full IDE accessible from any device
+category: dev
+version_hint: "latest"
+compose:
+  services:
+    code-server:
+      image: lscr.io/linuxserver/code-server:latest
+      restart: unless-stopped
+      ports:
+        - "8443:8443"
+      volumes:
+        - code_server_config:/config
+        - ${HOME}:/home/coder:rw
+      environment:
+        - PUID=1000
+        - PGID=1000
+        - TZ=UTC
+        - PASSWORD=changeme
+        - SUDO_PASSWORD=changeme
+  volumes:
+    code_server_config:
+ai_integration:
+  level: native
+  description: "Odysseus can open files, run terminal commands, and manage the workspace"
+links:
+  home: https://coder.com/docs/code-server
+  docs: https://coder.com/docs/code-server/latest

@@ -145,6 +145,49 @@ pub async fn images(
     Ok(Json(ImagesResponse { images }))
 }
 
+/// WebSocket live log tail — streams `docker logs --follow` output
+pub async fn logs_ws(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+) -> std::result::Result<impl IntoResponse, AppError> {
+    require_user(&state, &jar).await?;
+    Ok(ws.on_upgrade(move |socket| async move {
+        use axum::extract::ws::Message;
+        use bollard::container::{LogOutput, LogsOptions};
+        use futures_util::{SinkExt, StreamExt};
+
+        let (mut sink, mut stream) = socket.split();
+        let Ok(docker) = (|| bollard::Docker::connect_with_unix_defaults())() else { return };
+        let opts = LogsOptions::<String> {
+            stdout: true, stderr: true, follow: true, tail: "200".into(),
+            ..Default::default()
+        };
+        let mut logs = docker.logs(&id, Some(opts));
+        loop {
+            tokio::select! {
+                chunk = logs.next() => {
+                    match chunk {
+                        Some(Ok(LogOutput::StdOut { message } | LogOutput::StdErr { message })) => {
+                            let line = String::from_utf8_lossy(&message).trim_end().to_string();
+                            if !line.is_empty() {
+                                let json = serde_json::json!({"type":"log","line":line}).to_string();
+                                if sink.send(Message::Text(json)).await.is_err() { break; }
+                            }
+                        }
+                        None | Some(Err(_)) => break,
+                        _ => {}
+                    }
+                }
+                msg = stream.next() => {
+                    if !matches!(msg, Some(Ok(Message::Text(_) | Message::Binary(_)))) { break; }
+                }
+            }
+        }
+    }))
+}
+
 /// WebSocket exec — spawns `docker exec -it <id> sh` in a PTY
 pub async fn exec_ws(
     State(state): State<AppState>,
@@ -179,25 +222,44 @@ pub async fn get_compose(
         return Err(AppError::FeatureUnavailable("Docker unavailable".into()));
     }
 
-    // Use docker inspect to find compose working dir
-    let output = tokio::process::Command::new("docker")
-        .args(["inspect", "--format",
-               "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}",
-               &container_id])
-        .output()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    async fn inspect_label(id: &str, label: &str) -> String {
+        let fmt = format!("{{{{index .Config.Labels \"{label}\"}}}}");
+        tokio::process::Command::new("docker")
+            .args(["inspect", "--format", &fmt, id])
+            .output().await
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    }
 
-    let working_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Try config_files label first — it gives the absolute path(s) directly.
+    // Compose v2 sets this; may be comma-separated if multiple -f files were used.
+    let config_files = inspect_label(&container_id, "com.docker.compose.project.config_files").await;
+    if !config_files.is_empty() {
+        let path = config_files.split(',').next().unwrap_or("").trim().to_string();
+        if !path.is_empty() {
+            if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                let working_dir = std::path::Path::new(&path)
+                    .parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                return Ok(Json(serde_json::json!({
+                    "found": true,
+                    "path": path,
+                    "content": content,
+                    "working_dir": working_dir,
+                })));
+            }
+        }
+    }
+
+    // Fallback: working_dir label + search for compose filename
+    let working_dir = inspect_label(&container_id, "com.docker.compose.project.working_dir").await;
 
     if working_dir.is_empty() {
         return Ok(Json(serde_json::json!({
             "found": false,
-            "message": "Container was not started via docker compose (no working dir label)"
+            "message": "Container was not started via docker compose (no compose labels found)"
         })));
     }
 
-    // Find compose file
     let candidates = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
     for name in candidates {
         let path = format!("{working_dir}/{name}");

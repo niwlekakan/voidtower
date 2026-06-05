@@ -8,6 +8,52 @@ import Button from '@/components/ui/Button'
 
 type Tab = 'overview' | 'compose' | 'logs' | 'terminal'
 
+// ─── Live log stream via WebSocket ──────────────────────────────────
+function LogStream({ containerId }: { containerId: string }) {
+  const outputRef = useRef<HTMLDivElement>(null)
+  const [lines, setLines] = useState<string[]>(['Connecting…'])
+  const [connected, setConnected] = useState(false)
+
+  useEffect(() => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    const ws = new WebSocket(`${proto}://${location.host}/api/containers/${containerId}/logs/stream`)
+
+    ws.onopen = () => { setConnected(true); setLines([]) }
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data)
+        if (msg.type === 'log') {
+          setLines((prev) => [...prev.slice(-2000), msg.line])
+        }
+      } catch { /* ignore */ }
+    }
+    ws.onclose = () => { setConnected(false); setLines((p) => [...p, '[stream closed]']) }
+    ws.onerror = () => setLines((p) => [...p, '[connection error]'])
+
+    return () => ws.close()
+  }, [containerId])
+
+  useEffect(() => {
+    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
+  }, [lines])
+
+  return (
+    <div className="flex flex-col rounded overflow-hidden" style={{ background: 'var(--terminal-bg)', maxHeight: '60vh' }}>
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b text-xs shrink-0" style={{ borderColor: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}>
+        <span className="w-2 h-2 rounded-full" style={{ background: connected ? 'var(--accent-success)' : 'var(--accent-danger)' }} />
+        {connected ? `logs: ${containerId.slice(0, 12)}` : 'disconnected'}
+      </div>
+      <div
+        ref={outputRef}
+        className="overflow-y-auto p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap"
+        style={{ color: 'var(--text-secondary)' }}
+      >
+        {lines.length ? lines.join('\n') : <span style={{ color: 'var(--text-muted)' }}>No logs.</span>}
+      </div>
+    </div>
+  )
+}
+
 // ─── Exec terminal via WebSocket ────────────────────────────────────
 function ExecTerminal({ containerId }: { containerId: string }) {
   const outputRef = useRef<HTMLDivElement>(null)
@@ -193,7 +239,6 @@ export default function ContainerDetailPage() {
   const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('overview')
   const [container, setContainer] = useState<ContainerInfo | null>(null)
-  const [logs, setLogs] = useState<string[]>([])
   const [actioning, setActioning] = useState(false)
 
   const refresh = useCallback(() => {
@@ -204,11 +249,6 @@ export default function ContainerDetailPage() {
   }, [id])
 
   useEffect(() => { refresh() }, [refresh])
-
-  useEffect(() => {
-    if (tab !== 'logs' || !id) return
-    api.containers.logs(id, 300).then((r) => setLogs(r.lines)).catch(() => {})
-  }, [tab, id])
 
   const doAction = async (action: 'start' | 'stop' | 'restart') => {
     if (!id) return
@@ -310,14 +350,7 @@ export default function ContainerDetailPage() {
 
       {tab === 'compose' && id && <ComposeTab containerId={id} />}
 
-      {tab === 'logs' && (
-        <div
-          className="rounded p-3 font-mono text-xs overflow-y-auto leading-relaxed whitespace-pre-wrap"
-          style={{ background: 'var(--terminal-bg)', color: 'var(--text-secondary)', maxHeight: '60vh' }}
-        >
-          {logs.length ? logs.join('\n') : <span style={{ color: 'var(--text-muted)' }}>No logs.</span>}
-        </div>
-      )}
+      {tab === 'logs' && id && <LogStream containerId={id} />}
 
       {tab === 'terminal' && id && (
         isRunning

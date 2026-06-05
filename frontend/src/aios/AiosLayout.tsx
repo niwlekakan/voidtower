@@ -1,5 +1,4 @@
 import { useEffect, useCallback, Component } from 'react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import type { ReactNode, ErrorInfo } from 'react'
 import { useMetrics } from '@/hooks/useMetrics'
 import { useAiosStore, newPanelId } from '@/aios/store/aios'
@@ -22,7 +21,6 @@ import { useAuthStore } from '@/store/auth'
 import DashboardPage from '@/pages/Dashboard'
 import ServicesPage from '@/pages/Services'
 import ContainersPage from '@/pages/Containers'
-import ContainerDetailPage from '@/pages/ContainerDetail'
 import AppVaultPage from '@/pages/AppVault'
 import AlertsPage from '@/pages/Alerts'
 import BackupsPage from '@/pages/Backups'
@@ -75,48 +73,52 @@ class PanelErrorBoundary extends Component<{ children: ReactNode }, { error: Err
   }
 }
 
-// ── Panel content renderer ───────────────────────────────────────────────────
-// Each panel gets its own MemoryRouter so in-panel navigation (e.g. Containers
-// → ContainerDetail) works independently without changing the browser URL.
+// ── Panel component registry ─────────────────────────────────────────────────
+// Direct render — no nested Router (React Router v6 forbids them).
+// Pages use the outer BrowserRouter context for any navigation they trigger.
+
+const PANEL_REGISTRY: Record<string, React.ComponentType> = {
+  dashboard:    DashboardPage,
+  services:     ServicesPage,
+  containers:   ContainersPage,
+  apps:         AppVaultPage,
+  alerts:       AlertsPage,
+  backups:      BackupsPage,
+  storage:      StoragePage,
+  network:      NetworkPage,
+  terminal:     TerminalPage,
+  audit:        AuditPage,
+  ai:           AIPage,
+  files:        FilesPage,
+  proxies:      ProxiesPage,
+  security:     SecurityPage,
+  settings:     SettingsPage,
+  automation:   AutomationPage,
+  firewall:     FirewallPage,
+  timeline:     TimelinePage,
+  secrets:      SecretsPage,
+  capabilities: CapabilitiesPage,
+  diagnostics:  DiagnosticsPage,
+  wireguard:    WireGuardPage,
+  vms:          VMsPage,
+  tags:         TagsPage,
+  themes:       ThemesPage,
+  models:       ModelsPage,
+  updates:      UpdatesPage,
+  integrations: IntegrationsPage,
+  mods:         ModsPage,
+}
 
 function PanelContent({ component }: { component: string }) {
-  const initialPath = component.startsWith('http') ? '/' : `/${component}`
+  const Page = PANEL_REGISTRY[component]
+  if (!Page) return (
+    <div style={{ padding: 24, fontSize: 13, color: 'var(--text-muted)' }}>
+      Unknown page: {component}
+    </div>
+  )
   return (
     <PanelErrorBoundary>
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route path="/dashboard"     element={<DashboardPage />} />
-        <Route path="/services"      element={<ServicesPage />} />
-        <Route path="/containers"    element={<ContainersPage />} />
-        <Route path="/containers/:id" element={<ContainerDetailPage />} />
-        <Route path="/apps"          element={<AppVaultPage />} />
-        <Route path="/alerts"        element={<AlertsPage />} />
-        <Route path="/backups"       element={<BackupsPage />} />
-        <Route path="/storage"       element={<StoragePage />} />
-        <Route path="/network"       element={<NetworkPage />} />
-        <Route path="/terminal"      element={<TerminalPage />} />
-        <Route path="/audit"         element={<AuditPage />} />
-        <Route path="/ai"            element={<AIPage />} />
-        <Route path="/files"         element={<FilesPage />} />
-        <Route path="/proxies"       element={<ProxiesPage />} />
-        <Route path="/security"      element={<SecurityPage />} />
-        <Route path="/settings/*"    element={<SettingsPage />} />
-        <Route path="/automation"    element={<AutomationPage />} />
-        <Route path="/firewall"      element={<FirewallPage />} />
-        <Route path="/timeline"      element={<TimelinePage />} />
-        <Route path="/secrets"       element={<SecretsPage />} />
-        <Route path="/capabilities"  element={<CapabilitiesPage />} />
-        <Route path="/diagnostics"   element={<DiagnosticsPage />} />
-        <Route path="/wireguard"     element={<WireGuardPage />} />
-        <Route path="/vms"           element={<VMsPage />} />
-        <Route path="/tags"          element={<TagsPage />} />
-        <Route path="/themes"        element={<ThemesPage />} />
-        <Route path="/models"        element={<ModelsPage />} />
-        <Route path="/updates"       element={<UpdatesPage />} />
-        <Route path="/integrations"  element={<IntegrationsPage />} />
-        <Route path="/mods"          element={<ModsPage />} />
-      </Routes>
-    </MemoryRouter>
+      <Page />
     </PanelErrorBoundary>
   )
 }

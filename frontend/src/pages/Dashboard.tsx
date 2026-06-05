@@ -511,7 +511,7 @@ export default function DashboardPage() {
           </div>
         )
       case 'gpu_widget':
-        if (!on('gpu') || !snapshot || snapshot.gpu.length === 0) return null
+        if (!on('gpu') || !snapshot || !snapshot.gpu?.length) return null
         return (
           <div key="gpu_widget" className="card">
             <div className="text-xs uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>GPU</div>

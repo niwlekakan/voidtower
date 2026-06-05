@@ -3,7 +3,8 @@ use axum::{extract::State, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
-const GITHUB_REPO: &str = "elwla/voidtower";
+const GITHUB_REPO: &str = "niwlekakan/voidtower";
+const GITHUB_BRANCH: &str = "voidtower-aio";
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
@@ -46,17 +47,20 @@ fn installed_version(dir: &std::path::Path) -> String {
         .to_string()
 }
 
-fn github_latest_tag() -> Option<String> {
-    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
+fn github_latest_commit() -> Option<String> {
+    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}");
     let out = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "10", "-A", "voidtower-update", &url])
+        .args(["-fsSL", "--max-time", "10", "-A", "voidtower-update",
+               "-H", "Accept: application/vnd.github.sha", &url])
         .output().ok()?;
     if !out.status.success() { return None; }
-    let text = String::from_utf8_lossy(&out.stdout);
-    // Parse: "tag_name": "v1.2.3"
-    let after = text.split("\"tag_name\"").nth(1)?;
-    let tag = after.split('"').nth(2)?.trim_start_matches('v').to_string();
-    if tag.is_empty() { None } else { Some(tag) }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // The SHA-only Accept header returns a bare 40-char hex string
+    if sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(sha[..7].to_string())
+    } else {
+        None
+    }
 }
 
 // ─── Version ──────────────────────────────────────────────────────────────────
@@ -79,9 +83,15 @@ pub async fn version() -> Result<Json<VersionInfo>> {
         Ok(Json(VersionInfo { commit, branch, commit_date, dirty: !status.is_empty() }))
     } else {
         let dir = install_dir().ok_or_else(|| AppError::FeatureUnavailable("cannot locate install dir".into()))?;
-        let ver = installed_version(&dir);
-        let commit = if ver.is_empty() { "unknown".to_string() } else { format!("v{ver}") };
-        Ok(Json(VersionInfo { commit, branch: "main".to_string(), commit_date: String::new(), dirty: false }))
+        let commit_hash = std::fs::read_to_string(dir.join(".commit"))
+            .unwrap_or_default().trim().to_string();
+        let commit = if commit_hash.len() >= 7 {
+            commit_hash[..7].to_string()
+        } else {
+            let ver = installed_version(&dir);
+            if ver.is_empty() { "unknown".to_string() } else { format!("v{ver}") }
+        };
+        Ok(Json(VersionInfo { commit, branch: GITHUB_BRANCH.to_string(), commit_date: String::new(), dirty: false }))
     }
 }
 
@@ -101,22 +111,28 @@ pub async fn update_check(State(state): State<AppState>, jar: CookieJar) -> Resu
 
     if is_dev_install() {
         let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
+        let branch = git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| GITHUB_BRANCH.into());
+        let remote_ref = format!("origin/{branch}");
         let fetch_err = std::process::Command::new("git")
             .args(["fetch", "origin"]).current_dir(&root)
             .output().err().map(|e| e.to_string());
-        let behind = git(&root, &["rev-list", "HEAD..origin/main", "--count"])
+        let behind = git(&root, &["rev-list", &format!("HEAD..{remote_ref}"), "--count"])
             .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let ahead = git(&root, &["rev-list", "origin/main..HEAD", "--count"])
+        let ahead = git(&root, &["rev-list", &format!("{remote_ref}..HEAD"), "--count"])
             .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let remote_commit = git(&root, &["rev-parse", "--short", "origin/main"]).unwrap_or_default();
+        let remote_commit = git(&root, &["rev-parse", "--short", &remote_ref]).unwrap_or_default();
         Ok(Json(UpdateCheck { behind, ahead, can_update: behind > 0, remote_commit, error: fetch_err }))
     } else {
         let dir = install_dir().ok_or_else(|| AppError::FeatureUnavailable("cannot locate install dir".into()))?;
-        let current = installed_version(&dir);
-        let latest = github_latest_tag();
-        let can_update = latest.as_deref().map(|l| !l.is_empty() && l != current).unwrap_or(false);
+        let commit_hash = std::fs::read_to_string(dir.join(".commit"))
+            .unwrap_or_default().trim().to_string();
+        let current = if commit_hash.len() >= 7 { commit_hash[..7].to_string() } else { commit_hash };
+        let latest = github_latest_commit();
+        let can_update = latest.as_deref()
+            .map(|l| !l.is_empty() && !current.is_empty() && l != current)
+            .unwrap_or(false);
         let remote_commit = latest.clone().unwrap_or_else(|| "unknown".to_string());
-        let error = if latest.is_none() { Some("Could not reach GitHub releases API".to_string()) } else { None };
+        let error = if latest.is_none() { Some("Could not reach GitHub API".to_string()) } else { None };
         Ok(Json(UpdateCheck {
             behind: if can_update { 1 } else { 0 },
             ahead: 0,
@@ -162,8 +178,9 @@ pub async fn update(State(state): State<AppState>, jar: CookieJar) -> Result<Jso
 
     let script = if is_dev_install() {
         let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
+        let branch = git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| GITHUB_BRANCH.into());
         format!(
-            "#!/bin/sh\nset -e\ncd {root}\ngit pull origin main\ncargo build --manifest-path backend/Cargo.toml\nnpm --prefix frontend run build\nsleep 1\nkill -TERM {pid}\nsleep 1\nexec bash {root}/start-dev.sh >> /tmp/voidtower.log 2>&1\n",
+            "#!/bin/sh\nset -e\ncd {root}\ngit pull origin {branch}\ncargo build --manifest-path backend/Cargo.toml\nnpm --prefix frontend run build\nsleep 1\nkill -TERM {pid}\nsleep 1\nexec bash {root}/start-dev.sh >> /tmp/voidtower.log 2>&1\n",
             root = root.display()
         )
     } else {

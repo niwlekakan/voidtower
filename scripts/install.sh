@@ -293,6 +293,7 @@ build_from_source() {
     || die "Backend build failed"
   install -m 755 "$SRC/backend/target/release/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
   cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend"
+  git -C "$SRC" rev-parse HEAD 2>/dev/null > "${VT_INSTALL_DIR}/.commit" || true
   success "Built and installed from source"
 }
 

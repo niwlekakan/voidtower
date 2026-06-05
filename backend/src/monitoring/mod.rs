@@ -22,6 +22,7 @@ pub struct MetricsSnapshot {
     pub networks: Vec<NetworkInfo>,
     pub top_cpu_procs: Vec<ProcessInfo>,
     pub top_mem_procs: Vec<ProcessInfo>,
+    pub gpu: Vec<GpuInfo>,
     pub timestamp: i64,
 }
 
@@ -50,6 +51,42 @@ pub struct ProcessInfo {
     pub name: String,
     pub cpu_usage: f32,
     pub memory_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuInfo {
+    pub name: String,
+    pub temp_c: f32,
+    pub util_pct: f32,
+    pub mem_util_pct: f32,
+    pub mem_used_mb: u64,
+    pub mem_total_mb: u64,
+    pub power_w: f32,
+    pub power_limit_w: f32,
+}
+
+fn collect_gpu() -> Vec<GpuInfo> {
+    (|| -> Option<Vec<GpuInfo>> {
+        let out = std::process::Command::new("nvidia-smi")
+            .args(["--query-gpu=name,temperature.gpu,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,power.limit",
+                   "--format=csv,noheader,nounits"])
+            .output().ok().filter(|o| o.status.success())?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        Some(text.lines().filter_map(|line| {
+            let cols: Vec<&str> = line.split(',').map(str::trim).collect();
+            if cols.len() < 8 { return None; }
+            Some(GpuInfo {
+                name:           cols[0].to_string(),
+                temp_c:         cols[1].parse().unwrap_or(0.0),
+                util_pct:       cols[2].parse().unwrap_or(0.0),
+                mem_util_pct:   cols[3].parse().unwrap_or(0.0),
+                mem_used_mb:    cols[4].parse().unwrap_or(0),
+                mem_total_mb:   cols[5].parse().unwrap_or(0),
+                power_w:        cols[6].parse().unwrap_or(0.0),
+                power_limit_w:  cols[7].parse().unwrap_or(0.0),
+            })
+        }).collect())
+    })().unwrap_or_default()
 }
 
 pub type MetricsBroadcaster = broadcast::Sender<MetricsSnapshot>;
@@ -175,6 +212,7 @@ impl MetricsCollector {
             networks,
             top_cpu_procs,
             top_mem_procs,
+            gpu: collect_gpu(),
             timestamp,
         }
     }

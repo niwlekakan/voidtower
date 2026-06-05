@@ -31,7 +31,19 @@ export interface MetricsSnapshot {
   networks: NetworkInfo[]
   top_cpu_procs: ProcessInfo[]
   top_mem_procs: ProcessInfo[]
+  gpu: GpuInfo[]
   timestamp: number
+}
+
+export interface GpuInfo {
+  name: string
+  temp_c: number
+  util_pct: number
+  mem_util_pct: number
+  mem_used_mb: number
+  mem_total_mb: number
+  power_w: number
+  power_limit_w: number
 }
 
 export interface DiskInfo {

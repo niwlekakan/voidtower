@@ -21,6 +21,7 @@ const WIDGET_DEFS: WidgetDef[] = [
   { id: 'disks',      label: 'Disk Usage',          icon: <HardDrive size={14} />, defaultOn: true },
   { id: 'network',    label: 'Network',             icon: <Network size={14} />,   defaultOn: false },
   { id: 'processes',  label: 'Top Processes',       icon: <Activity size={14} />,  defaultOn: false },
+  { id: 'gpu',        label: 'GPU Stats',           icon: <Cpu size={14} />,       defaultOn: true },
 ]
 
 function loadWidgetConfig(): Record<WidgetId, boolean> {
@@ -37,7 +38,7 @@ function saveWidgetConfig(cfg: Record<WidgetId, boolean>) {
 
 // ─── Section ordering ─────────────────────────────────────────────────────────
 
-type SectionId = 'time' | 'system' | 'services' | 'charts' | 'disks' | 'network_widget' | 'processes'
+type SectionId = 'time' | 'system' | 'services' | 'charts' | 'disks' | 'network_widget' | 'processes' | 'gpu_widget'
 
 const SECTION_DEFS: { id: SectionId; label: string; widgets: WidgetId[] }[] = [
   { id: 'time',           label: 'Clock & Weather',       widgets: ['clock', 'weather'] },
@@ -47,6 +48,7 @@ const SECTION_DEFS: { id: SectionId; label: string; widgets: WidgetId[] }[] = [
   { id: 'disks',          label: 'Disk Usage',             widgets: ['disks'] },
   { id: 'network_widget', label: 'Network Rates',          widgets: ['network'] },
   { id: 'processes',      label: 'Top Processes',          widgets: ['processes'] },
+  { id: 'gpu_widget',     label: 'GPU Stats',              widgets: ['gpu'] },
 ]
 
 const DEFAULT_SECTION_ORDER: SectionId[] = SECTION_DEFS.map(s => s.id)
@@ -506,6 +508,42 @@ export default function DashboardPage() {
                 </div>
               </div>
             ))}
+          </div>
+        )
+      case 'gpu_widget':
+        if (!on('gpu') || !snapshot || snapshot.gpu.length === 0) return null
+        return (
+          <div key="gpu_widget" className="card">
+            <div className="text-xs uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>GPU</div>
+            <div className="space-y-4">
+              {snapshot.gpu.map((g, i) => {
+                const memPct = g.mem_total_mb > 0 ? (g.mem_used_mb / g.mem_total_mb) * 100 : 0
+                const pwrPct = g.power_limit_w > 0 ? (g.power_w / g.power_limit_w) * 100 : 0
+                const tempColor = g.temp_c >= 85 ? 'var(--accent-danger)' : g.temp_c >= 70 ? 'var(--accent-warning)' : 'var(--accent-success)'
+                return (
+                  <div key={i} className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium truncate max-w-48" style={{ color: 'var(--text-primary)' }}>{g.name}</span>
+                      <span className="text-xs font-mono" style={{ color: tempColor }}>{g.temp_c.toFixed(0)}°C</span>
+                    </div>
+                    {[
+                      { label: 'GPU',  pct: g.util_pct,     right: `${g.util_pct.toFixed(0)}%`,       color: 'var(--accent-primary)' },
+                      { label: 'VRAM', pct: memPct,          right: `${g.mem_used_mb} / ${g.mem_total_mb} MB`, color: 'var(--accent-secondary)' },
+                      { label: 'PWR',  pct: pwrPct,          right: `${g.power_w.toFixed(0)}W`,        color: 'var(--accent-warning)' },
+                    ].map(({ label, pct, right, color }) => (
+                      <div key={label}>
+                        <div className="flex justify-between text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+                          <span>{label}</span><span>{right}</span>
+                        </div>
+                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-elevated)' }}>
+                          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )
       default: return null

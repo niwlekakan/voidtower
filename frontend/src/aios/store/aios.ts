@@ -183,5 +183,4 @@ export const useAiosStore = create<AiosStore>()(
   ),
 )
 
-let _panelCounter = 0
-export const newPanelId = () => `panel-${++_panelCounter}`
+export const newPanelId = () => `panel-${crypto.randomUUID()}`

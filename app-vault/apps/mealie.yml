@@ -17,6 +17,13 @@ compose:
         - PUID=1000
         - PGID=1000
         - TZ=UTC
+        - VIRTUAL_HOST=mealie.local
+        - VIRTUAL_PORT=9000
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - mealie
   volumes:
     mealie_data:
 links:

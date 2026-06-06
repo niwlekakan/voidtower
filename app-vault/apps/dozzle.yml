@@ -10,9 +10,17 @@ compose:
       image: amir20/dozzle:latest
       restart: unless-stopped
       ports:
-        - "8888:8080"
+        - "8889:8080"
       volumes:
         - /var/run/docker.sock:/var/run/docker.sock:ro
+      environment:
+        - VIRTUAL_HOST=dozzle.local
+        - VIRTUAL_PORT=8080
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - dozzle
 links:
   home: https://dozzle.dev
   docs: https://dozzle.dev/guide

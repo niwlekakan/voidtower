@@ -1,0 +1,38 @@
+id: opencloud
+name: OpenCloud
+description: Modern open-source cloud storage and collaboration platform — self-hosted Google Drive / OneDrive alternative
+category: storage
+version_hint: "latest"
+compose:
+  services:
+    opencloud:
+      image: opencloudeu/opencloud:latest
+      restart: unless-stopped
+      ports:
+        - "9200:9200"
+      volumes:
+        - opencloud_data:/var/lib/opencloud
+        - opencloud_config:/etc/opencloud
+      environment:
+        - OC_INSECURE=true
+        - OC_URL=http://opencloud.local
+        - PROXY_HTTP_ADDR=0.0.0.0:9200
+        - VIRTUAL_HOST=opencloud.local
+        - VIRTUAL_PORT=9200
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - opencloud
+  volumes:
+    opencloud_data:
+    opencloud_config:
+  networks:
+    vt-proxy:
+      external: true
+ai_integration:
+  level: aware
+  description: "Odysseus can read file metadata and manage cloud storage via OpenCloud API"
+links:
+  home: https://opencloud.eu
+  docs: https://docs.opencloud.eu

@@ -14,6 +14,14 @@ compose:
         - jellyfin_config:/config
         - jellyfin_cache:/cache
         - /media:/media:ro
+      environment:
+        - VIRTUAL_HOST=jellyfin.local
+        - VIRTUAL_PORT=8096
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - jellyfin
   volumes:
     jellyfin_config:
     jellyfin_cache:

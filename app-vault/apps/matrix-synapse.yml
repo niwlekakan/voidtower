@@ -16,6 +16,13 @@ compose:
       environment:
         - SYNAPSE_SERVER_NAME=matrix.home
         - SYNAPSE_REPORT_STATS=no
+        - VIRTUAL_HOST=matrix.local
+        - VIRTUAL_PORT=8008
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - matrix
   volumes:
     synapse_data:
 links:

@@ -402,6 +402,13 @@ setup_system() {
   fi
   chown -R "${VT_USER}:${VT_GROUP}" "$VT_DATA_DIR" "$VT_CONFIG_DIR"
   chmod 750 "$VT_DATA_DIR" "$VT_CONFIG_DIR"
+
+  # Shared Docker network for inter-app routing (nginx-proxy, DNS, AI layer)
+  if [[ "$HAVE_DOCKER" == true ]]; then
+    docker network create vt-proxy 2>/dev/null || true
+    info "Docker network vt-proxy ready"
+  fi
+
   success "Directories and user ready"
 }
 

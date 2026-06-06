@@ -9,9 +9,17 @@ compose:
       image: louislam/uptime-kuma:latest
       restart: unless-stopped
       ports:
-        - "3001:3001"
+        - "3006:3001"
       volumes:
         - uptime_kuma_data:/app/data
+      environment:
+        - VIRTUAL_HOST=uptime.local
+        - VIRTUAL_PORT=3001
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - uptime-kuma
   volumes:
     uptime_kuma_data:
 ai_integration:

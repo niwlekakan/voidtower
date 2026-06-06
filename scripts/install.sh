@@ -753,6 +753,11 @@ install_ollama() {
   if [[ "$HAVE_SYSTEMD" == true ]]; then
     systemctl enable --now ollama 2>/dev/null || true
   fi
+  # Write marker so the App Vault deploy guard can detect this system install
+  # and warn the user about the port 11434 conflict before they try to also
+  # deploy the ollama.yml container.
+  mkdir -p /var/lib/voidtower
+  touch /var/lib/voidtower/.ollama-system-installed
   success "Ollama installed"
 }
 
@@ -948,6 +953,12 @@ EOF
     warn "systemd not available — start Odysseus manually:"
     warn "  cd ${ODYSSEUS_INSTALL_DIR} && venv/bin/uvicorn app:app --port ${ODYSSEUS_PORT}"
   fi
+
+  # Write marker so the App Vault deploy guard can detect this system install
+  # and warn the user about the port 7000 conflict before they try to also
+  # deploy the odysseus.yml container.
+  mkdir -p /var/lib/voidtower
+  touch /var/lib/voidtower/.odysseus-system-installed
 
   success "Odysseus installed at ${ODYSSEUS_INSTALL_DIR}"
 }

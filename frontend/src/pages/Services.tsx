@@ -9,6 +9,7 @@ import Button from '@/components/ui/Button'
 import LogViewer from '@/components/ui/LogViewer'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import { TagPill } from '@/components/ui/TagPill'
+import SendToOdysseus from '@/components/ui/SendToOdysseus'
 
 type ActionMeta = { service: string; action: ServiceAction }
 
@@ -179,6 +180,9 @@ export default function ServicesPage() {
                       <Button size="sm" variant="ghost" loading={acting === svc.name} onClick={() => setConfirm({ service: svc.name, action: 'restart' })} title="Restart"><RotateCcw size={12} /></Button>
                     )}
                     <Button size="sm" variant="ghost" onClick={() => viewLogs(svc.name)}>Logs</Button>
+                    <SendToOdysseus
+                      context={`Service: ${svc.name}\n${svc.description ? `Description: ${svc.description}\n` : ''}State: ${svc.active_state} (${svc.sub_state})\nEnabled: ${svc.enabled ? 'yes' : 'no'}`}
+                    />
                   </div>
                 </td>
               </tr>

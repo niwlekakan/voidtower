@@ -7,14 +7,16 @@ version_hint: "latest"
 compose:
   services:
     pihole:
-      # Pinned to last stable v5 release — v6 renamed env vars and changed
-      # the web server; update to 2025.x once v6 env vars are added here.
-      image: pihole/pihole:2024.07.0
+      # Updated to v6 (2025.x). Key v6 changes vs v5:
+      #   - WEBPASSWORD          → FTLCONF_webserver_api_password
+      #   - PIHOLE_DNS_          → FTLCONF_dns_upstreams (semicolon-separated)
+      #   - /etc/dnsmasq.d volume no longer used by v6; remove it from existing
+      #     installs with: docker volume rm pihole_dnsmasq
+      #   - DNS is now served by FTL directly (no separate dnsmasq process)
+      #   - The `dns:` service block is not needed in v6; FTL handles upstream
+      #     resolution for blocklist downloads internally.
+      image: pihole/pihole:latest
       restart: unless-stopped
-      # Explicit DNS so gravity can download blocklists inside the container.
-      dns:
-        - 1.1.1.1
-        - 8.8.8.8
       # DNS ports mapped to 5353 to avoid conflicting with systemd-resolved
       # on development machines. On a dedicated server/TrueNAS, change 5353
       # back to 53 and point your router's DNS at this host.
@@ -26,10 +28,12 @@ compose:
         - NET_ADMIN
       volumes:
         - pihole_etc:/etc/pihole
-        - pihole_dnsmasq:/etc/dnsmasq.d
       environment:
         - TZ=UTC
-        - WEBPASSWORD=changeme
+        # v6 password env var (replaces WEBPASSWORD from v5)
+        - FTLCONF_webserver_api_password=changeme
+        # v6 DNS upstream format (replaces PIHOLE_DNS_1 / PIHOLE_DNS_2 from v5)
+        - FTLCONF_dns_upstreams=1.1.1.1;8.8.8.8
         # nginx-proxy auto-discovery
         - VIRTUAL_HOST=pihole.local
         - VIRTUAL_PORT=80
@@ -40,7 +44,6 @@ compose:
             - pihole
   volumes:
     pihole_etc:
-    pihole_dnsmasq:
   networks:
     vt-proxy:
       external: true

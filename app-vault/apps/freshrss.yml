@@ -16,6 +16,13 @@ compose:
       environment:
         - TZ=UTC
         - CRON_MIN=1,31
+        - VIRTUAL_HOST=freshrss.local
+        - VIRTUAL_PORT=80
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - freshrss
   volumes:
     freshrss_data:
     freshrss_ext:

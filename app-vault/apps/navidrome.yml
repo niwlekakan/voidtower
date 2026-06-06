@@ -16,6 +16,13 @@ compose:
       environment:
         - ND_SCANSCHEDULE=1h
         - ND_LOGLEVEL=info
+        - VIRTUAL_HOST=music.local
+        - VIRTUAL_PORT=4533
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - navidrome
   volumes:
     navidrome_data:
 links:

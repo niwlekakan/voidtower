@@ -9,7 +9,7 @@ compose:
       image: lscr.io/linuxserver/code-server:latest
       restart: unless-stopped
       ports:
-        - "8443:8443"
+        - "8444:8443"
       volumes:
         - code_server_config:/config
         - ${HOME}:/home/coder:rw
@@ -19,6 +19,13 @@ compose:
         - TZ=UTC
         - PASSWORD=changeme
         - SUDO_PASSWORD=changeme
+        - VIRTUAL_HOST=code.local
+        - VIRTUAL_PORT=8443
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - code-server
   volumes:
     code_server_config:
 ai_integration:

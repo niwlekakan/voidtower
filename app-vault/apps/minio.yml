@@ -17,7 +17,15 @@ compose:
       environment:
         - MINIO_ROOT_USER=admin
         - MINIO_ROOT_PASSWORD=changeme123
+        - MINIO_BROWSER_REDIRECT_URL=http://minio.local
+        - VIRTUAL_HOST=minio.local
+        - VIRTUAL_PORT=9001
       command: server /data --console-address ":9001"
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - minio
   volumes:
     minio_data:
 links:

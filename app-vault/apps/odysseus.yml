@@ -23,8 +23,11 @@ compose:
         - ODYSSEUS_HOST=0.0.0.0
         - ODYSSEUS_PORT=7000
         - ODYSSEUS_DATA_DIR=/app/data
-        - LLM_API_BASE=${LLM_API_BASE:-http://host.docker.internal:8080/v1}
+        - LLM_API_BASE=${LLM_API_BASE:-http://ollama:11434/v1}
         - LLM_MODEL=${LLM_MODEL:-default}
+        - SEARXNG_BASE_URL=http://searxng:8080
+        - VIRTUAL_HOST=odysseus.local
+        - VIRTUAL_PORT=7000
         # Keep HuggingFace cache in the mounted path
         - HF_HOME=/root/.cache/huggingface
         # CUDA / GPU visibility for local embedding models (ChromaDB, sentence-transformers)
@@ -39,6 +42,11 @@ compose:
               - driver: nvidia
                 count: all
                 capabilities: [gpu]
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - odysseus
   volumes:
     odysseus_data: {}
     odysseus_chroma: {}

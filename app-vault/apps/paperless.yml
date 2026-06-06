@@ -19,9 +19,16 @@ compose:
         - PAPERLESS_REDIS=redis://paperless-redis:6379
         - PAPERLESS_SECRET_KEY=change-me-to-a-random-string
         - PAPERLESS_TIME_ZONE=UTC
+        - VIRTUAL_HOST=paperless.local
+        - VIRTUAL_PORT=8000
     paperless-redis:
       image: redis:7-alpine
       restart: unless-stopped
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - paperless
   volumes:
     paperless_data:
     paperless_media:

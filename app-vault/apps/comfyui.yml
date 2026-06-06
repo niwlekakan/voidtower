@@ -17,8 +17,15 @@ compose:
       environment:
         - NVIDIA_VISIBLE_DEVICES=all
         - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+        - VIRTUAL_HOST=comfyui.local
+        - VIRTUAL_PORT=8188
       devices:
         - /dev/dri:/dev/dri
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - comfyui
   volumes:
     comfyui_data:
 ai_integration:

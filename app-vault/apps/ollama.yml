@@ -18,8 +18,15 @@ compose:
         - NVIDIA_VISIBLE_DEVICES=all
         - NVIDIA_DRIVER_CAPABILITIES=compute,utility
         - OLLAMA_VULKAN=1
+        - VIRTUAL_HOST=ollama.local
+        - VIRTUAL_PORT=11434
       devices:
         - /dev/dri:/dev/dri
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - ollama
   volumes:
     ollama_data:
 ai_integration:

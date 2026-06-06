@@ -16,6 +16,13 @@ compose:
         - stirling_configs:/configs
       environment:
         - DOCKER_ENABLE_SECURITY=false
+        - VIRTUAL_HOST=pdf.local
+        - VIRTUAL_PORT=8080
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - stirling-pdf
   volumes:
     stirling_data: {}
     stirling_configs: {}

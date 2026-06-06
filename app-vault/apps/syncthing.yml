@@ -15,6 +15,14 @@ compose:
         - "22000:22000/udp"
       volumes:
         - syncthing_data:/var/syncthing
+      environment:
+        - VIRTUAL_HOST=syncthing.local
+        - VIRTUAL_PORT=8384
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - syncthing
   volumes:
     syncthing_data:
 links:

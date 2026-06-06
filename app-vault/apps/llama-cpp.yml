@@ -11,13 +11,15 @@ compose:
       restart: unless-stopped
       runtime: nvidia
       ports:
-        - "8080:8080"
+        - "8090:8080"
       volumes:
         - ~/.local/share/voidtower/models:/models:ro
         - ~/.cache/huggingface:/hf-cache:ro
       environment:
         - NVIDIA_VISIBLE_DEVICES=all
         - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+        - VIRTUAL_HOST=llama.local
+        - VIRTUAL_PORT=8080
       entrypoint:
         - /bin/sh
         - -c
@@ -50,6 +52,11 @@ compose:
               - driver: nvidia
                 count: all
                 capabilities: [gpu]
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - llama-cpp
 ai_integration:
   level: native
   description: "Odysseus uses llama.cpp as its primary local inference backend"

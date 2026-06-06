@@ -9,7 +9,7 @@ compose:
       image: outlinewiki/outline:latest
       restart: unless-stopped
       ports:
-        - "3000:3000"
+        - "3004:3000"
       volumes:
         - outline_data:/var/lib/outline/data
       environment:
@@ -17,8 +17,10 @@ compose:
         - UTILS_SECRET=changeme-another-random-string
         - DATABASE_URL=postgres://outline:outline@postgres/outline
         - REDIS_URL=redis://redis:6379
-        - URL=http://localhost:3000
+        - URL=http://outline.local
         - PORT=3000
+        - VIRTUAL_HOST=outline.local
+        - VIRTUAL_PORT=3000
     postgres:
       image: postgres:15
       restart: unless-stopped
@@ -31,6 +33,11 @@ compose:
     redis:
       image: redis:7
       restart: unless-stopped
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - outline
   volumes:
     outline_data:
     outline_postgres:

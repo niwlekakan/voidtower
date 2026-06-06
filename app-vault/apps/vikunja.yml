@@ -15,7 +15,14 @@ compose:
       environment:
         - VIKUNJA_DATABASE_TYPE=sqlite
         - VIKUNJA_SERVICE_JWTSECRET=changeme-random-secret
-        - VIKUNJA_SERVICE_FRONTENDURL=http://localhost:3456
+        - VIKUNJA_SERVICE_FRONTENDURL=http://tasks.local
+        - VIRTUAL_HOST=tasks.local
+        - VIRTUAL_PORT=3456
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - vikunja
   volumes:
     vikunja_data:
 links:

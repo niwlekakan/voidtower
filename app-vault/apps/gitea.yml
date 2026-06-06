@@ -10,13 +10,20 @@ compose:
       image: gitea/gitea:latest
       restart: unless-stopped
       ports:
-        - "3000:3000"
+        - "3002:3000"
         - "2222:22"
       volumes:
         - gitea_data:/data
       environment:
         - USER_UID=1000
         - USER_GID=1000
+        - VIRTUAL_HOST=gitea.local
+        - VIRTUAL_PORT=3000
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - gitea
   volumes:
     gitea_data:
 ai_integration:

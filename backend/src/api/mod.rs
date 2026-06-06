@@ -38,6 +38,7 @@ pub mod backups;
 pub mod capabilities;
 pub mod containers;
 pub mod diagnostics;
+pub mod events;
 pub mod files;
 pub mod firewall;
 pub mod metrics;
@@ -87,6 +88,8 @@ pub fn router(state: AppState) -> Router {
         // Metrics
         .route("/api/metrics/current", get(metrics::get_current))
         .route("/api/metrics/ws", get(metrics::ws_handler))
+        // Infrastructure event stream (SSE)
+        .route("/api/events/stream", get(events::stream_handler))
         // Services
         .route("/api/services", get(services::list))
         .route("/api/services/:name", get(services::get))

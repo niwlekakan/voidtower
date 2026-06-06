@@ -7,6 +7,7 @@ import {
   Key, Plus, Trash2, Copy, RefreshCw,
   ShieldAlert, ShieldCheck, PlugZap, Zap, BookOpen,
   AlertTriangle, CheckCircle, Clock, ChevronDown, ChevronUp,
+  Cpu,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -332,6 +333,112 @@ function TokensSection() {
 }
 
 // ---------------------------------------------------------------------------
+// MCP panel — shown inline when MCP is enabled
+// ---------------------------------------------------------------------------
+
+const MCP_TOOLS = [
+  { name: 'list_nodes',         description: 'List all VoidTower nodes with health status' },
+  { name: 'get_node_metrics',   description: 'Get current CPU/RAM/disk metrics for the local node' },
+  { name: 'list_containers',    description: 'List all Docker containers with status' },
+  { name: 'list_services',      description: 'List systemd services with active state' },
+  { name: 'list_alerts',        description: 'List active alerts' },
+  { name: 'get_container_logs', description: 'Get recent logs for a container (requires container_id)' },
+]
+
+function McpPanel() {
+  const [copied, setCopied] = useState<string | null>(null)
+  const [showTools, setShowTools] = useState(false)
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8743'
+
+  const claudeConfig = JSON.stringify({
+    mcpServers: {
+      voidtower: {
+        url: `${origin}/api/mcp`,
+        headers: { Authorization: 'Bearer <your-api-token>' },
+      },
+    },
+  }, null, 2)
+
+  const copy = (key: string, text: string) => {
+    navigator.clipboard.writeText(text)
+    setCopied(key)
+    setTimeout(() => setCopied(null), 2000)
+  }
+
+  return (
+    <div className="border border-violet-500/20 bg-violet-500/5 rounded-lg p-4 space-y-4">
+      <div className="flex items-center gap-2 text-sm font-medium text-violet-300">
+        <Cpu size={14} />
+        MCP server is active
+      </div>
+
+      {/* Endpoints */}
+      <div className="space-y-2">
+        <div className="text-xs text-zinc-400 font-medium">Endpoints</div>
+        {[
+          { label: 'SSE (initialise)',  url: `${origin}/api/mcp` },
+          { label: 'Messages',          url: `${origin}/api/mcp/message` },
+        ].map(({ label, url }) => (
+          <div key={label} className="flex items-center justify-between gap-2 bg-zinc-800 rounded px-3 py-1.5">
+            <span className="text-xs text-zinc-400 shrink-0">{label}</span>
+            <span className="text-xs font-mono text-zinc-200 truncate">{url}</span>
+            <button
+              className="shrink-0 text-zinc-500 hover:text-zinc-300"
+              onClick={() => copy(label, url)}
+              title="Copy URL"
+            >
+              <Copy size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Claude Code / claude.json snippet */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-xs text-zinc-400 font-medium">Claude Code config snippet</span>
+          <button
+            className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
+            onClick={() => copy('claude', claudeConfig)}
+          >
+            <Copy size={11} />
+            {copied === 'claude' ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+        <pre className="bg-zinc-800 rounded px-3 py-2 text-xs font-mono text-green-400 overflow-x-auto whitespace-pre">
+          {claudeConfig}
+        </pre>
+        <p className="text-xs text-zinc-500 mt-1.5">
+          Paste into <code className="bg-zinc-800 px-1 rounded">.claude/settings.json</code> → <code className="bg-zinc-800 px-1 rounded">mcpServers</code>. Replace the token with any valid API token.
+        </p>
+      </div>
+
+      {/* Tool list */}
+      <div>
+        <button
+          className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200"
+          onClick={() => setShowTools(p => !p)}
+        >
+          {showTools ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          {MCP_TOOLS.length} tools available
+        </button>
+        {showTools && (
+          <div className="mt-2 space-y-1">
+            {MCP_TOOLS.map(t => (
+              <div key={t.name} className="flex items-start gap-2 text-xs">
+                <span className="font-mono text-violet-300 shrink-0">{t.name}</span>
+                <span className="text-zinc-500">{t.description}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Odysseus config section
 // ---------------------------------------------------------------------------
 
@@ -394,7 +501,7 @@ function OdysseusSection() {
         </button>
       </div>
 
-      {/* MCP server (placeholder) */}
+      {/* MCP server toggle */}
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-medium">MCP server</div>
@@ -408,6 +515,9 @@ function OdysseusSection() {
           <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${cfg.mcp_enabled && cfg.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
         </button>
       </div>
+
+      {/* MCP endpoint info — only shown when active */}
+      {cfg.mcp_enabled && cfg.enabled && <McpPanel />}
 
       {/* Odysseus base URL */}
       <div>

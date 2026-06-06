@@ -223,11 +223,6 @@ fn nginx_active() -> bool {
         .unwrap_or(false)
 }
 
-fn nginx_available() -> bool {
-    docker_nginx_container_id().is_some()
-        || (which("nginx") && (nginx_test_ok() || nginx_active()))
-}
-
 fn reload_nginx() -> std::result::Result<String, String> {
     // Docker mode: reload nginx inside the running nginx-proxy container
     if let Some(id) = docker_nginx_container_id() {

@@ -64,6 +64,7 @@ pub mod updates;
 pub mod totp;
 pub mod mods;
 pub mod webhooks;
+pub mod mcp;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -271,6 +272,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mods/diff",         get(mods::get_diff))
         .route("/api/mods/apply",        post(mods::apply_mod))
         .route("/api/mods/rollback",     post(mods::rollback_mod))
+        // MCP (Model Context Protocol) server
+        .route("/api/mcp",         get(mcp::sse_handler))
+        .route("/api/mcp/message", post(mcp::message_handler))
         // Notification webhooks
         .route("/api/webhooks",           get(webhooks::list).post(webhooks::create))
         .route("/api/webhooks/:id",       patch(webhooks::update).delete(webhooks::delete))

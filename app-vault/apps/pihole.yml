@@ -9,10 +9,16 @@ compose:
     pihole:
       image: pihole/pihole:latest
       restart: unless-stopped
+      # Port 53 may conflict with systemd-resolved on modern Linux.
+      # If deploy fails with "address already in use", disable the stub:
+      #   sudo systemctl disable --now systemd-resolved
+      # or change the host-side port from 53 to 5353 here.
       ports:
         - "53:53/tcp"
         - "53:53/udp"
         - "8053:80"
+      cap_add:
+        - NET_ADMIN
       volumes:
         - pihole_etc:/etc/pihole
         - pihole_dnsmasq:/etc/dnsmasq.d

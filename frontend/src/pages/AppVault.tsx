@@ -81,24 +81,156 @@ function ListInput({ label, placeholder, items, onChange }: {
   )
 }
 
+// Pair [host, container] — joined with ':' before submit
+function PairInput({ label, hostPlaceholder, containerPlaceholder, pairs, onChange, validateHost }: {
+  label: string
+  hostPlaceholder: string
+  containerPlaceholder: string
+  pairs: [string, string][]
+  onChange: (pairs: [string, string][]) => void
+  validateHost?: (val: string) => string | null
+}) {
+  const update = (i: number, side: 0 | 1, val: string) => {
+    const next = pairs.map((p) => [...p] as [string, string])
+    next[i][side] = val
+    onChange(next)
+  }
+  const remove = (i: number) => onChange(pairs.filter((_, idx) => idx !== i))
+  const add    = () => onChange([...pairs, ['', '']])
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>{label}</label>
+        <button onClick={add} className="flex items-center gap-1 text-xs hover:opacity-80" style={{ color: 'var(--accent-primary)' }}>
+          <Plus size={11} /> Add
+        </button>
+      </div>
+      {pairs.map(([host, container], i) => {
+        const hostErr = validateHost ? validateHost(host) : null
+        return (
+          <div key={i} className="mb-1 space-y-0.5">
+            <div className="flex items-center gap-1">
+              <input
+                value={host} onChange={e => update(i, 0, e.target.value)}
+                placeholder={hostPlaceholder}
+                className="flex-1 px-2 py-1 rounded text-xs font-mono"
+                style={{
+                  background: 'var(--bg-input)',
+                  border: `1px solid ${hostErr ? 'var(--accent-danger)' : 'var(--border-subtle)'}`,
+                  color: 'var(--text-primary)',
+                }}
+              />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>→</span>
+              <input
+                value={container} onChange={e => update(i, 1, e.target.value)}
+                placeholder={containerPlaceholder}
+                className="flex-1 px-2 py-1 rounded text-xs font-mono"
+                style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}
+              />
+              <button onClick={() => remove(i)} className="px-1 hover:opacity-70" style={{ color: 'var(--text-muted)' }}>
+                <X size={12} />
+              </button>
+            </div>
+            {hostErr && <p className="text-xs pl-1" style={{ color: 'var(--accent-danger)' }}>{hostErr}</p>}
+          </div>
+        )
+      })}
+      {pairs.length === 0 && (
+        <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>None — click Add to set one</p>
+      )}
+    </div>
+  )
+}
+
+function validatePortNumber(val: string): string | null {
+  if (val === '') return null
+  const n = Number(val)
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return 'Port must be 1–65535'
+  return null
+}
+
+function validateName(val: string): string | null {
+  if (val === '') return null
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(val)) return 'Lowercase letters, numbers, hyphens only; must start with a letter or digit'
+  return null
+}
+
+const RESTART_POLICIES = ['unless-stopped', 'always', 'on-failure', 'no'] as const
+type RestartPolicy = (typeof RESTART_POLICIES)[number]
+
+function buildYamlPreview(
+  name: string,
+  image: string,
+  ports: [string, string][],
+  volumes: [string, string][],
+  env: string[],
+  restartPolicy: RestartPolicy,
+  joinVtProxy: boolean,
+): string {
+  const lines: string[] = ['services:']
+  const svcName = name.trim() || '<name>'
+  lines.push(`  ${svcName}:`)
+  lines.push(`    image: ${image.trim() || '<image>'}`)
+  lines.push(`    restart: ${restartPolicy}`)
+
+  const validPorts = ports.filter(([h, c]) => h && c).map(([h, c]) => `${h}:${c}`)
+  if (validPorts.length > 0) {
+    lines.push('    ports:')
+    validPorts.forEach(p => lines.push(`      - "${p}"`))
+  }
+
+  const validVols = volumes.filter(([h, c]) => h && c).map(([h, c]) => `${h}:${c}`)
+  if (validVols.length > 0) {
+    lines.push('    volumes:')
+    validVols.forEach(v => lines.push(`      - ${v}`))
+  }
+
+  const validEnv = env.filter(Boolean)
+  if (validEnv.length > 0) {
+    lines.push('    environment:')
+    validEnv.forEach(e => lines.push(`      - ${e}`))
+  }
+
+  if (joinVtProxy) {
+    lines.push('    networks:')
+    lines.push('      - vt-proxy')
+  }
+
+  if (joinVtProxy) {
+    lines.push('')
+    lines.push('networks:')
+    lines.push('  vt-proxy:')
+    lines.push('    external: true')
+  }
+
+  return lines.join('\n')
+}
+
 function CustomDeployTab({ onDeployed }: { onDeployed: () => void }) {
-  const [image,   setImage]   = useState('')
-  const [name,    setName]    = useState('')
-  const [ports,   setPorts]   = useState<string[]>([])
-  const [volumes, setVolumes] = useState<string[]>([])
-  const [env,     setEnv]     = useState<string[]>([])
-  const [busy,    setBusy]    = useState(false)
-  const [err,     setErr]     = useState<string | null>(null)
-  const [done,    setDone]    = useState<string | null>(null)
+  const [image,         setImage]         = useState('')
+  const [name,          setName]          = useState('')
+  const [ports,         setPorts]         = useState<[string, string][]>([])
+  const [volumes,       setVolumes]       = useState<[string, string][]>([])
+  const [env,           setEnv]           = useState<string[]>([])
+  const [restartPolicy, setRestartPolicy] = useState<RestartPolicy>('unless-stopped')
+  const [joinVtProxy,   setJoinVtProxy]   = useState(true)
+  const [busy,          setBusy]          = useState(false)
+  const [err,           setErr]           = useState<string | null>(null)
+  const [done,          setDone]          = useState<string | null>(null)
+
+  const nameErr  = validateName(name)
+  const portErrs = ports.map(([h]) => validatePortNumber(h))
+  const hasValidationErrors = !!nameErr || portErrs.some(Boolean)
 
   const deploy = async () => {
     if (!image.trim() || !name.trim()) { setErr('Image and name are required'); return }
+    if (hasValidationErrors) { setErr('Fix validation errors before deploying'); return }
     setBusy(true); setErr(null); setDone(null)
     try {
       const res = await api.apps.deployCustom({
         name: name.trim(), image: image.trim(),
-        ports: ports.filter(Boolean),
-        volumes: volumes.filter(Boolean),
+        ports:   ports.filter(([h, c]) => h && c).map(([h, c]) => `${h}:${c}`),
+        volumes: volumes.filter(([h, c]) => h && c).map(([h, c]) => `${h}:${c}`),
         env: env.filter(Boolean),
       })
       setDone(res.project_name)
@@ -107,8 +239,10 @@ function CustomDeployTab({ onDeployed }: { onDeployed: () => void }) {
     finally { setBusy(false) }
   }
 
+  const yaml = buildYamlPreview(name, image, ports, volumes, env, restartPolicy, joinVtProxy)
+
   return (
-    <div className="max-w-xl space-y-4">
+    <div className="max-w-2xl space-y-4">
       <div>
         <h2 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Deploy any Docker image</h2>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -117,6 +251,7 @@ function CustomDeployTab({ onDeployed }: { onDeployed: () => void }) {
       </div>
 
       <div className="space-y-3 p-4 rounded-lg" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)' }}>
+        {/* Image */}
         <div>
           <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Image <span style={{ color: 'var(--accent-danger)' }}>*</span></label>
           <input value={image} onChange={e => setImage(e.target.value)}
@@ -125,23 +260,95 @@ function CustomDeployTab({ onDeployed }: { onDeployed: () => void }) {
             style={{ background: 'var(--bg-input)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
           />
         </div>
+
+        {/* Name */}
         <div>
           <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Name <span style={{ color: 'var(--accent-danger)' }}>*</span></label>
           <input value={name} onChange={e => setName(e.target.value)}
             placeholder="my-nginx"
             className="w-full px-3 py-2 rounded text-sm"
-            style={{ background: 'var(--bg-input)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+            style={{
+              background: 'var(--bg-input)',
+              border: `1px solid ${nameErr ? 'var(--accent-danger)' : 'var(--border-default)'}`,
+              color: 'var(--text-primary)',
+            }}
           />
+          {nameErr && <p className="text-xs mt-0.5 pl-1" style={{ color: 'var(--accent-danger)' }}>{nameErr}</p>}
         </div>
-        <ListInput label="Ports"    placeholder="8080:80"       items={ports}   onChange={setPorts}   />
-        <ListInput label="Volumes"  placeholder="/data:/data"   items={volumes} onChange={setVolumes} />
-        <ListInput label="Env vars" placeholder="KEY=value"     items={env}     onChange={setEnv}     />
+
+        {/* Restart policy */}
+        <div>
+          <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Restart policy</label>
+          <select
+            value={restartPolicy}
+            onChange={e => setRestartPolicy(e.target.value as RestartPolicy)}
+            className="w-full px-3 py-2 rounded text-sm"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+          >
+            {RESTART_POLICIES.map(p => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* vt-proxy checkbox */}
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={joinVtProxy}
+            onChange={e => setJoinVtProxy(e.target.checked)}
+            className="rounded"
+            style={{ accentColor: 'var(--accent-primary)' }}
+          />
+          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            Join <code className="font-mono text-xs" style={{ color: 'var(--accent-primary)' }}>vt-proxy</code> network
+          </span>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>(recommended for reverse-proxy access)</span>
+        </label>
+
+        {/* Ports */}
+        <PairInput
+          label="Ports"
+          hostPlaceholder="8080"
+          containerPlaceholder="80"
+          pairs={ports}
+          onChange={setPorts}
+          validateHost={validatePortNumber}
+        />
+
+        {/* Volumes */}
+        <PairInput
+          label="Volumes"
+          hostPlaceholder="/host/path"
+          containerPlaceholder="/container/path"
+          pairs={volumes}
+          onChange={setVolumes}
+        />
+
+        <ListInput label="Env vars" placeholder="KEY=value" items={env} onChange={setEnv} />
+      </div>
+
+      {/* YAML preview */}
+      <div>
+        <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Compose preview</p>
+        <pre
+          className="text-xs font-mono rounded p-3 overflow-x-auto whitespace-pre"
+          style={{
+            background: 'var(--terminal-bg, var(--bg-elevated))',
+            color: 'var(--terminal-green, var(--text-secondary))',
+            border: '1px solid var(--border-subtle)',
+            maxHeight: 260,
+            overflowY: 'auto',
+          }}
+        >
+          {yaml}
+        </pre>
       </div>
 
       {err  && <p className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-danger)18', color: 'var(--accent-danger)', border: '1px solid var(--accent-danger)44' }}>{err}</p>}
       {done && <p className="text-xs px-3 py-2 rounded" style={{ background: '#22c55e18', color: '#22c55e', border: '1px solid #22c55e44' }}>Deployed as <code>{done}</code> — check the Deployed tab.</p>}
 
-      <button onClick={deploy} disabled={busy || !image.trim() || !name.trim()}
+      <button onClick={deploy} disabled={busy || !image.trim() || !name.trim() || hasValidationErrors}
         className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
         style={{ background: 'var(--accent-primary)', color: '#fff' }}>
         {busy ? <Loader2 size={14} className="animate-spin" /> : <Box size={14} />}

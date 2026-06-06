@@ -12,8 +12,9 @@ compose:
         - "8080:80"
         - "8443:443"
       volumes:
-        # Docker socket lets nginx-proxy auto-discover containers with VIRTUAL_HOST set
         - /var/run/docker.sock:/tmp/docker.sock:ro
+        # Bind-mounted so VoidTower proxy manager can write configs here directly
+        - /var/lib/voidtower/nginx/conf.d:/etc/nginx/conf.d
         - nginx_certs:/etc/nginx/certs
         - nginx_vhost:/etc/nginx/vhost.d
         - nginx_html:/usr/share/nginx/html

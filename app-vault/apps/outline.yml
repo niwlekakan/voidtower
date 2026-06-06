@@ -41,6 +41,11 @@ compose:
   volumes:
     outline_data:
     outline_postgres:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://www.getoutline.com
   docs: https://docs.getoutline.com/s/hosting

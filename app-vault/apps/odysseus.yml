@@ -50,6 +50,11 @@ compose:
   volumes:
     odysseus_data: {}
     odysseus_chroma: {}
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: native
   description: "This IS the AI — Odysseus is the VoidTower AI agent itself"

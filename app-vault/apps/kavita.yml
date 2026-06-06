@@ -25,6 +25,11 @@ compose:
   volumes:
     kavita_data:
     kavita_books:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://www.kavitareader.com
   docs: https://wiki.kavitareader.com

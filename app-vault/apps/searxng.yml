@@ -35,6 +35,11 @@ compose:
             - searxng
   volumes:
     searxng_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://searxng.github.io/searxng
   docs: https://docs.searxng.org

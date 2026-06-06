@@ -26,6 +26,11 @@ compose:
             - mealie
   volumes:
     mealie_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://mealie.io
   docs: https://docs.mealie.io

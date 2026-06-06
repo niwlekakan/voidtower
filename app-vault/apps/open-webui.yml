@@ -29,6 +29,11 @@ compose:
             - open-webui
   volumes:
     open_webui_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: native
   description: "Odysseus can read chat history and route queries through Open WebUI"

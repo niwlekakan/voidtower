@@ -28,6 +28,11 @@ compose:
             - code-server
   volumes:
     code_server_config:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: native
   description: "Odysseus can open files, run terminal commands, and manage the workspace"

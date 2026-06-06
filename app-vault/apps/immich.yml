@@ -40,6 +40,11 @@ compose:
   volumes:
     immich_upload:
     immich_db:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: aware
   description: "Odysseus can read photo library stats and recent uploads"

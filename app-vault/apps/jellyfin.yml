@@ -25,6 +25,11 @@ compose:
   volumes:
     jellyfin_config:
     jellyfin_cache:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: aware
   description: "Odysseus can read library stats and active playback sessions"

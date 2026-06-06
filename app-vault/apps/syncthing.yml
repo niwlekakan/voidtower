@@ -25,6 +25,11 @@ compose:
             - syncthing
   volumes:
     syncthing_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://syncthing.net
   docs: https://docs.syncthing.net

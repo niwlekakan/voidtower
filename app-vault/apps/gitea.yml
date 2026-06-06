@@ -26,6 +26,11 @@ compose:
             - gitea
   volumes:
     gitea_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: native
   description: "Odysseus can manage repositories, issues, branches, and webhooks"

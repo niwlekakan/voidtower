@@ -25,6 +25,11 @@ compose:
             - vaultwarden
   volumes:
     vaultwarden_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://github.com/dani-garcia/vaultwarden
   docs: https://github.com/dani-garcia/vaultwarden/wiki

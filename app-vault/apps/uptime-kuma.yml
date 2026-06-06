@@ -22,6 +22,11 @@ compose:
             - uptime-kuma
   volumes:
     uptime_kuma_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: aware
   description: "Odysseus can read uptime status, incidents, and monitor health"

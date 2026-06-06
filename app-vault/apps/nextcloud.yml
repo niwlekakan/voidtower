@@ -24,6 +24,11 @@ compose:
             - nextcloud
   volumes:
     nextcloud_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: aware
   description: "Odysseus can read file metadata, calendar events, and contacts"

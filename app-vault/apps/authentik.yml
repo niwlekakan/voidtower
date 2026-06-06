@@ -62,6 +62,11 @@ compose:
     authentik_db:
     authentik_media:
     authentik_certs:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: aware
   description: "Odysseus can read user sessions and authentication events"

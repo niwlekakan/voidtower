@@ -29,6 +29,11 @@ compose:
             - ollama
   volumes:
     ollama_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: native
   description: "Odysseus can list, pull, delete, and query Ollama models directly"

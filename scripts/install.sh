@@ -716,7 +716,7 @@ User=${VT_USER}
 Group=${VT_GROUP}
 Environment=LD_LIBRARY_PATH=${VT_INSTALL_DIR}/llama.cpp
 ExecStart=${VT_INSTALL_DIR}/llama.cpp/llama-server \
-  --model ${MODEL_PATH} --host 127.0.0.1 --port 8080 \
+  --model ${MODEL_PATH} --host 127.0.0.1 --port 8090 \
   --ctx-size 4096 --n-gpu-layers ${N_GPU_LAYERS} --threads ${N_THREADS} --log-disable
 Restart=on-failure
 RestartSec=10
@@ -728,7 +728,7 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable voidtower-llama.service
-  success "llama-server service installed (port 8080)"
+  success "llama-server service installed (port 8090)"
 }
 
 write_llm_config() {
@@ -1301,10 +1301,10 @@ setup_ai_legacy() {
   echo -e "  [1] Download recommended  [2] Choose model  [3] Remote endpoint  [4] Skip"
   local choice; read -rp "  Choice [1-4]: " choice
   case "${choice:-4}" in
-    1) download_llama_cpp && download_model && { install_llama_service; write_llm_config "http://127.0.0.1:8080/v1" "$MODEL_NAME"; AI_SETUP_DONE=true; } ;;
+    1) download_llama_cpp && download_model && { install_llama_service; write_llm_config "http://127.0.0.1:8090/v1" "$MODEL_NAME"; AI_SETUP_DONE=true; } ;;
     2) echo -e "  [1] Qwen2.5 3B  [2] Mistral 7B  [3] Llama3.1 8B  [4] Qwen2.5 14B  [5] Llama3.3 70B"
        local mc; read -rp "  Model: " mc; _set_model "${mc:-2}"
-       download_llama_cpp && download_model && { install_llama_service; write_llm_config "http://127.0.0.1:8080/v1" "$MODEL_NAME"; AI_SETUP_DONE=true; } ;;
+       download_llama_cpp && download_model && { install_llama_service; write_llm_config "http://127.0.0.1:8090/v1" "$MODEL_NAME"; AI_SETUP_DONE=true; } ;;
     3) read -rp "  llama.cpp URL: " LLM_REMOTE_URL
        [[ -n "$LLM_REMOTE_URL" ]] && { write_llm_config "${LLM_REMOTE_URL}/v1" "remote"; AI_SETUP_DONE=true; } ;;
   esac

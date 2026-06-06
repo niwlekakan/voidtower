@@ -25,6 +25,11 @@ compose:
             - vikunja
   volumes:
     vikunja_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://vikunja.io
   docs: https://vikunja.io/docs

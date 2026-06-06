@@ -25,6 +25,11 @@ compose:
             - matrix
   volumes:
     synapse_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://matrix.org
   docs: https://element-hq.github.io/synapse/latest

@@ -57,6 +57,11 @@ compose:
         vt-proxy:
           aliases:
             - llama-cpp
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: native
   description: "Odysseus uses llama.cpp as its primary local inference backend"

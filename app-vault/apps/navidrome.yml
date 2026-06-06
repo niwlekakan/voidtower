@@ -25,6 +25,11 @@ compose:
             - navidrome
   volumes:
     navidrome_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://www.navidrome.org
   docs: https://www.navidrome.org/docs

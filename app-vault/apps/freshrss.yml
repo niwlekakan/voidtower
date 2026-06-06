@@ -26,6 +26,11 @@ compose:
   volumes:
     freshrss_data:
     freshrss_ext:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://freshrss.org
   docs: https://freshrss.github.io/FreshRSS/en

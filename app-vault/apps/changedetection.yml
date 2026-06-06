@@ -23,6 +23,11 @@ compose:
             - changedetection
   volumes:
     changedetection_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://changedetection.io
   docs: https://github.com/dgtlmoon/changedetection.io/wiki

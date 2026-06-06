@@ -28,6 +28,11 @@ compose:
             - minio
   volumes:
     minio_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://min.io
   docs: https://min.io/docs

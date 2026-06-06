@@ -21,6 +21,11 @@ compose:
         vt-proxy:
           aliases:
             - dozzle
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://dozzle.dev
   docs: https://dozzle.dev/guide

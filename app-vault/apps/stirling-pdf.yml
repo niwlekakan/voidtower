@@ -26,5 +26,10 @@ compose:
   volumes:
     stirling_data: {}
     stirling_configs: {}
+
+  networks:
+    vt-proxy:
+      external: true
+
 links:
   home: https://github.com/Stirling-Tools/Stirling-PDF

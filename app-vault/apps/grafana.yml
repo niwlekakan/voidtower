@@ -25,6 +25,11 @@ compose:
             - grafana
   volumes:
     grafana_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: aware
   description: "Odysseus can read dashboard alerts and annotation history"

@@ -27,6 +27,11 @@ compose:
             - n8n
   volumes:
     n8n_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
 ai_integration:
   level: aware
   description: "Odysseus can trigger n8n workflows via webhook"

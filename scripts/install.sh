@@ -900,6 +900,9 @@ EOF
       "${ODYSSEUS_INSTALL_DIR}/venv/bin/python" setup.py 2>/dev/null) \
       && success "Odysseus admin user created" \
       || warn "Odysseus setup.py failed — login may not work on first run"
+    # setup.py runs as root — fix ownership so the odysseus user can write
+    chown -R "${ODYSSEUS_USER}:${ODYSSEUS_USER}" \
+      "$ODYSSEUS_INSTALL_DIR" "$ODYSSEUS_DATA_DIR" "$ODYSSEUS_CONFIG_DIR" 2>/dev/null || true
   fi
 
   # systemd service

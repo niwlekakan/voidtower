@@ -883,6 +883,21 @@ EOF
     chown -h "${ODYSSEUS_USER}:${ODYSSEUS_USER}" "${ODYSSEUS_INSTALL_DIR}/data"
   fi
 
+  # Bootstrap admin user from env vars — setup.py writes data/auth.json
+  if [[ ! -f "${ODYSSEUS_DATA_DIR}/auth.json" ]]; then
+    info "Creating Odysseus admin user…"
+    local _admin_user _admin_pass
+    _admin_user=$(grep "^ODYSSEUS_ADMIN_USER=" "${ODYSSEUS_INSTALL_DIR}/.env" | cut -d= -f2-)
+    _admin_pass=$(grep "^ODYSSEUS_ADMIN_PASSWORD=" "${ODYSSEUS_INSTALL_DIR}/.env" | cut -d= -f2-)
+    (cd "$ODYSSEUS_INSTALL_DIR" && \
+      ODYSSEUS_ADMIN_USER="$_admin_user" \
+      ODYSSEUS_ADMIN_PASSWORD="$_admin_pass" \
+      ODYSSEUS_SKIP_RUN_HINT=1 \
+      "${ODYSSEUS_INSTALL_DIR}/venv/bin/python" setup.py 2>/dev/null) \
+      && success "Odysseus admin user created" \
+      || warn "Odysseus setup.py failed — login may not work on first run"
+  fi
+
   # systemd service
   if [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]]; then
     cat > "${SYSTEMD_DIR}/odysseus.service" <<EOF

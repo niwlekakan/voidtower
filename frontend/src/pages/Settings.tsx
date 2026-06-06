@@ -252,6 +252,7 @@ function AIIntegrationsSection() {
   const [proxyPort, setProxyPort] = useState('7001')
   const [saving, setSaving] = useState(false)
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null)
+  const [nginxBackend, setNginxBackend] = useState<'docker' | 'system' | 'none'>('none')
 
   useEffect(() => {
     fetch('/api/settings/ai-url', { credentials: 'include' })
@@ -265,6 +266,12 @@ function AIIntegrationsSection() {
           }
           setProxyPort(String(s.port))
         }
+      })
+      .catch(() => {})
+    fetch('/api/proxy', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then((r: { nginx_backend?: string } | null) => {
+        if (r?.nginx_backend) setNginxBackend(r.nginx_backend as 'docker' | 'system' | 'none')
       })
       .catch(() => {})
   }, [])
@@ -345,13 +352,22 @@ function AIIntegrationsSection() {
             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
           />
           <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-            Odysseus, Open WebUI, or any AI frontend. VoidTower creates an nginx proxy so it embeds cleanly.
+            Odysseus, Open WebUI, or any AI frontend. VoidTower creates a reverse proxy
+            {nginxBackend === 'docker' ? ' (via nginx-proxy Docker container)' : nginxBackend === 'system' ? ' (via system nginx)' : ''}{' '}
+            so it embeds cleanly.
           </p>
         </div>
 
         <div>
           <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-            Proxy port <span style={{ color: 'var(--text-muted)' }}>(nginx listens here, must be reachable from your browser)</span>
+            Proxy port{' '}
+            <span style={{ color: 'var(--text-muted)' }}>
+              {nginxBackend === 'docker'
+                ? '(nginx-proxy Docker container listens here — default 8080)'
+                : nginxBackend === 'system'
+                ? '(nginx listens here, must be reachable from your browser)'
+                : '(deploy nginx-proxy from App Vault to enable proxy embedding)'}
+            </span>
           </label>
           <input
             type="number"
@@ -362,6 +378,13 @@ function AIIntegrationsSection() {
             className="w-32 px-3 py-2 rounded text-sm outline-none font-mono"
             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
           />
+          {nginxBackend === 'none' && (
+            <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+              No reverse proxy detected.{' '}
+              <a href="/apps" style={{ color: 'var(--accent-primary)' }}>Deploy nginx-proxy from App Vault</a>{' '}
+              or install system nginx to enable AI workspace embedding.
+            </p>
+          )}
         </div>
 
         <div>

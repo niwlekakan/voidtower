@@ -152,7 +152,7 @@ export const api = {
 
   proxy: {
     list: () =>
-      request<{ proxies: import('./types').ProxyConfig[]; nginx_available: boolean; sites_dir: string }>('/api/proxy'),
+      request<{ proxies: import('./types').ProxyConfig[]; nginx_available: boolean; nginx_backend: 'docker' | 'system' | 'none'; sites_dir: string }>('/api/proxy'),
     create: (domain: string, upstream: string, ssl: boolean, allow_embed = false) =>
       request<{ ok: boolean; id: string; nginx: string }>('/api/proxy', {
         method: 'POST',

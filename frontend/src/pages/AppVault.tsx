@@ -629,7 +629,22 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
 
 function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedApp[]; catalogApps: AppDef[]; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState<string | null>(null)
-  const embedOpen = useEmbedStore(s => s.open)
+  const embedOpen  = useEmbedStore(s => s.open)
+  const embedApp   = useEmbedStore(s => s.app)
+  const listRef    = useRef<HTMLDivElement>(null)
+  const savedScroll = useRef<number>(0)
+
+  // Save scroll position before opening overlay; restore when overlay closes
+  const openEmbed = (app: DeployedApp, def: ReturnType<typeof useEmbedStore.getState>['def']) => {
+    savedScroll.current = listRef.current?.scrollTop ?? 0
+    embedOpen(app, def!)
+  }
+
+  useEffect(() => {
+    if (embedApp === null && savedScroll.current > 0 && listRef.current) {
+      listRef.current.scrollTop = savedScroll.current
+    }
+  }, [embedApp])
 
   if (deployed.length === 0) {
     return (
@@ -640,7 +655,7 @@ function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedA
   }
 
   return (
-    <div className="space-y-2">
+    <div ref={listRef} className="space-y-2" style={{ overflowY: 'auto' }}>
       {deployed.map(app => {
         const open = expanded === app.project_name
         const running = app.status === 'running'
@@ -685,7 +700,7 @@ function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedA
                 </div>
               </div>
 
-              {running && app.primary_port !== null && (
+              {running && app.primary_port !== null && !catalogApps.find(d => d.id === app.app_id)?.no_web_ui && (
                 <button
                   onClick={e => {
                     e.stopPropagation()
@@ -693,7 +708,7 @@ function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedA
                       id: app.app_id, name: app.app_name, description: '', category: '',
                       icon: '', version_hint: '', links: {},
                     }
-                    embedOpen(app, def)
+                    openEmbed(app, def)
                   }}
                   className="flex items-center gap-1 text-xs px-2 py-1 rounded transition-opacity hover:opacity-80"
                   style={{

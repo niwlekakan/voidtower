@@ -145,6 +145,7 @@ export interface AppDef {
   version_hint: string
   links: Record<string, string>
   ai_integration?: { level: 'native' | 'aware'; description: string }
+  no_web_ui?: boolean
 }
 
 export interface DeployedApp {

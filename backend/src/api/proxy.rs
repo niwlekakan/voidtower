@@ -453,6 +453,14 @@ fn check_nginx_setup() -> NginxSetupStatus {
     }
 }
 
+// ─── Public wrappers for use by other modules ────────────────────────────────
+
+pub fn nginx_active_pub() -> bool { nginx_active() }
+pub fn write_nginx_conf_pub(domain: &str, upstream: &str, ssl: bool, allow_embed: bool) -> Result<()> {
+    write_nginx_conf(domain, upstream, ssl, allow_embed)
+}
+pub fn reload_nginx_pub() -> std::result::Result<String, String> { reload_nginx() }
+
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 pub async fn nginx_setup_status(

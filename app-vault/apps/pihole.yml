@@ -50,3 +50,4 @@ ai_integration:
 links:
   home: https://pi-hole.net
   docs: https://docs.pi-hole.net
+  web_ui: /admin/

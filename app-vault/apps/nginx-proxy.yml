@@ -3,6 +3,7 @@ name: Nginx Proxy
 description: Auto-configuring reverse proxy -- exposes Pi-hole, AdGuard, WireGuard and other apps behind clean virtual-host URLs
 category: networking
 version_hint: "latest"
+no_web_ui: true
 compose:
   services:
     nginx-proxy:

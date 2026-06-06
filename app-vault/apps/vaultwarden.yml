@@ -33,3 +33,4 @@ compose:
 links:
   home: https://github.com/dani-garcia/vaultwarden
   docs: https://github.com/dani-garcia/vaultwarden/wiki
+  web_ui: /

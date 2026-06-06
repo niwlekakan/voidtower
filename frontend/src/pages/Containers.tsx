@@ -7,6 +7,7 @@ import { notify } from '@/store/notifications'
 import Button from '@/components/ui/Button'
 import LogViewer from '@/components/ui/LogViewer'
 import { TagPill } from '@/components/ui/TagPill'
+import SendToOdysseus from '@/components/ui/SendToOdysseus'
 
 function TagPopover({ resourceId, allTags, assigned, onClose }: {
   resourceId: string; allTags: Tag[]; assigned: Tag[]; onClose: () => void
@@ -233,7 +234,7 @@ export default function ContainersPage() {
                       ))}
                     </td>
                     <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 flex-wrap">
                         {isRunning ? (
                           <Button size="sm" variant="ghost" loading={actionLoading === `${actionKey}stop`}
                             onClick={() => doAction(c, 'stop')}>Stop</Button>
@@ -244,6 +245,9 @@ export default function ContainersPage() {
                         <Button size="sm" variant="ghost" loading={actionLoading === `${actionKey}restart`}
                           onClick={() => doAction(c, 'restart')}>Restart</Button>
                         <Button size="sm" variant="ghost" onClick={() => openLogs(c)}>Logs</Button>
+                        <SendToOdysseus
+                          context={`Container: ${c.name} (${c.short_id})\nImage: ${c.image}\nState: ${c.state} — ${c.status}${c.ports.filter(p => p.host_port).length ? `\nPorts: ${c.ports.filter(p => p.host_port).map(p => `${p.host_port}:${p.container_port}/${p.protocol}`).join(', ')}` : ''}`}
+                        />
                       </div>
                     </td>
                   </tr>

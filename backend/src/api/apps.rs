@@ -38,6 +38,11 @@ pub struct AppDef {
     pub ai_integration: Option<AiIntegration>,
     #[serde(default)]
     pub no_web_ui: bool,
+    /// If set, VoidTower checks for a marker file at
+    /// `/var/lib/voidtower/.<value>-system-installed` before deploying.
+    /// If the marker exists the deploy is rejected with a port-conflict error.
+    #[serde(default)]
+    pub system_conflict_check: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -416,6 +421,27 @@ pub async fn deploy(
         .into_iter()
         .find(|a| a.id == req.app_id)
         .ok_or(AppError::NotFound)?;
+
+    // Refuse to deploy if a matching system service is installed on the host.
+    // The installer writes a marker file when it sets up Odysseus or Ollama as
+    // a systemd service; deploying the container would cause a port conflict.
+    if let Some(ref conflict_key) = app.system_conflict_check {
+        let marker = std::path::Path::new("/var/lib/voidtower")
+            .join(format!(".{}-system-installed", conflict_key));
+        if marker.exists() {
+            let port_hint = match conflict_key.as_str() {
+                "odysseus" => " (port 7000 conflict)",
+                "ollama"   => " (port 11434 conflict)",
+                _          => "",
+            };
+            return Err(AppError::BadRequest(format!(
+                "{} is already installed as a system service on this host{}. \
+                 Use the system service or remove it first with: \
+                 systemctl stop {conflict_key} && systemctl disable {conflict_key}",
+                app.name, port_hint,
+            )));
+        }
+    }
 
     let project_name = req
         .project_name

@@ -35,6 +35,11 @@ compose:
     vt-proxy:
       external: true
 
+# VoidTower will block deployment if the system service is detected (port 11434 conflict).
+# To use the Docker version instead, first remove the system service:
+#   systemctl stop ollama && systemctl disable ollama
+system_conflict_check: ollama
+
 ai_integration:
   level: native
   description: "Odysseus can list, pull, delete, and query Ollama models directly"

@@ -55,6 +55,11 @@ compose:
     vt-proxy:
       external: true
 
+# VoidTower will block deployment if the system service is detected (port 7000 conflict).
+# To use the Docker version instead, first remove the system service:
+#   systemctl stop odysseus && systemctl disable odysseus
+system_conflict_check: odysseus
+
 ai_integration:
   level: native
   description: "This IS the AI — Odysseus is the VoidTower AI agent itself"

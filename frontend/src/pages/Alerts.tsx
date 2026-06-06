@@ -3,6 +3,7 @@ import { api } from '@/api/client'
 import type { Alert } from '@/api/types'
 import { notify } from '@/store/notifications'
 import Button from '@/components/ui/Button'
+import SendToOdysseus from '@/components/ui/SendToOdysseus'
 
 function severityColor(severity: string): string {
   switch (severity) {
@@ -122,16 +123,32 @@ export default function AlertsPage() {
                 </div>
               </div>
 
-              {stateFilter === 'active' && (
-                <div className="flex items-center gap-2 shrink-0">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    loading={actionLoading === alert.id + '-ack'}
-                    onClick={() => doAck(alert.id)}
-                  >
-                    Ack
-                  </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                <SendToOdysseus
+                  context={`Alert [${alert.severity.toUpperCase()}] ${alert.title}\n${alert.message}\nCategory: ${alert.category}${alert.resource_type ? `\nResource: ${alert.resource_type}${alert.resource_id ? `:${alert.resource_id}` : ''}` : ''}`}
+                  label="Odysseus"
+                />
+                {stateFilter === 'active' && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={actionLoading === alert.id + '-ack'}
+                      onClick={() => doAck(alert.id)}
+                    >
+                      Ack
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={actionLoading === alert.id + '-resolve'}
+                      onClick={() => doResolve(alert.id)}
+                    >
+                      Resolve
+                    </Button>
+                  </>
+                )}
+                {stateFilter === 'acknowledged' && (
                   <Button
                     size="sm"
                     variant="ghost"
@@ -140,18 +157,8 @@ export default function AlertsPage() {
                   >
                     Resolve
                   </Button>
-                </div>
-              )}
-              {stateFilter === 'acknowledged' && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  loading={actionLoading === alert.id + '-resolve'}
-                  onClick={() => doResolve(alert.id)}
-                >
-                  Resolve
-                </Button>
-              )}
+                )}
+              </div>
             </div>
           </div>
         ))}

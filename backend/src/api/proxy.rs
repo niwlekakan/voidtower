@@ -612,12 +612,19 @@ pub async fn list(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let nginx_ok = nginx_available();
+    let (nginx_ok, nginx_backend) = tokio::task::spawn_blocking(|| {
+        let docker = docker_nginx_container_id().is_some();
+        let system = !docker && which("nginx") && (nginx_test_ok() || nginx_active());
+        let ok = docker || system;
+        let backend = if docker { "docker" } else if system { "system" } else { "none" };
+        (ok, backend)
+    }).await.unwrap();
 
     Ok(Json(serde_json::json!({
         "proxies": proxies,
         "nginx_available": nginx_ok,
-        "sites_dir": nginx_sites_dir(),
+        "nginx_backend": nginx_backend,
+        "sites_dir": if nginx_ok { effective_conf_dir() } else { nginx_sites_dir().to_string() },
     })))
 }
 

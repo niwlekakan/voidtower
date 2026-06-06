@@ -56,9 +56,10 @@ function CodeBlock({ children }: { children: string }) {
   )
 }
 
-interface SetupStep { label: string; cmd: string }
+interface SetupStep { label: string; cmd: string | null; app_id?: string }
 interface SetupStatus {
   ready: boolean
+  mode: 'docker' | 'system' | 'none'
   shell: 'fish' | 'bash'
   checks: { conf_d_exists: boolean; conf_d_writable: boolean; has_include: boolean; can_reload: boolean }
   steps: SetupStep[]
@@ -101,7 +102,11 @@ interface NginxStatus {
   pid: number | null
 }
 
-function NginxBackendCard({ available, onInstalled }: { available: boolean; onInstalled: () => void }) {
+function NginxBackendCard({ available, nginxBackend, onInstalled }: {
+  available: boolean
+  nginxBackend: 'docker' | 'system' | 'none'
+  onInstalled: () => void
+}) {
   const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [loadingSetup, setLoadingSetup] = useState(false)
   const [installCmd, setInstallCmd] = useState<string | null>(null)
@@ -201,10 +206,12 @@ function NginxBackendCard({ available, onInstalled }: { available: boolean; onIn
           {available && !needsSetup
             ? <CheckCircle size={15} style={{ color: 'var(--accent-success)', flexShrink: 0 }} />
             : <XCircle size={15} style={{ color: statusColor, flexShrink: 0 }} />}
-          <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>nginx</span>
+          <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+            {nginxBackend === 'docker' ? 'nginx-proxy' : 'nginx'}
+          </span>
           <span className="px-1.5 py-0.5 rounded text-xs font-medium"
                 style={{ background: 'var(--accent-primary)22', color: 'var(--accent-primary)' }}>
-            fully managed
+            {nginxBackend === 'docker' ? 'Docker · managed' : 'fully managed'}
           </span>
           <span className="text-xs hidden sm:block" style={{ color: statusColor }}>
             {statusText}
@@ -223,15 +230,38 @@ function NginxBackendCard({ available, onInstalled }: { available: boolean; onIn
         </div>
       )}
 
-      {/* nginx not installed */}
+      {/* Not available — Docker: prompt to deploy from App Vault; System: show install cmd */}
       {!available && !loadingSetup && (
         <div className="px-4 pb-4" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-          <p className="text-xs mt-3 mb-1" style={{ color: 'var(--text-secondary)' }}>
-            Install nginx, then click Refresh:
-          </p>
-          {installCmd
-            ? <CopyableCmd cmd={installCmd} />
-            : <CopyableCmd cmd="sudo pacman -S --noconfirm nginx && sudo systemctl enable --now nginx" />}
+          {nginxBackend !== 'system' ? (
+            <>
+              <p className="text-xs mt-3 mb-2" style={{ color: 'var(--text-secondary)' }}>
+                Deploy the <strong>Nginx Proxy</strong> app from the App Vault to enable Docker-managed reverse proxying:
+              </p>
+              <a href="/apps"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                style={{ background: 'var(--accent-primary)', color: '#fff' }}>
+                Open App Vault →
+              </a>
+              {installCmd && (
+                <>
+                  <p className="text-xs mt-4 mb-1" style={{ color: 'var(--text-muted)' }}>
+                    Or install system nginx as fallback:
+                  </p>
+                  <CopyableCmd cmd={installCmd} />
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="text-xs mt-3 mb-1" style={{ color: 'var(--text-secondary)' }}>
+                Install nginx, then click Refresh:
+              </p>
+              {installCmd
+                ? <CopyableCmd cmd={installCmd} />
+                : <CopyableCmd cmd="sudo pacman -S --noconfirm nginx && sudo systemctl enable --now nginx" />}
+            </>
+          )}
         </div>
       )}
 
@@ -292,12 +322,17 @@ function NginxBackendCard({ available, onInstalled }: { available: boolean; onIn
             <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
               {nginxStatus ? nginxStatus.state : 'checking…'}
             </span>
-            {nginxStatus?.pid && (
+            {nginxStatus?.pid ? (
               <span className="text-xs px-1.5 py-0.5 rounded font-mono"
                     style={{ background: 'var(--bg-base)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}>
                 PID {nginxStatus.pid}
               </span>
-            )}
+            ) : nginxBackend === 'docker' ? (
+              <span className="text-xs px-1.5 py-0.5 rounded font-mono"
+                    style={{ background: 'var(--bg-base)', color: 'var(--accent-primary)', border: '1px solid var(--border-subtle)' }}>
+                Docker container
+              </span>
+            ) : null}
           </div>
 
           {/* Action buttons */}
@@ -373,6 +408,7 @@ function NginxBackendCard({ available, onInstalled }: { available: boolean; onIn
 export default function ProxiesPage() {
   const [proxies, setProxies] = useState<ProxyConfig[]>([])
   const [nginxAvailable, setNginxAvailable] = useState(false)
+  const [nginxBackend, setNginxBackend] = useState<'docker' | 'system' | 'none'>('none')
   const [sitesDir, setSitesDir] = useState('')
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -390,6 +426,7 @@ export default function ProxiesPage() {
       .then((r) => {
         setProxies(r.proxies)
         setNginxAvailable(r.nginx_available)
+        setNginxBackend(r.nginx_backend ?? (r.nginx_available ? 'system' : 'none'))
         setSitesDir(r.sites_dir)
       })
       .catch(() => notify.error('Failed to load proxy configs'))
@@ -448,7 +485,7 @@ export default function ProxiesPage() {
           Proxy backends
         </p>
 
-        <NginxBackendCard available={nginxAvailable} onInstalled={refresh} />
+        <NginxBackendCard available={nginxAvailable} nginxBackend={nginxBackend} onInstalled={refresh} />
 
         <BackendCard
           name="Caddy"
@@ -575,7 +612,7 @@ backend servers
         <>
           <div className="flex items-center justify-between">
             <p className="text-xs uppercase tracking-wider font-medium" style={{ color: 'var(--text-muted)' }}>
-              nginx proxy rules
+              {nginxBackend === 'docker' ? 'nginx-proxy rules' : 'nginx proxy rules'}
             </p>
             <Button size="sm" variant="primary" onClick={() => setShowForm((v) => !v)}>
               <Plus size={13} className="mr-1" /> Add proxy

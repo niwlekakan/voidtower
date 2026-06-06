@@ -1458,7 +1458,7 @@ cmd_uninstall() {
   step "Uninstall VoidTower"
 
   if [[ "$HAVE_SYSTEMD" == true ]]; then
-    for unit in voidtower odysseus; do
+    for unit in voidtower odysseus voidtower-llama; do
       systemctl stop    "${unit}.service" 2>/dev/null || true
       systemctl disable "${unit}.service" 2>/dev/null || true
     done
@@ -1469,50 +1469,82 @@ cmd_uninstall() {
     systemctl daemon-reload
   fi
 
-  rm -f "${VT_INSTALL_DIR}/${BINARY_NAME}" "${VT_INSTALL_DIR}/configure-voidwatch.sh"
+  # Service unit files
   rm -f "${SYSTEMD_DIR}/voidtower.service" \
+        "${SYSTEMD_DIR}/odysseus.service" \
+        "${SYSTEMD_DIR}/voidtower-llama.service" \
         "${SYSTEMD_DIR}/voidwatch-configure.service" \
         "${SYSTEMD_DIR}/voidwatch-configure.path"
-  rm -f /etc/sudoers.d/voidtower-nginx
+  [[ "$HAVE_SYSTEMD" == true ]] && systemctl daemon-reload
+
+  # Sudoers
+  rm -f /etc/sudoers.d/voidtower-nginx /etc/sudoers.d/voidtower-odysseus
+
+  # nginx proxy config
   rm -f /etc/nginx/conf.d/voidtower.conf \
         /etc/nginx/sites-enabled/voidtower \
         /etc/nginx/sites-available/voidtower 2>/dev/null || true
-  command -v nginx &>/dev/null && nginx -t 2>/dev/null && nginx -s reload 2>/dev/null || true
-  [[ "$HAVE_SYSTEMD" == true ]] && systemctl daemon-reload
+  command -v nginx &>/dev/null && nginx -t &>/dev/null && nginx -s reload &>/dev/null || true
+
+  # Root credential / recovery files
+  rm -f /root/voidtower-bootstrap-token \
+        /root/odysseus-bootstrap-token \
+        /root/voidwatch-recovery-info
+
+  # App catalog
+  rm -rf /usr/share/voidtower
+
+  # VoidTower install dir (binary + frontend dist + llama.cpp)
+  rm -rf "${VT_INSTALL_DIR}"
+  success "Removed ${VT_INSTALL_DIR}"
 
   local ans
   if [[ "$UNATTENDED" == false ]]; then
-    read -rp "  Remove data directory ${VT_DATA_DIR}? [y/N]: " ans
+    read -rp "  Remove data directory ${VT_DATA_DIR}? [Y/n]: " ans
   else
     ans="y"
   fi
-  if [[ "${ans,,}" == "y" ]]; then
+  if [[ "${ans,,}" != "n" ]]; then
     rm -rf "$VT_DATA_DIR"; success "Removed $VT_DATA_DIR"
   else
     info "Keeping $VT_DATA_DIR"
   fi
 
   if [[ "$UNATTENDED" == false ]]; then
-    read -rp "  Remove config directory ${VT_CONFIG_DIR}? [y/N]: " ans
+    read -rp "  Remove config directory ${VT_CONFIG_DIR}? [Y/n]: " ans
   else
     ans="y"
   fi
-  if [[ "${ans,,}" == "y" ]]; then
+  if [[ "${ans,,}" != "n" ]]; then
     rm -rf "$VT_CONFIG_DIR"; success "Removed $VT_CONFIG_DIR"
   else
     info "Keeping $VT_CONFIG_DIR"
   fi
 
-  rmdir "${VT_INSTALL_DIR}" 2>/dev/null || true
+  if [[ -d "$ODYSSEUS_INSTALL_DIR" ]]; then
+    if [[ "$UNATTENDED" == false ]]; then
+      read -rp "  Remove Odysseus install directory ${ODYSSEUS_INSTALL_DIR}? [Y/n]: " ans
+    else
+      ans="y"
+    fi
+    if [[ "${ans,,}" != "n" ]]; then
+      rm -rf "$ODYSSEUS_INSTALL_DIR"; success "Removed $ODYSSEUS_INSTALL_DIR"
+    else
+      info "Keeping $ODYSSEUS_INSTALL_DIR"
+    fi
+  fi
 
   if [[ "$UNATTENDED" == false ]]; then
-    read -rp "  Remove system user '${VT_USER}'? [y/N]: " ans
+    read -rp "  Remove system users '${VT_USER}' and '${ODYSSEUS_USER}'? [y/N]: " ans
   else
     ans="n"
   fi
-  [[ "${ans,,}" == "y" ]] && { userdel "$VT_USER" 2>/dev/null || true; success "Removed user $VT_USER"; }
+  if [[ "${ans,,}" == "y" ]]; then
+    userdel "$VT_USER"       2>/dev/null && success "Removed user $VT_USER"       || true
+    userdel "$ODYSSEUS_USER" 2>/dev/null && success "Removed user $ODYSSEUS_USER" || true
+  fi
 
-  success "VoidTower uninstalled."
+  success "VoidTower uninstalled. Run the installer again for a clean install."
 }
 
 # ─── Reset ────────────────────────────────────────────────────────────────────

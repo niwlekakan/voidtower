@@ -10,6 +10,7 @@ import { useMetrics } from '@/hooks/useMetrics'
 import { useAuthStore } from '@/store/auth'
 import { BrainCircuit, Settings2, Cpu, Zap, ChevronDown, ChevronUp } from 'lucide-react'
 import Button from '@/components/ui/Button'
+import AppEmbedOverlay from '@/components/ui/AppEmbedOverlay'
 
 const AI_WORKSPACE_KEY = 'vt-ai-workspace-url'
 
@@ -209,6 +210,8 @@ export default function AppLayout() {
           {isAI && <div className="hidden"><Outlet /></div>}
           {/* Persistent iframe — loaded once, shown/hidden without reload */}
           <PersistentAIFrame visible={isAI} />
+          {/* App embed overlay — shown when a deployed app is opened in VoidTower */}
+          <AppEmbedOverlay />
         </main>
       </div>
       <NotificationToasts />

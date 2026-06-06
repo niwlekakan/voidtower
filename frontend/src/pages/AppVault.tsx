@@ -7,6 +7,7 @@ import {
 import { api, ApiClientError } from '@/api/client'
 import type { AppDef, DeployedApp, ComposeContainer } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { useEmbedStore } from '@/store/embedStore'
 import Button from '@/components/ui/Button'
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -626,8 +627,9 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
 
 // ─── Deployed Tab ─────────────────────────────────────────────────────────────
 
-function DeployedTab({ deployed, onRefresh }: { deployed: DeployedApp[]; onRefresh: () => void }) {
+function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedApp[]; catalogApps: AppDef[]; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState<string | null>(null)
+  const embedOpen = useEmbedStore(s => s.open)
 
   if (deployed.length === 0) {
     return (
@@ -682,6 +684,30 @@ function DeployedTab({ deployed, onRefresh }: { deployed: DeployedApp[]; onRefre
                   <span>Deployed {new Date(app.deployed_at * 1000).toLocaleDateString()}</span>
                 </div>
               </div>
+
+              {running && app.primary_port !== null && (
+                <button
+                  onClick={e => {
+                    e.stopPropagation()
+                    const def = catalogApps.find(d => d.id === app.app_id) ?? {
+                      id: app.app_id, name: app.app_name, description: '', category: '',
+                      icon: '', version_hint: '', links: {},
+                    }
+                    embedOpen(app, def)
+                  }}
+                  className="flex items-center gap-1 text-xs px-2 py-1 rounded transition-opacity hover:opacity-80"
+                  style={{
+                    background: 'var(--bg-elevated)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border-subtle)',
+                    flexShrink: 0,
+                  }}
+                  title="Open web UI inside VoidTower"
+                >
+                  <Box size={11} />
+                  Open
+                </button>
+              )}
 
               <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
                 {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -906,7 +932,7 @@ export default function AppVaultPage() {
       )}
 
       {tab === 'deployed' && (
-        <DeployedTab deployed={deployed} onRefresh={load} />
+        <DeployedTab deployed={deployed} catalogApps={apps} onRefresh={load} />
       )}
 
       {tab === 'custom' && (

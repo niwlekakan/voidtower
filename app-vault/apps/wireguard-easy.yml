@@ -24,9 +24,21 @@ compose:
         # bcrypt hash of "changeme" — replace before going to production.
         # Generate your own: docker run --rm ghcr.io/wg-easy/wg-easy wgpw YOUR_PASSWORD
         - PASSWORD_HASH=$$2b$$10$$WV8eOBXELDNwZtGNRZKoEupooqgmOX2QUL4TXhpLsBkiapdP7cm/S
-        - WG_DEFAULT_DNS=1.1.1.1
+        # Route VPN client DNS through Pi-hole on the shared vt-proxy network.
+        # Switch to adguard if using AdGuard Home instead of Pi-hole.
+        - WG_DEFAULT_DNS=pihole
+        - VIRTUAL_HOST=wireguard.local
+        - VIRTUAL_PORT=51821
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - wireguard
   volumes:
     wg_easy_data:
+  networks:
+    vt-proxy:
+      external: true
 links:
   home: https://github.com/wg-easy/wg-easy
   docs: https://github.com/wg-easy/wg-easy/blob/master/README.md

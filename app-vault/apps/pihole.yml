@@ -30,9 +30,20 @@ compose:
       environment:
         - TZ=UTC
         - WEBPASSWORD=changeme
+        # nginx-proxy auto-discovery
+        - VIRTUAL_HOST=pihole.local
+        - VIRTUAL_PORT=80
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - pihole
   volumes:
     pihole_etc:
     pihole_dnsmasq:
+  networks:
+    vt-proxy:
+      external: true
 ai_integration:
   level: aware
   description: "Odysseus can read DNS query stats and manage blocklists"

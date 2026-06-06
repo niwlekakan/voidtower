@@ -8,13 +8,30 @@ compose:
     adguardhome:
       image: adguard/adguardhome:latest
       restart: unless-stopped
-      network_mode: host
+      # DNS on 5354 (Pi-hole uses 5353). Admin port 3000 for the setup wizard;
+      # if you chose port 80 during first-run setup, reach it via :3001.
+      ports:
+        - "5354:53/tcp"
+        - "5354:53/udp"
+        - "3000:3000"
+        - "3001:80"
       volumes:
         - adguard_work:/opt/adguardhome/work
         - adguard_conf:/opt/adguardhome/conf
+      environment:
+        - VIRTUAL_HOST=adguard.local
+        - VIRTUAL_PORT=3000
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - adguard
   volumes:
     adguard_work:
     adguard_conf:
+  networks:
+    vt-proxy:
+      external: true
 ai_integration:
   level: aware
   description: "Odysseus can read DNS query logs, blocked domains, and filter stats"

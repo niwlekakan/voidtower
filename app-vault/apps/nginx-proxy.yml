@@ -1,0 +1,39 @@
+id: nginx-proxy
+name: Nginx Proxy
+description: Auto-configuring reverse proxy -- exposes Pi-hole, AdGuard, WireGuard and other apps behind clean virtual-host URLs
+category: networking
+version_hint: "latest"
+compose:
+  services:
+    nginx-proxy:
+      image: nginxproxy/nginx-proxy:alpine
+      restart: unless-stopped
+      ports:
+        - "8080:80"
+        - "8443:443"
+      volumes:
+        # Docker socket lets nginx-proxy auto-discover containers with VIRTUAL_HOST set
+        - /var/run/docker.sock:/tmp/docker.sock:ro
+        - nginx_certs:/etc/nginx/certs
+        - nginx_vhost:/etc/nginx/vhost.d
+        - nginx_html:/usr/share/nginx/html
+      environment:
+        - TRUST_DOWNSTREAM_PROXY=true
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - nginx
+  volumes:
+    nginx_certs:
+    nginx_vhost:
+    nginx_html:
+  networks:
+    vt-proxy:
+      external: true
+ai_integration:
+  level: aware
+  description: "Odysseus can read proxy routes and upstream health"
+links:
+  home: https://github.com/nginx-proxy/nginx-proxy
+  docs: https://github.com/nginx-proxy/nginx-proxy/blob/main/README.md

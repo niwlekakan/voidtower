@@ -838,9 +838,11 @@ install_odysseus() {
   "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt" \
     || die "Failed to install Odysseus Python dependencies"
 
-  # Create .env if missing
+  # Create .env if missing — track whether we wrote it fresh this run
   local env_file="${ODYSSEUS_INSTALL_DIR}/.env"
+  local _fresh_env=false
   if [[ ! -f "$env_file" ]]; then
+    _fresh_env=true
     local odysseus_admin_pass
     odysseus_admin_pass=$(openssl rand -hex 16 2>/dev/null || cat /proc/sys/kernel/random/uuid | tr -d '-')
     cat > "$env_file" <<EOF
@@ -883,12 +885,14 @@ EOF
     chown -h "${ODYSSEUS_USER}:${ODYSSEUS_USER}" "${ODYSSEUS_INSTALL_DIR}/data"
   fi
 
-  # Bootstrap admin user from env vars — setup.py writes data/auth.json
-  if [[ ! -f "${ODYSSEUS_DATA_DIR}/auth.json" ]]; then
+  # Bootstrap admin user — always run setup.py when .env was freshly written
+  # so auth.json reflects the credentials we just printed, even on reinstall
+  if [[ "$_fresh_env" == true ]]; then
     info "Creating Odysseus admin user…"
+    rm -f "${ODYSSEUS_DATA_DIR}/auth.json"
     local _admin_user _admin_pass
-    _admin_user=$(grep "^ODYSSEUS_ADMIN_USER=" "${ODYSSEUS_INSTALL_DIR}/.env" | cut -d= -f2-)
-    _admin_pass=$(grep "^ODYSSEUS_ADMIN_PASSWORD=" "${ODYSSEUS_INSTALL_DIR}/.env" | cut -d= -f2-)
+    _admin_user=$(grep "^ODYSSEUS_ADMIN_USER=" "$env_file" | cut -d= -f2-)
+    _admin_pass=$(grep "^ODYSSEUS_ADMIN_PASSWORD=" "$env_file" | cut -d= -f2-)
     (cd "$ODYSSEUS_INSTALL_DIR" && \
       ODYSSEUS_ADMIN_USER="$_admin_user" \
       ODYSSEUS_ADMIN_PASSWORD="$_admin_pass" \
@@ -1547,6 +1551,28 @@ cmd_uninstall() {
     else
       info "Keeping $ODYSSEUS_INSTALL_DIR"
     fi
+  fi
+
+  if [[ "$UNATTENDED" == false ]]; then
+    read -rp "  Remove Odysseus data directory ${ODYSSEUS_DATA_DIR}? [Y/n]: " ans
+  else
+    ans="y"
+  fi
+  if [[ "${ans,,}" != "n" ]]; then
+    rm -rf "$ODYSSEUS_DATA_DIR"; success "Removed $ODYSSEUS_DATA_DIR"
+  else
+    info "Keeping $ODYSSEUS_DATA_DIR"
+  fi
+
+  if [[ "$UNATTENDED" == false ]]; then
+    read -rp "  Remove Odysseus config directory ${ODYSSEUS_CONFIG_DIR}? [Y/n]: " ans
+  else
+    ans="y"
+  fi
+  if [[ "${ans,,}" != "n" ]]; then
+    rm -rf "$ODYSSEUS_CONFIG_DIR"; success "Removed $ODYSSEUS_CONFIG_DIR"
+  else
+    info "Keeping $ODYSSEUS_CONFIG_DIR"
   fi
 
   if [[ "$UNATTENDED" == false ]]; then

@@ -838,11 +838,11 @@ install_odysseus() {
 
   # Python venv
   info "Setting up Python virtual environment…"
-  python3 -m venv "${ODYSSEUS_INSTALL_DIR}/venv" \
+  TMPDIR=/var/tmp python3 -m venv "${ODYSSEUS_INSTALL_DIR}/venv" \
     || die "Failed to create Python venv at ${ODYSSEUS_INSTALL_DIR}/venv"
-  "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip \
+  TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip \
     || die "Failed to upgrade pip in Odysseus venv"
-  "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt" \
+  TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt" \
     || die "Failed to install Odysseus Python dependencies"
 
   # Create .env if missing — track whether we wrote it fresh this run

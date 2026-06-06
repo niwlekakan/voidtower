@@ -177,6 +177,48 @@ pub fn detect_gpu() -> bool {
         .unwrap_or(false)
 }
 
+/// If any service references vt-proxy in its networks section, inject the
+/// top-level `networks: { vt-proxy: { external: true } }` declaration so
+/// Docker Compose uses the shared external network instead of creating a
+/// project-scoped one.
+fn inject_external_networks(compose: &mut Value) {
+    let references_vt_proxy = compose
+        .get("services")
+        .and_then(|s| s.as_object())
+        .map(|svcs| {
+            svcs.values().any(|svc| {
+                svc.get("networks")
+                    .and_then(|n| n.as_object())
+                    .map(|nets| nets.contains_key("vt-proxy"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    if !references_vt_proxy {
+        return;
+    }
+
+    let nets = compose
+        .as_object_mut()
+        .map(|m| m.entry("networks").or_insert_with(|| serde_json::json!({})));
+
+    if let Some(nets_val) = nets {
+        if let Some(obj) = nets_val.as_object_mut() {
+            obj.entry("vt-proxy")
+                .or_insert_with(|| serde_json::json!({ "external": true }));
+        }
+    }
+}
+
+/// Ensure the vt-proxy Docker network exists (creates it if missing).
+async fn ensure_vt_proxy_network() {
+    let _ = tokio::process::Command::new("docker")
+        .args(["network", "create", "vt-proxy"])
+        .output()
+        .await;
+}
+
 /// Remove `deploy.resources.reservations.devices` (nvidia GPU requirement) from
 /// all services. Called when GPU is not detected so deployment doesn't fail with
 /// "unknown runtime" if NVIDIA Container Toolkit isn't configured.
@@ -429,9 +471,15 @@ pub async fn deploy(
         req.env_overrides.as_ref().unwrap_or(&HashMap::new()),
     ).await;
 
+    // Inject top-level external network declaration when services reference vt-proxy
+    inject_external_networks(&mut compose_val);
+
     let compose_str = serde_yaml::to_string(&compose_val).map_err(|e| AppError::Internal(e.into()))?;
     let compose_path = app_dir.join("docker-compose.yml");
     std::fs::write(&compose_path, &compose_str).map_err(|e| AppError::Internal(e.into()))?;
+
+    // Ensure shared Docker network exists before composing
+    ensure_vt_proxy_network().await;
 
     // Run docker compose up
     containers::deploy_compose(&project_name, &compose_path)
@@ -676,12 +724,14 @@ pub async fn redeploy_app(
         }
         ensure_volume_dirs(&compose_val);
         auto_inject_llm(&mut compose_val, &HashMap::new()).await;
+        inject_external_networks(&mut compose_val);
         let compose_str = serde_yaml::to_string(&compose_val)
             .map_err(|e| AppError::Internal(e.into()))?;
         std::fs::write(&compose_path, &compose_str)
             .map_err(|e| AppError::Internal(e.into()))?;
     }
 
+    ensure_vt_proxy_network().await;
     containers::deploy_compose(&project_name, &compose_path)
         .await
         .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;

@@ -20,7 +20,7 @@ export default function NotificationToasts() {
   if (!notifications.length) return null
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 w-72">
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 w-80">
       {notifications.map((n) => (
         <div
           key={n.id}
@@ -35,8 +35,12 @@ export default function NotificationToasts() {
             {icons[n.level]}
           </span>
           <div className="flex-1 min-w-0">
-            <div className="font-medium truncate">{n.title}</div>
-            {n.message && <div className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>{n.message}</div>}
+            <div className="font-medium break-words">{n.title}</div>
+            {n.message && (
+              <div className="text-xs mt-0.5 break-words whitespace-pre-wrap" style={{ color: 'var(--text-secondary)', maxHeight: 120, overflowY: 'auto' }}>
+                {n.message}
+              </div>
+            )}
           </div>
           <button onClick={() => remove(n.id)} style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
             <X size={12} />

@@ -704,6 +704,7 @@ export default function AppVaultPage() {
   const [dockerAvailable, setDockerAvailable] = useState(true)
   const [loading, setLoading]           = useState(true)
   const [deploying, setDeploying]       = useState<string | null>(null)
+  const [deployError, setDeployError]   = useState<string | null>(null)
   const [search, setSearch]             = useState('')
   const [category, setCategory]         = useState<string>('all')
   const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover' | 'custom'>('catalog')
@@ -729,13 +730,16 @@ export default function AppVaultPage() {
 
   const deploy = async (app: AppDef) => {
     setDeploying(app.id)
+    setDeployError(null)
     try {
       const result = await api.apps.deploy(app.id)
       notify.success(`${app.name} deployed as ${result.project_name}`)
       await load()
       setTab('deployed')
     } catch (e: unknown) {
-      notify.error(e instanceof Error ? e.message : 'Deploy failed')
+      const msg = e instanceof Error ? e.message : 'Deploy failed'
+      setDeployError(msg)
+      notify.error('Deploy failed', msg.split('\n')[0])
     } finally {
       setDeploying(null)
     }
@@ -809,6 +813,23 @@ export default function AppVaultPage() {
               ))}
             </select>
           </div>
+          {deployError && (
+            <div className="rounded-lg p-3 text-xs font-mono" style={{
+              background: 'var(--accent-danger)18',
+              border: '1px solid var(--accent-danger)44',
+              color: 'var(--accent-danger)',
+            }}>
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <span className="font-semibold not-italic">Deploy error</span>
+                <button onClick={() => setDeployError(null)} style={{ color: 'var(--text-muted)' }}>
+                  <X size={12} />
+                </button>
+              </div>
+              <pre className="whitespace-pre-wrap break-all overflow-auto" style={{ maxHeight: 200 }}>
+                {deployError}
+              </pre>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((app) => {
               const isDeployed = deployedIds.has(app.id)

@@ -36,6 +36,8 @@ pub struct AppDef {
     pub links: HashMap<String, String>,
     #[serde(default)]
     pub ai_integration: Option<AiIntegration>,
+    #[serde(default)]
+    pub no_web_ui: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -939,6 +941,94 @@ pub async fn get_compose(
 #[derive(Deserialize)]
 pub struct UpdateComposeRequest {
     pub content: String,
+}
+
+// ─── open-ui: auto-create embed proxy ────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct OpenUiRequest {
+    pub project_name: String,
+    pub primary_port: u16,
+}
+
+pub async fn open_ui(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<OpenUiRequest>,
+) -> Result<Json<serde_json::Value>> {
+    require_user(&state, &jar).await?;
+
+    let domain = format!("{}.local", req.project_name);
+    let port_suffix = format!(":{}", req.primary_port);
+
+    // Check for an existing proxy rule for this app
+    let existing: Option<(String, bool)> = sqlx::query_as(
+        "SELECT domain, allow_embed FROM proxy_configs WHERE domain = ? OR upstream LIKE ?",
+    )
+    .bind(&domain)
+    .bind(format!("%{}", port_suffix))
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    if let Some((existing_domain, allow_embed)) = existing {
+        if allow_embed {
+            return Ok(Json(serde_json::json!({
+                "url": format!("http://{}:8080", existing_domain),
+                "proxy_created": false,
+            })));
+        }
+        // Exists but embed not allowed — fall back to direct URL
+        return Ok(Json(serde_json::json!({
+            "url": format!("http://localhost:{}", req.primary_port),
+            "proxy_created": false,
+        })));
+    }
+
+    // Check if nginx is available
+    let nginx_ok = tokio::task::spawn_blocking(|| {
+        crate::api::proxy::nginx_active_pub()
+    }).await.unwrap();
+
+    if !nginx_ok {
+        return Ok(Json(serde_json::json!({
+            "url": format!("http://localhost:{}", req.primary_port),
+            "proxy_created": false,
+        })));
+    }
+
+    // Create a proxy rule with allow_embed = true
+    let upstream = format!("http://localhost:{}", req.primary_port);
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let insert_result = sqlx::query(
+        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, created_at) VALUES (?,?,?,0,1,1,?)",
+    )
+    .bind(&id)
+    .bind(&domain)
+    .bind(&upstream)
+    .bind(now)
+    .execute(&state.db)
+    .await;
+
+    if let Err(e) = insert_result {
+        // UNIQUE conflict means rule was just created by a concurrent request — still ok
+        if !e.to_string().contains("UNIQUE") {
+            return Err(AppError::Internal(e.into()));
+        }
+    } else {
+        let _ = crate::api::proxy::write_nginx_conf_pub(&domain, &upstream, false, true);
+        let _ = crate::api::proxy::reload_nginx_pub();
+    }
+
+    Ok(Json(serde_json::json!({
+        "url": format!("http://{}:8080", domain),
+        "proxy_created": true,
+    })))
 }
 
 pub async fn update_compose(

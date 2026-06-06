@@ -42,3 +42,4 @@ compose:
 links:
   home: https://docs.paperless-ngx.com
   docs: https://docs.paperless-ngx.com/setup
+  web_ui: /

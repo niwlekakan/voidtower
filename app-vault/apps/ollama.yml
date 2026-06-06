@@ -3,6 +3,7 @@ name: Ollama
 description: Run large language models locally
 category: ai
 version_hint: "latest"
+no_web_ui: true
 compose:
   services:
     ollama:

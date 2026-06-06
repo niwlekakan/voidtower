@@ -3,6 +3,7 @@ name: Tailscale
 description: Mesh VPN — access all your devices from anywhere, zero config
 category: networking
 version_hint: "latest"
+no_web_ui: true
 compose:
   services:
     tailscale:

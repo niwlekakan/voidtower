@@ -3,6 +3,7 @@ name: Matrix Synapse
 description: Self-hosted encrypted chat server — bridges to WhatsApp, Telegram, Discord
 category: productivity
 version_hint: "latest"
+no_web_ui: true
 compose:
   services:
     synapse:

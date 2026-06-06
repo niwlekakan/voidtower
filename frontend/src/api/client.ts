@@ -134,6 +134,11 @@ export const api = {
       request<{ ok: boolean; project_name: string }>('/api/apps/deploy-custom', {
         method: 'POST', body: JSON.stringify(body),
       }),
+    openUi: (projectName: string, primaryPort: number) =>
+      request<{ url: string; proxy_created: boolean }>('/api/apps/open-ui', {
+        method: 'POST',
+        body: JSON.stringify({ project_name: projectName, primary_port: primaryPort }),
+      }),
   },
 
   alerts: {

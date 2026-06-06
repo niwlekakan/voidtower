@@ -1813,6 +1813,12 @@ main() {
   install_service
   setup_domain
 
+  # Shared Docker network for inter-app routing (Pi-hole, AdGuard, WireGuard, Nginx)
+  if [[ "$HAVE_DOCKER" == true ]]; then
+    docker network create vt-proxy 2>/dev/null || true
+    success "Docker network vt-proxy ready"
+  fi
+
   # Integrated AI (Ollama) — runs before Odysseus so it's ready when Odysseus starts
   [[ "$WITH_AI" == true ]] && setup_ai_integrated
 

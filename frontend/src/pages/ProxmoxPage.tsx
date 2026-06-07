@@ -200,23 +200,31 @@ function NodeCards({ nodes }: { nodes: PveNode[] }) {
   if (nodes.length === 0) return null
   return (
     <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
-      {nodes.map(n => (
-        <div key={n.node} style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <Server size={14} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', flex: 1 }}>{n.node}</span>
-            <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 4, background: n.status === 'online' ? 'var(--accent-success-subtle)' : 'var(--bg-base)', color: n.status === 'online' ? 'var(--accent-success)' : 'var(--text-muted)' }}>
-              {n.status}
-            </span>
+      {nodes.map(n => {
+        const cpuPct   = (n.cpu ?? 0) * 100
+        const hasStats = (n.maxmem ?? 0) > 0
+        return (
+          <div key={n.node} style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <Server size={14} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', flex: 1 }}>{n.node}</span>
+              <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 4, background: n.status === 'online' ? 'var(--accent-success-subtle)' : 'var(--bg-base)', color: n.status === 'online' ? 'var(--accent-success)' : 'var(--text-muted)' }}>
+                {n.status ?? 'unknown'}
+              </span>
+            </div>
+            {hasStats ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <UsageBar used={(n.cpu ?? 0) * (n.maxcpu ?? 1)} total={n.maxcpu ?? 1} label={`CPU — ${cpuPct.toFixed(1)}% of ${n.maxcpu ?? '?'} cores`} />
+                <UsageBar used={n.mem ?? 0} total={n.maxmem ?? 0} label="RAM" />
+                <UsageBar used={n.disk ?? 0} total={n.maxdisk ?? 0} label="Root disk" />
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Metrics unavailable — token may need Sys.Audit permission</p>
+            )}
+            {(n.uptime ?? 0) > 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>up {fmtUptime(n.uptime)}</div>}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <UsageBar used={n.cpu * n.maxcpu} total={n.maxcpu} label={`CPU — ${(n.cpu * 100).toFixed(1)}% of ${n.maxcpu} cores`} />
-            <UsageBar used={n.mem} total={n.maxmem} label="RAM" />
-            <UsageBar used={n.disk} total={n.maxdisk} label="Root disk" />
-          </div>
-          {n.uptime > 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>up {fmtUptime(n.uptime)}</div>}
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -224,9 +232,9 @@ function NodeCards({ nodes }: { nodes: PveNode[] }) {
 // ── Summary bar ───────────────────────────────────────────────────────────────
 
 function SummaryBar({ nodes, vms, storage }: { nodes: PveNode[]; vms: PveVm[]; storage: PveStorage[] }) {
-  const running = vms.filter(v => v.status === 'running').length
-  const totalMem = vms.reduce((s, v) => s + (v.maxmem ?? 0), 0)
-  const usedMem  = vms.filter(v => v.status === 'running').reduce((s, v) => s + (v.mem ?? 0), 0)
+  const running   = vms.filter(v => v.status === 'running').length
+  const totalMem  = vms.reduce((s, v) => s + (v.maxmem ?? 0), 0)
+  const usedMem   = vms.filter(v => v.status === 'running').reduce((s, v) => s + (v.mem ?? 0), 0)
   const totalDisk = storage.reduce((s, p) => s + (p.total ?? 0), 0)
   const usedDisk  = storage.reduce((s, p) => s + (p.used ?? 0), 0)
 

@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import NativePanelShell, { NativeRow, StatusDot, EmptyState, LoadingState } from './NativePanelShell'
 
 interface Snapshot {
-  cpu: { usage_percent: number }
-  memory: { used_bytes: number; total_bytes: number }
-  disks: Array<{ mount: string; used_bytes: number; total_bytes: number }>
-  network: Array<{ interface: string; rx_bytes_sec: number; tx_bytes_sec: number }>
+  cpu_usage: number
+  ram_used: number
+  ram_total: number
+  disks: Array<{ mount_point: string; used: number; total: number }>
+  networks: Array<{ name: string; rx_bytes_per_sec: number; tx_bytes_per_sec: number }>
 }
 
 interface Summary { services: number; containers: number; alerts: number }
@@ -59,11 +60,11 @@ export default function NativeDashboardPanel() {
 
   if (loading) return <NativePanelShell><LoadingState /></NativePanelShell>
 
-  const cpu = snap?.cpu.usage_percent ?? 0
-  const memPct = snap ? (snap.memory.used_bytes / snap.memory.total_bytes) * 100 : 0
+  const cpu = snap?.cpu_usage ?? 0
+  const memPct = snap ? (snap.ram_used / snap.ram_total) * 100 : 0
   const disk0 = snap?.disks?.[0]
-  const diskPct = disk0 ? (disk0.used_bytes / disk0.total_bytes) * 100 : 0
-  const net = snap?.network?.find(n => !n.interface.startsWith('lo')) ?? null
+  const diskPct = disk0 ? (disk0.used / disk0.total) * 100 : 0
+  const net = snap?.networks?.find(n => !n.name.startsWith('lo')) ?? null
 
   return (
     <NativePanelShell>
@@ -90,7 +91,7 @@ export default function NativeDashboardPanel() {
           {net && (
             <NativeRow>
               <span style={{ width: 28, fontSize: 10, color: 'var(--text-muted)' }}>NET</span>
-              <span style={{ flex: 1, fontSize: 10, color: 'var(--text-secondary)' }}>↓{fmtRate(net.rx_bytes_sec)} ↑{fmtRate(net.tx_bytes_sec)}</span>
+              <span style={{ flex: 1, fontSize: 10, color: 'var(--text-secondary)' }}>↓{fmtRate(net.rx_bytes_per_sec)} ↑{fmtRate(net.tx_bytes_per_sec)}</span>
             </NativeRow>
           )}
           {summary && (
@@ -112,7 +113,7 @@ export default function NativeDashboardPanel() {
           <SL text="Memory" />
           <NativeRow>
             <span style={{ flex: 1, fontSize: 10, color: 'var(--text-muted)' }}>Used / Total</span>
-            <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{fmt(snap.memory.used_bytes)} / {fmt(snap.memory.total_bytes)}</span>
+            <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{fmt(snap.ram_used)} / {fmt(snap.ram_total)}</span>
           </NativeRow>
         </>
       )}

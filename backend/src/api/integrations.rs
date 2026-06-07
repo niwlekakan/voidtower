@@ -319,12 +319,27 @@ pub struct SaveConfigReq {
 pub async fn get_config(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<OdysseusConfig>> {
     require_admin(&state, &jar).await?;
 
     let enabled = get_setting(&state, "odysseus.enabled").await == "true";
     let mcp_enabled = get_setting(&state, "odysseus.mcp_enabled").await == "true";
-    let allowed_url = get_setting(&state, "odysseus.allowed_url").await;
+    let raw_url = get_setting(&state, "odysseus.allowed_url").await;
+    // Rewrite localhost/127.0.0.1 to the server's LAN IP so that browsers
+    // accessing VoidTower remotely can reach Odysseus via the iframe.
+    let server_ip = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(|h| h.rsplit_once(':').map(|(ip, _)| ip).unwrap_or(h))
+        .unwrap_or("localhost");
+    let allowed_url = if server_ip != "localhost" && server_ip != "127.0.0.1" {
+        raw_url
+            .replace("//localhost:", &format!("//{}:", server_ip))
+            .replace("//127.0.0.1:", &format!("//{}:", server_ip))
+    } else {
+        raw_url
+    };
     let emergency_disabled = get_setting(&state, "odysseus.emergency_disabled").await == "true";
     let secret = get_setting(&state, "odysseus.webhook_secret").await;
     let webhook_secret_hint = if secret.len() >= 4 {

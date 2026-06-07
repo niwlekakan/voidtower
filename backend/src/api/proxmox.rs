@@ -269,7 +269,8 @@ pub async fn list_nodes(
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let auth = format!("PVEAPIToken={}", host.token);
-    let data = pve_get(&client, &format!("{}/nodes", proxmox_base(&host.url)), &auth).await?;
+    // Use cluster/resources for node stats — works regardless of stored node name
+    let data = pve_get(&client, &format!("{}/cluster/resources?type=node", proxmox_base(&host.url)), &auth).await?;
     Ok(Json(data))
 }
 
@@ -283,20 +284,9 @@ pub async fn list_vms(
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
     let auth = format!("PVEAPIToken={}", host.token);
-    let node = &host.node;
-    let mut all: Vec<serde_json::Value> = Vec::new();
-    for kind in &["qemu", "lxc"] {
-        if let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/{}", base, node, kind), &auth).await {
-            if let Some(arr) = data.as_array() {
-                for vm in arr {
-                    let mut v = vm.clone();
-                    v["type"] = serde_json::json!(kind);
-                    v["node"] = serde_json::json!(node);
-                    all.push(v);
-                }
-            }
-        }
-    }
+    // cluster/resources returns all VMs and LXCs across all nodes with type field already set
+    let data = pve_get(&client, &format!("{}/cluster/resources?type=vm", base), &auth).await?;
+    let mut all = data.as_array().cloned().unwrap_or_default();
     all.sort_by_key(|v| v["vmid"].as_u64().unwrap_or(0));
     Ok(Json(serde_json::json!(all)))
 }
@@ -310,8 +300,22 @@ pub async fn list_storage(
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let auth = format!("PVEAPIToken={}", host.token);
-    let data = pve_get(&client, &format!("{}/nodes/{}/storage", proxmox_base(&host.url), host.node), &auth).await?;
-    Ok(Json(data))
+    // cluster/resources?type=storage — remap to match PveStorage frontend type
+    let data = pve_get(&client, &format!("{}/cluster/resources?type=storage", proxmox_base(&host.url)), &auth).await?;
+    let remapped: Vec<serde_json::Value> = data.as_array().unwrap_or(&vec![]).iter().map(|s| {
+        let maxdisk = s["maxdisk"].as_u64().unwrap_or(0);
+        let used    = s["disk"].as_u64().unwrap_or(0);
+        serde_json::json!({
+            "storage": s["storage"],
+            "node":    s["node"],
+            "type":    s["plugintype"],
+            "used":    used,
+            "total":   maxdisk,
+            "avail":   maxdisk.saturating_sub(used),
+            "active":  s["status"].as_str().unwrap_or("") == "available",
+        })
+    }).collect();
+    Ok(Json(serde_json::json!(remapped)))
 }
 
 pub async fn list_tasks(
@@ -323,8 +327,22 @@ pub async fn list_tasks(
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let auth = format!("PVEAPIToken={}", host.token);
-    let data = pve_get(&client, &format!("{}/nodes/{}/tasks", proxmox_base(&host.url), host.node), &auth).await?;
-    Ok(Json(data))
+    // First discover real node names, then collect tasks from each
+    let nodes_data = pve_get(&client, &format!("{}/cluster/resources?type=node", proxmox_base(&host.url)), &auth).await?;
+    let node_names: Vec<String> = nodes_data.as_array().unwrap_or(&vec![])
+        .iter().filter_map(|n| n["node"].as_str().map(|s| s.to_string())).collect();
+    let base = proxmox_base(&host.url);
+    let mut all_tasks: Vec<serde_json::Value> = Vec::new();
+    for node in &node_names {
+        if let Ok(tasks) = pve_get(&client, &format!("{}/nodes/{}/tasks?limit=50", base, node), &auth).await {
+            if let Some(arr) = tasks.as_array() {
+                all_tasks.extend(arr.iter().cloned());
+            }
+        }
+    }
+    all_tasks.sort_by(|a, b| b["starttime"].as_u64().unwrap_or(0).cmp(&a["starttime"].as_u64().unwrap_or(0)));
+    all_tasks.truncate(50);
+    Ok(Json(serde_json::json!(all_tasks)))
 }
 
 // ── lifecycle action routes ───────────────────────────────────────────────────

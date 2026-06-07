@@ -151,16 +151,17 @@ pub async fn list_hosts(
     .fetch_all(&state.db)
     .await
     .map_err(AppError::Database)?;
-    Ok(Json(serde_json::json!({ "hosts": hosts })))
+    Ok(Json(serde_json::json!(hosts)))
 }
 
 #[derive(Deserialize)]
 pub struct CreateHostRequest {
     pub name:        String,
     pub url:         String,
-    pub node:        String,
+    pub node:        Option<String>,
     pub fingerprint: Option<String>,
-    pub token:       String,
+    pub token_id:    String,
+    pub token_secret: String,
 }
 
 pub async fn create_host(
@@ -172,6 +173,7 @@ pub async fn create_host(
 
     require_admin(&state, &jar).await?;
     let id = uuid::Uuid::new_v4().to_string();
+    let node = req.node.as_deref().unwrap_or("pve").to_string();
 
     sqlx::query(
         "INSERT INTO proxmox_hosts (id, name, url, node, fingerprint) VALUES (?, ?, ?, ?, ?)",
@@ -179,18 +181,21 @@ pub async fn create_host(
     .bind(&id)
     .bind(&req.name)
     .bind(&req.url)
-    .bind(&req.node)
+    .bind(&node)
     .bind(&req.fingerprint)
     .execute(&state.db)
     .await
     .map_err(AppError::Database)?;
+
+    // PVE API token format: "user@realm!tokenname=uuid"
+    let token = format!("{}={}", req.token_id, req.token_secret);
 
     // encrypt and store token
     let cipher = Aes256Gcm::new(state.secrets_key.as_ref().into());
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, req.token.as_bytes())
+    let ciphertext = cipher.encrypt(nonce, token.as_bytes())
         .map_err(|_| AppError::Internal(anyhow::anyhow!("encryption failed")))?;
     let mut blob = nonce_bytes.to_vec();
     blob.extend_from_slice(&ciphertext);

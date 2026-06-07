@@ -12,14 +12,12 @@ export default function AppEmbedOverlay() {
   const [loading,   setLoading]   = useState(false)
   const [showBadge, setShowBadge] = useState(false)
 
-  // Escape key closes the overlay
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [close])
 
-  // When app changes, call open-ui to resolve the best URL
   const resolveRef = useRef(0)
   useEffect(() => {
     if (!app || app.primary_port === null) {
@@ -34,35 +32,19 @@ export default function AppEmbedOverlay() {
     setLoading(true)
     setShowBadge(false)
 
-    // Compute the fallback URL from def.links.web_ui or web_path
     const path = def?.links?.web_ui ?? def?.web_path ?? '/'
     const uiPort = def?.web_port ?? app.primary_port
-    const fallbackBase = `http://${window.location.hostname}:${uiPort}`
-    const fallbackUrl = path.startsWith('http://') || path.startsWith('https://')
-      ? path
-      : `${fallbackBase}${path.startsWith('/') ? path : `/${path}`}`
 
-    api.apps.openUi(app.project_name, uiPort)
-      .then(res => {
-        if (seq !== resolveRef.current) return
-        // Append the path hint (if any) to the returned URL
-        const base = res.url.replace(/\/$/, '')
-        const url = path.startsWith('http://') || path.startsWith('https://')
-          ? path
-          : `${base}${path.startsWith('/') ? path : `/${path}`}`
-        setIframeSrc(url)
-        if (res.proxy_created) {
-          setShowBadge(true)
-          setTimeout(() => setShowBadge(false), 3000)
-        }
-      })
-      .catch(() => {
-        if (seq !== resolveRef.current) return
-        setIframeSrc(fallbackUrl)
-      })
-      .finally(() => {
-        if (seq === resolveRef.current) setLoading(false)
-      })
+    // Use the embed proxy so X-Frame-Options / CSP headers are stripped server-side
+    const cleanPath = path.startsWith('/') ? path.slice(1) : path
+    const proxyUrl = `/api/apps/embed/${app.project_name}/${cleanPath}`
+
+    if (seq !== resolveRef.current) return
+    setIframeSrc(proxyUrl)
+    setLoading(false)
+
+    // Still call openUi in background for proxy/tracking side-effects
+    api.apps.openUi(app.project_name, uiPort).catch(() => {})
   }, [app, def])
 
   if (!app) return null

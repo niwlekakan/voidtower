@@ -14,6 +14,7 @@ import AiosTvLayout from '@/aios/AiosTvLayout'
 import AiosKioskLayout from '@/aios/AiosKioskLayout'
 import AiosOdysseus from '@/aios/AiosOdysseus'
 import AiosConfirm from '@/aios/AiosConfirm'
+import { AiosAskPopup } from '@/aios/AiosAskPopup'
 import AnimatedBackground from '@/components/ui/AnimatedBackground'
 import NotificationToasts from '@/components/ui/NotificationToasts'
 import CommandPalette from '@/components/ui/CommandPalette'
@@ -304,6 +305,7 @@ export default function AiosLayout() {
     openPanel, focusPanel, setWorkspace,
     tileMode, tileTrees, toggleTileMode, splitPanel,
   } = useAiosStore()
+  const askOpen = useAiosStore((s) => s.askOpen)
 
   const isPhone = tier === 'phone'
   const isTv = tier === 'tv'
@@ -383,6 +385,13 @@ export default function AiosLayout() {
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Ctrl+Shift+Space — open Ask AI popup
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === ' ') {
+        e.preventDefault()
+        useAiosStore.getState().setAskOpen(true)
+        return
+      }
+
       // Ctrl+Alt+O — toggle Odysseus panel
       if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === 'o') {
         e.preventDefault()
@@ -576,6 +585,7 @@ export default function AiosLayout() {
         <LayoutGrid size={14} />
       </button>
 
+      <AiosAskPopup open={askOpen} onClose={() => useAiosStore.getState().setAskOpen(false)} />
       <NotificationToasts />
       <CommandPalette />
       <AiosConfirm />

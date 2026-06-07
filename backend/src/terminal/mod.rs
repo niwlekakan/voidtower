@@ -4,7 +4,6 @@ use futures_util::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -197,26 +196,34 @@ fn which_bin(name: &str) -> bool {
 // Shared PTY↔WebSocket relay loop
 async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<()> {
     let reader = pair.master.try_clone_reader()?;
-    // Use std::sync::Mutex so we can move into spawn_blocking without async overhead
-    let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+    let writer = pair.master.take_writer()?;
     let (mut ws_sink, mut ws_stream) = socket.split();
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Option<String>>(64);
+    // Single persistent writer thread: select loop does fast try_send, never blocks
+    let (write_tx, write_rx) = tokio::sync::mpsc::channel::<String>(128);
 
-    // Reader thread: sends Some(data) for output, None on EOF (process died)
+    // Reader thread: Some(data) on output, None on EOF / process exit
     tokio::task::spawn_blocking(move || {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => {
-                    let _ = output_tx.blocking_send(None);
-                    break;
-                }
+                Ok(0) | Err(_) => { let _ = output_tx.blocking_send(None); break; }
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
                     if output_tx.blocking_send(Some(data)).is_err() { break; }
                 }
             }
+        }
+    });
+
+    // Writer thread: one thread owns the PTY writer; exits when write_tx is dropped
+    tokio::task::spawn_blocking(move || {
+        let mut writer = writer;
+        let mut rx = write_rx;
+        while let Some(data) = rx.blocking_recv() {
+            let _ = writer.write_all(data.as_bytes());
+            let _ = writer.flush();
         }
     });
 
@@ -228,7 +235,6 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
                         let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
                         if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
                     }
-                    // Process exited (EOF from PTY reader) or channel dropped
                     Some(None) | None => {
                         let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
                         let _ = ws_sink.send(Message::Text(msg.into())).await;
@@ -241,14 +247,7 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<ClientMessage>(&text) {
                             Ok(ClientMessage::Input { data }) => {
-                                // Write is blocking I/O — must not block the async executor
-                                let w = writer.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    if let Ok(mut w) = w.lock() {
-                                        let _ = w.write_all(data.as_bytes());
-                                        let _ = w.flush();
-                                    }
-                                });
+                                let _ = write_tx.try_send(data);
                             }
                             Ok(ClientMessage::Resize { cols, rows }) => {
                                 let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });

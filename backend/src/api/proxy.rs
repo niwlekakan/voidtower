@@ -1053,7 +1053,7 @@ pub async fn nginx_action(
         // Docker mode: manage the nginx-proxy container directly
         if let Some(id) = docker_nginx_container_id() {
             let docker_action = match action.as_str() {
-                "reload"  => return reload_nginx().map_err(|e| e),
+                "reload"  => return reload_nginx(),
                 "restart" => "restart",
                 "stop"    => "stop",
                 "start"   => "start",

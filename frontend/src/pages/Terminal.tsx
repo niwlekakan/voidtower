@@ -59,9 +59,10 @@ interface PtyTerminalProps {
   wsUrl: string
   label?: string
   onClose?: () => void
+  reconnect?: boolean
 }
 
-function PtyTerminal({ wsUrl, label, onClose }: PtyTerminalProps) {
+function PtyTerminal({ wsUrl, label, onClose, reconnect = true }: PtyTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef      = useRef<XTerm | null>(null)
   const wsRef        = useRef<WebSocket | null>(null)
@@ -143,12 +144,15 @@ function PtyTerminal({ wsUrl, label, onClose }: PtyTerminalProps) {
         try {
           const msg = JSON.parse(e.data as string)
           if (msg.type === 'output') term.write(msg.data as string)
-          if (msg.type === 'closed') term.writeln('\r\n\x1b[31m[session closed]\x1b[0m')
+          if (msg.type === 'closed') {
+            term.writeln('\r\n\x1b[31m[session closed]\x1b[0m')
+            if (!reconnect) deadRef.current = true
+          }
         } catch { /* ignore */ }
       }
       ws.onclose = () => {
         setConnected(false)
-        if (!deadRef.current) {
+        if (!deadRef.current && reconnect) {
           term.writeln('\r\n\x1b[33m[disconnected — reconnecting in 3s…]\x1b[0m')
           reconnectTimer = setTimeout(connect, 3000)
         }
@@ -521,6 +525,7 @@ function SshArea() {
             wsUrl={api.terminal.sshWsUrl(activeSession.id)}
             label={`${activeSession.username}@${activeSession.host}:${activeSession.port} — ${activeSession.label}`}
             onClose={() => setActive(null)}
+            reconnect={false}
           />
         ) : (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, color: 'var(--text-muted)' }}>

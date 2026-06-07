@@ -382,7 +382,7 @@ export default function ThemeEditor() {
             minWidth: 160,
           }}
         />
-        <Button size="sm" variant="primary" onClick={save} disabled={!dirty}>
+        <Button size="sm" variant="primary" onClick={save} disabled={!themeName.trim()}>
           <Save size={12} className="mr-1.5" /> Save as theme
         </Button>
         <Button size="sm" variant="ghost" onClick={reset} disabled={!dirty}>

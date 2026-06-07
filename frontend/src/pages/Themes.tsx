@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useThemeStore } from '@/store/theme'
-import { exportTheme, type Theme, GLASS_LEVELS } from '@/theme/themes'
+import { exportTheme, importTheme, type Theme, GLASS_LEVELS } from '@/theme/themes'
 import ThemeEditor from '@/components/ui/ThemeEditor'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
-import { Check, Shuffle, Trash2, ChevronDown, ChevronUp } from 'lucide-react'
+import { Check, Shuffle, Trash2, Upload, Download, Clipboard } from 'lucide-react'
 
 // Small swatch strip showing key colors for a theme
 function ThemeSwatch({ theme }: { theme: Theme }) {
@@ -99,15 +99,15 @@ function InterfaceCard() {
 }
 
 export default function ThemesPage() {
-  const { activeTheme, setTheme, allThemes, removeCustomTheme, randomize, importFromJson } = useThemeStore()
+  const { activeTheme, setTheme, allThemes, addCustomTheme, removeCustomTheme, randomize } = useThemeStore()
   const [importText, setImportText] = useState('')
-  const [importOpen, setImportOpen] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const themes = allThemes()
   const builtins = themes.filter(t => t.isBuiltin)
   const customs = themes.filter(t => !t.isBuiltin)
 
-  const handleExport = () => {
+  const exportToClipboard = () => {
     const json = exportTheme(activeTheme)
     navigator.clipboard.writeText(json).then(
       () => notify.success('Theme JSON copied to clipboard'),
@@ -115,15 +115,36 @@ export default function ThemesPage() {
     )
   }
 
-  const handleImport = () => {
+  const exportToFile = () => {
+    const json = exportTheme(activeTheme)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${activeTheme.name.toLowerCase().replace(/\s+/g, '-')}.theme.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const doImport = (json: string) => {
     try {
-      importFromJson(importText)
+      const theme = importTheme(json.trim())
+      addCustomTheme(theme)
+      setTheme(theme.id)
       setImportText('')
-      setImportOpen(false)
-      notify.success('Theme imported')
+      notify.success(`Theme "${theme.name}" imported`)
     } catch {
-      notify.error('Invalid theme JSON')
+      notify.error('Invalid theme JSON — check format and try again')
     }
+  }
+
+  const handleImportText = () => doImport(importText)
+
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    file.text().then(doImport).catch(() => notify.error('Failed to read file'))
+    e.target.value = ''
   }
 
   return (
@@ -153,57 +174,63 @@ export default function ThemesPage() {
             ))}
           </div>
 
-          {/* Custom / saved themes */}
-          {customs.length > 0 && (
-            <div className="card space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Saved</p>
-              {customs.map(t => (
-                <ThemeCard
-                  key={t.id}
-                  theme={t}
-                  active={activeTheme.id === t.id}
-                  onSelect={() => setTheme(t.id)}
-                  onDelete={() => removeCustomTheme(t.id)}
-                />
-              ))}
-            </div>
-          )}
+          {/* Custom themes — always visible */}
+          <div className="card space-y-2">
+            <p className="text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Custom themes</p>
+            {customs.length === 0 ? (
+              <p className="text-xs py-2" style={{ color: 'var(--text-disabled)' }}>
+                No custom themes yet. Edit tokens on the right and click "Save as theme", or import a JSON file below.
+              </p>
+            ) : customs.map(t => (
+              <ThemeCard
+                key={t.id}
+                theme={t}
+                active={activeTheme.id === t.id}
+                onSelect={() => setTheme(t.id)}
+                onDelete={() => removeCustomTheme(t.id)}
+              />
+            ))}
+          </div>
 
           {/* Interface sliders */}
           <InterfaceCard />
 
-          {/* Import / export (collapsed by default) */}
+          {/* Import / Export */}
           <div className="card space-y-3">
-            <button
-              className="flex items-center justify-between w-full text-xs font-medium"
-              style={{ color: 'var(--text-secondary)' }}
-              onClick={() => setImportOpen(v => !v)}
-            >
-              <span>Import / Export JSON</span>
-              {importOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            </button>
-            {importOpen && (
-              <div className="space-y-2 pt-1">
-                <Button size="sm" variant="ghost" onClick={handleExport} className="w-full justify-center">
-                  Export active theme
+            <p className="text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Import / Export</p>
+
+            <div>
+              <p className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>Export active theme</p>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={exportToClipboard}>
+                  <Clipboard size={12} className="mr-1.5" /> Copy JSON
                 </Button>
-                <textarea
-                  value={importText}
-                  onChange={(e) => setImportText(e.target.value)}
-                  placeholder="Paste theme JSON…"
-                  rows={5}
-                  className="w-full px-3 py-2 rounded text-xs font-mono resize-none outline-none"
-                  style={{
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--border-default)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
-                <Button size="sm" variant="primary" disabled={!importText.trim()} onClick={handleImport} className="w-full justify-center">
-                  Import
+                <Button size="sm" variant="ghost" onClick={exportToFile}>
+                  <Download size={12} className="mr-1.5" /> Download file
                 </Button>
               </div>
-            )}
+            </div>
+
+            <div>
+              <p className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>Import theme</p>
+              <div className="flex gap-2 mb-2">
+                <Button size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()}>
+                  <Upload size={12} className="mr-1.5" /> Choose JSON file
+                </Button>
+                <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
+              </div>
+              <textarea
+                value={importText}
+                onChange={e => setImportText(e.target.value)}
+                placeholder="…or paste theme JSON here"
+                rows={4}
+                className="w-full px-3 py-2 rounded text-xs font-mono resize-none outline-none"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+              <Button size="sm" variant="primary" disabled={!importText.trim()} onClick={handleImportText} className="mt-2 w-full justify-center">
+                Import from JSON
+              </Button>
+            </div>
           </div>
         </div>
 

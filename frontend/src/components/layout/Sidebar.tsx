@@ -37,6 +37,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/services',   icon: Server,    label: 'Services',  requires: 'systemd' },
       { to: '/containers', icon: Container, label: 'Containers'                     },
       { to: '/vms',        icon: Monitor,   label: 'VMs',       requires: 'kvm'     },
+      { to: '/proxmox',    icon: Server,    label: 'Proxmox'                        },
       { to: '/apps',       icon: Package,   label: 'App Vault'                      },
     ],
   },

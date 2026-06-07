@@ -581,3 +581,68 @@ export interface ModFetchResult {
   diff_preview: string
   commits_ahead: number
 }
+
+// ── Proxmox multi-host types ──────────────────────────────────────────────────
+
+export interface ProxmoxHost {
+  id: string
+  name: string
+  url: string
+  node: string
+  fingerprint?: string
+  created_at: string
+}
+
+export interface AddHostRequest {
+  name: string
+  url: string
+  node?: string
+  token_id: string
+  token_secret: string
+  fingerprint?: string
+}
+
+export interface PveVm {
+  vmid: number
+  name: string
+  status: string
+  type: 'qemu' | 'lxc'
+  cpu: number
+  mem: number
+  maxmem: number
+  disk: number
+  maxdisk: number
+  uptime: number
+  node: string
+}
+
+export interface PveNode {
+  node: string
+  status: string
+  cpu: number
+  maxcpu: number
+  mem: number
+  maxmem: number
+  disk: number
+  maxdisk: number
+  uptime: number
+}
+
+export interface PveStorage {
+  storage: string
+  type: string
+  avail: number
+  total: number
+  used: number
+  active: boolean
+}
+
+export interface PveTask {
+  upid: string
+  type: string
+  status: string
+  starttime: number
+  endtime?: number
+  node: string
+  id?: string
+}

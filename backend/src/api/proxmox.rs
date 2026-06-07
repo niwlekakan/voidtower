@@ -268,10 +268,27 @@ pub async fn list_nodes(
     require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let auth = format!("PVEAPIToken={}", host.token);
-    // Use cluster/resources for node stats — works regardless of stored node name
-    let data = pve_get(&client, &format!("{}/cluster/resources?type=node", proxmox_base(&host.url)), &auth).await?;
-    Ok(Json(data))
+    let auth  = format!("PVEAPIToken={}", host.token);
+    let base  = proxmox_base(&host.url);
+
+    // Step 1: list node names
+    let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await?;
+    let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
+        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+
+    // Step 2: fetch full status per node (includes cpu/mem/disk metrics)
+    let mut result = Vec::new();
+    for name in &names {
+        if let Ok(status) = pve_get(&client, &format!("{}/nodes/{}/status", base, name), &auth).await {
+            let mut entry = status.clone();
+            entry["node"]   = serde_json::json!(name);
+            entry["status"] = serde_json::json!("online");
+            result.push(entry);
+        } else if let Some(basic) = node_list.as_array().and_then(|a| a.iter().find(|n| n["node"].as_str() == Some(name.as_str()))) {
+            result.push(basic.clone());
+        }
+    }
+    Ok(Json(serde_json::json!(result)))
 }
 
 pub async fn list_vms(
@@ -284,9 +301,27 @@ pub async fn list_vms(
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
     let auth = format!("PVEAPIToken={}", host.token);
-    // cluster/resources returns all VMs and LXCs across all nodes with type field already set
-    let data = pve_get(&client, &format!("{}/cluster/resources?type=vm", base), &auth).await?;
-    let mut all = data.as_array().cloned().unwrap_or_default();
+
+    // Discover node names, then query qemu+lxc per node for complete data
+    let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await?;
+    let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
+        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+
+    let mut all: Vec<serde_json::Value> = Vec::new();
+    for node in &names {
+        for kind in &["qemu", "lxc"] {
+            if let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/{}", base, node, kind), &auth).await {
+                if let Some(arr) = data.as_array() {
+                    for vm in arr {
+                        let mut v = vm.clone();
+                        v["type"] = serde_json::json!(kind);
+                        v["node"] = serde_json::json!(node);
+                        all.push(v);
+                    }
+                }
+            }
+        }
+    }
     all.sort_by_key(|v| v["vmid"].as_u64().unwrap_or(0));
     Ok(Json(serde_json::json!(all)))
 }
@@ -299,23 +334,31 @@ pub async fn list_storage(
     require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
     let auth = format!("PVEAPIToken={}", host.token);
-    // cluster/resources?type=storage — remap to match PveStorage frontend type
-    let data = pve_get(&client, &format!("{}/cluster/resources?type=storage", proxmox_base(&host.url)), &auth).await?;
-    let remapped: Vec<serde_json::Value> = data.as_array().unwrap_or(&vec![]).iter().map(|s| {
-        let maxdisk = s["maxdisk"].as_u64().unwrap_or(0);
-        let used    = s["disk"].as_u64().unwrap_or(0);
-        serde_json::json!({
-            "storage": s["storage"],
-            "node":    s["node"],
-            "type":    s["plugintype"],
-            "used":    used,
-            "total":   maxdisk,
-            "avail":   maxdisk.saturating_sub(used),
-            "active":  s["status"].as_str().unwrap_or("") == "available",
-        })
-    }).collect();
-    Ok(Json(serde_json::json!(remapped)))
+
+    // Discover nodes, collect storage from each
+    let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await?;
+    let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
+        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+
+    let mut all: Vec<serde_json::Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for node in &names {
+        if let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/storage", base, node), &auth).await {
+            if let Some(arr) = data.as_array() {
+                for s in arr {
+                    let key = s["storage"].as_str().unwrap_or("").to_string();
+                    if seen.insert(key) {
+                        let mut entry = s.clone();
+                        entry["node"] = serde_json::json!(node);
+                        all.push(entry);
+                    }
+                }
+            }
+        }
+    }
+    Ok(Json(serde_json::json!(all)))
 }
 
 pub async fn list_tasks(
@@ -326,14 +369,15 @@ pub async fn list_tasks(
     require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let auth = format!("PVEAPIToken={}", host.token);
-    // First discover real node names, then collect tasks from each
-    let nodes_data = pve_get(&client, &format!("{}/cluster/resources?type=node", proxmox_base(&host.url)), &auth).await?;
-    let node_names: Vec<String> = nodes_data.as_array().unwrap_or(&vec![])
-        .iter().filter_map(|n| n["node"].as_str().map(|s| s.to_string())).collect();
     let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+
+    let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await?;
+    let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
+        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+
     let mut all_tasks: Vec<serde_json::Value> = Vec::new();
-    for node in &node_names {
+    for node in &names {
         if let Ok(tasks) = pve_get(&client, &format!("{}/nodes/{}/tasks?limit=50", base, node), &auth).await {
             if let Some(arr) = tasks.as_array() {
                 all_tasks.extend(arr.iter().cloned());

@@ -4,8 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -55,7 +54,11 @@ fn detect_user_info() -> UserInfo {
 }
 
 fn default_path() -> String {
-    std::env::var("PATH").unwrap_or_else(|_| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into())
+    let base = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    match std::env::var("PATH") {
+        Ok(p) if !p.is_empty() => p,
+        _ => base.into(),
+    }
 }
 
 pub async fn handle_terminal_ws(socket: WebSocket, shell: Option<String>, _user_id: String) {
@@ -112,69 +115,106 @@ async fn run_ssh(
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
 
-    // If password stored, try sshpass; otherwise direct ssh (interactive password prompt)
-    let use_sshpass = password.is_some() && which_sshpass();
+    // Write a temp askpass script when password is set — works even without sshpass
+    let askpass_path: Option<String> = if let Some(ref pw) = password {
+        let path = format!("/tmp/.vt-askpass-{}.sh", uuid::Uuid::new_v4());
+        // Escape single quotes in password for shell safety
+        let safe_pw = pw.replace('\'', "'\\''");
+        let script = format!("#!/bin/sh\nprintf '%s' '{}'\n", safe_pw);
+        if std::fs::write(&path, &script).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+            }
+            Some(path)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let use_sshpass = password.is_some() && which_bin("sshpass");
 
     let mut cmd = if use_sshpass {
+        // sshpass reads password from SSHPASS env var via -e flag
         let mut c = CommandBuilder::new("sshpass");
-        c.arg("-e"); // read password from SSHPASS env var
+        c.arg("-e");
         c.args(["ssh",
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
             "-o", "BatchMode=no",
             "-p", &port.to_string(),
         ]);
-        if let Some(ref kp) = key_path {
-            c.args(["-i", kp]);
-        }
-        c.arg(&format!("{}@{}", username, host));
+        if let Some(ref kp) = key_path { c.args(["-i", kp]); }
+        c.arg(format!("{}@{}", username, host));
         c
     } else {
         let mut c = CommandBuilder::new("ssh");
         c.args([
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
             "-p", &port.to_string(),
         ]);
-        if let Some(ref kp) = key_path {
-            c.args(["-i", kp]);
+        if let Some(ref kp) = key_path { c.args(["-i", kp]); }
+        // SSH_ASKPASS path — works on OpenSSH 8.4+ with SSH_ASKPASS_REQUIRE=force
+        // On older versions falls back to interactive prompt
+        if let Some(ref ap) = askpass_path {
+            c.args(["-o", "BatchMode=no"]);
+            c.env("SSH_ASKPASS", ap);
+            c.env("SSH_ASKPASS_REQUIRE", "force");
+            c.env("DISPLAY", ":0"); // needed for older OpenSSH fallback
         }
-        c.arg(&format!("{}@{}", username, host));
+        c.arg(format!("{}@{}", username, host));
         c
     };
 
     cmd.env("TERM", "xterm-256color");
     cmd.env("PATH", default_path());
+    // For sshpass -e: set SSHPASS in env
     if let Some(ref pw) = password {
         cmd.env("SSHPASS", pw);
     }
 
     let _child = pair.slave.spawn_command(cmd)?;
-    run_pty_loop(socket, pair).await
+
+    // Clean up askpass script after session ends
+    let result = run_pty_loop(socket, pair).await;
+    if let Some(path) = askpass_path {
+        let _ = std::fs::remove_file(&path);
+    }
+    result
 }
 
-fn which_sshpass() -> bool {
-    std::process::Command::new("which").arg("sshpass").output()
+fn which_bin(name: &str) -> bool {
+    std::process::Command::new("which").arg(name).output()
         .map(|o| o.status.success()).unwrap_or(false)
 }
 
 // Shared PTY↔WebSocket relay loop
 async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<()> {
     let reader = pair.master.try_clone_reader()?;
+    // Use std::sync::Mutex so we can move into spawn_blocking without async overhead
     let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
     let (mut ws_sink, mut ws_stream) = socket.split();
-    let writer_clone = writer.clone();
-    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<String>(64);
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Option<String>>(64);
 
+    // Reader thread: sends Some(data) for output, None on EOF (process died)
     tokio::task::spawn_blocking(move || {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) | Err(_) => {
+                    let _ = output_tx.blocking_send(None);
+                    break;
+                }
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    if output_tx.blocking_send(data).is_err() { break; }
+                    if output_tx.blocking_send(Some(data)).is_err() { break; }
                 }
             }
         }
@@ -182,24 +222,40 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
 
     loop {
         tokio::select! {
-            Some(data) = output_rx.recv() => {
-                let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
-                if ws_sink.send(Message::Text(msg)).await.is_err() { break; }
+            item = output_rx.recv() => {
+                match item {
+                    Some(Some(data)) => {
+                        let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
+                        if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
+                    }
+                    // Process exited (EOF from PTY reader) or channel dropped
+                    Some(None) | None => {
+                        let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
+                        let _ = ws_sink.send(Message::Text(msg.into())).await;
+                        break;
+                    }
+                }
             }
             msg = ws_stream.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<ClientMessage>(&text) {
                             Ok(ClientMessage::Input { data }) => {
-                                let mut w = writer_clone.lock().await;
-                                let _ = w.write_all(data.as_bytes());
+                                // Write is blocking I/O — must not block the async executor
+                                let w = writer.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    if let Ok(mut w) = w.lock() {
+                                        let _ = w.write_all(data.as_bytes());
+                                        let _ = w.flush();
+                                    }
+                                });
                             }
                             Ok(ClientMessage::Resize { cols, rows }) => {
                                 let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
                             }
                             Ok(ClientMessage::Ping) => {
                                 let msg = serde_json::to_string(&ServerMessage::Pong).unwrap_or_default();
-                                let _ = ws_sink.send(Message::Text(msg)).await;
+                                let _ = ws_sink.send(Message::Text(msg.into())).await;
                             }
                             Err(_) => {}
                         }

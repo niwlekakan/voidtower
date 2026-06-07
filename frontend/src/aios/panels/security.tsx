@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { LogOut } from 'lucide-react'
+import { LogOut, Users } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
 
-interface Session { id: string; user?: string; ip?: string; user_agent?: string; created_at: string; is_current?: boolean }
+interface Session { id: string; user?: string; ip?: string; user_agent?: string; created_at: string; is_current?: boolean; role?: string }
 
 function rel(ts: string) {
   const d = Date.now() - new Date(ts).getTime()
@@ -20,26 +20,31 @@ export default function NativeSecurityPanel() {
     if (r.ok) { const d = await r.json(); setSessions(d.sessions ?? []) }
     setLoading(false)
   }
-
   async function revoke(id: string) {
     await fetch(`/api/security/sessions/${id}`, { method: 'DELETE', credentials: 'include' })
+    load()
+  }
+  async function revokeOthers() {
+    await fetch('/api/security/sessions/revoke-others', { method: 'POST', credentials: 'include' })
     load()
   }
 
   useEffect(() => { load() }, [])
 
   return (
-    <NativePanelShell>
+    <NativePanelShell actions={
+      <IconBtn title="Revoke all other sessions" onClick={revokeOthers} danger><Users size={12} /></IconBtn>
+    }>
       {loading ? <LoadingState /> : sessions.length === 0 ? <EmptyState text="No active sessions" /> :
         sessions.map(s => (
           <NativeRow key={s.id}>
             <StatusDot color={s.is_current ? '#22c55e' : '#94a3b8'} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 11, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {s.ip ?? 'unknown'}{s.is_current ? ' (this session)' : ''}
+                {s.user ? `${s.user} · ` : ''}{s.ip ?? 'unknown'}{s.is_current ? ' (this session)' : ''}{s.role ? ` · ${s.role}` : ''}
               </div>
               <div style={{ fontSize: 9, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {rel(s.created_at)}{s.user_agent ? ` · ${s.user_agent.slice(0, 30)}` : ''}
+                {rel(s.created_at)}{s.user_agent ? ` · ${s.user_agent.slice(0, 35)}` : ''}
               </div>
             </div>
             {!s.is_current && (

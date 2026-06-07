@@ -199,10 +199,10 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
     let writer = pair.master.take_writer()?;
     let (mut ws_sink, mut ws_stream) = socket.split();
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Option<String>>(64);
-    // Single persistent writer thread: select loop does fast try_send, never blocks
-    let (write_tx, write_rx) = tokio::sync::mpsc::channel::<String>(128);
+    // std::sync::mpsc has no tokio-runtime dependency — safe from spawn_blocking or OS thread
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<String>(256);
 
-    // Reader thread: Some(data) on output, None on EOF / process exit
+    // Reader: blocking OS thread → async channel
     tokio::task::spawn_blocking(move || {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
@@ -217,31 +217,19 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
         }
     });
 
-    // Writer thread: one thread owns the PTY writer; exits when write_tx is dropped
-    tokio::task::spawn_blocking(move || {
+    // Writer: dedicated OS thread; exits when write_tx is dropped (loop exit)
+    std::thread::spawn(move || {
         let mut writer = writer;
-        let mut rx = write_rx;
-        while let Some(data) = rx.blocking_recv() {
+        for data in write_rx {
             let _ = writer.write_all(data.as_bytes());
-            let _ = writer.flush();
         }
     });
 
     loop {
+        // biased: always check incoming input before draining output — prevents
+        // fish prompt output from starving keystrokes when both are ready
         tokio::select! {
-            item = output_rx.recv() => {
-                match item {
-                    Some(Some(data)) => {
-                        let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
-                        if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
-                    }
-                    Some(None) | None => {
-                        let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
-                        let _ = ws_sink.send(Message::Text(msg.into())).await;
-                        break;
-                    }
-                }
-            }
+            biased;
             msg = ws_stream.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
@@ -261,6 +249,19 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
+                }
+            }
+            item = output_rx.recv() => {
+                match item {
+                    Some(Some(data)) => {
+                        let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
+                        if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
+                    }
+                    Some(None) | None => {
+                        let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
+                        let _ = ws_sink.send(Message::Text(msg.into())).await;
+                        break;
+                    }
                 }
             }
         }

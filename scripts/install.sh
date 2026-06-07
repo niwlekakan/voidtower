@@ -234,7 +234,10 @@ install_deps() {
   case "$PKG_MGR" in
     apt)
       DEBIAN_FRONTEND=noninteractive apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs pciutils python3 python3-pip python3-venv
+      # python3-pip intentionally omitted here — on Ubuntu 24.04+ it pulls in
+      # python3-dev → build-essential → gcc (51 packages + slow man-db trigger).
+      # pip and venv are only needed for Odysseus and are installed there.
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs pciutils python3 python3-venv
       ;;
     dnf|yum)
       $PKG_MGR install -y -q $pkgs pciutils python3 python3-pip
@@ -290,7 +293,7 @@ build_from_source() {
   info "No pre-built binary available. Attempting build from source…"
 
   if ! command -v cargo >/dev/null 2>&1; then
-    info "Rust not found — installing via rustup…"
+    info "Rust not found — installing via rustup (this takes 2–5 min, no output is normal)…"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --default-toolchain stable
     # Activate for the rest of this script
@@ -870,6 +873,18 @@ install_odysseus() {
 
   mkdir -p "$ODYSSEUS_DATA_DIR" "$ODYSSEUS_CONFIG_DIR"
   chown -R "${ODYSSEUS_USER}:${ODYSSEUS_USER}" "$ODYSSEUS_INSTALL_DIR" "$ODYSSEUS_DATA_DIR" "$ODYSSEUS_CONFIG_DIR"
+
+  # Ensure pip is available (deferred from install_deps to avoid pulling gcc on Ubuntu)
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    info "Installing python3-pip…"
+    case "$PKG_MGR" in
+      apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip ;;
+      dnf|yum) $PKG_MGR install -y -q python3-pip ;;
+      pacman) pacman -S --noconfirm --needed python-pip ;;
+      apk)    apk add --no-cache py3-pip ;;
+      zypper) zypper --non-interactive install -q python3-pip ;;
+    esac
+  fi
 
   # Python venv
   info "Setting up Python virtual environment…"

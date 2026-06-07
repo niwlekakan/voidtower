@@ -48,6 +48,8 @@ CT_BRIDGE="vmbr0"
 CT_IP="dhcp"
 CT_GW=""
 CT_PASS=""
+CT_USER=""
+CT_DNS=""
 VT_PORT=8743
 DOCKER=true
 ALL_IN_ONE=false
@@ -185,10 +187,21 @@ if [[ "$YES" == false ]]; then
        [[ "${_yn,,}" == "y"* ]] && PULL_MODEL=true ;;
   esac
 
+  read -rp "  Container username  (leave blank = root only): " CT_USER
   read -rsp "  Root password for container (leave blank = no password): " CT_PASS
   echo
 
+  # DNS: use host nameserver as default
+  local _host_dns; _host_dns=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null || echo "8.8.8.8")
+  read -rp "  DNS nameserver      [${_host_dns}]: " _v
+  CT_DNS="${_v:-$_host_dns}"
+
   echo
+fi
+
+# Resolve CT_DNS if not set (non-interactive path)
+if [[ -z "$CT_DNS" ]]; then
+  CT_DNS=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null || echo "8.8.8.8")
 fi
 
 # ─── Validate ─────────────────────────────────────────────────────────────────
@@ -286,6 +299,7 @@ fi
 
 [[ -n "$CT_PASS" ]] && PCT_ARGS_CLEAN+=(--password "$CT_PASS")
 [[ "$DOCKER" == true ]] && PCT_ARGS_CLEAN+=(--features "keyctl=1,nesting=1")
+PCT_ARGS_CLEAN+=(--nameserver "$CT_DNS")
 
 info "Running: pct create ${PCT_ARGS_CLEAN[*]}"
 pct create "${PCT_ARGS_CLEAN[@]}" || die "pct create failed"
@@ -318,6 +332,16 @@ for i in $(seq 1 30); do
   sleep 2
   [[ $i -eq 30 ]] && die "Container did not become ready in 60 s — check: pct status ${CT_ID}"
 done
+
+# Create non-root sudo user if requested
+if [[ -n "$CT_USER" ]]; then
+  info "Creating user '${CT_USER}' with sudo access…"
+  pct exec "$CT_ID" -- bash -c "
+    useradd -m -s /bin/bash '${CT_USER}'
+    usermod -aG sudo '${CT_USER}'
+    [[ -n '${CT_PASS}' ]] && echo '${CT_USER}:${CT_PASS}' | chpasswd || true
+  " && success "User '${CT_USER}' created"
+fi
 
 # ─── Bootstrap inside container ───────────────────────────────────────────────
 step "Installing VoidTower inside container ${CT_ID}"

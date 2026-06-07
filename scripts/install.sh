@@ -465,6 +465,11 @@ install_service() {
   local EXTRA_FLAGS=""
   [[ "$NO_TLS" == true ]] && EXTRA_FLAGS=" --no-tls"
 
+  # Only list docker in SupplementaryGroups if the group exists — systemd
+  # fails with status=216/GROUP if any listed group is missing.
+  local SUPP_GROUPS=""
+  getent group docker &>/dev/null && SUPP_GROUPS="docker"
+
   info "Installing voidtower.service…"
   cat > "${SYSTEMD_DIR}/voidtower.service" <<EOF
 [Unit]
@@ -490,7 +495,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=${VT_DATA_DIR} ${VT_CONFIG_DIR} -/etc/nginx/conf.d -/etc/nginx/sites-enabled
-SupplementaryGroups=docker
+SupplementaryGroups=${SUPP_GROUPS}
 PrivateTmp=true
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -1229,6 +1234,13 @@ setup_ai_integrated() {
   local recommended_model; recommended_model=$(recommend_ollama_model)
 
   if [[ "$AI_PROVIDER" == "ollama" ]]; then
+    if [[ "$GPU_VENDOR" == "cpu" && "$YES_MODE" != true ]]; then
+      warn "No GPU detected. Ollama will run in CPU-only mode — inference will be slow."
+      read -rp "  Continue installing Ollama in CPU-only mode? [Y/n]: " _gpu_yn
+      case "${_gpu_yn:-Y}" in
+        [Nn]*) info "Skipping AI runtime. Re-run with --with-ai once a GPU is available."; return ;;
+      esac
+    fi
     install_ollama
 
     # Determine model

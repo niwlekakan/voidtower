@@ -26,6 +26,8 @@ interface ThemeStore {
   activeTheme: Theme
   customThemes: Theme[]
   glassLevel: GlassLevel
+  panelOpacity: number   // 0 = fully opaque, 100 = max transparency
+  panelRadius: number    // 0-20 px, border-radius for panels/cards
   bgPreset: BgPreset
   animConfig: AnimConfig
   uiMode: UiMode
@@ -33,6 +35,8 @@ interface ThemeStore {
   a11y: A11yConfig
   setTheme: (id: string) => void
   setGlass: (level: GlassLevel) => void
+  setPanelOpacity: (n: number) => void
+  setPanelRadius: (n: number) => void
   setBgPreset: (preset: BgPreset) => void
   setAnimConfig: (patch: Partial<AnimConfig>) => void
   resetAnimConfig: () => void
@@ -55,6 +59,8 @@ export const useThemeStore = create<ThemeStore>()(
       activeTheme: BUILTIN_THEMES[0],
       customThemes: [],
       glassLevel: 'none',
+      panelOpacity: 0,
+      panelRadius: 8,
       bgPreset: 'none',
       animConfig: { ...DEFAULT_ANIM_CONFIG },
       uiMode: 'tower' as UiMode,
@@ -68,6 +74,8 @@ export const useThemeStore = create<ThemeStore>()(
       },
 
       setGlass: (level) => set({ glassLevel: level }),
+      setPanelOpacity: (n) => set({ panelOpacity: Math.max(0, Math.min(100, n)) }),
+      setPanelRadius: (n) => set({ panelRadius: Math.max(0, Math.min(20, n)) }),
 
       setBgPreset: (preset) => set({ bgPreset: preset }),
 
@@ -162,6 +170,8 @@ export const useThemeStore = create<ThemeStore>()(
         activeTheme: s.activeTheme,
         customThemes: s.customThemes,
         glassLevel: s.glassLevel,
+        panelOpacity: s.panelOpacity,
+        panelRadius: s.panelRadius,
         bgPreset: s.bgPreset,
         animConfig: s.animConfig,
         uiMode: s.uiMode,

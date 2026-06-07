@@ -288,8 +288,38 @@ download_binary() {
 # ─── Build from source ────────────────────────────────────────────────────────
 build_from_source() {
   info "No pre-built binary available. Attempting build from source…"
-  command -v cargo >/dev/null 2>&1 || die "cargo not found. Install Rust: https://rustup.rs"
-  command -v npm   >/dev/null 2>&1 || die "npm not found. Install Node.js: https://nodejs.org"
+
+  if ! command -v cargo >/dev/null 2>&1; then
+    info "Rust not found — installing via rustup…"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --default-toolchain stable
+    # Activate for the rest of this script
+    source "${HOME}/.cargo/env" 2>/dev/null \
+      || export PATH="${HOME}/.cargo/bin:${PATH}"
+    command -v cargo >/dev/null 2>&1 \
+      || die "Rust install failed — install manually: https://rustup.rs"
+    success "Rust installed: $(cargo --version)"
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    info "Node.js not found — installing…"
+    case "$PKG_MGR" in
+      apt)
+        # Use NodeSource LTS (v20) for reliable npm availability
+        curl -fsSL https://deb.nodesource.com/setup_lts.x \
+          | DEBIAN_FRONTEND=noninteractive bash - >/dev/null 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs
+        ;;
+      dnf|yum) $PKG_MGR install -y -q nodejs npm ;;
+      pacman)  pacman -S --noconfirm --needed nodejs npm ;;
+      apk)     apk add --no-cache nodejs npm ;;
+      zypper)  zypper --non-interactive install -q nodejs npm ;;
+      *) die "npm not found — install Node.js: https://nodejs.org" ;;
+    esac
+    command -v npm >/dev/null 2>&1 \
+      || die "Node.js install failed — install manually: https://nodejs.org"
+    success "Node.js installed: $(node --version), npm $(npm --version)"
+  fi
 
   local SRC; SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -1787,7 +1817,10 @@ main() {
   # bash has the full script in memory, so we can safely reopen /dev/tty for
   # interactive prompts. Fall back to unattended mode if no terminal exists.
   if [[ ! -t 0 ]]; then
-    exec 0</dev/tty 2>/dev/null || UNATTENDED=true
+    # Reopen stdin from the terminal so interactive prompts work.
+    # Do NOT redirect stderr here — exec 2>/dev/null would permanently
+    # silence all error output (die, trap) for the rest of the script.
+    exec 0</dev/tty || UNATTENDED=true
   fi
 
   echo

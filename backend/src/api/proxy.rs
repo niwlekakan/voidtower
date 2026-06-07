@@ -471,14 +471,17 @@ struct NginxSetupStatus {
     conf_d_writable: bool,
     has_include: bool,
     can_reload: bool,
+    /// Docker mode only: false means the container is not running yet (vs socket access issue)
+    container_running: bool,
 }
 
 fn check_nginx_setup() -> NginxSetupStatus {
+    let docker_conf_d = std::path::Path::new(DOCKER_NGINX_CONF_DIR);
+
     if let Some(id) = docker_nginx_container_id() {
-        let conf_d_path = std::path::Path::new(DOCKER_NGINX_CONF_DIR);
-        let conf_d_exists = conf_d_path.exists();
+        let conf_d_exists = docker_conf_d.exists();
         let conf_d_writable = conf_d_exists && {
-            let tmp = conf_d_path.join(".vt-write-test");
+            let tmp = docker_conf_d.join(".vt-write-test");
             if std::fs::write(&tmp, b"").is_ok() { let _ = std::fs::remove_file(&tmp); true } else { false }
         };
         let can_reload = std::process::Command::new("docker")
@@ -490,10 +493,29 @@ fn check_nginx_setup() -> NginxSetupStatus {
             mode: NginxMode::Docker,
             conf_d_exists,
             conf_d_writable,
-            has_include: true, // nginx-proxy always includes conf.d
+            has_include: true,
             can_reload,
+            container_running: true,
         };
     }
+
+    // Docker directory exists but container not yet running — user chose Docker mode.
+    // Stay in Docker mode so system nginx paths (which require root) are not used.
+    if docker_conf_d.exists() {
+        let conf_d_writable = {
+            let tmp = docker_conf_d.join(".vt-write-test");
+            if std::fs::write(&tmp, b"").is_ok() { let _ = std::fs::remove_file(&tmp); true } else { false }
+        };
+        return NginxSetupStatus {
+            mode: NginxMode::Docker,
+            conf_d_exists: true,
+            conf_d_writable,
+            has_include: true,
+            can_reload: false,
+            container_running: false,
+        };
+    }
+
     if which("nginx") {
         let conf_d_exists = std::path::Path::new("/etc/nginx/conf.d").exists();
         return NginxSetupStatus {
@@ -502,6 +524,7 @@ fn check_nginx_setup() -> NginxSetupStatus {
             conf_d_writable: conf_d_writable(),
             has_include: conf_d_has_include(),
             can_reload: can_reload_nginx(),
+            container_running: false,
         };
     }
     NginxSetupStatus {
@@ -510,6 +533,7 @@ fn check_nginx_setup() -> NginxSetupStatus {
         conf_d_writable: false,
         has_include: false,
         can_reload: false,
+        container_running: false,
     }
 }
 
@@ -552,10 +576,18 @@ pub async fn nginx_setup_status(
                 }));
             }
             if !s.can_reload {
-                steps.push(serde_json::json!({
-                    "label": "VoidTower needs Docker socket access",
-                    "cmd": format!("sudo usermod -aG docker {}", current_username())
-                }));
+                if !s.container_running {
+                    steps.push(serde_json::json!({
+                        "label": "Deploy and start the nginx-proxy container from App Vault",
+                        "cmd": null,
+                        "app_id": "nginx-proxy"
+                    }));
+                } else {
+                    steps.push(serde_json::json!({
+                        "label": "VoidTower needs Docker socket access",
+                        "cmd": format!("sudo usermod -aG docker {}", current_username())
+                    }));
+                }
             }
         }
         NginxMode::System => {

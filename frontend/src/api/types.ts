@@ -352,6 +352,7 @@ export interface SshSession {
   port: number
   username: string
   key_path?: string
+  password_set?: boolean
   created_at: number
   last_used?: number
 }

@@ -194,7 +194,7 @@ pub fn router(state: AppState) -> Router {
         // Terminal
         .route("/api/terminal/ws", get(terminal::ws_handler))
         .route("/api/terminal/ssh/sessions", get(terminal::list_ssh_sessions).post(terminal::create_ssh_session))
-        .route("/api/terminal/ssh/sessions/:id", delete(terminal::delete_ssh_session))
+        .route("/api/terminal/ssh/sessions/:id", delete(terminal::delete_ssh_session).put(terminal::update_ssh_session))
         .route("/api/terminal/ssh/ws", get(terminal::ssh_ws_handler))
         // Audit
         .route("/api/audit", get(audit::list))

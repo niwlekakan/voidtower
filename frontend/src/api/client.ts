@@ -236,8 +236,10 @@ export const api = {
       return `${proto}://${location.host}/api/terminal/ssh/ws?session_id=${encodeURIComponent(sessionId)}`
     },
     listSshSessions: () => request<import('./types').SshSession[]>('/api/terminal/ssh/sessions'),
-    createSshSession: (s: Omit<import('./types').SshSession, 'id' | 'created_at' | 'last_used'>) =>
+    createSshSession: (s: { label: string; host: string; port: number; username: string; key_path?: string; password?: string }) =>
       request<import('./types').SshSession>('/api/terminal/ssh/sessions', { method: 'POST', body: JSON.stringify(s) }),
+    updateSshSession: (id: string, s: { label: string; host: string; port: number; username: string; key_path?: string; password?: string }) =>
+      request<import('./types').SshSession>(`/api/terminal/ssh/sessions/${id}`, { method: 'PUT', body: JSON.stringify(s) }),
     deleteSshSession: (id: string) =>
       request<{ ok: boolean }>(`/api/terminal/ssh/sessions/${id}`, { method: 'DELETE' }),
   },

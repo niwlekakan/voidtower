@@ -395,7 +395,27 @@ export const useAiosStore = create<AiosStore>()(
 
       uncoupleSplit: () => set({ splitPair: null }),
 
-      setSplitRatio: (r) => set({ splitRatio: Math.max(0.15, Math.min(0.85, r)) }),
+      setSplitRatio: (r) => {
+        const ratio = Math.max(0.15, Math.min(0.85, r))
+        const { splitPair, panels, dims } = get()
+        if (!splitPair) { set({ splitRatio: ratio }); return }
+        const [leftId, rightId] = splitPair
+        const vw = window.innerWidth
+        const vh = window.innerHeight
+        const { statusH, dockH, dockLeft } = dims
+        const canvas = vh - statusH - dockH
+        const usableW = vw - dockLeft
+        const leftW  = Math.round(usableW * ratio)
+        const rightW = usableW - leftW
+        set({
+          splitRatio: ratio,
+          panels: panels.map(p => {
+            if (p.id === leftId)  return { ...p, x: dockLeft,         y: statusH, w: leftW,  h: canvas }
+            if (p.id === rightId) return { ...p, x: dockLeft + leftW, y: statusH, w: rightW, h: canvas }
+            return p
+          }),
+        })
+      },
 
       setDeviceTier: (tier) => set({ deviceTier: tier }),
       setDims: (statusH: number, dockH: number, dockLeft: number) => set({ dims: { statusH, dockH, dockLeft } }),

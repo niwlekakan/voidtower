@@ -27,8 +27,8 @@ pub enum ServerMessage {
 
 struct UserInfo {
     shell: String,
-    home: String,
-    name: String,
+    home:  String,
+    name:  String,
 }
 
 fn detect_user_info() -> UserInfo {
@@ -39,11 +39,9 @@ fn detect_user_info() -> UserInfo {
             let shell = u.shell.to_string_lossy().to_string();
             let home  = u.dir.to_string_lossy().to_string();
             let name  = u.name.clone();
-            let valid_shell = !shell.is_empty()
-                && shell != "/sbin/nologin"
-                && shell != "/bin/false";
+            let valid = !shell.is_empty() && shell != "/sbin/nologin" && shell != "/bin/false";
             return UserInfo {
-                shell: if valid_shell { shell } else { "/bin/bash".into() },
+                shell: if valid { shell } else { "/bin/bash".into() },
                 home:  if home.is_empty() { std::env::var("HOME").unwrap_or_else(|_| "/root".into()) } else { home },
                 name,
             };
@@ -56,11 +54,11 @@ fn detect_user_info() -> UserInfo {
     }
 }
 
-pub async fn handle_terminal_ws(
-    socket: WebSocket,
-    shell: Option<String>,
-    _user_id: String,
-) {
+fn default_path() -> String {
+    std::env::var("PATH").unwrap_or_else(|_| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into())
+}
+
+pub async fn handle_terminal_ws(socket: WebSocket, shell: Option<String>, _user_id: String) {
     if let Err(e) = run_terminal(socket, shell).await {
         tracing::error!("Terminal error: {e}");
     }
@@ -72,86 +70,22 @@ async fn run_terminal(socket: WebSocket, shell: Option<String>) -> Result<()> {
 
     let info = detect_user_info();
     let shell_cmd = shell.unwrap_or(info.shell.clone());
-
-    // Split "docker exec -it <id> sh" style commands into binary + args.
-    // CommandBuilder::new() takes only the binary name, not a full command string.
     let parts: Vec<&str> = shell_cmd.split_whitespace().collect();
     let (binary, args) = parts.split_first()
         .map(|(b, a)| (*b, a.to_vec()))
         .unwrap_or((&info.shell, vec![]));
 
     let mut cmd = CommandBuilder::new(binary);
-    if !args.is_empty() {
-        cmd.args(&args);
-    }
+    if !args.is_empty() { cmd.args(&args); }
     cmd.env("HOME",    &info.home);
     cmd.env("USER",    &info.name);
     cmd.env("LOGNAME", &info.name);
     cmd.env("TERM",    "xterm-256color");
+    cmd.env("PATH",    default_path());
     cmd.cwd(&info.home);
     let _child = pair.slave.spawn_command(cmd)?;
 
-    let reader = pair.master.try_clone_reader()?;
-    let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
-    let (mut ws_sink, mut ws_stream) = socket.split();
-    let writer_clone = writer.clone();
-    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<String>(64);
-
-    tokio::task::spawn_blocking(move || {
-        let mut reader = reader;
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    if output_tx.blocking_send(data).is_err() { break; }
-                }
-            }
-        }
-    });
-
-    loop {
-        tokio::select! {
-            // PTY output -> WebSocket
-            Some(data) = output_rx.recv() => {
-                let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
-                if ws_sink.send(Message::Text(msg)).await.is_err() {
-                    break;
-                }
-            }
-            // WebSocket input -> PTY
-            msg = ws_stream.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        match serde_json::from_str::<ClientMessage>(&text) {
-                            Ok(ClientMessage::Input { data }) => {
-                                let mut w = writer_clone.lock().await;
-                                let _ = w.write_all(data.as_bytes());
-                            }
-                            Ok(ClientMessage::Resize { cols, rows }) => {
-                                let _ = pair.master.resize(PtySize {
-                                    rows,
-                                    cols,
-                                    pixel_width: 0,
-                                    pixel_height: 0,
-                                });
-                            }
-                            Ok(ClientMessage::Ping) => {
-                                let msg = serde_json::to_string(&ServerMessage::Pong).unwrap_or_default();
-                                let _ = ws_sink.send(Message::Text(msg)).await;
-                            }
-                            Err(_) => {}
-                        }
-                    }
-                    Some(Ok(Message::Close(_))) | None => break,
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    Ok(())
+    run_pty_loop(socket, pair).await
 }
 
 pub async fn handle_ssh_ws(
@@ -159,26 +93,73 @@ pub async fn handle_ssh_ws(
     host: String,
     port: u16,
     username: String,
+    key_path: Option<String>,
+    password: Option<String>,
 ) {
-    if let Err(e) = run_ssh(socket, host, port, username).await {
+    if let Err(e) = run_ssh(socket, host, port, username, key_path, password).await {
         tracing::error!("SSH terminal error: {e}");
     }
 }
 
-async fn run_ssh(socket: WebSocket, host: String, port: u16, username: String) -> Result<()> {
+async fn run_ssh(
+    socket: WebSocket,
+    host: String,
+    port: u16,
+    username: String,
+    key_path: Option<String>,
+    password: Option<String>,
+) -> Result<()> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
 
-    let mut cmd = CommandBuilder::new("ssh");
-    cmd.args([
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "ServerAliveInterval=30",
-        "-p", &port.to_string(),
-        &format!("{}@{}", username, host),
-    ]);
-    cmd.env("TERM", "xterm-256color");
-    let _child = pair.slave.spawn_command(cmd)?;
+    // If password stored, try sshpass; otherwise direct ssh (interactive password prompt)
+    let use_sshpass = password.is_some() && which_sshpass();
 
+    let mut cmd = if use_sshpass {
+        let mut c = CommandBuilder::new("sshpass");
+        c.arg("-e"); // read password from SSHPASS env var
+        c.args(["ssh",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ServerAliveInterval=30",
+            "-o", "BatchMode=no",
+            "-p", &port.to_string(),
+        ]);
+        if let Some(ref kp) = key_path {
+            c.args(["-i", kp]);
+        }
+        c.arg(&format!("{}@{}", username, host));
+        c
+    } else {
+        let mut c = CommandBuilder::new("ssh");
+        c.args([
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ServerAliveInterval=30",
+            "-p", &port.to_string(),
+        ]);
+        if let Some(ref kp) = key_path {
+            c.args(["-i", kp]);
+        }
+        c.arg(&format!("{}@{}", username, host));
+        c
+    };
+
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("PATH", default_path());
+    if let Some(ref pw) = password {
+        cmd.env("SSHPASS", pw);
+    }
+
+    let _child = pair.slave.spawn_command(cmd)?;
+    run_pty_loop(socket, pair).await
+}
+
+fn which_sshpass() -> bool {
+    std::process::Command::new("which").arg("sshpass").output()
+        .map(|o| o.status.success()).unwrap_or(false)
+}
+
+// Shared PTY↔WebSocket relay loop
+async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<()> {
     let reader = pair.master.try_clone_reader()?;
     let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
     let (mut ws_sink, mut ws_stream) = socket.split();

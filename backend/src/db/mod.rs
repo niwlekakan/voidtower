@@ -57,6 +57,9 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     // Disaster recovery import uses ON CONFLICT(name) — needs a unique index
     let _ = sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_jobs_name ON automation_jobs(name)").execute(&pool).await;
 
+    // SSH session encrypted password storage
+    let _ = sqlx::query("ALTER TABLE ssh_sessions ADD COLUMN password_enc TEXT").execute(&pool).await;
+
     // Proxmox multi-host management (added post-initial schema)
     let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS proxmox_hosts (
         id          TEXT PRIMARY KEY,

@@ -260,7 +260,7 @@ pub async fn list_nodes(
         .header("Authorization", &auth_header)
         .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
         .json().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    Ok(Json(res))
+    Ok(Json(res["data"].clone()))
 }
 
 pub async fn list_vms(
@@ -294,7 +294,7 @@ pub async fn list_vms(
     }
 
     all.sort_by_key(|v| v["vmid"].as_u64().unwrap_or(0));
-    Ok(Json(serde_json::json!({ "vms": all })))
+    Ok(Json(serde_json::json!(all)))
 }
 
 pub async fn list_storage(
@@ -312,7 +312,7 @@ pub async fn list_storage(
         .header("Authorization", &auth_header)
         .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
         .json().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    Ok(Json(res))
+    Ok(Json(res["data"].clone()))
 }
 
 pub async fn list_tasks(
@@ -330,7 +330,7 @@ pub async fn list_tasks(
         .header("Authorization", &auth_header)
         .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
         .json().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    Ok(Json(res))
+    Ok(Json(res["data"].clone()))
 }
 
 // ── lifecycle action routes ───────────────────────────────────────────────────

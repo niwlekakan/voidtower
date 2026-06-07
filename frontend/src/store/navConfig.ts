@@ -15,6 +15,7 @@ export const DEFAULT_NAV_ITEMS: NavItem[] = [
   { id: 'apps',         label: 'App Vault',    visible: true },
   { id: 'containers',   label: 'Containers',   visible: true },
   { id: 'vms',          label: 'VMs',          visible: true },
+  { id: 'proxmox',      label: 'Proxmox',      visible: true },
   { id: 'files',        label: 'Files',        visible: true },
   { id: 'alerts',       label: 'Alerts',       visible: true },
   { id: 'settings',     label: 'Settings',     visible: true },

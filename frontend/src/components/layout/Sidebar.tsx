@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle,
+  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
@@ -87,6 +87,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/integrations', icon: PlugZap,       label: 'Integrations' },
       { to: '/updates',      icon: ArrowUpCircle, label: 'Updates'      },
       { to: '/mods',         icon: Puzzle,        label: 'Mods'         },
+      { to: '/themes',       icon: Palette,       label: 'Themes'       },
       { to: '/settings',     icon: Settings,      label: 'Settings'     },
     ],
   },
@@ -118,12 +119,14 @@ export default function Sidebar() {
   }, [])
 
   useEffect(() => {
+    const apply = (name?: string) => { if (name) { setInstanceName(name); document.title = name } }
     fetch('/api/settings/public')
       .then(r => r.ok ? r.json() : null)
-      .then((d: { instance_name?: string } | null) => {
-        if (d?.instance_name) setInstanceName(d.instance_name)
-      })
+      .then((d: { instance_name?: string } | null) => apply(d?.instance_name))
       .catch(() => {})
+    const handler = (e: Event) => apply((e as CustomEvent<{ instance_name: string }>).detail?.instance_name)
+    window.addEventListener('vt-settings-changed', handler)
+    return () => window.removeEventListener('vt-settings-changed', handler)
   }, [])
 
   const handleLogout = async () => {

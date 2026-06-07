@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useThemeStore } from '@/store/theme'
-import { exportTheme, type Theme } from '@/theme/themes'
+import { exportTheme, type Theme, GLASS_LEVELS } from '@/theme/themes'
 import ThemeEditor from '@/components/ui/ThemeEditor'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
@@ -39,6 +39,63 @@ const BUILTIN_SWATCH_COLORS: Record<string, string[]> = {
   'solar-breach':   ['#f59e0b', '#1a0a00', '#fef3c7', '#ef4444'],
   'light-ops':      ['#7c3aed', '#f8f9fa', '#1a1a2e', '#059669'],
   'high-contrast':  ['#ffff00', '#000000', '#ffffff', '#ff0000'],
+}
+
+function InterfaceCard() {
+  const { glassLevel, setGlass, panelOpacity, setPanelOpacity, panelRadius, setPanelRadius, a11y, setA11y } = useThemeStore()
+
+  const slider = (label: string, value: number, min: number, max: number, onChange: (n: number) => void, fmt: (n: number) => string) => (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{label}</span>
+        <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{fmt(value)}</span>
+      </div>
+      <input type="range" min={min} max={max} value={value} onChange={e => onChange(Number(e.target.value))}
+        className="w-full" style={{ accentColor: 'var(--accent-primary)', height: 4 }} />
+    </div>
+  )
+
+  return (
+    <div className="card space-y-4">
+      <p className="text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Interface</p>
+
+      {slider('Transparency', panelOpacity, 0, 100, setPanelOpacity, v => v === 0 ? 'Off' : `${v}%`)}
+      {slider('Panel rounding', panelRadius, 0, 20, setPanelRadius, v => `${v}px`)}
+
+      <div>
+        <span className="text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>Glass effect</span>
+        <div className="flex flex-wrap gap-1.5">
+          {GLASS_LEVELS.map(g => (
+            <button key={g.id} onClick={() => setGlass(g.id)}
+              className="px-3 py-1 rounded text-xs transition-colors"
+              style={{
+                background: glassLevel === g.id ? 'var(--accent-primary)' : 'var(--bg-elevated)',
+                color: glassLevel === g.id ? '#fff' : 'var(--text-secondary)',
+                border: `1px solid ${glassLevel === g.id ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+              }}>
+              {g.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+          {GLASS_LEVELS.find(g => g.id === glassLevel)?.description ?? ''}
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between pt-1 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div>
+          <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>Reduce transparency</div>
+          <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Override — forces fully opaque backgrounds.</div>
+        </div>
+        <button role="switch" aria-checked={a11y.reduceTransparency}
+          onClick={() => setA11y({ reduceTransparency: !a11y.reduceTransparency })}
+          style={{ flexShrink: 0, width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer', position: 'relative',
+            background: a11y.reduceTransparency ? 'var(--accent-primary)' : 'var(--bg-elevated)' }}>
+          <span style={{ position: 'absolute', top: 2, left: a11y.reduceTransparency ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s' }} />
+        </button>
+      </div>
+    </div>
+  )
 }
 
 export default function ThemesPage() {
@@ -111,6 +168,9 @@ export default function ThemesPage() {
               ))}
             </div>
           )}
+
+          {/* Interface sliders */}
+          <InterfaceCard />
 
           {/* Import / export (collapsed by default) */}
           <div className="card space-y-3">

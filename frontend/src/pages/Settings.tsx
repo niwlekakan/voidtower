@@ -4,7 +4,7 @@ import { api, ApiClientError } from '@/api/client'
 import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
-import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight, Cpu, Stethoscope, Palette, AlertTriangle, Upload, Copy, ShieldOff, Eye, EyeOff, GripVertical, Navigation } from 'lucide-react'
+import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight, Cpu, Stethoscope, Palette, AlertTriangle, Upload, Copy, ShieldOff, Eye, EyeOff, Navigation } from 'lucide-react'
 import { useThemeStore, type UiMode } from '@/store/theme'
 import { setDeviceTierOverride, type DeviceTier } from '@/aios/hooks/useDeviceTier'
 import { Accessibility } from 'lucide-react'
@@ -117,11 +117,6 @@ function AccessibilitySection() {
         <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Accessibility</h2>
       </div>
       <Row
-        field="reduceTransparency"
-        label="Reduce transparency"
-        desc="Replace glass/blur panel surfaces with solid backgrounds."
-      />
-      <Row
         field="reduceMotion"
         label="Reduce motion"
         desc="Disable all transitions and animations throughout the UI."
@@ -178,6 +173,125 @@ function QuickLinksCard() {
           </a>
         ))}
       </div>
+    </div>
+  )
+}
+
+// ─── Preferences section ─────────────────────────────────────────────────────
+
+function PreferencesSection() {
+  const ls = (key: string, def: string) => localStorage.getItem(key) ?? def
+  const [pollInterval, setPollInterval] = useState(() => ls('vt-poll-interval', '15'))
+  const [clockFormat,  setClockFormat]  = useState(() => ls('vt-clock-format', '24h'))
+  const [confirmDestructive, setConfirmDestructive] = useState(() => ls('vt-confirm-destructive', 'true') === 'true')
+  const [saved, setSaved] = useState(false)
+
+  const save = () => {
+    localStorage.setItem('vt-poll-interval', pollInterval)
+    localStorage.setItem('vt-clock-format', clockFormat)
+    localStorage.setItem('vt-confirm-destructive', String(confirmDestructive))
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  const row = (label: string, desc: string, control: React.ReactNode) => (
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{label}</div>
+        <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{desc}</div>
+      </div>
+      {control}
+    </div>
+  )
+
+  const sel = (value: string, onChange: (v: string) => void, opts: [string, string][]) => (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className="px-2 py-1.5 rounded text-xs outline-none"
+      style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
+      {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+    </select>
+  )
+
+  const tog = (on: boolean, onChange: (v: boolean) => void) => (
+    <button role="switch" aria-checked={on} onClick={() => onChange(!on)} style={{
+      flexShrink: 0, width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer', position: 'relative',
+      background: on ? 'var(--accent-primary)' : 'var(--bg-elevated)',
+    }}>
+      <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s' }} />
+    </button>
+  )
+
+  return (
+    <div className="card space-y-4">
+      <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Preferences</h2>
+      {row('Panel refresh interval', 'How often live data panels poll the backend.',
+        sel(pollInterval, setPollInterval, [['5','5 seconds'],['15','15 seconds'],['30','30 seconds'],['60','1 minute']]))}
+      {row('Clock format', 'Time display in the status bar and widgets.',
+        sel(clockFormat, setClockFormat, [['24h','24-hour'],['12h','12-hour']]))}
+      {row('Confirm destructive actions', 'Show a confirmation prompt before deletes, stops, and resets.',
+        tog(confirmDestructive, setConfirmDestructive))}
+      <button onClick={save} className="px-3 py-1.5 rounded text-xs font-medium"
+        style={{ background: saved ? 'var(--accent-success-subtle)' : 'var(--accent-primary)', color: saved ? 'var(--accent-success)' : '#fff' }}>
+        {saved ? 'Saved ✓' : 'Save preferences'}
+      </button>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Preferences are stored locally in your browser.</p>
+    </div>
+  )
+}
+
+// ─── Developer section ────────────────────────────────────────────────────────
+
+function DeveloperSection() {
+  const ls = (k: string) => localStorage.getItem(k) === 'true'
+  const [latencyBadge,   setLatencyBadge]   = useState(() => ls('vt-show-latency'))
+  const [debugBorders,   setDebugBorders]   = useState(() => ls('vt-debug-panels'))
+  const [forceMode,      setForceMode]      = useState(() => localStorage.getItem('vt-force-mode') ?? '')
+
+  const apply = (key: string, val: boolean | string) => {
+    if (typeof val === 'boolean') {
+      if (val) localStorage.setItem(key, 'true'); else localStorage.removeItem(key)
+    } else {
+      if (val) localStorage.setItem(key, val); else localStorage.removeItem(key)
+    }
+    if (key === 'vt-debug-panels') document.documentElement.classList.toggle('debug-panel-borders', val as boolean)
+  }
+
+  const tog = (on: boolean, onChange: (v: boolean) => void, key: string) => (
+    <button role="switch" aria-checked={on} onClick={() => { const next = !on; onChange(next); apply(key, next) }} style={{
+      flexShrink: 0, width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer', position: 'relative',
+      background: on ? 'var(--accent-primary)' : 'var(--bg-elevated)',
+    }}>
+      <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s' }} />
+    </button>
+  )
+
+  const row = (label: string, desc: string, control: React.ReactNode) => (
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{label}</div>
+        <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{desc}</div>
+      </div>
+      {control}
+    </div>
+  )
+
+  return (
+    <div className="card space-y-4" style={{ borderColor: 'var(--border-default)' }}>
+      <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Developer</h2>
+      {row('API latency badge', 'Show response time (ms) on panel headers.',
+        tog(latencyBadge, setLatencyBadge, 'vt-show-latency'))}
+      {row('Debug panel borders', 'Outline all panels in red for layout debugging.',
+        tog(debugBorders, setDebugBorders, 'vt-debug-panels'))}
+      {row('Force UI mode',
+        'Override auto-detection. Takes effect after reload.',
+        <select value={forceMode} onChange={e => { setForceMode(e.target.value); apply('vt-force-mode', e.target.value) }}
+          className="px-2 py-1.5 rounded text-xs outline-none"
+          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
+          <option value="">Auto-detect</option>
+          <option value="tower">Tower Mode</option>
+          <option value="void">Void Mode</option>
+        </select>
+      )}
     </div>
   )
 }
@@ -503,6 +617,12 @@ export default function SettingsPage() {
       {/* System — update + restart */}
       {isAdmin && <SystemSection />}
 
+      {/* Preferences */}
+      <PreferencesSection />
+
+      {/* Developer */}
+      {isAdmin && <DeveloperSection />}
+
       {/* Disaster Recovery — owner/admin only */}
       {isAdmin && <DisasterRecoverySection />}
 
@@ -563,8 +683,8 @@ function GeneralSection() {
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
-      // Apply immediately
-      document.title = name.trim() || 'VoidTower'
+      const finalName = name.trim() || 'VoidTower'
+      window.dispatchEvent(new CustomEvent('vt-settings-changed', { detail: { instance_name: finalName } }))
       let styleEl = document.getElementById('vt-custom-css') as HTMLStyleElement | null
       if (customCss) {
         if (!styleEl) { styleEl = document.createElement('style'); styleEl.id = 'vt-custom-css'; document.head.appendChild(styleEl) }
@@ -680,123 +800,102 @@ function GeneralSection() {
   )
 }
 
+// Sidebar groups in the exact order they appear in Tower Mode
+const SIDEBAR_GROUPS: { label: string; ids: string[] }[] = [
+  { label: 'Overview',  ids: ['dashboard', 'alerts', 'timeline'] },
+  { label: 'Resources', ids: ['services', 'containers', 'vms', 'proxmox', 'apps'] },
+  { label: 'AI',        ids: ['ai', 'models'] },
+  { label: 'Network',   ids: ['network', 'proxies', 'wireguard', 'firewall'] },
+  { label: 'Data',      ids: ['storage', 'backups', 'files'] },
+  { label: 'Security',  ids: ['security', 'secrets', 'audit'] },
+  { label: 'Ops',       ids: ['automation', 'terminal', 'tags'] },
+  { label: 'System',    ids: ['integrations', 'updates', 'mods', 'themes', 'settings'] },
+  { label: 'Void Mode dock only', ids: ['odysseus'] },
+]
+
 function NavigationSection() {
   const { items, setItems, resetItems } = useNavConfigStore()
   const resolved = resolvedNavItems(items)
   const [list, setList] = useState<NavItem[]>(resolved)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const dragIdx = useRef<number | null>(null)
 
-  // Sync if store changes externally
-  useEffect(() => {
-    setList(resolvedNavItems(items))
-  }, [items])
-
-  const save = (next: NavItem[]) => {
-    setList(next)
-    setItems(next)
-  }
+  useEffect(() => { setList(resolvedNavItems(items)) }, [items])
 
   const toggleVisible = (id: string) => {
-    save(list.map(it => it.id === id ? { ...it, visible: !it.visible } : it))
+    const next = list.map(it => it.id === id ? { ...it, visible: !it.visible } : it)
+    setList(next); setItems(next)
   }
 
   const updateLabel = (id: string, label: string) => {
-    save(list.map(it => it.id === id ? { ...it, label } : it))
-    setEditingId(null)
+    const next = list.map(it => it.id === id ? { ...it, label } : it)
+    setList(next); setItems(next); setEditingId(null)
   }
 
-  const handleDragStart = (idx: number) => { dragIdx.current = idx }
-  const handleDragOver = (e: React.DragEvent, idx: number) => {
-    e.preventDefault()
-    const from = dragIdx.current
-    if (from === null || from === idx) return
-    const next = [...list]
-    const [moved] = next.splice(from, 1)
-    next.splice(idx, 0, moved)
-    dragIdx.current = idx
-    setList(next)
-  }
-  const handleDrop = () => {
-    setItems(list)
-    dragIdx.current = null
-  }
+  const navMap = Object.fromEntries(list.map(it => [it.id, it]))
 
   return (
-    <div className="card space-y-3">
+    <div className="card space-y-4">
       <div className="flex items-center gap-2">
         <Navigation size={14} style={{ color: 'var(--accent-primary)' }} />
         <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Navigation</h2>
       </div>
       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-        Reorder, rename, or hide navigation items. Changes apply immediately in the dock and sidebar.
+        Toggle visibility or rename items. Groups match the Tower Mode sidebar. Changes apply immediately.
       </p>
-      <div className="space-y-1">
-        {list.map((item, idx) => {
-          const Icon = ICON_MAP[item.id]
-          const defaultLabel = DEFAULT_NAV_ITEMS.find(d => d.id === item.id)?.label ?? item.id
-          return (
-            <div
-              key={item.id}
-              draggable
-              onDragStart={() => handleDragStart(idx)}
-              onDragOver={(e) => handleDragOver(e, idx)}
-              onDrop={handleDrop}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '6px 8px', borderRadius: 6,
-                background: 'var(--bg-elevated)',
-                border: '1px solid var(--border-subtle)',
-                opacity: item.visible ? 1 : 0.45,
-                cursor: 'grab',
-              }}
-            >
-              <GripVertical size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-              {Icon && <Icon size={14} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {editingId === item.id ? (
-                  <input
-                    autoFocus
-                    defaultValue={item.label}
-                    onBlur={e => updateLabel(item.id, e.target.value.trim() || defaultLabel)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') updateLabel(item.id, (e.target as HTMLInputElement).value.trim() || defaultLabel)
-                      if (e.key === 'Escape') setEditingId(null)
-                    }}
-                    className="w-full text-xs outline-none px-1 rounded"
-                    style={{ background: 'var(--bg-root)', border: '1px solid var(--accent-primary)', color: 'var(--text-primary)' }}
-                    onClick={e => e.stopPropagation()}
-                  />
-                ) : (
-                  <span
-                    className="text-xs cursor-text"
-                    style={{ color: 'var(--text-primary)' }}
-                    onClick={() => setEditingId(item.id)}
-                    title="Click to rename"
-                  >
-                    {item.label}
-                    {item.label !== defaultLabel && (
-                      <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>({defaultLabel})</span>
-                    )}
-                  </span>
-                )}
-              </div>
-              <button
-                onClick={() => toggleVisible(item.id)}
-                title={item.visible ? 'Hide' : 'Show'}
-                style={{ color: item.visible ? 'var(--text-secondary)' : 'var(--text-muted)', flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer' }}
-              >
-                {item.visible ? <Eye size={13} /> : <EyeOff size={13} />}
-              </button>
+
+      {SIDEBAR_GROUPS.map(group => {
+        const groupItems = group.ids.map(id => navMap[id]).filter(Boolean)
+        if (groupItems.length === 0) return null
+        return (
+          <div key={group.label}>
+            <p className="text-xs font-medium uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>{group.label}</p>
+            <div className="space-y-1">
+              {groupItems.map(item => {
+                const Icon = ICON_MAP[item.id]
+                const defaultLabel = DEFAULT_NAV_ITEMS.find(d => d.id === item.id)?.label ?? item.id
+                return (
+                  <div key={item.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '5px 8px', borderRadius: 6,
+                    background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                    opacity: item.visible ? 1 : 0.45,
+                  }}>
+                    {Icon && <Icon size={13} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {editingId === item.id ? (
+                        <input autoFocus defaultValue={item.label}
+                          onBlur={e => updateLabel(item.id, e.target.value.trim() || defaultLabel)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') updateLabel(item.id, (e.target as HTMLInputElement).value.trim() || defaultLabel)
+                            if (e.key === 'Escape') setEditingId(null)
+                          }}
+                          className="w-full text-xs outline-none px-1 rounded"
+                          style={{ background: 'var(--bg-root)', border: '1px solid var(--accent-primary)', color: 'var(--text-primary)' }}
+                          onClick={e => e.stopPropagation()}
+                        />
+                      ) : (
+                        <span className="text-xs cursor-text" style={{ color: 'var(--text-primary)' }}
+                          onClick={() => setEditingId(item.id)} title="Click to rename">
+                          {item.label}
+                          {item.label !== defaultLabel && <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>({defaultLabel})</span>}
+                        </span>
+                      )}
+                    </div>
+                    <button onClick={() => toggleVisible(item.id)} title={item.visible ? 'Hide' : 'Show'}
+                      style={{ color: item.visible ? 'var(--text-secondary)' : 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+                      {item.visible ? <Eye size={13} /> : <EyeOff size={13} />}
+                    </button>
+                  </div>
+                )
+              })}
             </div>
-          )
-        })}
-      </div>
-      <button
-        onClick={() => { resetItems(); setList(DEFAULT_NAV_ITEMS) }}
+          </div>
+        )
+      })}
+
+      <button onClick={() => { resetItems(); setList(DEFAULT_NAV_ITEMS) }}
         className="px-3 py-1.5 rounded text-xs transition-colors hover:opacity-80"
-        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
-      >
+        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
         Reset to defaults
       </button>
     </div>

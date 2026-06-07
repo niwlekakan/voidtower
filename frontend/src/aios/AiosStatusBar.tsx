@@ -7,6 +7,23 @@ import type { DeviceTier } from '@/aios/hooks/useDeviceTier'
 import { PRESET_LIST } from '@/aios/AiosPresets'
 import type { PresetName } from '@/aios/store/aios'
 
+function InstanceName() {
+  const [name, setName] = useState('VoidTower')
+  useEffect(() => {
+    fetch('/api/settings/public')
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { instance_name?: string } | null) => { if (d?.instance_name) setName(d.instance_name) })
+      .catch(() => {})
+    const handler = (e: Event) => {
+      const n = (e as CustomEvent<{ instance_name?: string }>).detail?.instance_name
+      if (n) setName(n)
+    }
+    window.addEventListener('vt-settings-changed', handler)
+    return () => window.removeEventListener('vt-settings-changed', handler)
+  }, [])
+  return <>{name}</>
+}
+
 interface Props {
   tier: DeviceTier
 }
@@ -690,12 +707,12 @@ export default function AiosStatusBar({ tier }: Props) {
         fontSize: isTv ? 15 : 11,
       }}
     >
-      {/* Left: VoidTower logo/name */}
+      {/* Left: instance name */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
         <span style={{ fontSize: isTv ? 22 : 14 }}>⬡</span>
         {!isPhone && (
           <span style={{ fontSize: isTv ? 14 : 11, fontWeight: 700, letterSpacing: '0.05em', color: 'var(--text-primary)' }}>
-            VoidTower
+            <InstanceName />
           </span>
         )}
       </div>

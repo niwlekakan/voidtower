@@ -1,12 +1,15 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuthStore } from '@/store/auth'
 import { api, ApiClientError } from '@/api/client'
 import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
-import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight } from 'lucide-react'
+import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight, Cpu, Stethoscope, Palette, AlertTriangle, Upload, Copy, ShieldOff, Eye, EyeOff, GripVertical, Navigation } from 'lucide-react'
 import { useThemeStore, type UiMode } from '@/store/theme'
 import { setDeviceTierOverride, type DeviceTier } from '@/aios/hooks/useDeviceTier'
+import { Accessibility } from 'lucide-react'
+import { useNavConfigStore, DEFAULT_NAV_ITEMS, resolvedNavItems, type NavItem } from '@/store/navConfig'
+import { ICON_MAP } from '@/aios/AiosDock'
 
 function AppearanceSection() {
   const { uiMode, setUiMode } = useThemeStore()
@@ -77,6 +80,391 @@ function AppearanceSection() {
   )
 }
 
+function AccessibilitySection() {
+  const { a11y, setA11y } = useThemeStore()
+
+  const Row = ({ label, desc, field }: { label: string; desc: string; field: keyof typeof a11y }) => (
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+      <div style={{ flex: 1 }}>
+        <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{label}</div>
+        <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{desc}</div>
+      </div>
+      <button
+        role="switch"
+        aria-checked={a11y[field]}
+        onClick={() => setA11y({ [field]: !a11y[field] })}
+        style={{
+          flexShrink: 0,
+          width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer',
+          background: a11y[field] ? 'var(--accent-primary)' : 'var(--bg-elevated)',
+          position: 'relative', transition: 'background 0.2s',
+        }}
+      >
+        <span style={{
+          position: 'absolute', top: 2,
+          left: a11y[field] ? 18 : 2,
+          width: 16, height: 16, borderRadius: '50%',
+          background: '#fff', transition: 'left 0.2s',
+        }} />
+      </button>
+    </div>
+  )
+
+  return (
+    <div className="card space-y-4">
+      <div className="flex items-center gap-2">
+        <Accessibility size={14} style={{ color: 'var(--accent-primary)' }} />
+        <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Accessibility</h2>
+      </div>
+      <Row
+        field="reduceTransparency"
+        label="Reduce transparency"
+        desc="Replace glass/blur panel surfaces with solid backgrounds."
+      />
+      <Row
+        field="reduceMotion"
+        label="Reduce motion"
+        desc="Disable all transitions and animations throughout the UI."
+      />
+      <Row
+        field="largeControls"
+        label="Large controls"
+        desc="Increase minimum tap target size and font size for buttons and inputs."
+      />
+      <Row
+        field="preferStacked"
+        label="Prefer stacked layout"
+        desc="Force single-panel stacked layout in Void Mode (like phone tier)."
+      />
+    </div>
+  )
+}
+
+function QuickLinksCard() {
+  const links = [
+    { href: '/capabilities', label: 'Capabilities', icon: Cpu,         desc: 'Manage system capabilities and feature flags' },
+    { href: '/diagnostics',  label: 'Diagnostics',  icon: Stethoscope, desc: 'Run health checks and view diagnostics' },
+    { href: '/themes',       label: 'Themes',       icon: Palette,     desc: 'Customize the appearance and color scheme' },
+  ]
+  return (
+    <div className="card space-y-3">
+      <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Quick Links</h2>
+      <div className="grid grid-cols-1 gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
+        {links.map(({ href, label, icon: Icon, desc }) => (
+          <a
+            key={href}
+            href={href}
+            style={{
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+              padding: '10px 12px', borderRadius: 8, textDecoration: 'none',
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-subtle)',
+              transition: 'border-color 0.15s, background 0.15s',
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.borderColor = 'var(--accent-primary)'
+              ;(e.currentTarget as HTMLElement).style.background = 'var(--accent-primary-subtle, rgba(139,92,246,0.08))'
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-subtle)'
+              ;(e.currentTarget as HTMLElement).style.background = 'var(--bg-elevated)'
+            }}
+          >
+            <Icon size={15} style={{ color: 'var(--accent-primary)', flexShrink: 0, marginTop: 1 }} />
+            <div>
+              <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{label}</div>
+              <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{desc}</div>
+            </div>
+          </a>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Disaster Recovery section ────────────────────────────────────────────────
+
+function DisasterRecoverySection() {
+  // Export
+  const [exporting, setExporting] = useState(false)
+
+  // Import
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<{ proxies: number; automations: number; tags: number } | null>(null)
+
+  // Emergency disable
+  const [disableConfirm, setDisableConfirm] = useState(false)
+  const [disabling, setDisabling] = useState(false)
+  const [disableResult, setDisableResult] = useState<{ odysseus: boolean; automations: number } | null>(null)
+
+  // Reset admin
+  const [resetInput, setResetInput] = useState('')
+  const [resetting, setResetting] = useState(false)
+  const [tempPassword, setTempPassword] = useState<{ username: string; password: string } | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  const doExport = async () => {
+    setExporting(true)
+    try {
+      const res = await fetch('/api/disaster/export-config', {
+        method: 'POST',
+        credentials: 'include',
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const cd = res.headers.get('Content-Disposition') ?? ''
+      const match = cd.match(/filename="?([^"]+)"?/)
+      const filename = match?.[1] ?? 'voidtower-config.json'
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : 'Export failed')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const doImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const text = await file.text()
+      const payload = JSON.parse(text)
+      const res = await fetch('/api/disaster/import-config', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) throw new Error(data.error ?? 'Import failed')
+      setImportResult(data.applied)
+      notify.success('Config imported successfully')
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setImporting(false)
+      e.target.value = ''
+    }
+  }
+
+  const doEmergencyDisable = async () => {
+    setDisabling(true)
+    setDisableConfirm(false)
+    try {
+      const res = await fetch('/api/disaster/emergency-disable', {
+        method: 'POST',
+        credentials: 'include',
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) throw new Error(data.error ?? 'Failed')
+      setDisableResult(data.disabled)
+      notify.success('Emergency disable applied')
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : 'Emergency disable failed')
+    } finally {
+      setDisabling(false)
+    }
+  }
+
+  const doResetAdmin = async () => {
+    if (resetInput !== 'RESET') return
+    setResetting(true)
+    setTempPassword(null)
+    try {
+      const res = await fetch('/api/disaster/emergency-reset-admin', {
+        method: 'POST',
+        credentials: 'include',
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) throw new Error(data.error ?? 'Failed')
+      setTempPassword({ username: data.username, password: data.temporary_password })
+      setResetInput('')
+      notify.success('Admin password reset')
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : 'Reset failed')
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  const copyPassword = async () => {
+    if (!tempPassword) return
+    await navigator.clipboard.writeText(tempPassword.password)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div
+      className="card space-y-5"
+      style={{ borderColor: 'var(--accent-danger, #ef4444)44' }}
+    >
+      <div className="flex items-center gap-2">
+        <AlertTriangle size={15} style={{ color: 'var(--accent-danger, #ef4444)' }} />
+        <h2 className="text-sm font-semibold" style={{ color: 'var(--accent-danger, #ef4444)' }}>
+          Disaster Recovery
+        </h2>
+      </div>
+
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Emergency controls for recovering a broken instance. Use with care — these actions are destructive and audit-logged.
+      </p>
+
+      {/* Export config */}
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Export configuration</p>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Downloads a JSON snapshot of proxy rules, automation jobs, tags, and general settings. Does not include users, secrets, or session data.
+        </p>
+        <Button variant="secondary" size="sm" onClick={doExport} disabled={exporting}>
+          {exporting
+            ? <><RefreshCw size={13} className="animate-spin mr-1.5" />Exporting…</>
+            : <><Download size={13} className="mr-1.5" />Export Config</>}
+        </Button>
+      </div>
+
+      {/* Import config */}
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Import configuration</p>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Load a previously exported JSON file. Upserts proxy rules, automation jobs, and tags. Alert rules are skipped for safety.
+        </p>
+        <label
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium cursor-pointer select-none"
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-default)',
+            color: importing ? 'var(--text-muted)' : 'var(--text-primary)',
+            cursor: importing ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {importing
+            ? <><RefreshCw size={13} className="animate-spin" />Importing…</>
+            : <><Upload size={13} />Import Config</>}
+          <input
+            type="file"
+            accept=".json"
+            className="sr-only"
+            onChange={doImport}
+            disabled={importing}
+          />
+        </label>
+        {importResult && (
+          <div
+            className="rounded px-3 py-2 text-xs"
+            style={{
+              background: 'var(--accent-success)18',
+              border: '1px solid var(--accent-success)44',
+              color: 'var(--accent-success)',
+            }}
+          >
+            Applied: {importResult.proxies} {importResult.proxies === 1 ? 'proxy' : 'proxies'},{' '}
+            {importResult.automations} {importResult.automations === 1 ? 'automation' : 'automations'},{' '}
+            {importResult.tags} {importResult.tags === 1 ? 'tag' : 'tags'}
+          </div>
+        )}
+      </div>
+
+      {/* Emergency disable */}
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Emergency disable all AI &amp; automations</p>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Immediately disables Odysseus AI access and turns off all enabled automation jobs.
+        </p>
+        {disableResult ? (
+          <div
+            className="rounded px-3 py-2 text-xs"
+            style={{
+              background: 'var(--accent-warning, #f59e0b)18',
+              border: '1px solid var(--accent-warning, #f59e0b)44',
+              color: 'var(--accent-warning, #f59e0b)',
+            }}
+          >
+            Disabled: Odysseus AI access, {disableResult.automations}{' '}
+            {disableResult.automations === 1 ? 'automation' : 'automations'}
+          </div>
+        ) : disableConfirm ? (
+          <div className="flex gap-2">
+            <Button variant="danger" size="sm" onClick={doEmergencyDisable} disabled={disabling}>
+              {disabling ? <><RefreshCw size={13} className="animate-spin mr-1.5" />Disabling…</> : 'Confirm — Disable Now'}
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setDisableConfirm(false)}>Cancel</Button>
+          </div>
+        ) : (
+          <Button variant="danger" size="sm" onClick={() => setDisableConfirm(true)}>
+            <ShieldOff size={13} className="mr-1.5" />Emergency Disable
+          </Button>
+        )}
+      </div>
+
+      {/* Reset admin password */}
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Reset admin password</p>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Resets the oldest owner account to a random 16-character password. Type <code>RESET</code> to confirm.
+        </p>
+        {tempPassword ? (
+          <div className="space-y-2">
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              Temporary password for <strong style={{ color: 'var(--text-primary)' }}>{tempPassword.username}</strong> — shown once:
+            </p>
+            <div className="flex items-center gap-2">
+              <code
+                className="px-3 py-1.5 rounded text-sm font-mono select-all"
+                style={{
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-default)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                {tempPassword.password}
+              </code>
+              <Button variant="secondary" size="sm" onClick={copyPassword}>
+                <Copy size={13} className="mr-1" />
+                {copied ? 'Copied!' : 'Copy'}
+              </Button>
+            </div>
+            <p className="text-xs" style={{ color: 'var(--accent-warning, #f59e0b)' }}>
+              Save this password now — it will not be shown again.
+            </p>
+          </div>
+        ) : (
+          <div className="flex gap-2 items-center">
+            <input
+              type="text"
+              value={resetInput}
+              onChange={e => setResetInput(e.target.value)}
+              placeholder='Type RESET to confirm'
+              className="px-3 py-1.5 rounded text-sm outline-none"
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-default)',
+                color: 'var(--text-primary)',
+                width: '200px',
+              }}
+            />
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={doResetAdmin}
+              disabled={resetInput !== 'RESET' || resetting}
+            >
+              {resetting ? <><RefreshCw size={13} className="animate-spin mr-1.5" />Resetting…</> : 'Reset Password'}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   const currentUser = useAuthStore((s) => s.user)
   const isAdmin = currentUser?.role === 'owner' || currentUser?.role === 'admin'
@@ -85,11 +473,20 @@ export default function SettingsPage() {
     <div className="space-y-6 max-w-2xl">
       <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Settings</h1>
 
+      {/* Quick links to pages removed from top-level nav */}
+      <QuickLinksCard />
+
       {/* General / instance */}
       {isAdmin && <GeneralSection />}
 
+      {/* Navigation editor — admin only */}
+      {isAdmin && <NavigationSection />}
+
       {/* Appearance — UI mode + device override */}
       <AppearanceSection />
+
+      {/* Accessibility */}
+      <AccessibilitySection />
 
       {/* Dashboard / Weather */}
       <WeatherLocationSection />
@@ -106,6 +503,9 @@ export default function SettingsPage() {
       {/* System — update + restart */}
       {isAdmin && <SystemSection />}
 
+      {/* Disaster Recovery — owner/admin only */}
+      {isAdmin && <DisasterRecoverySection />}
+
       {/* Change own password */}
       <AccountSection />
 
@@ -117,39 +517,74 @@ export default function SettingsPage() {
 
 function GeneralSection() {
   const [name, setName] = useState('')
+  const [tagline, setTagline] = useState('')
+  const [bgUrl, setBgUrl] = useState('')
+  const [customCss, setCustomCss] = useState('')
+  const [logo, setLogo] = useState('')
   const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(true)
+  const logoInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     fetch('/api/settings/general', { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
-      .then((d: { instance_name: string } | null) => {
-        if (d) setName(d.instance_name)
+      .then((d: { instance_name: string; login_tagline: string; custom_css: string; login_bg_url: string; instance_logo: string } | null) => {
+        if (d) {
+          setName(d.instance_name ?? '')
+          setTagline(d.login_tagline ?? '')
+          setBgUrl(d.login_bg_url ?? '')
+          setCustomCss(d.custom_css ?? '')
+          setLogo(d.instance_logo ?? '')
+        }
       })
       .finally(() => setLoading(false))
   }, [])
+
+  const handleLogoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => setLogo(reader.result as string)
+    reader.readAsDataURL(file)
+  }
 
   const save = async () => {
     try {
       await fetch('/api/settings/general', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instance_name: name.trim() || 'VoidTower' }),
+        body: JSON.stringify({
+          instance_name: name.trim() || 'VoidTower',
+          login_tagline: tagline.trim() || null,
+          login_bg_url:  bgUrl.trim() || null,
+          custom_css:    customCss || null,
+          instance_logo: logo || null,
+        }),
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+      // Apply immediately
       document.title = name.trim() || 'VoidTower'
+      let styleEl = document.getElementById('vt-custom-css') as HTMLStyleElement | null
+      if (customCss) {
+        if (!styleEl) { styleEl = document.createElement('style'); styleEl.id = 'vt-custom-css'; document.head.appendChild(styleEl) }
+        styleEl.textContent = customCss
+      } else if (styleEl) { styleEl.textContent = '' }
     } catch {
       notify.error('Failed to save')
     }
   }
 
+  const inputStyle = { background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }
+
   return (
-    <div className="card space-y-3">
+    <div className="card space-y-4">
       <div className="flex items-center gap-2">
         <Globe size={14} style={{ color: 'var(--accent-primary)' }} />
         <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>General</h2>
       </div>
+
+      {/* Instance name */}
       <div>
         <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Instance name</label>
         <input
@@ -158,15 +593,211 @@ function GeneralSection() {
           placeholder="VoidTower"
           disabled={loading}
           className="w-full px-3 py-2 rounded text-sm outline-none"
-          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+          style={inputStyle}
         />
-        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-          Shown in the browser tab title.
-        </p>
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Shown in the browser tab title and sidebar.</p>
       </div>
+
+      {/* Logo */}
+      <div>
+        <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Instance logo</label>
+        <div className="flex items-center gap-3">
+          {logo && (
+            <img src={logo} alt="logo preview" style={{ width: 48, height: 48, objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)' }} />
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={() => logoInputRef.current?.click()}
+              className="px-3 py-1.5 rounded text-xs font-medium"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+            >
+              {logo ? 'Change' : 'Choose file'}
+            </button>
+            {logo && (
+              <button
+                onClick={() => { setLogo(''); if (logoInputRef.current) logoInputRef.current.value = '' }}
+                className="px-3 py-1.5 rounded text-xs"
+                style={{ color: 'var(--accent-danger)' }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <input ref={logoInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoFile} />
+        </div>
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Used as favicon and on the login page. Max ~256 KB.</p>
+      </div>
+
+      {/* Login tagline */}
+      <div>
+        <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Login tagline</label>
+        <input
+          value={tagline}
+          onChange={e => setTagline(e.target.value)}
+          placeholder="Self-hosted infrastructure dashboard"
+          className="w-full px-3 py-2 rounded text-sm outline-none"
+          style={inputStyle}
+        />
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Short description shown below the instance name on the login page.</p>
+      </div>
+
+      {/* Login background URL */}
+      <div>
+        <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Login background URL</label>
+        <input
+          value={bgUrl}
+          onChange={e => setBgUrl(e.target.value)}
+          placeholder="https://example.com/bg.jpg"
+          className="w-full px-3 py-2 rounded text-sm outline-none font-mono"
+          style={inputStyle}
+        />
+        {bgUrl && (
+          <div style={{ marginTop: 6, height: 80, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border-subtle)' }}>
+            <img src={bgUrl} alt="bg preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </div>
+        )}
+      </div>
+
+      {/* Custom CSS */}
+      <div>
+        <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Custom CSS (injected globally)</label>
+        <textarea
+          value={customCss}
+          onChange={e => setCustomCss(e.target.value)}
+          rows={10}
+          placeholder=":root { --accent-primary: #ff6b6b; }"
+          className="w-full px-3 py-2 rounded text-sm outline-none font-mono"
+          style={{ ...inputStyle, resize: 'vertical' }}
+        />
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Max 8192 characters. Applied immediately on save.</p>
+      </div>
+
       <button onClick={save} className="px-3 py-1.5 rounded text-xs font-medium transition-colors"
         style={{ background: saved ? 'var(--accent-success-subtle)' : 'var(--accent-primary)', color: saved ? 'var(--accent-success)' : '#fff' }}>
         {saved ? 'Saved ✓' : 'Save'}
+      </button>
+    </div>
+  )
+}
+
+function NavigationSection() {
+  const { items, setItems, resetItems } = useNavConfigStore()
+  const resolved = resolvedNavItems(items)
+  const [list, setList] = useState<NavItem[]>(resolved)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const dragIdx = useRef<number | null>(null)
+
+  // Sync if store changes externally
+  useEffect(() => {
+    setList(resolvedNavItems(items))
+  }, [items])
+
+  const save = (next: NavItem[]) => {
+    setList(next)
+    setItems(next)
+  }
+
+  const toggleVisible = (id: string) => {
+    save(list.map(it => it.id === id ? { ...it, visible: !it.visible } : it))
+  }
+
+  const updateLabel = (id: string, label: string) => {
+    save(list.map(it => it.id === id ? { ...it, label } : it))
+    setEditingId(null)
+  }
+
+  const handleDragStart = (idx: number) => { dragIdx.current = idx }
+  const handleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault()
+    const from = dragIdx.current
+    if (from === null || from === idx) return
+    const next = [...list]
+    const [moved] = next.splice(from, 1)
+    next.splice(idx, 0, moved)
+    dragIdx.current = idx
+    setList(next)
+  }
+  const handleDrop = () => {
+    setItems(list)
+    dragIdx.current = null
+  }
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center gap-2">
+        <Navigation size={14} style={{ color: 'var(--accent-primary)' }} />
+        <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Navigation</h2>
+      </div>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Reorder, rename, or hide navigation items. Changes apply immediately in the dock and sidebar.
+      </p>
+      <div className="space-y-1">
+        {list.map((item, idx) => {
+          const Icon = ICON_MAP[item.id]
+          const defaultLabel = DEFAULT_NAV_ITEMS.find(d => d.id === item.id)?.label ?? item.id
+          return (
+            <div
+              key={item.id}
+              draggable
+              onDragStart={() => handleDragStart(idx)}
+              onDragOver={(e) => handleDragOver(e, idx)}
+              onDrop={handleDrop}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 8px', borderRadius: 6,
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-subtle)',
+                opacity: item.visible ? 1 : 0.45,
+                cursor: 'grab',
+              }}
+            >
+              <GripVertical size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+              {Icon && <Icon size={14} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {editingId === item.id ? (
+                  <input
+                    autoFocus
+                    defaultValue={item.label}
+                    onBlur={e => updateLabel(item.id, e.target.value.trim() || defaultLabel)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') updateLabel(item.id, (e.target as HTMLInputElement).value.trim() || defaultLabel)
+                      if (e.key === 'Escape') setEditingId(null)
+                    }}
+                    className="w-full text-xs outline-none px-1 rounded"
+                    style={{ background: 'var(--bg-root)', border: '1px solid var(--accent-primary)', color: 'var(--text-primary)' }}
+                    onClick={e => e.stopPropagation()}
+                  />
+                ) : (
+                  <span
+                    className="text-xs cursor-text"
+                    style={{ color: 'var(--text-primary)' }}
+                    onClick={() => setEditingId(item.id)}
+                    title="Click to rename"
+                  >
+                    {item.label}
+                    {item.label !== defaultLabel && (
+                      <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>({defaultLabel})</span>
+                    )}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => toggleVisible(item.id)}
+                title={item.visible ? 'Hide' : 'Show'}
+                style={{ color: item.visible ? 'var(--text-secondary)' : 'var(--text-muted)', flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                {item.visible ? <Eye size={13} /> : <EyeOff size={13} />}
+              </button>
+            </div>
+          )
+        })}
+      </div>
+      <button
+        onClick={() => { resetItems(); setList(DEFAULT_NAV_ITEMS) }}
+        className="px-3 py-1.5 rounded text-xs transition-colors hover:opacity-80"
+        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
+      >
+        Reset to defaults
       </button>
     </div>
   )

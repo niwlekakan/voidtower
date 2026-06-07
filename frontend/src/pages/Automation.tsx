@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react'
-import { Plus, Play, Trash2, ChevronDown, ChevronRight, X, ToggleLeft, ToggleRight, Clock } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import { Plus, Play, Trash2, ChevronDown, ChevronRight, X, ToggleLeft, ToggleRight, Clock, Tag as TagIcon } from 'lucide-react'
+import { api } from '@/api/client'
+import type { Tag, TagMap } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { useFiltersStore } from '@/store/filters'
+import { TagPill, TagPopover } from '@/components/ui/TagPill'
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...init?.headers } })
@@ -149,10 +153,13 @@ function RunHistory({ jobId }: { jobId: string }) {
   )
 }
 
-function JobRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
+function JobRow({ job, allTags, assigned, onRefresh, onTagsChanged }: {
+  job: Job; allTags: Tag[]; assigned: Tag[]; onRefresh: () => void; onTagsChanged: () => void
+}) {
   const [expanded, setExpanded] = useState(false)
   const [running, setRunning] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [popover, setPopover] = useState(false)
 
   const runNow = async () => {
     setRunning(true)
@@ -191,6 +198,16 @@ function JobRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
         <td className="px-4 py-3">
           <div className="font-medium text-sm cursor-pointer" onClick={() => setEditing(true)} style={{ color: 'var(--text-primary)' }}>{job.name}</div>
           {job.description && <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{job.description}</div>}
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3, alignItems: 'center', position: 'relative' }}>
+            {assigned.map(t => <TagPill key={t.id} tag={t} />)}
+            <button onClick={() => setPopover(p => !p)} style={{
+              background: 'none', border: '1px dashed var(--border-subtle)', borderRadius: 10,
+              cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, padding: '0px 6px', lineHeight: '18px',
+            }}><TagIcon size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /></button>
+            {popover && (
+              <TagPopover resourceType="automation" resourceId={job.id} allTags={allTags} assigned={assigned} onClose={() => { setPopover(false); onTagsChanged() }} />
+            )}
+          </div>
         </td>
         <td className="px-4 py-3 font-mono text-xs max-w-[16rem] truncate" style={{ color: 'var(--text-secondary)' }} title={job.command}>{job.command}</td>
         <td className="px-4 py-3 text-xs">
@@ -234,13 +251,24 @@ export default function AutomationPage() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
+  const [allTags, setAllTags] = useState<Tag[]>([])
+  const [tagMap, setTagMap] = useState<TagMap>({})
+  const globalTag = useFiltersStore((s) => s.globalTag)
 
   const load = () => {
     setLoading(true)
     apiFetch<{ jobs: Job[] }>('/api/automation').then(r => setJobs(r.jobs)).catch(() => notify.error('Failed to load jobs')).finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  const loadTags = useCallback(async () => {
+    try {
+      const [tags, map] = await Promise.all([api.tags.list(), api.tags.map('automation')])
+      setAllTags(tags)
+      setTagMap(map)
+    } catch { /* empty */ }
+  }, [])
+
+  useEffect(() => { load(); loadTags() }, [loadTags])
 
   return (
     <div className="space-y-4">
@@ -265,7 +293,9 @@ export default function AutomationPage() {
             </tr>
           </thead>
           <tbody>
-            {jobs.map(j => <JobRow key={j.id} job={j} onRefresh={load} />)}
+            {(globalTag ? jobs.filter(j => (tagMap[j.id] || []).some(t => t.id === globalTag)) : jobs).map(j => (
+              <JobRow key={j.id} job={j} allTags={allTags} assigned={tagMap[j.id] || []} onRefresh={load} onTagsChanged={loadTags} />
+            ))}
             {!loading && jobs.length === 0 && (
               <tr><td colSpan={6} className="px-4 py-10 text-center text-sm" style={{ color: 'var(--text-muted)' }}>No automation jobs. Create one to get started.</td></tr>
             )}

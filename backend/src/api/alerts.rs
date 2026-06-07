@@ -240,11 +240,35 @@ pub async fn create_alert(
     .execute(pool)
     .await;
 
-    // Fire webhooks for alert.created (only if insert actually happened — not a duplicate)
+    // Fire webhooks and inherit tags only if insert actually happened — not a duplicate
     if let Ok(r) = result {
         if r.rows_affected() > 0 {
             let msg = format!("[{severity}] {title}: {message}");
             crate::api::webhooks::fire_webhooks(pool, "alert.created", &msg).await;
+
+            // Inherit tags from the source resource (if any)
+            if let (Some(rtype), Some(rid)) = (resource_type, resource_id) {
+                #[derive(sqlx::FromRow)]
+                struct TagId { tag_id: String }
+                if let Ok(tag_ids) = sqlx::query_as::<_, TagId>(
+                    "SELECT tag_id FROM resource_tags WHERE resource_type = ? AND resource_id = ?"
+                )
+                .bind(rtype)
+                .bind(rid)
+                .fetch_all(pool)
+                .await
+                {
+                    for t in tag_ids {
+                        let _ = sqlx::query(
+                            "INSERT OR IGNORE INTO resource_tags (resource_type, resource_id, tag_id) VALUES ('alert', ?, ?)"
+                        )
+                        .bind(&id)
+                        .bind(&t.tag_id)
+                        .execute(pool)
+                        .await;
+                    }
+                }
+            }
         }
     }
 }

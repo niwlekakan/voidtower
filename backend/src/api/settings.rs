@@ -9,6 +9,12 @@ use serde::Deserialize;
 
 const AI_URL_KEY: &str = "ai_proxy_url";
 const INSTANCE_NAME_KEY: &str = "instance_name";
+const LOGIN_TAGLINE_KEY: &str = "login_tagline";
+const CUSTOM_CSS_KEY: &str = "custom_css";
+const LOGIN_BG_URL_KEY: &str = "login_bg_url";
+const INSTANCE_LOGO_KEY: &str = "instance_logo";
+const MAX_CUSTOM_CSS_LEN: usize = 8192;
+const MAX_LOGO_LEN: usize = 256 * 1024; // 256 KB base64
 const NOTIF_NTFY_URL_KEY: &str = "notif_ntfy_url";
 const NOTIF_DISCORD_KEY: &str = "notif_discord_webhook";
 const NOTIF_SLACK_KEY: &str = "notif_slack_webhook";
@@ -290,14 +296,27 @@ pub async fn get_general(
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let name = db_get(&state, INSTANCE_NAME_KEY).await
-        .unwrap_or_else(|| "VoidTower".into());
-    Ok(Json(serde_json::json!({ "instance_name": name })))
+    let name       = db_get(&state, INSTANCE_NAME_KEY).await.unwrap_or_else(|| "VoidTower".into());
+    let tagline    = db_get(&state, LOGIN_TAGLINE_KEY).await.unwrap_or_default();
+    let custom_css = db_get(&state, CUSTOM_CSS_KEY).await.unwrap_or_default();
+    let bg_url     = db_get(&state, LOGIN_BG_URL_KEY).await.unwrap_or_default();
+    let logo       = db_get(&state, INSTANCE_LOGO_KEY).await.unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "instance_name": name,
+        "login_tagline": tagline,
+        "custom_css":    custom_css,
+        "login_bg_url":  bg_url,
+        "instance_logo": logo,
+    })))
 }
 
 #[derive(Deserialize)]
 pub struct SetGeneralReq {
     pub instance_name: Option<String>,
+    pub login_tagline: Option<String>,
+    pub custom_css:    Option<String>,
+    pub login_bg_url:  Option<String>,
+    pub instance_logo: Option<String>,
 }
 
 pub async fn set_general(
@@ -306,15 +325,56 @@ pub async fn set_general(
     Json(req): Json<SetGeneralReq>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
+
     let name = req.instance_name.as_deref().unwrap_or("VoidTower").trim().to_string();
     let name = if name.is_empty() { "VoidTower".into() } else { name };
     db_set(&state, INSTANCE_NAME_KEY, &name).await?;
+
+    let tagline = req.login_tagline.as_deref().unwrap_or("").trim().to_string();
+    if tagline.is_empty() { db_delete(&state, LOGIN_TAGLINE_KEY).await?; }
+    else { db_set(&state, LOGIN_TAGLINE_KEY, &tagline).await?; }
+
+    let css = req.custom_css.as_deref().unwrap_or("").to_string();
+    if css.len() > MAX_CUSTOM_CSS_LEN {
+        return Err(AppError::BadRequest(format!("custom_css exceeds {} bytes", MAX_CUSTOM_CSS_LEN)));
+    }
+    if css.is_empty() { db_delete(&state, CUSTOM_CSS_KEY).await?; }
+    else { db_set(&state, CUSTOM_CSS_KEY, &css).await?; }
+
+    let bg_url = req.login_bg_url.as_deref().unwrap_or("").trim().to_string();
+    if bg_url.is_empty() { db_delete(&state, LOGIN_BG_URL_KEY).await?; }
+    else { db_set(&state, LOGIN_BG_URL_KEY, &bg_url).await?; }
+
+    let logo = req.instance_logo.as_deref().unwrap_or("").to_string();
+    if logo.len() > MAX_LOGO_LEN {
+        return Err(AppError::BadRequest("instance_logo exceeds 256KB".into()));
+    }
+    if logo.is_empty() { db_delete(&state, INSTANCE_LOGO_KEY).await?; }
+    else { db_set(&state, INSTANCE_LOGO_KEY, &logo).await?; }
+
     audit::log(
         &state.db, Some(&user.id), "human", "settings.general.set",
         Some("settings"), None, "success", None,
         Some(&format!("instance_name={name}")),
     ).await;
     Ok(Json(serde_json::json!({ "ok": true, "instance_name": name })))
+}
+
+/// Public endpoint — no authentication required.
+/// Returns only the fields needed by the login page.
+pub async fn get_public(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let name    = db_get(&state, INSTANCE_NAME_KEY).await.unwrap_or_else(|| "VoidTower".into());
+    let tagline = db_get(&state, LOGIN_TAGLINE_KEY).await.unwrap_or_default();
+    let bg_url  = db_get(&state, LOGIN_BG_URL_KEY).await.unwrap_or_default();
+    let logo    = db_get(&state, INSTANCE_LOGO_KEY).await.unwrap_or_default();
+    Json(serde_json::json!({
+        "instance_name": name,
+        "login_tagline": tagline,
+        "login_bg_url":  bg_url,
+        "instance_logo": logo,
+    }))
 }
 
 // ─── Notification webhooks ────────────────────────────────────────────────────

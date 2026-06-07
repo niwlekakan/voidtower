@@ -2,11 +2,25 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import {
   type Theme, type GlassLevel, type BgPreset, type AnimConfig,
-  BUILTIN_THEMES, BG_PRESETS, DEFAULT_ANIM_CONFIG, randomizeAnimConfig, importTheme, applyTheme,
+  BUILTIN_THEMES, BG_PRESETS, DEFAULT_ANIM_CONFIG, randomizeAnimConfig, importTheme, applyTheme, hsl2hex,
 } from '@/theme/themes'
 import { type DeviceTier } from '../aios/store/aios'
 
 export type UiMode = 'tower' | 'void'
+
+export interface A11yConfig {
+  reduceTransparency: boolean
+  reduceMotion: boolean
+  largeControls: boolean
+  preferStacked: boolean
+}
+
+const DEFAULT_A11Y: A11yConfig = {
+  reduceTransparency: false,
+  reduceMotion: false,
+  largeControls: false,
+  preferStacked: false,
+}
 
 interface ThemeStore {
   activeTheme: Theme
@@ -16,6 +30,7 @@ interface ThemeStore {
   animConfig: AnimConfig
   uiMode: UiMode
   deviceMode: DeviceTier | 'auto'
+  a11y: A11yConfig
   setTheme: (id: string) => void
   setGlass: (level: GlassLevel) => void
   setBgPreset: (preset: BgPreset) => void
@@ -29,12 +44,10 @@ interface ThemeStore {
   allThemes: () => Theme[]
   setUiMode: (mode: UiMode) => void
   setDeviceMode: (mode: DeviceTier | 'auto') => void
+  setA11y: (patch: Partial<A11yConfig>) => void
 }
 
 const GLASS_LEVELS: GlassLevel[] = ['none', 'blur', 'acrylic', 'frosted']
-const ACCENT_COLORS = [
-  '#8b5cf6','#06b6d4','#f59e0b','#ef4444','#39ff88','#ec4899','#3b82f6','#f97316',
-]
 
 export const useThemeStore = create<ThemeStore>()(
   persist(
@@ -46,6 +59,7 @@ export const useThemeStore = create<ThemeStore>()(
       animConfig: { ...DEFAULT_ANIM_CONFIG },
       uiMode: 'tower' as UiMode,
       deviceMode: 'auto' as DeviceTier | 'auto',
+      a11y: { ...DEFAULT_A11Y },
 
       setTheme: (id) => {
         const all = [...BUILTIN_THEMES, ...get().customThemes]
@@ -65,14 +79,57 @@ export const useThemeStore = create<ThemeStore>()(
       randomize: () => {
         const preset = BG_PRESETS.filter(p => p.id !== 'none')[Math.floor(Math.random() * (BG_PRESETS.length - 1))].id
         const glass  = GLASS_LEVELS[Math.floor(Math.random() * GLASS_LEVELS.length)]
-        const accent = ACCENT_COLORS[Math.floor(Math.random() * ACCENT_COLORS.length)]
-        // Store accent override in the active theme's tokens so it survives theme switches
-        // and is handled by applyTheme() rather than a raw DOM write
-        const current = get().activeTheme
-        const updated: Theme = {
-          ...current,
-          tokens: { ...(current.tokens ?? {}), '--accent-primary': accent },
+        // Generate a full coherent token palette from a random base hue
+        const h  = Math.random() * 360
+        const hA = (h + 140 + Math.random() * 80) % 360  // secondary accent hue
+        const isDark = Math.random() > 0.15               // ~85% dark themes
+        // Backgrounds: 4 layered dark/light surfaces
+        const bgL0 = isDark ?  6 + Math.random() *  6 :  94 + Math.random() *  4
+        const bgL1 = isDark ?  9 + Math.random() *  6 :  90 + Math.random() *  4
+        const bgL2 = isDark ? 12 + Math.random() *  6 :  86 + Math.random() *  4
+        const bgL3 = isDark ? 16 + Math.random() *  6 :  82 + Math.random() *  4
+        const bgSat = 8 + Math.random() * 14
+        // Borders: slightly lighter than surface
+        const bdBase = isDark ? bgL2 + 6 : bgL2 - 6
+        // Text: high contrast against bg
+        const txL0 = isDark ? 88 + Math.random() * 10 : 10 + Math.random() *  8
+        const txL1 = isDark ? 68 + Math.random() * 12 : 28 + Math.random() * 10
+        const txL2 = isDark ? 46 + Math.random() * 12 : 46 + Math.random() * 10
+        // Accents
+        const acS = 70 + Math.random() * 25
+        const acL = 55 + Math.random() * 15
+        const accent        = hsl2hex(h,  acS,     acL)
+        const accentHover   = hsl2hex(h,  acS,     Math.min(acL + 8, 85))
+        const accentSecond  = hsl2hex(hA, acS - 5, acL + 5)
+        // Semantic
+        const successH = (120 + Math.random() * 30) % 360
+        const warningH = (38  + Math.random() * 20) % 360
+        const dangerH  = (0   + Math.random() * 20) % 360
+        // Terminal
+        const termGreenH = (135 + Math.random() * 25) % 360
+        const tokens: Record<string, string> = {
+          '--bg-root':              hsl2hex(h, bgSat,     bgL0),
+          '--bg-panel':             hsl2hex(h, bgSat,     bgL1),
+          '--bg-card':              hsl2hex(h, bgSat,     bgL2),
+          '--bg-elevated':          hsl2hex(h, bgSat,     bgL3),
+          '--border-subtle':        hsl2hex(h, bgSat + 4, bdBase),
+          '--border-default':       hsl2hex(h, bgSat + 4, bdBase + (isDark ? 6 : -6)),
+          '--border-strong':        hsl2hex(h, bgSat + 4, bdBase + (isDark ? 14 : -14)),
+          '--text-primary':         hsl2hex(h, 12,        txL0),
+          '--text-secondary':       hsl2hex(h, 10,        txL1),
+          '--text-muted':           hsl2hex(h,  8,        txL2),
+          '--accent-primary':       accent,
+          '--accent-primary-hover': accentHover,
+          '--accent-secondary':     accentSecond,
+          '--accent-success':       hsl2hex(successH, 70, 50 + Math.random() * 15),
+          '--accent-warning':       hsl2hex(warningH, 85, 52 + Math.random() * 12),
+          '--accent-danger':        hsl2hex(dangerH,  75, 52 + Math.random() * 12),
+          '--terminal-green':       hsl2hex(termGreenH, 80, 52 + Math.random() * 15),
+          '--terminal-bg':          hsl2hex(h, bgSat, Math.max(bgL0 - 3, 3)),
+          '--terminal-cursor':      accent,
         }
+        const current = get().activeTheme
+        const updated: Theme = { ...current, tokens }
         applyTheme(updated)
         set({ activeTheme: updated, bgPreset: preset, glassLevel: glass, animConfig: randomizeAnimConfig() })
       },
@@ -96,6 +153,8 @@ export const useThemeStore = create<ThemeStore>()(
       setUiMode: (mode) => set({ uiMode: mode }),
 
       setDeviceMode: (mode) => set({ deviceMode: mode }),
+
+      setA11y: (patch) => set((s) => ({ a11y: { ...s.a11y, ...patch } })),
     }),
     {
       name: 'vt-theme',
@@ -107,6 +166,7 @@ export const useThemeStore = create<ThemeStore>()(
         animConfig: s.animConfig,
         uiMode: s.uiMode,
         deviceMode: s.deviceMode,
+        a11y: s.a11y,
       }),
     },
   ),

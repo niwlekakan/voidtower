@@ -4,6 +4,7 @@ description: Open-source Identity Provider — SSO, LDAP, OAuth2
 category: security
 icon: ""
 version_hint: "latest"
+web_port: 9080
 compose:
   services:
     authentik-db:

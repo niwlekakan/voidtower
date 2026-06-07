@@ -2,13 +2,16 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   BrainCircuit, Send, ExternalLink, Loader2, Play, Square, RotateCw,
   Trash2, ChevronDown, ChevronUp, Terminal, FileCode, Layers, RefreshCw,
-  Plus, X, Zap, Eye, Box,
+  Plus, X, Box, Tag as TagIcon,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
-import type { AppDef, DeployedApp, ComposeContainer } from '@/api/types'
+import type { AppDef, DeployedApp, ComposeContainer, Tag, TagMap } from '@/api/types'
 import { notify } from '@/store/notifications'
 import { useEmbedStore } from '@/store/embedStore'
+import { useFiltersStore } from '@/store/filters'
+import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import Button from '@/components/ui/Button'
+import AiBadge from '@/components/ui/AiBadge'
 
 const CATEGORY_LABELS: Record<string, string> = {
   dev:         'Development',
@@ -22,25 +25,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   ai:          'AI',
   security:    'Security',
   vm:          'Virtual Machines',
-}
-
-// ─── AI Integration Badge ─────────────────────────────────────────────────────
-
-function AiBadge({ level, description }: { level: 'native' | 'aware'; description: string }) {
-  const isNative = level === 'native'
-  const color = isNative ? '#06b6d4' : '#818cf8'
-  const Icon = isNative ? Zap : Eye
-  const label = isNative ? 'AI Native' : 'AI Aware'
-  return (
-    <span
-      title={description}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium cursor-help"
-      style={{ background: `${color}18`, color, border: `1px solid ${color}44` }}
-    >
-      <Icon size={10} />
-      {label}
-    </span>
-  )
 }
 
 // ─── Custom Deploy Tab ────────────────────────────────────────────────────────
@@ -834,8 +818,13 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
 
 // ─── Deployed Tab ─────────────────────────────────────────────────────────────
 
-function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedApp[]; catalogApps: AppDef[]; onRefresh: () => void }) {
+function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, onRefresh, onTagsChanged }: {
+  deployed: DeployedApp[]; catalogApps: AppDef[];
+  allTags: Tag[]; tagMap: TagMap; globalTag: string | null;
+  onRefresh: () => void; onTagsChanged: () => void
+}) {
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [popover, setPopover] = useState<string | null>(null)
   const embedOpen  = useEmbedStore(s => s.open)
   const embedApp   = useEmbedStore(s => s.app)
   const listRef    = useRef<HTMLDivElement>(null)
@@ -853,6 +842,8 @@ function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedA
     }
   }, [embedApp])
 
+  const displayed = globalTag ? deployed.filter(app => (tagMap[app.project_name] || []).some(t => t.id === globalTag)) : deployed
+
   if (deployed.length === 0) {
     return (
       <p className="py-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -861,9 +852,17 @@ function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedA
     )
   }
 
+  if (displayed.length === 0) {
+    return (
+      <p className="py-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+        No deployed apps with this tag.
+      </p>
+    )
+  }
+
   return (
     <div ref={listRef} className="space-y-2" style={{ overflowY: 'auto' }}>
-      {deployed.map(app => {
+      {displayed.map(app => {
         const open = expanded === app.project_name
         const running = app.status === 'running'
         return (
@@ -885,25 +884,40 @@ function DeployedTab({ deployed, catalogApps, onRefresh }: { deployed: DeployedA
                   <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
                     {app.project_name}
                   </span>
-                  {app.primary_port && (
-                    <a
-                      href={`http://${window.location.hostname}:${app.primary_port}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={e => e.stopPropagation()}
-                      className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
-                      style={{ background: 'var(--accent-primary-subtle)', color: 'var(--accent-primary)', border: '1px solid var(--accent-primary)' }}
-                    >
-                      <ExternalLink size={10} />
-                      :{app.primary_port}
-                    </a>
-                  )}
+                  {app.primary_port && (() => {
+                    const catalogDef = catalogApps.find(d => d.id === app.app_id)
+                    const uiPort = catalogDef?.web_port ?? app.primary_port
+                    const uiPath = catalogDef?.web_path ?? ''
+                    return (
+                      <a
+                        href={`http://${window.location.hostname}:${uiPort}${uiPath}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                        style={{ background: 'var(--accent-primary-subtle)', color: 'var(--accent-primary)', border: '1px solid var(--accent-primary)' }}
+                      >
+                        <ExternalLink size={10} />
+                        :{uiPort}
+                      </a>
+                    )
+                  })()}
                 </div>
                 <div className="text-xs mt-0.5 flex items-center gap-3" style={{ color: 'var(--text-muted)' }}>
                   <span style={{ color: running ? 'var(--accent-success)' : 'var(--text-disabled)' }}>
                     {app.status}
                   </span>
                   <span>Deployed {new Date(app.deployed_at * 1000).toLocaleDateString()}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3, alignItems: 'center', position: 'relative' }} onClick={e => e.stopPropagation()}>
+                  {(tagMap[app.project_name] || []).map(t => <TagPill key={t.id} tag={t} />)}
+                  <button onClick={() => setPopover(popover === app.project_name ? null : app.project_name)} style={{
+                    background: 'none', border: '1px dashed var(--border-subtle)', borderRadius: 10,
+                    cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, padding: '0px 6px', lineHeight: '18px',
+                  }}><TagIcon size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /></button>
+                  {popover === app.project_name && (
+                    <TagPopover resourceType="app" resourceId={app.project_name} allTags={allTags} assigned={tagMap[app.project_name] || []} onClose={() => { setPopover(null); onTagsChanged() }} />
+                  )}
                 </div>
               </div>
 
@@ -956,6 +970,17 @@ export default function AppVaultPage() {
   const [search, setSearch]             = useState('')
   const [category, setCategory]         = useState<string>('all')
   const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover' | 'custom'>('catalog')
+  const [allTags, setAllTags]           = useState<Tag[]>([])
+  const [tagMap, setTagMap]             = useState<TagMap>({})
+  const globalTag = useFiltersStore((s) => s.globalTag)
+
+  const loadTags = useCallback(async () => {
+    try {
+      const [tags, map] = await Promise.all([api.tags.list(), api.tags.map('app')])
+      setAllTags(tags)
+      setTagMap(map)
+    } catch { /* empty */ }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -974,7 +999,7 @@ export default function AppVaultPage() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(); loadTags() }, [load, loadTags])
 
   const deploy = async (app: AppDef) => {
     setDeploying(app.id)
@@ -1154,7 +1179,7 @@ export default function AppVaultPage() {
       )}
 
       {tab === 'deployed' && (
-        <DeployedTab deployed={deployed} catalogApps={apps} onRefresh={load} />
+        <DeployedTab deployed={deployed} catalogApps={apps} allTags={allTags} tagMap={tagMap} globalTag={globalTag} onRefresh={load} onTagsChanged={loadTags} />
       )}
 
       {tab === 'custom' && (

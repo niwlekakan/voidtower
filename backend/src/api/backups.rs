@@ -15,7 +15,8 @@ use uuid::Uuid;
 const SELECT_COLS: &str =
     "id, name, source_path, repo_path, schedule, retention_days, enabled,
      last_run_at, last_status, created_at,
-     last_check_at, last_check_status, last_restore_test_at, last_restore_test_status";
+     last_check_at, last_check_status, last_restore_test_at, last_restore_test_status,
+     restore_test_schedule";
 
 async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
@@ -55,6 +56,7 @@ pub struct CreateRequest {
     pub repo_path: String,
     pub schedule: Option<String>,
     pub retention_days: Option<i64>,
+    pub restore_test_schedule: Option<String>,
 }
 
 pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(req): Json<CreateRequest>) -> Result<Json<serde_json::Value>> {
@@ -63,9 +65,9 @@ pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(req): Js
     let id = Uuid::new_v4().to_string();
     let retention = req.retention_days.unwrap_or(30);
     sqlx::query(
-        "INSERT INTO backup_configs (id, name, source_path, repo_path, schedule, retention_days, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)"
+        "INSERT INTO backup_configs (id, name, source_path, repo_path, schedule, retention_days, enabled, created_at, restore_test_schedule) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)"
     ).bind(&id).bind(&req.name).bind(&req.source_path).bind(&req.repo_path)
-     .bind(&req.schedule).bind(retention).bind(now())
+     .bind(&req.schedule).bind(retention).bind(now()).bind(&req.restore_test_schedule)
     .execute(&state.db).await.map_err(AppError::Database)?;
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }

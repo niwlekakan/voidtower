@@ -159,8 +159,10 @@ The UI must be fully responsive and work well on:
 - Desktop monitors.
 - Laptops.
 - Tablets.
-- Mobile browsers.
+- Mobile browsers (phone).
 - PWA/mobile install mode.
+- TV / large display (10-foot UI, D-pad navigation).
+- Kiosk / wall panel (passive read mode, auto-cycle, PIN wake).
 
 The UI must prioritize:
 
@@ -185,203 +187,373 @@ The UI must avoid:
 - Marketing copy inside operational screens.
 
 --------------------------------------------------------------------
-OVERALL UI CONCEPT
+TWO UI MODES
 --------------------------------------------------------------------
 
-VoidTower should feel like logging into a tactical server operations tower.
+VoidTower ships two distinct UI modes that the operator can switch between at any time using Ctrl+Shift+V or the mode toggle pill in the status bar.
 
-Visual metaphors:
+1. Tower Mode (traditional)
+   The classic sidebar-plus-content layout. A fixed left navigation sidebar, a top command bar, and a full-width main content panel. This is the default for operators who prefer a conventional admin dashboard feel.
 
-- Command tower.
-- Dark terminal.
-- Infrastructure grid.
-- Machine telemetry.
-- Node map.
-- Signal beacon.
-- Control console.
-- Systems cockpit.
+2. Void Mode (AI OS / floating panels)
+   A windowed desktop environment that runs inside the browser. Pages open as draggable, resizable, snappable floating panels on a canvas. Multiple panels can be open at once. Four virtual workspaces allow organizing panels into groups. A persistent status bar sits at the top; a floating dock or vertical icon strip sits at the side or bottom depending on screen size. An AI command bar (⌘K / Ctrl+K) replaces the top bar and serves as the main navigation surface. This mode is designed for power operators and AI-first workflows where multiple contexts are open simultaneously.
 
-The UI should combine:
+Both modes share the same page components and backend data. The mode is persisted per-user in local storage and applied immediately on load without a page reload.
 
-- A left navigation sidebar.
-- A top command/search bar.
-- A main content canvas.
-- Optional right-side context drawer.
-- Optional bottom task/activity console.
-- Modal confirmations for dangerous actions.
-- Toasts for lightweight feedback.
-- Persistent activity/audit feed for important operations.
+--------------------------------------------------------------------
+VOID MODE — FLOATING PANEL SYSTEM
+--------------------------------------------------------------------
 
-Default layout:
+The Void Mode panel system is the AI OS layer of VoidTower.
+
+Panel lifecycle:
+
+- Each page (Dashboard, Containers, Terminal, etc.) opens as a floating panel.
+- Panels can be opened from the dock, the command bar, or the command palette.
+- Multiple panels can be open on the same workspace.
+- Each panel has: title bar, minimize, maximize, close, pin controls.
+- Panels are draggable by their title bar.
+- Panels are resizable from all edges and corners.
+- Panels remember their position and size across sessions.
+- Panels have a z-index stack — clicking a panel brings it to front.
+- Panels can be pinned to stay on top.
+
+Panel layout modes (snap zones):
+
+- floating (free position)
+- left-half / right-half
+- top-half / bottom-half
+- top-left / top-right / bottom-left / bottom-right (quarter snap)
+- fullscreen
+- minimized (collapsed to dock with indicator dot)
+- sheet (full-width bottom sheet on phone)
+- tile (future: auto-tiling layout mode)
+
+Snapping is triggered by:
+- Dragging a panel to a screen edge until a snap preview appears.
+- Keyboard: Ctrl+Shift+Arrow to snap the focused panel.
+- Two panels snapped left-half and right-half auto-couple into a split pair with a draggable divider.
+
+Panel caps by device tier:
+- phone: 1 visible panel (sheet mode)
+- tablet: 3 panels
+- desktop: 5 panels
+- large (≥1920px): 8 panels
+- tv/kiosk: 5 panels
+
+When a new panel would exceed the cap, the oldest non-pinned visible panel is minimized automatically.
+
+Virtual workspaces:
+
+- Four workspaces (0–3), switched with Ctrl+1/2/3/4.
+- Each workspace has its own panel set.
+- Panels can be sent to a different workspace via the title bar context menu.
+- Workspace dots are shown in the status bar; active workspace is indicated visually.
+
+Embed panels:
+
+- Any http(s) URL typed into the command bar opens as an iframe embed panel.
+- This allows embedding self-hosted apps (Gitea, Grafana, Jellyfin, etc.) as panels alongside VoidTower pages.
+- Embed panels share the same floating/snap/workspace system.
+- Sandbox policy: allow-scripts, allow-same-origin, allow-forms, allow-popups.
+- Future: Odysseus integration opens as an embed panel type, allowing the AI chat to sit alongside any infrastructure page.
+
+--------------------------------------------------------------------
+VOID MODE — STATUS BAR
+--------------------------------------------------------------------
+
+A slim persistent bar fixed at the top of the screen. Height: 28px (desktop), 52px (TV).
+
+Left section:
+- VoidTower logo mark (⬡) and name.
+
+Center section (desktop/large/tablet):
+- Live metric pills: CPU%, RAM%, NET ↓/↑, GPU%, uptime.
+- Colors warn at >60% (amber) and >85% (red).
+- Shows “loading…” or “offline” if metrics stream is disconnected.
+
+Center section (phone):
+- Workspace dots (active workspace selector).
+
+Right section:
+- Workspace dots (desktop — phone shows them center).
+- Split exit button (shown when a split pair is active).
+- WebSocket connection indicator (Wifi / WifiOff icon).
+- Notification bell (with count badge, dropdown list).
+- Clock (HH:MM, tabular numerals, 24h).
+- UI Mode Toggle pill (switches between Tower and Void modes).
+
+--------------------------------------------------------------------
+VOID MODE — DOCK
+--------------------------------------------------------------------
+
+The dock is the primary navigation surface in Void Mode.
+
+Layout by device tier:
+
+- Desktop/large (≥1400px width): vertical icon strip fixed to the left edge, scrollable.
+- Desktop/tablet (<1400px): centered horizontal pill floating above the bottom of the screen.
+- Phone: full-width bottom tab bar with icon + label, fixed to the bottom edge.
+- TV/kiosk: hidden (these tiers use dedicated layouts).
+
+Dock items (current set):
+Dashboard, Alerts, Timeline, Services, Containers, VMs, App Vault, AI, Models, Network, Proxies, WireGuard, Firewall, Storage, Backups, Files, Security, Secrets, Audit Log, Automation, Terminal, Capabilities, Diagnostics, Themes, Updates, Mods, Integrations, Tags, Settings.
+
+Dock item states:
+
+- Default: muted icon.
+- Open (panel visible): accent color, outline ring, indicator dot below icon.
+- Minimized: amber indicator dot.
+
+Clicking a dock item:
+1. If a minimized panel for that key exists on this workspace: restore and focus it.
+2. If an open panel for that key exists: focus it.
+3. Otherwise: open a new panel via the openApp callback (which uses defaultGeometry based on tier and existing panel count).
+
+Tooltips appear on hover (desktop only) positioned to the right of a vertical dock or above a horizontal dock.
+
+--------------------------------------------------------------------
+VOID MODE — COMMAND BAR
+--------------------------------------------------------------------
+
+A floating pill input fixed above the dock, centered horizontally.
+
+Shortcut: ⌘K / Ctrl+K to focus. Escape to dismiss.
+
+Input modes:
+
+1. App search (default): fuzzy matches dock items by label or key. Shows up to 8 results with icons. Arrow keys navigate, Enter opens.
+2. Odysseus mode: prefix with `/`. Shows “Ask Odysseus” row. Enter routes the query to the active Odysseus panel via postMessage, or opens the AI page. Prompt: `/why is jellyfin using 95% CPU`.
+3. URL embed mode: prefix with http:// or https://. Shows “Open as embed” row. Enter opens the URL as an iframe embed panel.
+
+Phone: the command bar is a FAB (floating action button, search icon) fixed above the dock. Tapping opens a bottom sheet with the same three input modes.
+
+TV/kiosk: command bar is hidden (navigation uses dedicated layouts).
+
+--------------------------------------------------------------------
+VOID MODE — TV LAYOUT
+--------------------------------------------------------------------
+
+Used on coarse-pointer large screens (TV, monitor without mouse).
+
+A 3×2 (or 2×2 for ≤4 tiles) grid of large icon+label tiles. Default tiles: Dashboard, Alerts, Containers, Services, AI, App Vault, Terminal, Network, Backups, Storage, Security, Diagnostics.
+
+Navigation: Arrow keys move focus. Enter opens the selected tile as a fullscreen panel. Escape goes back to the grid.
+
+A Back button is shown in the expanded view.
+
+The status bar is present at the top (larger, 52px).
+
+--------------------------------------------------------------------
+VOID MODE — KIOSK LAYOUT
+--------------------------------------------------------------------
+
+Used via `?mode=kiosk` URL parameter. Intended for wall panels, NOC displays, and public status boards.
+
+Behavior:
+
+- Shows a configurable set of tiles (default: dashboard, containers, alerts) in a grid.
+- Auto-cycles through tiles on a configurable interval (default: 30s).
+- Passive read mode: the UI animates tile highlights but does not interact.
+- After IDLE_SCREENSAVER_MS (10 min) of no interaction: dims to 50% opacity and shows a clock screensaver.
+- Tap or click anywhere to wake from screensaver.
+- Optional PIN: if configured, tapping shows a 4-digit PIN pad before unlocking interactive mode.
+- Interactive mode: lasts 5 minutes, then reverts to passive cycle mode. During interactive mode, clicking a tile opens it.
+- Critical alert flash: polls /api/alerts every 60s. If any critical alert is active, flashes a red border outline for 5s.
+
+Kiosk config stored in localStorage under `kiosk_layout`:
+
+```json
+{
+  “tiles”: [“dashboard”, “containers”, “alerts”],
+  “cycleInterval”: 30000,
+  “wakePin”: “”
+}
+```
+
+--------------------------------------------------------------------
+TOWER MODE — LAYOUT
+--------------------------------------------------------------------
+
+Tower Mode uses a conventional sidebar-plus-content layout.
 
 1. Left sidebar
-   - Product mark.
-   - Current node/cluster selector.
-   - Primary navigation.
-   - Health badges.
-   - User/account controls.
-   - Collapse/expand state.
+   - VoidTower product mark.
+   - Navigation groups (collapsible sections).
+   - Health badges on sections with active alerts.
+   - Collapse/expand toggle.
+   - User/account controls at the bottom.
+   - On mobile: becomes a slide-out drawer triggered by a hamburger button.
 
 2. Top bar
-   - Page title.
-   - Global search.
-   - Command palette trigger.
-   - Quick actions.
-   - Alert indicator.
-   - Theme/status controls.
-   - Current user menu.
+   - Page title and breadcrumbs.
+   - Global search input.
+   - Command palette trigger (⌘K).
+   - Alert count indicator.
+   - UI Mode Toggle (switch to Void Mode).
+   - Current user menu (profile, settings, logout).
 
-3. Main panel
-   - Page-specific content.
-   - Cards, tables, charts, terminal panels, forms, and split views.
+3. Main content panel
+   - Page-specific content: cards, tables, charts, forms, terminal panels, split views.
+   - Full-width on desktop, responsive on tablet/mobile.
 
-4. Right context drawer
-   - Details for selected node/container/service/VM.
-   - Recent logs.
-   - Related actions.
-   - AI/Odysseus handoff button.
-   - Audit trail for selected entity.
+4. Right context drawer (future)
+   - Slide-in detail panel for a selected entity (container, service, VM).
+   - Recent logs, related actions, audit history.
+   - “Send to Odysseus” button.
 
-5. Bottom task console
-   - Background jobs.
-   - Automation runs.
-   - Deployment progress.
-   - Backup progress.
-   - Agent-triggered tasks.
+5. Bottom task console (future)
+   - Expandable strip for background jobs, automation runs, deployment progress, backup progress.
    - Expandable log output.
 
 --------------------------------------------------------------------
 NAVIGATION STRUCTURE
 --------------------------------------------------------------------
 
-Primary navigation sections:
+Current navigation sections (both Tower sidebar and Void dock):
 
-- Command
-- Nodes
+Infrastructure:
+- Dashboard
+- Services
 - Containers
-- Virtual Machines
+- VMs
 - App Vault
 - Storage
+- Files
+
+Network:
 - Network
-- Services
-- Terminal
+- Proxies
+- WireGuard
+- Firewall
+
+Operations:
 - Backups
-- Status
 - Automation
 - Alerts
+- Timeline
+- Terminal
+
+AI / Intelligence:
+- AI (Odysseus workspace embed + recommendations)
+- Models (GGUF / Ollama model manager)
+
+System:
+- Capabilities
+- Diagnostics
+- Secrets
 - Security
+- Audit Log
+- Tags
+- Integrations
+- Updates
+- Mods (plugins, future)
+- Themes
 - Settings
 
 Navigation requirements:
 
-- Sidebar must be collapsible.
-- Sidebar must show health badges where useful.
-- Sections with active warnings must show alert indicators.
+- Tower sidebar must be collapsible to icon-only mode.
+- Sections with active warnings must show alert count badges.
+- Current section must be visually obvious (active highlight, accent color).
 - Navigation must support keyboard shortcuts.
-- Current section must be visually obvious.
-- Mobile navigation must become a slide-out drawer.
-- The UI must include breadcrumbs for deeper views.
+- Tower mode must include breadcrumbs for deeper views.
+- Mobile Tower sidebar becomes a slide-out drawer.
+- Void dock auto-adapts to device tier (vertical strip / horizontal pill / bottom tab bar).
 
 Keyboard shortcuts:
 
-- `/` opens global search.
-- `Ctrl+K` or `Cmd+K` opens command palette.
-- `g d` opens Command/Dashboard.
-- `g n` opens Nodes.
-- `g c` opens Containers.
-- `g v` opens Virtual Machines.
-- `g a` opens App Vault.
-- `g t` opens Terminal.
-- `g s` opens Settings.
-- `Esc` closes modals/drawers.
+- `Ctrl+K` or `Cmd+K` opens command bar / command palette.
+- `Ctrl+Shift+V` toggles between Tower and Void modes.
+- `Ctrl+1` / `Ctrl+2` / `Ctrl+3` / `Ctrl+4` switches workspaces (Void Mode).
+- `Ctrl+Shift+Arrow` snaps focused panel to a zone (Void Mode).
+- `Ctrl+W` closes focused panel (Void Mode).
+- `Ctrl+M` closes all panels (Void Mode).
+- `Alt+Tab` cycles visible panels on current workspace (Void Mode).
+- `Escape` minimizes focused panel or closes modal/drawer.
 - `?` opens keyboard shortcut help.
 
 --------------------------------------------------------------------
 COMMAND PALETTE
 --------------------------------------------------------------------
 
-VoidTower must include a command palette.
+VoidTower includes a command palette (Ctrl+K) in both UI modes.
 
-The command palette should allow users to:
+In Tower Mode, the command palette is a modal overlay.
+In Void Mode, the command palette is integrated into the command bar.
 
-- Navigate to pages.
-- Search nodes.
-- Search containers.
-- Search VMs.
-- Search services.
-- Run safe actions.
-- Open logs.
-- Start terminal sessions.
-- Trigger automations.
-- Open settings sections.
-- Search App Vault.
-- Send selected context to Odysseus if enabled.
+The command palette allows users to:
 
-Command palette actions must respect RBAC permissions.
+- Navigate to any page.
+- Open apps in Void Mode panels.
+- Open embed URLs as panels.
+- Send Odysseus queries (prefix: /).
+- Search containers, services, VMs by name.
+- Trigger automations (if RBAC allows).
+- Open a terminal session.
+- Run safe system actions.
 
-Dangerous actions must not execute directly from the command palette unless they require confirmation.
+Dangerous actions must never execute directly from the palette. They must navigate to the relevant page where the confirmation flow lives.
 
 Examples:
 
-- “Restart nginx”
-- “Open terminal on node alpha”
-- “Show failed services”
-- “Run backup: nightly”
-- “Deploy Gitea”
-- “View Docker logs for jellyfin”
-- “Open security scanner”
-- “Send alert to Odysseus”
+- “Containers” → opens Containers page/panel.
+- “Terminal” → opens Terminal panel.
+- “Backups” → opens Backups page.
+- “/why is nginx failing” → routes to Odysseus with that query.
+- “https://gitea.local” → opens as embed panel (Void Mode).
 
 --------------------------------------------------------------------
 DASHBOARD / COMMAND PAGE
 --------------------------------------------------------------------
 
-The main landing page is called Command.
+The Dashboard is the main landing page in Tower Mode and the default first panel in Void Mode.
 
-It must show:
+Current implementation: customizable widget grid with drag-to-reorder. Widgets include CPU/RAM/disk/network charts, container summary, alert count, and clock.
 
-- Cluster health.
-- Node count.
-- Online/offline nodes.
-- CPU/RAM/disk overview.
-- Network throughput.
-- Active alerts.
-- Failed services.
-- Unhealthy containers.
-- VM status.
-- Backup status.
+The Dashboard should show:
+
+- System health overview (CPU, RAM, disk, network).
+- Active alert count (with severity breakdown).
+- Failed or degraded services count.
+- Unhealthy containers count.
+- VM status summary.
+- Backup confidence card (last backup time, last restore test, confidence level).
 - Recent automation runs.
-- Recent audit events.
-- Security warnings.
-- Quick actions.
+- Recent timeline/audit events.
+- Security warning count.
+- Quick action buttons.
 
-Dashboard cards should be compact and useful.
-
-Each card should support:
+Dashboard cards must support:
 
 - Loading state.
 - Empty state.
-- Healthy state.
-- Warning state.
-- Critical state.
-- Click-through to detail page.
+- Healthy / warning / critical states.
+- Click-through to the relevant detail page.
 
 Charts:
 
-- CPU history.
+- CPU history (sparkline or area).
 - RAM history.
-- Disk usage.
-- Network RX/TX.
-- Node health over time.
-- Backup success/failure trend.
+- Disk usage per mount point.
+- Network RX/TX history.
+- GPU utilization (if GPU detected).
 
-Charts must be readable in dark mode and not overuse neon glow.
+Charts must be readable in dark mode. Glow effects must be restrained.
+
+Future dashboard additions:
+- Backup confidence widget with scheduled restore test status.
+- Per-node health grid (multi-node mode).
+- Config drift alerts widget.
+- Maintenance window banner.
+- Incident mode banner when an active incident exists.
+- AI insight card: Odysseus-generated one-line infrastructure summary (opt-in).
 
 --------------------------------------------------------------------
 TABLES AND DATA GRIDS
 --------------------------------------------------------------------
 
-VoidTower will display many operational tables. Tables must be excellent.
+VoidTower displays many operational tables. Tables must be excellent.
 
 Requirements:
 
@@ -389,61 +561,74 @@ Requirements:
 - Filter/search.
 - Status badges.
 - Bulk selection where safe.
-- Row actions.
+- Row actions (inline buttons or dropdown).
 - Expandable row details.
 - Column visibility controls.
 - Compact and comfortable density modes.
 - Pagination or virtual scrolling for large datasets.
-- Copy-to-clipboard for IDs, IPs, paths, commands, tokens where appropriate.
+- Copy-to-clipboard for IDs, IPs, paths, commands, tokens.
 - Clear empty states.
 - Clear loading states.
 - Clear error states.
 
-Tables needed for:
+Tables needed for (current):
 
-- Nodes.
-- Containers.
+- Containers (Docker).
 - Images.
 - Volumes.
 - Networks.
-- VMs.
-- Services.
-- Backups.
+- VMs (libvirt / Proxmox).
+- Services (systemd units).
+- Backups / snapshots.
 - Alerts.
 - Automations.
-- Audit logs.
+- Audit log.
 - API tokens.
-- Odysseus integration events.
+- Integrations / Odysseus events.
+- Secrets.
+- Firewall rules.
+- Proxy rules.
+- WireGuard peers.
+- Storage block devices.
+- Status checks.
+
+Future table additions:
+- Multi-node: nodes table with per-node health columns.
+- Inventory / asset database (hardware, OS, packages per node).
+- Plugin registry.
+- Policy rules (policy engine, future).
+- Maintenance windows.
+- Incidents.
 
 --------------------------------------------------------------------
 DETAIL PAGES
 --------------------------------------------------------------------
 
-Every major object should have a detail page:
+Major objects should have detail pages or expandable drawers.
 
-- Node detail.
-- Container detail.
-- VM detail.
-- Service detail.
-- App detail.
-- Backup detail.
-- Alert detail.
-- Automation detail.
+Currently built:
 
-Detail pages should include:
+- Container detail page (ContainerDetail.tsx): full stats, logs, exec, compose diff.
 
-- Summary header.
-- Health/status badge.
-- Metadata.
-- Metrics.
-- Logs.
+Required for future:
+
+- Node detail: hardware summary, all metrics history, running services, running containers, open ports, recent events, audit history, notes, Send to Odysseus button.
+- VM detail: config, metrics, snapshots, console link, lifecycle actions, danger zone.
+- Service detail: status, logs, unit file view, start/stop/restart, override editor.
+- App detail (App Vault): deployed compose, env vars, logs, update, redeploy, rollback.
+- Backup detail: snapshot list, integrity check result, last restore test, restore button.
+- Alert detail: timeline, related metrics at alert time, acknowledge/resolve/silence.
+- Automation detail: run history with per-run log output, edit, dry-run, manual trigger.
+
+Detail page structure:
+
+- Summary header with name, status badge, key metadata.
+- Metrics section (where applicable).
+- Logs section (where applicable).
 - Related resources.
-- Recent events.
-- Audit history.
+- Recent audit events.
 - Safe action buttons.
-- Dangerous action area separated visually.
-
-Dangerous actions must be grouped under a clearly marked “Danger Zone”.
+- Danger Zone: grouped destructive actions, always separated visually, typed-name confirmation for irreversible operations.
 
 --------------------------------------------------------------------
 TERMINAL UI
@@ -451,33 +636,35 @@ TERMINAL UI
 
 Terminal is a central part of VoidTower.
 
+Current implementation: full PTY browser terminal with shell auto-detection and SSH session manager (Terminal.tsx).
+
 Requirements:
 
 - xterm.js-based terminal.
-- Full-screen mode.
-- Split terminal panes if feasible.
-- Node selector.
+- Full-screen mode (fills the panel or the full window).
+- Node selector (host shell vs. container exec).
 - Container exec selector.
+- SSH session manager: save/load saved sessions.
 - Font size controls.
 - Copy/paste support.
 - Session status indicator.
-- Reconnect handling.
-- Clear disconnect state.
+- Reconnect handling with clear disconnect state.
 - Optional session recording indicator.
-- Audit notice when session recording is enabled.
+- Audit notice when session recording is active.
 
 Terminal design:
 
 - Background: near-black.
-- Text: terminal green by default.
+- Text: terminal green by default (theme-controlled).
 - Cursor: bright accent.
-- Minimal chrome.
-- Clear session metadata:
-  - node
-  - user
-  - shell
-  - started time
-  - recording state
+- Minimal chrome: only title bar with session metadata.
+- Session metadata shown: node, user, shell, started time, recording state.
+
+In Void Mode, the Terminal opens as a panel that can be snapped, split, or resized like any other panel. Two terminal panels side-by-side (left-half + right-half snap) gives a native split-terminal experience.
+
+Future:
+- Named session groups / tab bar within one terminal panel.
+- Session replay viewer (if recording is stored).
 
 --------------------------------------------------------------------
 LOG VIEWER
@@ -485,31 +672,38 @@ LOG VIEWER
 
 Logs must be easy to inspect.
 
+Current implementation: LogViewer.tsx component used across Services, Containers, Backups, Automation.
+
 Requirements:
 
 - Live tail mode.
 - Pause/resume.
 - Search within logs.
-- Regex filter if feasible.
-- Severity highlighting.
+- Regex filter.
+- Severity highlighting (error/warn/info/debug color coding).
 - Timestamp normalization.
 - Download logs.
 - Copy selected lines.
 - Wrap/nowrap toggle.
-- Follow mode.
-- Jump to bottom.
-- Redact secrets where possible.
+- Follow mode (auto-scroll to bottom).
+- Jump to bottom button.
+- Redact known secret patterns where possible.
 
-Log viewer should be used for:
+Log viewer is used for:
 
 - systemd services.
-- containers.
-- VMs where available.
-- backups.
-- automations.
-- installer logs.
-- audit events.
-- Odysseus-triggered actions.
+- Docker containers.
+- VMs (where journald or serial log is available).
+- Restic backup runs.
+- Automation job runs.
+- Installer logs.
+- Audit event detail.
+- Odysseus-triggered actions (future).
+
+Future:
+- Structured log parsing (JSON logs rendered as expandable key-value rows).
+- Correlation: click a log line timestamp to jump to the timeline at that moment.
+- Export as file (JSON, plain text, filtered subset).
 
 --------------------------------------------------------------------
 APP VAULT UI
@@ -517,30 +711,54 @@ APP VAULT UI
 
 App Vault is the application deployment area.
 
+Current implementation: 40+ one-click deployments, management panel per app with Containers/Compose/Logs tabs, AI-based app recommendation, iframe embed support (AppVault.tsx).
+
 Design:
 
-- Dark app catalog.
-- Cards for apps.
-- Category filters.
-- Search.
+- Dark catalog grid.
+- App cards with icon, name, short description, category badge.
+- Category filters (self-hosted, dev, media, communication, AI, network, productivity, etc.).
+- Search by name or description.
 - Badges for official/community/local templates.
-- Deployment wizard.
-- Compose preview.
+- Deployment wizard (see below).
+- Compose preview before deploy.
 - Environment variable editor.
 - Volume/port editor.
 - Validation before deploy.
-- Deployment progress.
+- Deployment progress log.
 - Rollback info where available.
+- AI recommendation chip on cards (“Odysseus suggests this for your setup”).
+
+App card badges (planned — see future_plan.md §21):
+
+- AI Native — Odysseus has full tool coverage for this app.
+- AI Aware — Odysseus can read status and logs but cannot act.
+- AI Ready — no integration yet, template exists for one-click wiring.
+- (none) — community app, unknown AI integration.
+
+Badge color: cyan = native, blue = aware, grey outline = ready.
 
 Deployment wizard steps:
 
 1. Select app.
-2. Choose target node.
-3. Configure variables.
-4. Configure ports/volumes.
-5. Preview generated Docker Compose.
-6. Confirm deployment.
-7. Watch deployment logs.
+2. Choose target node (once multi-node exists; currently: local only).
+3. Configure environment variables.
+4. Configure ports and volume mounts.
+5. Preview generated Docker Compose file.
+6. Review change plan (dry-run, once implemented).
+7. Confirm deployment.
+8. Watch deployment logs in real time.
+
+Custom app deployment (planned):
+- A “Deploy custom” button opens a minimal form: image, name, port maps, volume maps, env vars.
+- VoidTower generates and saves a compose file and deploys it.
+- The deployed app appears in the running apps list like any App Vault deployment.
+
+App management panel (per deployed app):
+- Containers tab: list containers, start/stop/restart/remove.
+- Compose tab: view and edit the generated compose file with staged diff preview.
+- Logs tab: live log tail across all containers in the compose project.
+- Actions: update (pull latest image), redeploy, rollback (if rollback point exists), remove.
 
 --------------------------------------------------------------------
 AUTOMATION UI
@@ -548,38 +766,44 @@ AUTOMATION UI
 
 Automation must feel powerful but safe.
 
+Current implementation: cron-style shell jobs with run history and output, enable/disable (Automation.tsx). Editor is a shell command + cron expression.
+
 Views:
 
-- Automation list.
+- Automation list (name, schedule, last run, last status, enable/disable toggle).
 - Automation editor.
-- Run history.
-- Trigger configuration.
-- Action graph/YAML editor.
-- Logs.
-- Manual run panel.
-- Odysseus handoff/invocation history.
+- Run history with per-run log output.
+- Manual run button.
+- Odysseus invocation history (once policy engine and action linking are implemented).
 
-MVP editor:
+Current editor:
 
-- YAML editor with validation.
-- Schema-aware suggestions if possible.
-- Dry-run button.
-- Save draft.
-- Enable/disable automation.
+- Shell command input.
+- Cron expression input.
+- Enable/disable toggle.
+- Save.
 
-Future editor:
+Planned editor additions:
 
-- Visual workflow graph.
-- Drag-and-drop triggers/actions.
-- Conditional branches.
-- Secrets picker.
-- Run preview.
+- Dry-run button: shows what the command would do without executing.
+- Secrets picker: insert a secret reference without exposing plaintext.
+- Schema-aware YAML editor (once automation engine supports multi-step definitions).
+
+Future editor (visual workflow):
+
+- Drag-and-drop trigger/action graph.
+- Conditional branches (if/else on exit code or output).
+- Multi-step sequences.
+- Built-in action types: restart service, stop container, run backup, send notification, HTTP request, delay.
+- Run preview: show execution path before running.
 
 --------------------------------------------------------------------
 ALERTS UI
 --------------------------------------------------------------------
 
 Alerts must be impossible to miss but not obnoxious.
+
+Current implementation: metric threshold alerts + TCP/HTTP status checks, ack/resolve, public /status page (Alerts.tsx).
 
 Alert states:
 
@@ -592,24 +816,28 @@ Alert states:
 
 Alert page must support:
 
-- Filtering by severity.
-- Filtering by node.
-- Filtering by category.
-- Acknowledge.
-- Silence.
+- Filtering by severity, node, category.
+- Acknowledge (suppresses notification, keeps alert visible).
+- Silence (hides from active list for a duration).
 - Resolve.
-- Assign owner if users exist.
-- Send to Odysseus.
+- Assign owner (if users exist).
+- Send to Odysseus (SendToOdysseus component — present in codebase, copies context to clipboard and opens Odysseus URL).
 - View related logs.
-- View related metrics.
-- View timeline.
+- View related timeline entry.
 
-Critical alerts should appear in:
+Critical alerts appear in:
 
-- Sidebar badge.
-- Top bar indicator.
-- Dashboard card.
+- Void Mode status bar: notification bell badge.
+- Kiosk mode: red border flash.
+- Tower Mode sidebar badge on Alerts section.
+- Dashboard alert count card.
 - Alerts page.
+
+Future alert features:
+- Maintenance window suppression: alerts generated during a configured window are silenced automatically.
+- Incident creation: “Open incident from this alert” button.
+- Alert routing by tag: route alerts tagged `prod` to one webhook, `lab` to another.
+- Alert grouping: collapse repeated same-source alerts into one entry with a count.
 
 --------------------------------------------------------------------
 SECURITY UI
@@ -617,19 +845,21 @@ SECURITY UI
 
 Security section must be blunt and useful.
 
+Current implementation: session list for all users, revoke individual/all-other sessions, full audit log (Security.tsx). Secrets managed in Secrets.tsx.
+
 Views:
 
-- Security overview.
+- Security overview (summary of active sessions, recent login attempts, open findings).
 - File permission scanner.
-- Exposed services.
-- Login attempts.
-- Active sessions.
-- API tokens.
-- Odysseus integration access.
-- Audit log.
-- Secret rotation.
-- TLS/certificate status.
-- Dangerous capability review.
+- Exposed services (open ports vs. firewall rules).
+- Login attempts (rate limiting events).
+- Active sessions (all users, revoke button).
+- API tokens (list, create, revoke, scope display).
+- Odysseus integration access (enabled/disabled, token scope, last used).
+- Audit log (full operation history).
+- Secrets manager (AES-256-GCM encrypted store, reveal-on-demand with audit log).
+- TLS/certificate status (expiry dates, renewal state).
+- Dangerous capability review (which capabilities are enabled that increase attack surface).
 
 Security findings should be grouped by severity:
 
@@ -647,24 +877,31 @@ Every finding should include:
 - Whether VoidTower can fix it automatically.
 - Manual command suggestion where safe.
 
+Future security additions:
+- TOTP enrollment UI (backend totp.rs module exists but no frontend page/flow yet).
+- WebAuthn / passkey registration and login.
+- Emergency disable panel: one-click buttons to disable Odysseus access, all automations, all webhooks, MCP server.
+- Policy engine UI: define per-actor rules for what actions are allowed on which resources.
+
 --------------------------------------------------------------------
 SETTINGS UI
 --------------------------------------------------------------------
 
 Settings must be comprehensive but organized.
 
-Settings sections:
+Current implementation: Settings.tsx with multiple sections.
 
-- General
-- Appearance
-- Theme Editor
+Settings sections (current):
+
+- General (bind, port, data paths)
+- Appearance (theme selection, animated background, glass level)
+- Theme Editor (full live token editor)
 - Users
 - Roles & Permissions
-- Authentication
+- Authentication (password policy)
 - Sessions
 - API Tokens
-- Odysseus Integration
-- MCP Server
+- Integrations (Odysseus config, MCP toggle, webhook secret, SSE events)
 - Notifications
 - Alerts
 - Backups
@@ -673,6 +910,7 @@ Settings sections:
 - App Vault
 - Automation
 - Security
+- Diagnostics
 - Advanced
 - About
 
@@ -680,155 +918,111 @@ Settings must include search.
 
 Settings changes must show:
 
-- Unsaved state.
-- Validation errors.
+- Unsaved state indicator.
+- Validation errors inline.
 - Reset/revert option.
 - Save confirmation for sensitive changes.
-- Audit logging for sensitive settings.
+- Audit log entry for sensitive settings changes.
+
+Future settings additions:
+
+- Plugin manager section (once plugin system is built).
+- Policy engine section (actor/resource/action rules).
+- Maintenance windows section.
+- Disaster recovery section (export config, import config, emergency reset).
+- Node management section (once multi-node agent mode is built).
+- TOTP / WebAuthn section under Authentication.
 
 --------------------------------------------------------------------
 FULL THEME CUSTOMIZATION
 --------------------------------------------------------------------
 
-VoidTower must allow the user to fully customize the UI theme from inside the web UI.
+VoidTower allows full theme customization from inside the web UI.
 
-Add Settings → Appearance → Theme Editor.
+Current implementation: 7 built-in themes, live custom CSS token editor with 14+ animation parameters, animated background system with 7 canvas presets (Void, Grid, Aurora, Pulse, Noise, Hex, Circuit) and 4 glass levels (Themes.tsx, ThemeEditor.tsx, ThemeProvider.tsx).
 
-The Theme Editor must allow customization of:
+The Theme Editor allows customization of:
 
-- Base mode:
-  - dark
-  - darker
-  - light
-  - custom
-- Background colors.
-- Panel colors.
-- Card colors.
+- Base mode: dark / darker / light / custom.
+- Background colors (root, panel, card, elevated).
 - Border colors.
-- Text colors.
-- Muted text colors.
-- Primary accent color.
-- Secondary accent color.
-- Success color.
-- Warning color.
-- Danger color.
-- Terminal background.
-- Terminal foreground.
-- Terminal cursor color.
+- Text colors (primary, secondary, muted).
+- Accent colors (primary, secondary, success, warning, danger).
+- Terminal background, foreground, cursor color.
 - Chart colors.
-- Sidebar style.
 - Font family.
 - Font size scale.
-- UI density:
-  - compact
-  - normal
-  - comfortable
-- Border radius:
-  - sharp
-  - slight
-  - rounded
-- Glow intensity:
-  - off
-  - low
-  - medium
-  - high
-- Animation level:
-  - off
-  - reduced
-  - normal
+- UI density: compact / normal / comfortable.
+- Border radius: sharp / slight / rounded.
+- Glow intensity: off / low / medium / high.
+- Animation level: off / reduced / normal.
 - Table density.
 - Terminal font.
 - Code/log font.
 - Card shadow depth.
-- Sidebar width.
-- Layout mode:
-  - fixed
-  - fluid
-  - dense ops
+- Sidebar width (Tower Mode).
+- Animated background preset and intensity.
+- Glass blur level (0–4).
 
 Theme requirements:
 
-- Themes must be stored locally.
-- Themes must be exportable as JSON.
-- Themes must be importable from JSON.
-- Users must be able to duplicate a theme.
-- Users must be able to reset to defaults.
-- Users must be able to preview before applying.
-- Users must be able to save multiple named themes.
+- Themes stored locally (Zustand + localStorage).
+- Themes exportable as JSON.
+- Themes importable from JSON.
+- Users can duplicate a theme.
+- Users can reset to defaults.
+- Users can preview before applying.
+- Users can save multiple named themes.
 - Admins can set a global default theme.
 - Users can override the global theme for their own account.
-- Theme changes should apply live without reload.
-- Invalid colors must be rejected.
-- Accessible contrast warnings must be shown.
+- Theme changes apply live without page reload (CSS variable injection).
+- Invalid colors are rejected.
+- Accessible contrast warnings are shown.
 - Theme editor must never allow unsafe CSS injection.
 
-Built-in themes:
+Built-in themes (current):
 
-1. VoidTower Default
-   - Dark cyber-ops theme.
-   - Violet/cyan accents.
-
-2. Blacksite
-   - Near-black.
-   - Red danger accents.
-   - Minimal glow.
-
-3. Ghost Terminal
-   - Black/green terminal-inspired theme.
-
-4. Deep Grid
-   - Indigo/cyan infrastructure-grid theme.
-
-5. Solar Breach
-   - Dark amber/orange operations theme.
-
-6. Light Ops
-   - Light theme for daylight environments.
-
-7. High Contrast
-   - Accessibility-first high-contrast theme.
+1. VoidTower Default — dark cyber-ops, violet/cyan accents.
+2. Blacksite — near-black, red danger accents, minimal glow.
+3. Ghost Terminal — black/green terminal-inspired.
+4. Deep Grid — indigo/cyan infrastructure-grid.
+5. Solar Breach — dark amber/orange operations.
+6. Light Ops — light theme for daylight.
+7. High Contrast — accessibility-first.
 
 Theme implementation:
 
-- Use CSS variables.
-- Store theme tokens in database or config.
-- Apply user theme at login.
+- CSS variables (var(--bg-root), var(--accent-primary), etc.).
+- Store tokens in database for cross-device sync (future) or localStorage for local-only.
+- Apply at login and on live change.
 - Expose current theme at `/api/settings/theme`.
-- Provide endpoints:
-  - GET /api/settings/themes
-  - POST /api/settings/themes
-  - PUT /api/settings/themes/{id}
-  - DELETE /api/settings/themes/{id}
-  - POST /api/settings/themes/{id}/apply
-  - POST /api/settings/themes/import
-  - GET /api/settings/themes/{id}/export
 
-Theme JSON schema must be documented.
+Theme JSON schema example:
 
-Example theme JSON:
-
+```json
 {
-  "name": "Ghost Terminal",
-  "mode": "dark",
-  "tokens": {
-    "bgRoot": "#020403",
-    "bgPanel": "#050806",
-    "bgCard": "#08110c",
-    "textPrimary": "#d7ffe8",
-    "textSecondary": "#7cffb2",
-    "accentPrimary": "#00ff9c",
-    "accentSecondary": "#00b8ff",
-    "accentDanger": "#ff3355",
-    "borderSubtle": "#123022",
-    "terminalBg": "#000000",
-    "terminalFg": "#00ff9c",
-    "terminalCursor": "#ffffff"
+  “name”: “Ghost Terminal”,
+  “mode”: “dark”,
+  “tokens”: {
+    “bgRoot”: “#020403”,
+    “bgPanel”: “#050806”,
+    “bgCard”: “#08110c”,
+    “textPrimary”: “#d7ffe8”,
+    “textSecondary”: “#7cffb2”,
+    “accentPrimary”: “#00ff9c”,
+    “accentSecondary”: “#00b8ff”,
+    “accentDanger”: “#ff3355”,
+    “borderSubtle”: “#123022”,
+    “terminalBg”: “#000000”,
+    “terminalFg”: “#00ff9c”,
+    “terminalCursor”: “#ffffff”
   },
-  "density": "compact",
-  "radius": "slight",
-  "glow": "medium",
-  "animations": "reduced"
+  “density”: “compact”,
+  “radius”: “slight”,
+  “glow”: “medium”,
+  “animations”: “reduced”
 }
+```
 
 --------------------------------------------------------------------
 ACCESSIBILITY
@@ -838,46 +1032,46 @@ VoidTower must be accessible enough for serious daily use.
 
 Requirements:
 
-- Keyboard navigable.
-- Visible focus states.
-- Semantic HTML.
-- ARIA labels where needed.
-- Sufficient color contrast.
-- High contrast theme.
-- Reduced motion support.
-- Screen-reader-friendly status updates where practical.
-- Do not rely on color alone for state.
-- Icons must have labels/tooltips.
-
-Theme editor must warn if custom colors create poor contrast.
+- Keyboard navigable throughout.
+- Visible focus states (outline ring on interactive elements).
+- Semantic HTML (buttons are buttons, not divs).
+- ARIA labels on icon-only buttons, modals, and live regions.
+- Sufficient color contrast (WCAG AA minimum).
+- High Contrast built-in theme.
+- Reduced motion support (respects prefers-reduced-motion; animations level “off” disables all transitions).
+- Screen-reader-friendly status updates where practical (aria-live).
+- Do not rely on color alone for state (use icon + color, or label + color).
+- Icons must have labels or tooltips.
+- Theme editor must warn if custom color choices create poor contrast ratios.
+- Kiosk mode wake hint and PIN pad must be keyboard accessible.
+- Void Mode panel controls (minimize, maximize, close) must have aria-labels.
 
 --------------------------------------------------------------------
 RESPONSIVE / MOBILE UI
 --------------------------------------------------------------------
 
-Mobile UI must not be an afterthought.
+Mobile UI is handled via the device tier system, not via CSS-only media queries.
 
-Requirements:
+Device tiers and their UI adaptations:
 
-- Sidebar becomes slide-out drawer.
-- Tables become cards or horizontally scrollable with sticky key columns.
-- Terminal usable on mobile.
-- Important actions reachable with touch.
-- Cards stack cleanly.
-- Charts remain readable.
-- Command palette works on mobile.
-- Status/alerts are visible.
-- PWA metadata included.
+- phone (<640px): Void Mode uses sheet panels (full-width bottom sheet, one at a time). Dock is a full-width bottom tab bar with icons + labels. Command bar is a FAB above the dock. Status bar shows workspace dots in center. Tower Mode sidebar becomes a slide-out drawer.
+- tablet (640–1199px): Void Mode uses up to 3 floating panels, centered pill dock. Tower Mode uses a collapsible sidebar.
+- desktop (1200–1919px): Void Mode uses up to 5 floating panels, centered pill dock or vertical strip if width ≥1400.
+- large (≥1920px): Void Mode uses up to 8 panels, vertical strip dock.
+- tv (coarse pointer + ≥1200px): TV grid layout with D-pad navigation.
+- kiosk (URL param ?mode=kiosk): kiosk auto-cycle layout.
+
+Tier is detected from window dimensions, pointer media queries, and an optional localStorage override for manual testing.
 
 Mobile use cases:
 
-- Check alerts.
-- Restart a service.
-- View logs.
-- Run an automation.
+- Check and acknowledge alerts.
+- Restart a failing service.
+- View container logs.
+- Run a manual automation job.
 - Check backup result.
-- Open limited terminal if allowed.
-- Approve or deny a high-risk Odysseus action.
+- Open a terminal session.
+- Approve or deny a pending Odysseus action (future: AI approval queue).
 
 --------------------------------------------------------------------
 REAL-TIME UX
@@ -885,24 +1079,27 @@ REAL-TIME UX
 
 The UI must clearly show live state.
 
+Current implementation: WebSocket SSE metrics stream, Zustand metrics store, connection indicator in status bar, toast notification system.
+
 Requirements:
 
-- Real-time metric updates.
-- Connection status indicator.
-- Reconnecting state.
-- Stale data indicator.
-- Last updated timestamp.
-- Background job progress.
-- Toasts for completed actions.
-- Persistent task log for long operations.
-- Optimistic updates only when safe.
+- Real-time metric updates via SSE (no polling).
+- Connection status indicator (green Wifi icon = connected, amber WifiOff = disconnected).
+- Reconnecting state with backoff (shown in status bar).
+- Stale data indicator if metrics have not updated for >30s.
+- Last updated timestamp on metric cards.
+- Background job progress (deployment, backup, automation run).
+- Toast notifications for completed actions (success, warning, error).
+- Persistent task log in bottom console for long operations (future).
+- Optimistic updates only where safe (e.g., toggle enable/disable).
 
 If the backend connection drops:
 
 - Show degraded/offline banner.
-- Avoid pretending actions succeeded.
-- Queue nothing silently.
-- Disable unsafe actions until reconnected.
+- Metric pills in status bar show “offline”.
+- Unsafe actions (start/stop/deploy/delete) are disabled with a tooltip explaining the disconnect.
+- No silent queuing. Every action either succeeds or fails loudly.
+- Auto-reconnect attempt with exponential backoff.
 
 --------------------------------------------------------------------
 CONFIRMATIONS AND DANGER ZONES
@@ -915,69 +1112,162 @@ Actions requiring confirmation:
 - Delete container.
 - Delete VM.
 - Delete volume.
-- Delete backup.
-- Purge data.
+- Delete backup snapshot.
+- Purge data directory.
 - Modify firewall rules.
 - Expose service publicly.
 - Rotate secrets.
-- Run arbitrary command.
+- Run arbitrary shell command.
 - Disable authentication.
-- Enable MCP/Odysseus high-risk tools.
+- Enable MCP server or Odysseus high-risk tools.
 - Uninstall package.
-- Remove node.
-- Reset cluster.
+- Remove node from cluster.
+- Reset node identity.
+- Emergency disable all AI access.
+- Format disk.
+- Apply a disaster recovery import (replaces all data).
 
 Confirmation dialog must show:
 
-- Exact target.
-- Consequence.
-- Whether action is reversible.
-- Required permission.
-- Audit logging note.
-- Optional typed confirmation for destructive actions.
+- Exact target name.
+- Consequence description.
+- Whether the action is reversible.
+- Required permission level.
+- A note that the action will be audit logged.
+- Optional typed confirmation for irreversible actions (“Type prod-db-01 to confirm”).
 
-Example:
+Danger Zone design:
 
-“To delete VM `prod-db-01`, type `prod-db-01`.”
+- Grouped at the bottom of detail pages and settings sections.
+- Visually separated by a red-bordered section with a “Danger Zone” heading.
+- Buttons use accent-danger color with extra padding.
+- Buttons are disabled until a prerequisite is met (e.g., type the name).
+
+Future additions:
+- Dry-run preview before destructive actions: show a change plan (files touched, services restarted, containers removed, ports affected) before execution.
+- Rollback point creation prompt: “VoidTower will create a rollback point before this action. Continue?”
 
 --------------------------------------------------------------------
 ODYSSEUS UI TOUCHPOINTS
 --------------------------------------------------------------------
 
-If Odysseus integration is enabled, the UI must include AI-agent handoff controls.
+When Odysseus integration is enabled, the UI includes AI-agent handoff controls.
 
-Add “Send to Odysseus” buttons on:
+Current implementation: SendToOdysseus.tsx component (copies context to clipboard + opens Odysseus URL). AiosCommandBar supports `/` prefix to route to Odysseus.
 
-- Alerts.
-- Failed services.
-- Containers.
-- VMs.
-- Backup failures.
-- Security findings.
-- Log selections.
-- Automation failures.
+“Send to Odysseus” buttons are present on (or planned for):
+
+- Alerts (send alert context for diagnosis).
+- Failed services (send service name + recent logs).
+- Containers (send container state + logs).
+- VMs (send VM config + status).
+- Backup failures (send backup job + error).
+- Security findings (send finding description + remediation context).
+- Log line selections (send selected text as context).
+- Automation failures (send run output + definition).
 - Node health pages.
 
 Send-to-Odysseus flow:
 
-1. User selects context.
-2. VoidTower previews what data will be shared.
-3. Secrets are redacted.
-4. User chooses:
-   - ask for diagnosis
-   - draft fix plan
-   - run approved automation
-   - monitor this issue
-5. Action is logged in audit trail.
+1. User clicks “Send to Odysseus” on an entity.
+2. VoidTower packages the context (name, status, logs, metadata).
+3. Secrets and sensitive env vars are redacted from the context before packaging.
+4. Context is copied to clipboard and Odysseus opens (in a new tab, or as an embed panel in Void Mode).
+5. Action is logged in the audit trail.
 
-AI approval UI:
+Future Odysseus UI additions:
 
-- Show pending high-risk AI-requested actions.
-- User can approve once.
-- User can deny.
-- User can approve with time limit.
-- User can create policy from repeated safe action.
-- Every decision is logged.
+- AI approval queue: a panel showing pending high-risk AI-requested actions. User can approve once, deny, approve with a time limit, or create a policy from a repeated safe pattern. Every decision is logged.
+- Context preview modal: before sending, show exactly what data will be shared and what will be redacted.
+- Odysseus panel type: a dedicated embed panel type in Void Mode that maintains Odysseus state and receives prefill queries via postMessage from any panel.
+- “Ask Odysseus” quick action in every detail page header.
+- Inline AI insight chips: optional one-line AI annotation on resource cards (“Last restart was caused by OOM — consider increasing memory limit”).
+
+--------------------------------------------------------------------
+FUTURE UI AREAS (PLANNED)
+--------------------------------------------------------------------
+
+The following UI surfaces do not yet exist but are planned or in the backlog. This section captures their intended design so it can guide implementation.
+
+Multi-node / Agent Mode:
+
+- Nodes page: table of all registered nodes with per-node health columns (CPU, RAM, disk, alerts, last seen).
+- Node selector: dropdown or sidebar section to scope all pages to a specific node.
+- Node detail page: full hardware summary, all metrics, running services/containers, open ports, recent events, notes.
+- Node add wizard: enter agent URL + join token, test connection, register.
+- Per-node alert routing: alerts tagged with the source node.
+
+Maintenance Windows:
+
+- Maintenance windows page: create/edit windows with start/end time, affected nodes/resources, suppressed alert categories, status page message.
+- Active maintenance banner: shown on the dashboard and in the status bar during a window.
+- Automation policy during windows: only allow selected automations to run.
+
+Incident Mode:
+
+- Incidents page: create incident from an alert, attach logs/metrics/services/containers.
+- Incident detail: timeline view, owner assignment, status tracking (Investigating / Identified / Monitoring / Resolved / Postmortem Pending), notes editor.
+- Postmortem export: generate a markdown postmortem from the incident data.
+- “Send incident to Odysseus” button: packages the full incident context for AI-assisted investigation.
+
+Config Drift Detection:
+
+- Drift page or section in resource detail pages.
+- Shows expected state (what VoidTower last set) vs. actual state (current on disk/system).
+- Inline diff view.
+- Reconcile button (apply VoidTower’s desired state) or Accept button (adopt the external change as the new baseline).
+- Ignore rule for known intentional differences.
+
+Inventory / Asset Database:
+
+- Inventory page: hardware, CPU, RAM, disk, GPU, network interfaces, OS/kernel, installed packages, owners, notes, warranty metadata.
+- Queryable: “which nodes have GPUs?”, “which nodes run public-facing services?”, “which services have no backups?”
+- Notes field per resource (Markdown, pinnable, searchable).
+
+Declarative / GitOps Mode:
+
+- State export: download current VoidTower state as a YAML file.
+- State import: upload a desired-state YAML, preview the diff, apply with rollback point.
+- Optional Git sync: connect to a repository, pull desired state on a schedule, apply with dry-run.
+- Pull-request-style change flow: AI can draft a state change YAML instead of acting directly on production.
+
+Policy Engine:
+
+- Policy rules page: create rules binding actor (user / role / API token / Odysseus / automation) to allowed actions on resource types, with time window and approval requirements.
+- Policy violation log: show when a policy rule blocked or required approval for an action.
+- Policy testing: dry-run a hypothetical action to see which rules apply.
+
+Plugin Manager (Mods):
+
+- Mods page (present as Mods.tsx placeholder).
+- List installed plugins with name, version, permissions declared, status (enabled/disabled).
+- Plugin install from URL or local file (once plugin SDK exists).
+- Plugin permission review before enable.
+- Per-plugin audit log.
+- Plugin detail page: description, declared permissions, registered routes/actions/tools.
+
+Disaster Recovery:
+
+- Disaster recovery section in Settings (or dedicated page).
+- Export config: download a full VoidTower config + database backup as an encrypted archive.
+- Import config: restore from an archive (requires typed confirmation — replaces all data).
+- Emergency admin reset: creates a new Owner account without the web UI.
+- Emergency disable panel: individual one-click disable buttons for Odysseus, all automations, all webhooks, MCP server.
+- Recovery status page: shown when VoidTower detects a corrupted or incomplete state on startup.
+
+OpenAPI / Developer Tools:
+
+- API docs page: browsable Swagger/Redoc UI served from /api/openapi.json.
+- Available at /api/docs once a UI is wired.
+- Useful for plugin developers, SDK users, and Odysseus tool authors.
+
+Demo / Simulation Mode:
+
+- Enabled via `voidtower --demo` CLI flag.
+- UI shows a “Demo Mode” banner in the status bar.
+- All data is synthetic (fake nodes, containers, metrics, alerts, backups, VMs).
+- No real host operations are performed.
+- Useful for screenshots, documentation, onboarding, and UI development without a real server.
 
 --------------------------------------------------------------------
 FRONTEND CODE QUALITY
@@ -985,40 +1275,49 @@ FRONTEND CODE QUALITY
 
 Frontend must be maintainable.
 
+Current architecture:
+
+- React + TypeScript + Vite.
+- Zustand for all state (auth, metrics, theme, notifications, cmdpalette, embed, aios panels).
+- Central API client at src/api/client.ts.
+- Central type models at src/api/types.ts.
+- Component structure: src/components/layout/, src/components/ui/, src/pages/, src/aios/.
+- Two layout modes: AppLayout.tsx (Tower) and AiosLayout.tsx (Void).
+
 Requirements:
 
-- Componentized structure.
-- Reusable cards/tables/modals/forms.
-- Central API client.
-- Central auth state.
-- Central theme store.
-- Central notification/toast system.
-- Type-safe API models.
-- Loading/error/empty states for every data view.
+- Componentized structure: reusable cards, tables, modals, forms.
+- Central API client: no raw fetch() calls outside of src/api/.
+- Central auth state: no local auth logic in page components.
+- Central theme store: no hardcoded colors outside CSS variables and theme tokens.
+- Central notification system: all toasts go through notify.success/warning/error.
+- Type-safe API models: responses are typed at the client layer.
+- Loading / error / empty states for every data-fetching view.
 - No hardcoded API URLs.
-- No hardcoded colors outside theme tokens.
-- No inline secrets.
+- No inline secrets or tokens.
 - No telemetry dependencies.
+- Panel error boundary: each Void Mode panel is wrapped in PanelErrorBoundary so one broken page does not blank the whole canvas.
 
-Recommended component groups:
+Component groups (current):
 
-- Layout
-- Navigation
-- CommandPalette
-- MetricCards
-- Charts
-- DataTable
-- EntityHeader
-- StatusBadge
-- LogViewer
-- Terminal
-- ConfirmDialog
-- DangerZone
-- ThemeEditor
-- SettingsForms
-- AutomationEditor
-- AppVault
-- OdysseusIntegration
+- Layout: AppLayout, AiosLayout, AiosTvLayout, AiosKioskLayout, Sidebar, TopBar.
+- Void OS: AiosPanel, AiosDock, AiosCommandBar, AiosStatusBar, AiosSplitDivider.
+- UI primitives: Button, StatusBadge, TagPill, MetricCard, MetricChart, LogViewer, MiniTerminal, ConfirmDialog, NotificationToasts, CommandPalette, ThemeEditor, UiModeToggle, SendToOdysseus, AppEmbedOverlay, AnimatedBackground, ForcePasswordChange.
+- Store hooks: useMetrics, useKeyboard, useDeviceTier, useSnapZones, useTouchGestures.
+
+Future component additions:
+
+- DangerZone: standardized danger section wrapper with red border and confirmation gating.
+- EntityHeader: reusable detail-page header with name, status badge, key metadata, action row.
+- ChangePreview: dry-run change plan display (files, services, commands, rollback state).
+- AiInsightChip: inline Odysseus-generated annotation on resource cards.
+- AiApprovalQueue: panel listing pending AI-requested high-risk actions.
+- MaintenanceBanner: dashboard and status bar banner during a maintenance window.
+- IncidentBadge: status badge shown on dashboard/sidebar when an active incident exists.
+- PolicyRuleEditor: form for creating/editing policy engine rules.
+- DriftDiff: side-by-side diff between expected and actual resource state.
+- NoteEditor: Markdown note editor for per-resource notes.
+- InventoryCard: hardware summary card for nodes.
 
 --------------------------------------------------------------------
 WEB UI ACCEPTANCE CRITERIA
@@ -1026,23 +1325,29 @@ WEB UI ACCEPTANCE CRITERIA
 
 The web UI is acceptable only if:
 
-- It has a polished dark VoidTower identity.
-- It has responsive layout.
-- It has dashboard metrics.
-- It has working navigation.
-- It has command palette/search.
-- It has usable tables.
-- It has detail pages for major resources.
-- It has working terminal UI.
-- It has loading, empty, error, and offline states.
-- It has clear dangerous-action confirmations.
-- It has Settings → Appearance → Theme Editor.
-- Users can fully customize the theme from the UI.
+- It has a polished dark VoidTower identity in both Tower and Void modes.
+- Tower Mode has a working sidebar + topbar + content layout.
+- Void Mode has working floating panels, dock, command bar, and status bar.
+- Device tiers are detected and the correct layout variant is served (phone / tablet / desktop / large / tv / kiosk).
+- Dashboard shows live metrics.
+- Navigation works in both modes.
+- Command palette / command bar opens with Ctrl+K, supports app navigation, Odysseus queries, and URL embeds.
+- Tables are sortable, filterable, and have appropriate empty/loading/error states.
+- Container detail page works with logs, exec, and compose diff.
+- Terminal opens and connects to a PTY session.
+- Loading, empty, error, and offline states are present on every data view.
+- Dangerous actions show a typed confirmation dialog.
+- Theme Editor is accessible from Settings → Appearance.
+- Users can fully customize theme tokens live without page reload.
 - Themes can be saved, duplicated, imported, exported, reset, and applied live.
-- Theme customization uses safe CSS variables, not arbitrary unsafe CSS injection.
-- Accessibility basics are implemented.
-- Mobile layout is usable.
-- Odysseus integration has visible UI touchpoints when enabled.
+- Theme customization uses validated CSS variables and never allows arbitrary CSS injection.
+- Animated backgrounds can be selected and configured.
+- Accessibility basics are implemented: keyboard nav, focus states, ARIA labels, no color-only state.
+- Mobile (phone tier) layout is usable for alerts, service restart, log view, and terminal.
+- Kiosk mode activates via ?mode=kiosk, auto-cycles tiles, and shows a screensaver.
+- TV layout activates on coarse-pointer large screens and supports D-pad navigation.
+- Odysseus touchpoints (SendToOdysseus component, /prefix in command bar) are visible and functional when integration is configured.
+- UI mode toggle (Tower ↔ Void) works and persists across page loads.
 
 ====================================================================
 TECH STACK

@@ -165,8 +165,23 @@ export const api = {
       }),
     delete: (id: string) =>
       request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, { method: 'DELETE' }),
+    update: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean) =>
+      request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed }),
+      }),
     toggle: (id: string) =>
       request<{ ok: boolean; enabled: boolean; nginx: string }>(`/api/proxy/${id}/toggle`, { method: 'POST' }),
+    plan: (domain: string, upstream: string, ssl: boolean, allow_embed: boolean) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>('/api/proxy', {
+        method: 'POST',
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, dry_run: true }),
+      }),
+    planUpdate: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(`/api/proxy/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, dry_run: true }),
+      }),
   },
 
   files: {
@@ -249,6 +264,10 @@ export const api = {
       request<{ ok: boolean }>(`/api/secrets/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     delete: (id: string) => request<{ ok: boolean }>(`/api/secrets/${id}`, { method: 'DELETE' }),
     reveal: (id: string) => request<{ value: string }>(`/api/secrets/${id}/reveal`),
+    rotate: (id: string, new_value?: string) =>
+      request<{ rotated: boolean; version: number }>(`/api/secrets/${id}/rotate`, {
+        method: 'POST', body: JSON.stringify({ new_value }),
+      }),
   },
 
   wireguard: {
@@ -376,9 +395,9 @@ export const api = {
   integrations: {
     scopes: () => request<{ scopes: { name: string; description: string }[] }>('/api/integrations/scopes'),
     listTokens: () => request<{ tokens: import('./types').ApiToken[] }>('/api/integrations/tokens'),
-    createToken: (name: string, scopes: string[], expires_days?: number) =>
-      request<{ id: string; token: string; name: string; scopes: string[]; created_at: number }>(
-        '/api/integrations/tokens', { method: 'POST', body: JSON.stringify({ name, scopes, expires_days }) },
+    createToken: (name: string, scopes: string[], expires_days?: number, secret_ids?: string[]) =>
+      request<{ id: string; token: string; name: string; scopes: string[]; created_at: number; secret_ids: string[] | null }>(
+        '/api/integrations/tokens', { method: 'POST', body: JSON.stringify({ name, scopes, expires_days, secret_ids: secret_ids?.length ? secret_ids : undefined }) },
       ),
     revokeToken: (id: string) =>
       request<{ ok: boolean }>(`/api/integrations/tokens/${id}`, { method: 'DELETE' }),

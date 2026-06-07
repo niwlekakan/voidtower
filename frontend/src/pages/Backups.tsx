@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ShieldCheck, ShieldAlert, ShieldX, Shield, Play, Search, Undo2, Trash2 } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, ShieldX, Shield, Play, Search, Undo2, Trash2, Tag as TagIcon } from 'lucide-react'
+import { api } from '@/api/client'
+import type { Tag, TagMap } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { useFiltersStore } from '@/store/filters'
+import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import Button from '@/components/ui/Button'
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -68,6 +72,10 @@ export default function BackupsPage() {
   const [busy, setBusy] = useState<Record<string, string>>({})  // id -> action
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ name: '', source_path: '', repo_path: '', retention_days: '30' })
+  const [allTags, setAllTags] = useState<Tag[]>([])
+  const [tagMap, setTagMap] = useState<TagMap>({})
+  const [popover, setPopover] = useState<string | null>(null)
+  const globalTag = useFiltersStore((s) => s.globalTag)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -79,7 +87,15 @@ export default function BackupsPage() {
     finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  const loadTags = useCallback(async () => {
+    try {
+      const [tags, map] = await Promise.all([api.tags.list(), api.tags.map('backup')])
+      setAllTags(tags)
+      setTagMap(map)
+    } catch { /* empty */ }
+  }, [])
+
+  useEffect(() => { load(); loadTags() }, [load, loadTags])
 
   const action = async (id: string, label: string, path: string) => {
     setBusy(b => ({ ...b, [id]: label }))
@@ -184,9 +200,21 @@ export default function BackupsPage() {
             </tr>
           </thead>
           <tbody>
-            {configs.map(c => (
+            {(globalTag ? configs.filter(c => (tagMap[c.id] || []).some(t => t.id === globalTag)) : configs).map(c => (
               <tr key={c.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                <td className="px-4 py-3 font-medium" style={{ color: 'var(--text-primary)' }}>{c.name}</td>
+                <td className="px-4 py-3 font-medium" style={{ color: 'var(--text-primary)' }}>
+                  <div>{c.name}</div>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3, alignItems: 'center', position: 'relative' }}>
+                    {(tagMap[c.id] || []).map(t => <TagPill key={t.id} tag={t} />)}
+                    <button onClick={() => setPopover(popover === c.id ? null : c.id)} style={{
+                      background: 'none', border: '1px dashed var(--border-subtle)', borderRadius: 10,
+                      cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, padding: '0px 6px', lineHeight: '18px',
+                    }}><TagIcon size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /></button>
+                    {popover === c.id && (
+                      <TagPopover resourceType="backup" resourceId={c.id} allTags={allTags} assigned={tagMap[c.id] || []} onClose={() => { setPopover(null); loadTags() }} />
+                    )}
+                  </div>
+                </td>
                 <td className="px-4 py-3 font-mono" style={{ color: 'var(--text-muted)', maxWidth: '12rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.source_path}</td>
                 <td className="px-4 py-3">
                   <div style={{ color: c.last_status === 'success' ? 'var(--accent-success)' : c.last_status === 'failed' ? 'var(--accent-error)' : 'var(--text-muted)' }}>

@@ -5,6 +5,13 @@ import { api, ApiClientError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import Button from '@/components/ui/Button'
 
+interface PublicSettings {
+  instance_name: string
+  login_tagline: string
+  login_bg_url: string
+  instance_logo: string
+}
+
 export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -12,6 +19,7 @@ export default function LoginPage() {
   const [step, setStep] = useState<'credentials' | 'totp'>('credentials')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [pub, setPub] = useState<PublicSettings | null>(null)
   const setUser = useAuthStore((s) => s.setUser)
   const navigate = useNavigate()
   const totpRef = useRef<HTMLInputElement>(null)
@@ -19,6 +27,13 @@ export default function LoginPage() {
   useEffect(() => {
     if (step === 'totp') totpRef.current?.focus()
   }, [step])
+
+  useEffect(() => {
+    fetch('/api/settings/public')
+      .then(r => r.ok ? r.json() : null)
+      .then((d: PublicSettings | null) => { if (d) setPub(d) })
+      .catch(() => {})
+  }, [])
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -54,13 +69,25 @@ export default function LoginPage() {
     color: 'var(--text-primary)',
   }
 
+  const bgStyle = pub?.login_bg_url
+    ? { backgroundImage: `url(${pub.login_bg_url})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+    : {}
+
   return (
-    <div className="h-full flex items-center justify-center" style={{ background: 'var(--bg-root)' }}>
+    <div className="h-full flex items-center justify-center" style={{ background: 'var(--bg-root)', ...bgStyle }}>
       <div className="card w-full max-w-sm">
         <div className="flex items-center gap-2 mb-6">
-          <Shield size={22} style={{ color: 'var(--accent-primary)' }} />
-          <span className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>VoidTower</span>
+          {pub?.instance_logo
+            ? <img src={pub.instance_logo} alt="logo" style={{ width: 28, height: 28, objectFit: 'contain', flexShrink: 0 }} />
+            : <Shield size={22} style={{ color: 'var(--accent-primary)' }} />
+          }
+          <span className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
+            {pub?.instance_name ?? 'VoidTower'}
+          </span>
         </div>
+        {pub?.login_tagline && (
+          <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>{pub.login_tagline}</p>
+        )}
 
         <form onSubmit={submit} className="space-y-4">
           {step === 'credentials' ? (

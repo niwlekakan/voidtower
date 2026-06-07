@@ -15,6 +15,7 @@ pub struct AuditEntry {
     pub ip_address: Option<String>,
     pub request_id: Option<String>,
     pub details: Option<String>,
+    pub source: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -53,6 +54,45 @@ pub async fn log(
     }
 }
 
+/// Like `log` but also records an optional source tag (e.g. `"odysseus"`).
+#[allow(clippy::too_many_arguments)]
+pub async fn log_sourced(
+    pool: &SqlitePool,
+    user_id: Option<&str>,
+    actor_type: &str,
+    action: &str,
+    resource_type: Option<&str>,
+    resource_id: Option<&str>,
+    outcome: &str,
+    ip: Option<&str>,
+    details: Option<&str>,
+    source: Option<&str>,
+) {
+    let id = Uuid::new_v4().to_string();
+    let timestamp = unix_now();
+    if let Err(e) = sqlx::query(
+        "INSERT INTO audit_log
+         (id, timestamp, user_id, actor_type, action, resource_type, resource_id, outcome, ip_address, details, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(timestamp)
+    .bind(user_id)
+    .bind(actor_type)
+    .bind(action)
+    .bind(resource_type)
+    .bind(resource_id)
+    .bind(outcome)
+    .bind(ip)
+    .bind(details)
+    .bind(source)
+    .execute(pool)
+    .await
+    {
+        tracing::error!("Failed to write audit log: {e}");
+    }
+}
+
 pub async fn list(
     pool: &SqlitePool,
     limit: i64,
@@ -60,7 +100,7 @@ pub async fn list(
 ) -> anyhow::Result<Vec<AuditEntry>> {
     let entries = sqlx::query_as::<_, AuditEntry>(
         "SELECT id, timestamp, user_id, actor_type, action, resource_type, resource_id,
-                outcome, ip_address, request_id, details
+                outcome, ip_address, request_id, details, source
          FROM audit_log ORDER BY timestamp DESC LIMIT ? OFFSET ?",
     )
     .bind(limit)

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ShieldCheck, ShieldOff, Plus, Trash2, RefreshCw, X, AlertTriangle } from 'lucide-react'
 import { notify } from '@/store/notifications'
+import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...init?.headers } })
@@ -17,25 +18,40 @@ const ACTION_COLOR: Record<string, string> = {
 }
 
 function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [action, setAction] = useState('allow')
-  const [port, setPort]     = useState('')
-  const [proto, setProto]   = useState('tcp')
-  const [from, setFrom]     = useState('')
-  const [dir, setDir]       = useState('in')
-  const [busy, setBusy]     = useState(false)
+  const [action, setAction]   = useState('allow')
+  const [port, setPort]       = useState('')
+  const [proto, setProto]     = useState('tcp')
+  const [from, setFrom]       = useState('')
+  const [dir, setDir]         = useState('in')
+  const [busy, setBusy]       = useState(false)
+  const [plan, setPlan]       = useState<ChangePlan | null>(null)
+  const [executing, setExec]  = useState(false)
 
-  const submit = async () => {
+  const body = () => ({
+    action, port: port || undefined, proto: proto !== 'any' ? proto : undefined,
+    from: from || undefined, direction: dir,
+  })
+
+  const preview = async () => {
     if (!port && !from) return
     setBusy(true)
     try {
-      await apiFetch('/api/firewall/rules', { method: 'POST', body: JSON.stringify({
-        action, port: port || undefined, proto: proto !== 'any' ? proto : undefined,
-        from: from || undefined, direction: dir,
-      })})
+      const res = await apiFetch<{ plan: ChangePlan }>('/api/firewall/rules', {
+        method: 'POST', body: JSON.stringify({ ...body(), dry_run: true }),
+      })
+      setPlan(res.plan)
+    } catch (e: any) { notify.error(e.message ?? 'Failed to plan rule') }
+    finally { setBusy(false) }
+  }
+
+  const execute = async () => {
+    setExec(true)
+    try {
+      await apiFetch('/api/firewall/rules', { method: 'POST', body: JSON.stringify(body()) })
       notify.success('Rule added')
       onSaved(); onClose()
     } catch (e: any) { notify.error(e.message ?? 'Failed to add rule') }
-    finally { setBusy(false) }
+    finally { setExec(false) }
   }
 
   return (
@@ -64,11 +80,19 @@ function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
         </div>
         <div className="flex gap-2 justify-end">
           <button onClick={onClose} className="px-3 py-1.5 rounded text-sm" style={{ background: 'var(--bg-surface)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>Cancel</button>
-          <button onClick={submit} disabled={busy || (!port && !from)} className="px-3 py-1.5 rounded text-sm disabled:opacity-50" style={{ background: 'var(--accent-primary)', color: '#fff' }}>
-            {busy ? 'Adding…' : 'Add Rule'}
+          <button onClick={preview} disabled={busy || (!port && !from)} className="px-3 py-1.5 rounded text-sm disabled:opacity-50" style={{ background: 'var(--accent-primary)', color: '#fff' }}>
+            {busy ? 'Planning…' : 'Review & Add'}
           </button>
         </div>
       </div>
+      {plan && (
+        <ChangePlanModal
+          plan={plan}
+          confirming={executing}
+          onConfirm={execute}
+          onCancel={() => setPlan(null)}
+        />
+      )}
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw, Search } from 'lucide-react'
+import { Download, RefreshCw, Search } from 'lucide-react'
 import { api } from '@/api/client'
 import type { TimelineEvent } from '@/api/types'
 
@@ -49,6 +49,7 @@ function EventRow({ e }: { e: TimelineEvent }) {
           <div className="flex items-baseline gap-2 flex-wrap">
             <span className="text-xs font-semibold uppercase tracking-wider" style={{ color }}>{e.category}</span>
             {failed && <span className="text-xs px-1 rounded" style={{ background: 'color-mix(in srgb, var(--accent-error) 15%, transparent)', color: 'var(--accent-error)' }}>failed</span>}
+            {e.source === 'odysseus' && <span className="text-xs px-1 rounded" style={{ background: 'color-mix(in srgb, #a78bfa 15%, transparent)', color: '#a78bfa' }}>odysseus</span>}
             <span className="flex-1 text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{e.action.replace(/_/g, ' ')}</span>
             <span className="text-xs tabular-nums" style={{ color: 'var(--text-muted)' }}>{relTime(e.timestamp)}</span>
           </div>
@@ -68,6 +69,37 @@ function EventRow({ e }: { e: TimelineEvent }) {
       </div>
     </div>
   )
+}
+
+function exportEvents(events: TimelineEvent[], format: 'json' | 'csv') {
+  let content: string
+  let mime: string
+  let ext: string
+
+  if (format === 'json') {
+    content = JSON.stringify(events, null, 2)
+    mime = 'application/json'
+    ext = 'json'
+  } else {
+    const cols = ['id', 'timestamp', 'category', 'action', 'actor', 'actor_type', 'resource_type', 'resource_id', 'outcome', 'details', 'ip_address', 'source'] as const
+    const escape = (v: unknown) => {
+      if (v == null) return ''
+      const s = String(v)
+      return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const rows = [cols.join(','), ...events.map(e => cols.map(c => escape(e[c])).join(','))]
+    content = rows.join('\n')
+    mime = 'text/csv'
+    ext = 'csv'
+  }
+
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `timeline-${new Date().toISOString().slice(0, 10)}.${ext}`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 export default function TimelinePage() {
@@ -112,9 +144,23 @@ export default function TimelinePage() {
             {category !== 'all' ? ` in ${category}` : ''}
           </p>
         </div>
-        <button onClick={() => load(0)} disabled={loading} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm hover:opacity-80 disabled:opacity-50" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center rounded overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
+            <button onClick={() => exportEvents(events, 'json')} disabled={events.length === 0} title="Export as JSON"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm hover:opacity-80 disabled:opacity-40"
+              style={{ background: 'var(--bg-panel)', color: 'var(--text-secondary)', borderRight: '1px solid var(--border-subtle)' }}>
+              <Download size={13} /> JSON
+            </button>
+            <button onClick={() => exportEvents(events, 'csv')} disabled={events.length === 0} title="Export as CSV"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm hover:opacity-80 disabled:opacity-40"
+              style={{ background: 'var(--bg-panel)', color: 'var(--text-secondary)' }}>
+              CSV
+            </button>
+          </div>
+          <button onClick={() => load(0)} disabled={loading} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm hover:opacity-80 disabled:opacity-50" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Search */}

@@ -66,6 +66,7 @@ pub mod totp;
 pub mod mods;
 pub mod webhooks;
 pub mod mcp;
+pub mod disaster;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -169,7 +170,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxy/nginx/logs", get(proxy::nginx_logs))
         .route("/api/proxy/nginx/status", get(proxy::nginx_status))
         .route("/api/proxy/ai-auto", post(proxy::ai_auto_proxy))
-        .route("/api/proxy/:id", delete(proxy::delete_proxy))
+        .route("/api/proxy/:id", delete(proxy::delete_proxy).put(proxy::update_proxy))
         .route("/api/proxy/:id/toggle", post(proxy::toggle))
         // Security
         .route("/api/security/sessions", get(security::list_sessions))
@@ -206,12 +207,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/secrets", get(secrets::list).post(secrets::create))
         .route("/api/secrets/:id", delete(secrets::delete).patch(secrets::update))
         .route("/api/secrets/:id/reveal", get(secrets::reveal))
+        .route("/api/secrets/:id/rotate", post(secrets::rotate))
         // Network neighbors (LAN scan)
         .route("/api/network/neighbors", get(network::neighbors))
         // WireGuard
         .route("/api/wireguard", get(wireguard::list))
         .route("/api/wireguard/peers", post(wireguard::add_peer))
         .route("/api/wireguard/peers/:id", delete(wireguard::delete_peer))
+        .route("/api/settings/public",  get(settings::get_public))
         .route("/api/settings/ai-url", get(settings::get_ai_url).post(settings::set_ai_url))
         .route("/api/settings/general", get(settings::get_general).post(settings::set_general))
         .route("/api/settings/notifications", get(settings::get_notifications).post(settings::set_notifications))
@@ -278,6 +281,11 @@ pub fn router(state: AppState) -> Router {
         // MCP (Model Context Protocol) server
         .route("/api/mcp",         get(mcp::sse_handler))
         .route("/api/mcp/message", post(mcp::message_handler))
+        // Disaster Recovery
+        .route("/api/disaster/export-config",          post(disaster::export_config))
+        .route("/api/disaster/import-config",          post(disaster::import_config))
+        .route("/api/disaster/emergency-reset-admin",  post(disaster::emergency_reset_admin))
+        .route("/api/disaster/emergency-disable",      post(disaster::emergency_disable))
         // Notification webhooks
         .route("/api/webhooks",           get(webhooks::list).post(webhooks::create))
         .route("/api/webhooks/:id",       patch(webhooks::update).delete(webhooks::delete))

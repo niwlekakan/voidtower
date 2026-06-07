@@ -183,6 +183,64 @@ fn remove_nginx_conf(domain: &str) {
     let _ = std::fs::remove_file(conf_path(domain));
 }
 
+fn nginx_conf_content(domain: &str, upstream: &str, ssl: bool, allow_embed: bool) -> String {
+    let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
+    if ssl {
+        format!(
+            r#"# Managed by VoidTower — do not edit manually
+server {{
+    listen 80;
+    server_name {domain};
+    return 301 https://$server_name$request_uri;
+}}
+
+server {{
+    listen 443 ssl http2;
+    server_name {domain};
+
+    ssl_certificate     /etc/letsencrypt/live/{domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    location / {{
+        proxy_pass {upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;{embed}
+    }}
+}}
+"#
+        )
+    } else {
+        format!(
+            r#"# Managed by VoidTower — do not edit manually
+server {{
+    listen 80;
+    server_name {domain};
+
+    location / {{
+        proxy_pass {upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;{embed}
+    }}
+}}
+"#
+        )
+    }
+}
+
 fn is_root() -> bool {
     std::process::Command::new("id")
         .arg("-u")
@@ -290,6 +348,8 @@ pub struct CreateRequest {
     pub ssl: bool,
     #[serde(default)]
     pub allow_embed: bool,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn which_path(cmd: &str) -> Option<String> {
@@ -641,6 +701,29 @@ pub async fn create(
     validate_domain(&req.domain)?;
     validate_upstream(&req.upstream)?;
 
+    if req.dry_run {
+        let conf_file = conf_path(&req.domain);
+        let exists = conf_file.exists();
+        let content = nginx_conf_content(&req.domain, &req.upstream, req.ssl, req.allow_embed);
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "plan": {
+                "title": "Create Nginx Proxy",
+                "risk": "low",
+                "changes": [
+                    { "label": "Domain", "value": req.domain },
+                    { "label": "Upstream", "value": req.upstream },
+                    { "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } },
+                    { "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } },
+                    { "label": "Config file", "value": conf_file.display().to_string() },
+                    { "label": "Config file action", "value": if exists { "overwrite existing" } else { "create new" } },
+                    { "label": "Rollback", "value": "Delete conf file and reload nginx" },
+                ],
+                "preview": content,
+            }
+        })));
+    }
+
     let id = Uuid::new_v4().to_string();
     let now = unix_now();
 
@@ -709,6 +792,92 @@ pub async fn delete_proxy(
 
     Ok(Json(serde_json::json!({ "ok": true, "nginx": reload_msg })))
 }
+
+pub async fn update_proxy(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(proxy_id): Path<String>,
+    Json(req): Json<CreateRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+
+    validate_domain(&req.domain)?;
+    validate_upstream(&req.upstream)?;
+
+    // Fetch current row to get the old domain and enabled state
+    let row: Option<(String, bool)> =
+        sqlx::query_as("SELECT domain, enabled FROM proxy_configs WHERE id = ?")
+            .bind(&proxy_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+    let (old_domain, enabled) = row.ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
+
+    if req.dry_run {
+        let conf_file = conf_path(&req.domain);
+        let content = nginx_conf_content(&req.domain, &req.upstream, req.ssl, req.allow_embed);
+        let domain_changed = old_domain != req.domain;
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "plan": {
+                "title": "Update Nginx Proxy",
+                "risk": "low",
+                "changes": [
+                    { "label": "Domain", "value": format!("{} → {}", old_domain, req.domain) },
+                    { "label": "Upstream", "value": req.upstream },
+                    { "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } },
+                    { "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } },
+                    { "label": "Config file", "value": conf_file.display().to_string() },
+                    { "label": "Config file action", "value": if domain_changed { "rename old conf + write new" } else { "overwrite in place" } },
+                    { "label": "Nginx reload", "value": if enabled { "yes" } else { "no (proxy is disabled)" } },
+                    { "label": "Rollback", "value": "Revert domain/upstream fields and re-save" },
+                ],
+                "preview": if enabled { Some(content) } else { None::<String> },
+            }
+        })));
+    }
+
+    sqlx::query(
+        "UPDATE proxy_configs SET domain = ?, upstream = ?, ssl = ?, allow_embed = ? WHERE id = ?",
+    )
+    .bind(&req.domain)
+    .bind(&req.upstream)
+    .bind(req.ssl)
+    .bind(req.allow_embed)
+    .bind(&proxy_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            AppError::BadRequest(format!("Domain '{}' already has a proxy rule", req.domain))
+        } else {
+            AppError::Internal(e.into())
+        }
+    })?;
+
+    // Remove old conf when domain changed (regardless of enabled state)
+    if old_domain != req.domain {
+        remove_nginx_conf(&old_domain);
+    }
+
+    // Only write/reload nginx if the proxy is currently enabled
+    let reload_msg = if enabled {
+        write_nginx_conf(&req.domain, &req.upstream, req.ssl, req.allow_embed)?;
+        reload_nginx().unwrap_or_else(|e| format!("warning: {e}"))
+    } else {
+        "proxy is disabled — nginx not updated".into()
+    };
+
+    audit::log(
+        &state.db, Some(&user.id), "human", "proxy.update",
+        Some("proxy"), Some(&proxy_id), "success", None,
+        Some(&format!("domain={},upstream={}", req.domain, req.upstream)),
+    ).await;
+
+    Ok(Json(serde_json::json!({ "ok": true, "nginx": reload_msg })))
+}
+
 
 // ── AI auto-proxy ─────────────────────────────────────────────────────────────
 

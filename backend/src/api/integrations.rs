@@ -128,6 +128,7 @@ pub struct TokenRow {
     pub last_used_at: Option<i64>,
     pub expires_at: Option<i64>,
     pub created_at: i64,
+    pub secret_ids: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +136,8 @@ pub struct CreateTokenReq {
     pub name: String,
     pub scopes: Vec<String>,
     pub expires_days: Option<i64>,
+    /// When set, this token can only access the listed secret IDs. None = unrestricted.
+    pub secret_ids: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -144,6 +147,7 @@ pub struct CreateTokenResp {
     pub name: String,
     pub scopes: Vec<String>,
     pub created_at: i64,
+    pub secret_ids: Option<Vec<String>>,
 }
 
 pub async fn list_tokens(
@@ -160,10 +164,11 @@ pub async fn list_tokens(
         last_used_at: Option<i64>,
         expires_at: Option<i64>,
         created_at: i64,
+        secret_ids: Option<String>,
     }
 
     let rows = sqlx::query_as::<_, Row>(
-        "SELECT id, name, scopes, last_used_at, expires_at, created_at
+        "SELECT id, name, scopes, last_used_at, expires_at, created_at, secret_ids
          FROM api_tokens ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
@@ -179,6 +184,7 @@ pub async fn list_tokens(
             last_used_at: r.last_used_at,
             expires_at: r.expires_at,
             created_at: r.created_at,
+            secret_ids: r.secret_ids.as_deref().and_then(|s| serde_json::from_str(s).ok()),
         })
         .collect();
 
@@ -212,10 +218,11 @@ pub async fn create_token(
     let now = unix_now();
     let expires_at = req.expires_days.map(|d| now + d * 86400);
     let scopes_json = serde_json::to_string(&req.scopes).unwrap_or_default();
+    let secret_ids_json = req.secret_ids.as_ref().map(|ids| serde_json::to_string(ids).unwrap_or_default());
 
     sqlx::query(
-        "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at, secret_ids)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&user.id)
@@ -224,10 +231,12 @@ pub async fn create_token(
     .bind(&scopes_json)
     .bind(expires_at)
     .bind(now)
+    .bind(&secret_ids_json)
     .execute(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
+    let secret_ids_detail = secret_ids_json.as_deref().map(|s| format!(", secret_ids={s}")).unwrap_or_default();
     audit::log(
         &state.db,
         Some(&user.id),
@@ -237,7 +246,7 @@ pub async fn create_token(
         Some(&id),
         "success",
         None,
-        Some(&format!("name={}, scopes={}", req.name, scopes_json)),
+        Some(&format!("name={}, scopes={}{}", req.name, scopes_json, secret_ids_detail)),
     )
     .await;
 
@@ -247,6 +256,7 @@ pub async fn create_token(
         name: req.name,
         scopes: req.scopes,
         created_at: now,
+        secret_ids: req.secret_ids,
     }))
 }
 
@@ -385,6 +395,46 @@ pub async fn save_config(
         "ok": true,
         "webhook_secret": new_webhook_secret,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// Item #7C: Odysseus context redaction
+// ---------------------------------------------------------------------------
+
+/// Strip any secret-related fields before serialising a context payload
+/// sent to Odysseus (manifest, SSE events, webhook responses).
+/// This ensures secret names/IDs never leak into Odysseus-visible responses.
+#[allow(dead_code)]
+pub fn redact_secrets(mut value: serde_json::Value) -> serde_json::Value {
+    redact_value(&mut value);
+    value
+}
+
+fn redact_value(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            // Remove any key that looks like it refers to secrets
+            let secret_keys: Vec<String> = map.keys()
+                .filter(|k| {
+                    let k = k.to_lowercase();
+                    k.contains("secret") || k == "secret_ids"
+                })
+                .cloned()
+                .collect();
+            for k in secret_keys {
+                map.remove(&k);
+            }
+            for v in map.values_mut() {
+                redact_value(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                redact_value(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +608,10 @@ pub async fn event_stream(
                     .fetch_all(&db)
                     .await {
                         for (id, action, resource_type, outcome, ts) in rows {
+                            // Item #7C: never leak secret-related audit events to Odysseus
+                            if resource_type.as_deref() == Some("secret") {
+                                continue;
+                            }
                             let ev = serde_json::json!({
                                 "type": "audit", "id": id, "action": action,
                                 "resource_type": resource_type, "outcome": outcome, "timestamp": ts,
@@ -633,7 +687,7 @@ pub async fn webhook(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-        audit::log(
+        audit::log_sourced(
             &state.db,
             None,
             "agent",
@@ -643,6 +697,7 @@ pub async fn webhook(
             "success",
             None,
             Some(&format!("dry_run={dry_run}")),
+            Some("odysseus"),
         )
         .await;
 

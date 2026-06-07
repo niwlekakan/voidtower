@@ -34,14 +34,15 @@ export default function AppEmbedOverlay() {
     setLoading(true)
     setShowBadge(false)
 
-    // Compute the fallback URL from def.links.web_ui or '/'
-    const path = def?.links?.web_ui ?? '/'
-    const fallbackBase = `http://${window.location.hostname}:${app.primary_port}`
+    // Compute the fallback URL from def.links.web_ui or web_path
+    const path = def?.links?.web_ui ?? def?.web_path ?? '/'
+    const uiPort = def?.web_port ?? app.primary_port
+    const fallbackBase = `http://${window.location.hostname}:${uiPort}`
     const fallbackUrl = path.startsWith('http://') || path.startsWith('https://')
       ? path
       : `${fallbackBase}${path.startsWith('/') ? path : `/${path}`}`
 
-    api.apps.openUi(app.project_name, app.primary_port)
+    api.apps.openUi(app.project_name, uiPort)
       .then(res => {
         if (seq !== resolveRef.current) return
         // Append the path hint (if any) to the returned URL

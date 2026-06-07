@@ -3,6 +3,7 @@ name: AdGuard Home
 description: Network-wide DNS ad blocker with per-device rules and query logging
 category: networking
 version_hint: "latest"
+web_port: 3000
 compose:
   services:
     adguardhome:

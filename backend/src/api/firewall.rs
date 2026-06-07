@@ -153,6 +153,8 @@ pub struct AddRuleRequest {
     pub from: Option<String>,  // IP or "Anywhere"
     pub direction: Option<String>, // "in" | "out"
     pub comment: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 pub async fn add_rule(State(state): State<AppState>, jar: CookieJar, Json(req): Json<AddRuleRequest>) -> Result<Json<serde_json::Value>> {
@@ -212,6 +214,35 @@ pub async fn add_rule(State(state): State<AppState>, jar: CookieJar, Json(req): 
             args.push("comment".into());
             args.push(c.to_string());
         }
+    }
+
+    if req.dry_run {
+        let cmd = format!("ufw {}", args.join(" "));
+        let from_desc = req.from.as_deref().unwrap_or("Anywhere");
+        let port_desc = req.port.as_deref().unwrap_or("any port");
+        let proto_desc = req.proto.as_deref().unwrap_or("any");
+        let effect = format!(
+            "{} {} traffic on {} {} from {}",
+            action.to_uppercase(),
+            req.direction.as_deref().unwrap_or("in"),
+            proto_desc,
+            port_desc,
+            from_desc,
+        );
+        let rollback = format!("ufw delete {} {}", action, args.last().cloned().unwrap_or_default());
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "plan": {
+                "title": "Add Firewall Rule",
+                "risk": if action == "allow" { "low" } else { "medium" },
+                "changes": [
+                    { "label": "Command", "value": cmd },
+                    { "label": "Effect", "value": effect },
+                    { "label": "Rollback", "value": rollback },
+                ],
+                "preview": null,
+            }
+        })));
     }
 
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();

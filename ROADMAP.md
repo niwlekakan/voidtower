@@ -73,6 +73,164 @@ Items from `plan.md` Phase 4 that are absent or only skeleton-present in the cod
 
 ---
 
+## Phase 5 — AI Living Desktop
+
+These items transform VoidTower from an admin panel into a true local-first AI operating system. They build on the existing Void Mode shell and Odysseus voidlink integration.
+
+### Bug Fixes (blocking polish)
+
+- [ ] **Fix "Open WebUI in VoidTower" button** — App Vault deploy creates a proxy entry but routing is wrong for apps with `web_path` (e.g. Pi-hole `/admin`) or non-standard `web_port`. Fix: auto-creation must pull `web_port`/`web_path` from YAML catalog and strip iframe-blocking headers (X-Frame-Options, CSP frame-ancestors) on the generated proxy rule.
+- [ ] **Fix theme randomizer** — randomizer skips some of the 14 animation parameters and not all color tokens are cycled; fix to cover every CSS variable and animation param with sensible bounds clamping per parameter type.
+- [ ] **Fix proxy edit/delete** — proxy rules are effectively create-only in current UI; add inline edit form and delete with confirmation.
+
+### Full UI Customization
+
+- [ ] **Instance branding** — Settings → Appearance → Branding: instance name (replaces "VoidTower" wordmark), logo upload (PNG/SVG, becomes favicon and sidebar icon), login page background image, login tagline, custom CSS injection field. All client-side from backend-stored settings.
+- [ ] **Navigation editor** — Settings → Navigation: toggle individual nav items on/off, rename them, pick a custom Lucide icon, reorder via drag-and-drop, create or rename nav groups. Changes are per-user and stored in their profile. Owner can set instance-wide defaults.
+- [ ] **Menu position & layout** — choose navigation placement: left sidebar (Tower Mode default), right sidebar, top horizontal bar, bottom bar, floating pill (Void Mode dock default), or pop-out drawer (hidden, slides in on hover or shortcut). Open/close animations are configurable (slide, fade, spring). Auto-hide-on-scroll toggle.
+- [ ] **Custom tabs** — Settings → My Tabs: add personal nav entries with name, icon, and a target: any VoidTower page, an embed URL (iframe), a local file path opened in the file viewer, or a WebSocket stream. Useful for personal Grafana dashboards, Netdata, Homer, Jupyter notebooks, documentation, internal tools.
+
+### User Management & Multi-tenancy
+
+- [ ] **Full user management page** — Settings → Users: beyond current RBAC, add per-user profile (avatar, display name, email), per-user nav layout, per-user default workspace and theme, per-user AI endpoint (URL, API key, model, system prompt). Includes a household member onboarding wizard that creates an account and assigns a starter layout preset.
+- [ ] **Per-user AI endpoint** — each user configures their own Odysseus URL, API key, and model. Owner sets a shared fallback. Supports family members with different AI preferences or spending limits.
+- [ ] **User groups** — group users (e.g. "Family", "Admins", "Guests"), assign group-level resource permissions, view per-group activity.
+- [ ] **Guest / read-only access** — shareable URL granting limited time-limited read access (view metrics, alerts status) without a login; configurable scope (pages visible) and expiry.
+
+### AI Agent Visualization
+
+- [ ] **Live agent canvas** — an animated overlay layer between the AnimatedBackground and the panel canvas that renders connected AI agents and running automations as small animated characters. Characters move between resource "nodes" based on the SSE event stream. Off by default; toggle in Settings → Appearance → Agent Visualization.
+- [ ] **Agent speech bubbles** — small floating labels near characters showing their current action ("analyzing logs", "restarting container"). Driven by SSE events, fade in and out automatically, max ~40 chars.
+- [ ] **Agent inspector** — click an agent character to open a small popover: agent name, current task, recent actions, resource being acted on, "pause this agent" toggle.
+- [ ] **Configurable agents** — Settings → Agent Visualization: choose which agents/automations appear, their avatar style (dot, sprite, emoji), and whether path trails are shown.
+
+### More Background Animations
+
+- [ ] **New canvas presets**: Particles (drifting dots with connecting lines), Matrix Rain (falling green characters), Starfield (parallax depth field), Neural Network (pulsing nodes and weighted edges), Ocean (dark slow waves), Nebula (soft slow-moving color clouds).
+- [ ] **Metric-reactive mode** — optional: animation speed and intensity respond to live system metrics (CPU load → pulse speed, network traffic → particle density). Driven by the same WebSocket metric stream as the status bar.
+- [ ] **Agent-reactive mode** — when agent visualization is active, the background canvas shows subtle ripples or trails emanating from positions where agents are active.
+
+### Proxy Management — Full Nginx Capabilities
+
+- [ ] **Proxy edit form** — full edit UI for existing rules: upstream URL, domain, SSL, custom request/response headers, frame policy, rate limit, auth headers, cache settings.
+- [ ] **Proxy presets** — one-click configuration presets: "Strip iframe blockers" (remove X-Frame-Options, loosen CSP), "Add basic auth", "Rate limit 10 req/min", "Force HTTPS redirect", "WebSocket passthrough", "Gzip + cache static assets".
+- [ ] **AI proxy recommendations** — when a proxy is created for an App Vault app, VoidTower checks the YAML catalog for known embed requirements and auto-suggests the right preset (Grafana needs CSP relaxed, Portainer needs WebSocket passthrough, etc.).
+- [ ] **Proxy health dashboard** — list all rules with upstream reachability (green/amber/red), last check timestamp, and response time. Manual "test" button per entry.
+- [ ] **Let's Encrypt integration** — SSL certificate request and auto-renewal via Certbot/acme.sh as a toggle in the proxy edit form; renewal status shown in the proxy list.
+- [ ] **Wildcard subdomain routing** — configure `*.home.domain.tld` to auto-route to apps by name from a single wildcard proxy rule.
+
+### Search Expansion
+
+- [ ] **Full-text search** — Ctrl+K searches across: containers (name/image), services (unit name), timeline events (description), secrets (name only, never value), automation jobs, file names in Files, tags, and notes. Results grouped by type with icons.
+- [ ] **Search filters** — filter chips in command bar results: resource type, date range, status, tag. Fully keyboard-navigable.
+- [ ] **Saved search shortcuts** — save a query as a named shortcut; invoke with `!name` in command bar.
+- [ ] **Inline Odysseus search** — `/query` prefix in command bar sends query to Odysseus and shows the AI response as a result card inline before opening the Odysseus panel.
+
+### AI Creative Studio (Odysseus Voidlink Deep Integration)
+
+Full integration of the Odysseus voidlink automation and generation capabilities into the VoidTower UI. VoidTower becomes a local hub for AI-driven content creation, not just infrastructure management.
+
+- [ ] **AI Studio page** — top-level page combining all local AI generation capabilities: image, video, TTS, STT, 3D. Shows available models, their loaded/unloaded state, VRAM usage, and queue depth. Accessible as a Void Mode panel.
+- [ ] **Image generation panel** — prompt → ComfyUI or Stable Diffusion WebUI via API; built-in image viewer with generation metadata; prompt history; workflow picker (txt2img, img2img, inpainting, upscale); gallery of recent outputs.
+- [ ] **Video generation panel** — text/image prompt → local video diffusion (AnimateDiff, SVD, CogVideoX via ComfyUI); built-in video player; generation queue; preview frames while generating.
+- [ ] **TTS panel** — local TTS via Kokoro, Coqui, or Piper; voice picker; built-in audio player; save to Files; voice cloning workflow (upload a 10s clip → fine-tune).
+- [ ] **STT panel** — local Whisper transcription; upload audio/video or record from browser microphone; output plain text or SRT; send to Odysseus for summarization.
+- [ ] **Content pipeline editor** — visual node graph for AI content pipelines: e.g. "text prompt → image → animate → TTS narration → save to Files". Nodes represent local AI tools. Built on the existing Automation backend with new AI node types.
+- [ ] **3D generation panel** — local 3D model generation (TripoSR, Zero123++, Shap-E); built-in Three.js viewer (orbit, zoom, wireframe, export GLB/OBJ); generate from image or text prompt.
+- [ ] **MCP tool panel** — inspect and invoke any MCP tool registered in Odysseus's tool manifest directly from VoidTower. Input form auto-generated from tool schema. Useful for testing and debugging without a terminal.
+- [ ] **Local agent terminal panel** — Void Mode panel that runs a local AI coding agent (Claude Code, Aider, or any CLI agent) inside a PTY with context buttons: "Add this container's logs", "Add this file from Files". Wires into existing Terminal + Files infrastructure.
+- [ ] **Inbuilt media viewers** — first-class Void Mode panel types for: image gallery, video player, audio player, PDF reader, 3D model viewer, notebook viewer (`.ipynb`). Any file in Files or AI-generated output opens in the correct viewer panel.
+- [ ] **Automation library** — pre-built automation templates: "Daily blog post draft", "Auto-caption video", "Generate product images from description", "Transcribe and summarize meeting recording". One-click install from a curated library, customizable via Odysseus.
+
+---
+
+### Void Mode — /ask Chat Popup (Odysseus Quick Chat)
+
+Replace the current `/ask` UX (which opens the full Odysseus iframe panel) with a lightweight inline chat overlay that streams responses without leaving the current context. The backend acts as a **full transparent reverse proxy** to Odysseus — not a thin wrapper — so every Odysseus feature (tools, memory, RAG, MCP, multi-turn) is available through the popup and through VoidTower's auth wall.
+
+**Backend: Wildcard Odysseus Reverse Proxy**
+
+- [ ] **`/api/odysseus/*` wildcard reverse proxy** — A single Axum wildcard route forwards all methods (GET/POST/DELETE/etc.) verbatim to the configured Odysseus URL (`http://localhost:7000/{rest}`). Request body, headers, and query params forwarded as-is. Response body streamed back (chunked transfer / SSE passthrough). CORS and auth handled by VoidTower; Odysseus URL and API key never reach the browser.
+- [ ] **System context injection** — For POST requests to `/api/odysseus/v1/chat/completions`, the backend intercepts the JSON body, prepends a VoidTower context message (instance state, running resource counts, focused panel) to the `messages` array, then forwards. All other routes pass through unmodified.
+- [ ] **Auth gate** — Wildcard route requires a valid VoidTower session cookie or API token. Unauthorized requests return 401 before touching Odysseus.
+- [ ] **Graceful degradation** — If Odysseus is unreachable, returns `{ error: "odysseus_unavailable" }` with 502. Frontend shows a "Odysseus offline" state rather than hanging.
+
+**Frontend: Chat Popup**
+
+- [ ] **Animated chat popup** — `/ask query` or dedicated keyboard shortcut → compact floating panel (400×320px) spring-animates up from the dock. Appears above all panels. Dismiss with Escape or click-outside.
+- [ ] **Full Odysseus client** — The popup sends requests to `/api/odysseus/v1/chat/completions` with streaming. Because it's a transparent proxy, tool calls, memory reads, MCP tool invocations, and RAG queries all work exactly as they do in the full Odysseus UI.
+- [ ] **Conversational thread** — Scrollable message history maintained per Void Mode session. Cleared on page reload or manual clear button.
+- [ ] **Context injection** — Focused panel title and component key are included in the system message. Paperclip button pins current panel's live data as additional context.
+- [ ] **Inline rendering** — Responses rendered with lightweight markdown: bold, inline code, fenced code blocks with copy button. Tool call results shown as collapsible blocks.
+- [ ] **"Open in Odysseus panel" button** — Sends the current conversation history to the full Odysseus iframe panel via postMessage.
+- [ ] **Slash commands in command bar** — `/ask <query>` pre-fills the popup. `/clear` wipes history. `/copy` copies last response.
+
+---
+
+### Odysseus Self-Knowledge — Codebase Context at Launch
+
+When Odysseus loads in VoidTower, inject a structured knowledge bundle so the AI knows exactly how VoidTower and Odysseus-Voidlink are built. Ask "how do I add a new background animation?" and get a working template, not a guess.
+
+**What gets injected (the Boot Context Bundle):**
+
+- [ ] **Architecture overview** — component tree (Backend Rust → SQLite → API → Frontend React/Vite → Void Mode AIOS), key file paths, module responsibilities
+- [ ] **Extension templates** — ready-to-paste code templates for:
+  - Adding a new canvas background animation (AnimatedBackground canvas preset + params)
+  - Deploying a new MCP tool with Docker (App Vault YAML + `docker-compose.yml` + VoidTower tool manifest entry)
+  - Creating a new API-backed App Vault entry (YAML schema, required fields, env var conventions)
+  - Adding a new native Void Mode panel (NativePanelShell pattern, PANEL_REGISTRY entry, fetch pattern)
+  - Writing a new backend API module (Rust axum router pattern, SQLite migration pattern)
+  - Registering a new Odysseus tool in the manifest (schema, handler, permissions)
+- [ ] **API surface reference** — all `/api/*` routes with method, request body shape, and response shape (generated from the OpenAPI spec or parsed from `client.ts`)
+- [ ] **Current instance state** — live snapshot appended at session start: running services count, active containers, alert count, VoidTower version, enabled capabilities (Docker/libvirt/WireGuard/GPU/etc.)
+- [ ] **MCP tools in scope** — list of all currently registered Odysseus tools with their descriptions, so Odysseus can recommend the right tool for a given task
+
+**Implementation:**
+
+- [ ] **`/api/ai/context` endpoint** — returns the full boot context bundle as structured JSON. Includes static architecture docs + live instance snapshot. Called once when the Odysseus panel opens.
+- [ ] **Context injection via URL param** — VoidTower passes `?vtx=<base64-encoded-context-summary>` when opening the Odysseus iframe; Odysseus reads this on load and prepends to its system prompt.
+- [ ] **Knowledge file storage** — `data/ai-context/` directory: `architecture.md`, `templates/*.md`, `api-reference.md`. Editable from the VoidTower Files panel. Odysseus reads these at startup via the MCP filesystem tool.
+- [ ] **Auto-regenerate on update** — when VoidTower updates (version bump), the context bundle is regenerated and saved; stale context is flagged with a "knowledge outdated" warning in the Odysseus panel header.
+- [ ] **`/api/ai/context/templates`** — list and serve individual template files; allows Odysseus to `GET /api/ai/context/templates/new-animation` and receive the full template text directly via MCP tool call.
+
+---
+
+### Proxmox Full Management Suite
+
+Full Proxmox Virtual Environment management built into VoidTower — on par with PVEDiscord/PegaProx for depth, but native to the AIOS panel system. No separate web UI needed.
+
+**Proxmox Tower Mode pages (sub-navigation under VMs):**
+
+- [ ] **Nodes overview** — all Proxmox cluster nodes with CPU/RAM/storage utilisation bars, uptime, kernel version, subscription status badge. Click a node to filter all other views to that node.
+- [ ] **QEMU VMs** — full table: vmid, name, status (running/stopped/paused), CPU %, RAM %, disk, network I/O, node, tags. Actions per row: start / stop / shutdown (graceful) / reset / suspend / resume / migrate. Bulk select + action. Status live-polls every 5 s.
+- [ ] **LXC Containers** — same table + actions as VMs. Separate page because LXC has different fields (unprivileged flag, rootfs vs disk, ostype). Start / stop / restart / shutdown / migrate.
+- [ ] **Console access** — noVNC WebSocket proxy: VoidTower backend opens a WebSocket tunnel to the Proxmox VNC console and forwards it to the browser. Works for both QEMU (VNC/SPICE) and LXC (xterm.js over serial console). No Proxmox web UI needed.
+- [ ] **VM creation wizard** — multi-step form: choose node, ISO from library, resource allocation (cores, RAM, disk size, storage pool), network bridge, optional cloud-init config. Generates API call to `POST /nodes/{node}/qemu`. LXC version uses templates from Proxmox template library.
+- [ ] **Snapshot management** — list snapshots per VM/LXC with name, description, date, RAM state included. Create snapshot (with description), rollback with confirmation, delete. Dry-run enabled: show what would be reverted before committing.
+- [ ] **Storage browser** — Proxmox storage pools: list content (ISOs, templates, VM disks, snippets), upload ISOs from browser, delete content, view pool usage. Links to VoidTower's existing Storage page for local block devices.
+- [ ] **Backup jobs** — list all vzdump backup jobs (scheduled and manual). View job history, restore a backup to a new VM/LXC with a wizard. Integrates with Proxmox Backup Server (PBS) if configured.
+- [ ] **Cluster / node tasks** — running and recent task list from `/nodes/{node}/tasks`. Shows progress bars for long-running ops (migration, backup, restore). Subscription status and cluster quorum health.
+- [ ] **Network & firewall** — view Proxmox SDN/bridge network config and firewall rules per node and per VM. Edit bridge assignments and VLAN tags. (Full edit is phase 2; read + assignment in phase 1.)
+
+**Void Mode native panel:**
+
+- [ ] **NativeProxmoxPanel** — compact panel with three tabs: VMs (rows with status dot, name, CPU bar, memory bar, start/stop button), LXC (same), Snapshots (last 5 per selected VM). Clicking a row opens a full Tower Mode Proxmox VM page. Console button opens a new panel with the noVNC stream.
+
+**Multi-host:**
+
+- [ ] **Multiple Proxmox hosts** — Settings → Integrations → Proxmox: add multiple PVE hosts (URL, API token, optional TLS fingerprint). Each host shows as a collapsible group in the VMs page. VoidTower's existing Proxmox config struct (`ProxmoxConfig` in `api/types.ts`) extended with array support.
+
+**Proxmox Backup Server (PBS) integration:**
+
+- [ ] **PBS datastore browser** — list datastores, namespaces, and backup snapshots. Restore selected backup to a Proxmox VM. Show backup size, verify status (green tick / red X), and last GC run.
+
+**Safety:**
+
+- All destructive operations (stop, reset, rollback, delete) show the existing `ChangePlanModal` dry-run preview before executing.
+- VM/LXC management actions are gated by VoidTower RBAC: Operator can start/stop; Admin can create/delete/snapshot; Owner can configure clusters.
+
+---
+
 ## Feature Backlog (roughly prioritized)
 
 ### Infrastructure intelligence

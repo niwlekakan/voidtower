@@ -34,7 +34,7 @@ export const DEFAULT_ANIM_CONFIG: AnimConfig = {
   glowIntensity: 12,
 }
 
-function hsl2hex(h: number, s: number, l: number): string {
+export function hsl2hex(h: number, s: number, l: number): string {
   s /= 100; l /= 100
   const k = (n: number) => (n + h / 30) % 12
   const a = s * Math.min(l, 1 - l)

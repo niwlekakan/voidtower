@@ -146,6 +146,8 @@ export interface AppDef {
   links: Record<string, string>
   ai_integration?: { level: 'native' | 'aware'; description: string }
   no_web_ui?: boolean
+  web_port?: number
+  web_path?: string
 }
 
 export interface DeployedApp {
@@ -271,6 +273,7 @@ export interface TimelineEvent {
   outcome: string
   details: string | null
   ip_address: string | null
+  source: string | null
 }
 
 export interface TimelineResponse {
@@ -288,6 +291,7 @@ export interface SecretMeta {
   created_at: number
   updated_at: number
   last_used_at: number | null
+  version: number
 }
 
 export interface SecretsResponse { secrets: SecretMeta[] }
@@ -526,6 +530,7 @@ export interface ApiToken {
   last_used_at: number | null
   expires_at: number | null
   created_at: number
+  secret_ids: string[] | null
 }
 
 export interface OdysseusConfig {

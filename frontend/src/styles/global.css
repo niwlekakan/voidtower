@@ -205,14 +205,14 @@ body, #root {
 .panel {
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius);
+  border-radius: var(--panel-radius, var(--radius));
 }
 
 /* Card */
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius);
+  border-radius: var(--panel-radius, var(--radius));
   padding: 16px;
 }
 
@@ -383,7 +383,7 @@ body[data-glass="frosted"] header {
 
   /* Compact cards on mobile */
   .card, .panel {
-    border-radius: 6px;
+    border-radius: var(--panel-radius, 6px);
   }
 
   /* Tables scroll horizontally */

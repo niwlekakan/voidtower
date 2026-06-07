@@ -8,7 +8,7 @@ import {
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
 import { api } from '@/api/client'
-import { useNavConfigStore, resolvedNavItems } from '@/store/navConfig'
+import { useNavConfigStore, resolvedNavItems, resolvedNavGroups } from '@/store/navConfig'
 
 interface NavItem {
   to: string
@@ -93,6 +93,11 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ]
 
+// Flat lookup: id -> NavItem definition (icon, route, requires)
+const NAV_ITEMS_BY_ID: Record<string, NavItem> = Object.fromEntries(
+  NAV_GROUPS.flatMap(g => g.items).map(item => [item.to.replace(/^\//, ''), item])
+)
+
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const [available, setAvailable] = useState<Set<string> | null>(null)
@@ -100,7 +105,9 @@ export default function Sidebar() {
   const { user, logout } = useAuthStore()
   const navigate = useNavigate()
   const navItems = useNavConfigStore((s) => s.items)
+  const storedGroups = useNavConfigStore((s) => s.navGroups)
   const resolved = resolvedNavItems(navItems)
+  const activeGroups = resolvedNavGroups(storedGroups)
   // Build a lookup: id -> { label, visible }
   const navMap = Object.fromEntries(resolved.map((n) => [n.id, n]))
 
@@ -162,56 +169,60 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-2 overflow-y-auto">
-        {NAV_GROUPS.map((group, gi) => (
-          <div key={group.label} className={gi > 0 ? 'mt-3' : ''}>
-            {!collapsed && (
-              <div
-                className="px-2 mb-1 text-xs font-medium uppercase tracking-widest select-none"
-                style={{ color: 'var(--text-disabled)', letterSpacing: '0.08em' }}
-              >
-                {group.label}
+        {activeGroups.map((group, gi) => {
+          const visibleItems = group.itemIds
+            .map(id => NAV_ITEMS_BY_ID[id])
+            .filter((item): item is NavItem => {
+              if (!item) return false
+              if (item.requires && available !== null && !available.has(item.requires)) return false
+              const cfg = navMap[item.to.replace(/^\//, '')]
+              if (cfg && !cfg.visible) return false
+              return true
+            })
+          if (visibleItems.length === 0) return null
+          return (
+            <div key={group.id} className={gi > 0 ? 'mt-3' : ''}>
+              {!collapsed && (
+                <div
+                  className="px-2 mb-1 text-xs font-medium uppercase tracking-widest select-none"
+                  style={{ color: 'var(--text-disabled)', letterSpacing: '0.08em' }}
+                >
+                  {group.label}
+                </div>
+              )}
+              {collapsed && gi > 0 && (
+                <div className="mx-2 mb-2 mt-1" style={{ height: 1, background: 'var(--border-subtle)' }} />
+              )}
+              <div className="space-y-0.5">
+                {visibleItems.map(({ to, icon: Icon, label }) => {
+                  const key = to.replace(/^\//, '')
+                  const displayLabel = navMap[key]?.label ?? label
+                  return (
+                    <NavLink
+                      key={to}
+                      to={to}
+                      onClick={() => document.body.classList.remove('mobile-nav-open')}
+                      className={({ isActive }) =>
+                        clsx(
+                          'flex items-center gap-3 px-2 py-2 rounded text-sm transition-colors',
+                          isActive ? 'font-medium' : 'hover:opacity-80',
+                        )
+                      }
+                      style={({ isActive }) => ({
+                        background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
+                        color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                      })}
+                      title={collapsed ? displayLabel : undefined}
+                    >
+                      <Icon size={16} style={{ flexShrink: 0 }} />
+                      {!collapsed && <span>{displayLabel}</span>}
+                    </NavLink>
+                  )
+                })}
               </div>
-            )}
-            {collapsed && gi > 0 && (
-              <div className="mx-2 mb-2 mt-1" style={{ height: 1, background: 'var(--border-subtle)' }} />
-            )}
-            <div className="space-y-0.5">
-              {group.items.filter(({ requires, to }) => {
-                // capability filter
-                if (requires && available !== null && !available.has(requires)) return false
-                // nav config visibility: derive key from path (e.g. '/dashboard' -> 'dashboard')
-                const key = to.replace(/^\//, '')
-                const cfg = navMap[key]
-                if (cfg && !cfg.visible) return false
-                return true
-              }).map(({ to, icon: Icon, label }) => {
-                const key = to.replace(/^\//, '')
-                const displayLabel = navMap[key]?.label ?? label
-                return (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    onClick={() => document.body.classList.remove('mobile-nav-open')}
-                    className={({ isActive }) =>
-                      clsx(
-                        'flex items-center gap-3 px-2 py-2 rounded text-sm transition-colors',
-                        isActive ? 'font-medium' : 'hover:opacity-80',
-                      )
-                    }
-                    style={({ isActive }) => ({
-                      background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
-                      color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                    })}
-                    title={collapsed ? displayLabel : undefined}
-                  >
-                    <Icon size={16} style={{ flexShrink: 0 }} />
-                    {!collapsed && <span>{displayLabel}</span>}
-                  </NavLink>
-                )
-              })}
             </div>
-          </div>
-        ))}
+          )
+        })}
       </nav>
 
       {/* Footer */}

@@ -56,6 +56,7 @@ pub mod wireguard;
 pub mod vms;
 pub mod tags;
 pub mod ai;
+pub mod ai_ask;
 pub mod bearer_auth;
 pub mod integrations;
 pub mod models;
@@ -74,7 +75,15 @@ pub fn router(state: AppState) -> Router {
         .allow_headers(Any)
         .allow_methods(Any);
 
-    Router::new()
+    // Embed proxy: separate sub-router — must NOT have security_headers so that
+    // the upstream response can use frame-ancestors * instead of DENY.
+    let embed_router = Router::new()
+        .route("/api/apps/embed/:project_name/*path", get(apps::embed_proxy))
+        .layer(cors.clone())
+        .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
+        .with_state(state.clone());
+
+    let main_router = Router::new()
         // Health
         .route("/api/health", get(auth::health))
         // Auth
@@ -147,9 +156,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/files/rename",   post(files::rename))
         .route("/api/files/activity", get(files::activity))
         .route("/api/files/raw",      get(files::serve_raw))
-        // AI / llama.cpp
+        // AI / llama.cpp / ask
         .route("/api/ai/llama",        get(ai::llama_status))
         .route("/api/ai/llama/unload", post(ai::llama_unload))
+        .route("/api/ai/ask",          post(ai_ask::ask))
         // Models
         .route("/api/models",              get(models::list_models))
         .route("/api/models/download",     post(models::start_download))
@@ -293,5 +303,9 @@ pub fn router(state: AppState) -> Router {
         .layer(cors)
         .layer(middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
-        .with_state(state)
+        .with_state(state);
+
+    Router::new()
+        .merge(main_router)
+        .merge(embed_router)
 }

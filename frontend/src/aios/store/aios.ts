@@ -102,6 +102,10 @@ interface AiosStore {
   openBesideOdysseus: () => void
   /** Open the Inspector panel targeting a specific panel id */
   openInspector: (targetPanelId: string) => void
+
+  // ── Ask popup ───────────────────────────────────────────────────────────────
+  askOpen: boolean
+  setAskOpen: (v: boolean) => void
 }
 
 export const newPanelId = () => `panel-${crypto.randomUUID()}`
@@ -589,6 +593,9 @@ export const useAiosStore = create<AiosStore>()(
           void panels
         })
       },
+
+      askOpen: false,
+      setAskOpen: (v) => set({ askOpen: v }),
 
       openInspector: (targetPanelId) => {
         const { panels, focusPanel, openPanel, activeWorkspace } = get()

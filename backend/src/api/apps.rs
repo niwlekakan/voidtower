@@ -6,8 +6,10 @@ use crate::{
     AppState,
 };
 use axum::{
+    body::Body,
     extract::{ConnectInfo, Path, State},
-    http::HeaderMap,
+    http::{HeaderMap, HeaderValue, StatusCode},
+    response::IntoResponse,
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -1109,4 +1111,67 @@ pub async fn update_compose(
     ).await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ── Embed proxy — strips X-Frame-Options so App Vault iframes load ────────────
+
+pub async fn embed_proxy(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((project_name, path)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let session_id = match jar.get("vt_session").map(|c| c.value().to_string()) {
+        Some(s) => s,
+        None => return (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+    };
+    match auth::validate_session(&state.db, &session_id).await {
+        Ok(Some(_)) => {}
+        _ => return (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+    }
+
+    let row = match sqlx::query_as::<_, DeployedAppRow>(
+        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"),
+    )
+    .bind(&project_name)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "app not found").into_response(),
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response(),
+    };
+
+    let port = match row.primary_port {
+        Some(p) if p > 0 => p as u16,
+        _ => return (StatusCode::BAD_GATEWAY, "no port configured").into_response(),
+    };
+
+    let upstream_url = format!("http://localhost:{}/{}", port, path);
+
+    let client = reqwest::Client::new();
+    let upstream_resp = match client
+        .get(&upstream_url)
+        .header("X-Forwarded-For", "127.0.0.1")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_GATEWAY, "upstream error").into_response(),
+    };
+
+    let status = upstream_resp.status();
+    let mut resp_headers = axum::http::HeaderMap::new();
+
+    for (name, value) in upstream_resp.headers() {
+        let n = name.as_str().to_lowercase();
+        if n == "x-frame-options" || n == "content-security-policy" { continue; }
+        resp_headers.insert(name.clone(), value.clone());
+    }
+    resp_headers.insert(
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors *"),
+    );
+
+    let body = Body::from_stream(upstream_resp.bytes_stream());
+    (status, resp_headers, body).into_response()
 }

@@ -281,6 +281,15 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
             last_used  INTEGER
         );
+
+        CREATE TABLE IF NOT EXISTS proxmox_hosts (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            url         TEXT NOT NULL,
+            node        TEXT NOT NULL DEFAULT 'pve',
+            fingerprint TEXT,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         "#,
     )
     .execute(pool)

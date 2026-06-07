@@ -67,6 +67,7 @@ pub mod totp;
 pub mod mods;
 pub mod webhooks;
 pub mod mcp;
+pub mod proxmox;
 pub mod disaster;
 
 pub fn router(state: AppState) -> Router {
@@ -281,6 +282,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/updates/docker/:id/apply",    post(updates::docker_apply))
         .route("/api/updates/os",                  get(updates::os_info))
         .route("/api/updates/os/apply",            post(updates::apply_os))
+        // Proxmox multi-host management
+        .route("/api/proxmox/hosts",               get(proxmox::list_hosts).post(proxmox::add_host))
+        .route("/api/proxmox/hosts/:id",           delete(proxmox::delete_host))
+        .route("/api/proxmox/:host_id/nodes",      get(proxmox::get_nodes))
+        .route("/api/proxmox/:host_id/vms",        get(proxmox::get_vms))
+        .route("/api/proxmox/:host_id/storage",    get(proxmox::get_storage))
+        .route("/api/proxmox/:host_id/tasks",      get(proxmox::get_tasks))
         // Mods
         .route("/api/mods",              get(mods::get_status))
         .route("/api/mods/config",       post(mods::save_config))

@@ -111,20 +111,28 @@ if [[ -z "$CT_ID" ]]; then
   [[ -n "$CT_ID" ]] || die "Could not find a free container ID — set one with --id"
 fi
 
-# Storage: prefer local-lvm or local-zfs, fall back to local
+# Storage: must support 'rootdir' content type (container root filesystems).
+# 'local' only holds ISOs/templates — it cannot host container rootfs.
 if [[ -z "$CT_STORAGE" ]]; then
-  # pvesm status columns: Name  Type  Status  Total  Used  Available  %
-  CT_STORAGE=$(pvesm status 2>/dev/null \
-    | awk 'NR>1 && $2=="lvm-thin" && $3=="active" {print $1; exit}')
+  # pvesm status --content rootdir lists only storages that support container directories
+  CT_STORAGE=$(pvesm status --content rootdir 2>/dev/null \
+    | awk 'NR>1 && $3=="active" && $2=="lvmthin" {print $1; exit}')
   if [[ -z "$CT_STORAGE" ]]; then
-    CT_STORAGE=$(pvesm status 2>/dev/null \
-      | awk 'NR>1 && $2=="zfspool" && $3=="active" {print $1; exit}')
+    CT_STORAGE=$(pvesm status --content rootdir 2>/dev/null \
+      | awk 'NR>1 && $3=="active" && $2=="zfspool" {print $1; exit}')
   fi
   if [[ -z "$CT_STORAGE" ]]; then
-    CT_STORAGE=$(pvesm status 2>/dev/null \
-      | awk 'NR>1 && $2=="dir" && $3=="active" {print $1; exit}')
+    # Any active rootdir-capable storage (dir with rootdir content, btrfs, etc.)
+    CT_STORAGE=$(pvesm status --content rootdir 2>/dev/null \
+      | awk 'NR>1 && $3=="active" {print $1; exit}')
   fi
-  [[ -n "$CT_STORAGE" ]] || CT_STORAGE="local"
+  if [[ -z "$CT_STORAGE" ]]; then
+    echo -e "\n${YELLOW}[WARN]${RESET}  Could not auto-detect a rootdir-capable storage."
+    echo -e "  Available storages:"
+    pvesm status 2>/dev/null | awk 'NR>1 {printf "    %-20s type=%-12s status=%s\n", $1, $2, $3}'
+    echo
+    die "Set storage with --storage <pool>. Common choices: local-lvm, local-zfs"
+  fi
 fi
 
 # Find the best storage for templates (needs content type vztmpl)

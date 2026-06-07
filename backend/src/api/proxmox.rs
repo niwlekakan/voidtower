@@ -246,6 +246,20 @@ pub async fn delete_host(
 
 // ── proxmox passthrough routes ────────────────────────────────────────────────
 
+/// GET a Proxmox API endpoint, unwrap `data`, propagate HTTP errors as 502.
+async fn pve_get(client: &reqwest::Client, url: &str, auth: &str) -> Result<serde_json::Value> {
+    let res = client.get(url).header("Authorization", auth)
+        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!("Proxmox unreachable: {}", e)))?;
+    let status = res.status();
+    let body: serde_json::Value = res.json().await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Proxmox response parse error: {}", e)))?;
+    if !status.is_success() {
+        let msg = body["errors"].to_string();
+        return Err(AppError::Internal(anyhow::anyhow!("Proxmox {} — {}", status, msg)));
+    }
+    Ok(body["data"].clone())
+}
+
 pub async fn list_nodes(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -254,14 +268,9 @@ pub async fn list_nodes(
     require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-    let res: serde_json::Value = client
-        .get(format!("{}/nodes", base))
-        .header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .json().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    Ok(Json(res["data"].clone()))
+    let auth = format!("PVEAPIToken={}", host.token);
+    let data = pve_get(&client, &format!("{}/nodes", proxmox_base(&host.url)), &auth).await?;
+    Ok(Json(data))
 }
 
 pub async fn list_vms(
@@ -273,27 +282,21 @@ pub async fn list_vms(
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
+    let auth = format!("PVEAPIToken={}", host.token);
     let node = &host.node;
-
     let mut all: Vec<serde_json::Value> = Vec::new();
-
     for kind in &["qemu", "lxc"] {
-        let url = format!("{}/nodes/{}/{}", base, node, kind);
-        if let Ok(res) = client.get(&url).header("Authorization", &auth_header).send().await {
-            if let Ok(body) = res.json::<serde_json::Value>().await {
-                if let Some(arr) = body["data"].as_array() {
-                    for vm in arr {
-                        let mut v = vm.clone();
-                        v["type"] = serde_json::json!(kind);
-                        v["node"] = serde_json::json!(node);
-                        all.push(v);
-                    }
+        if let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/{}", base, node, kind), &auth).await {
+            if let Some(arr) = data.as_array() {
+                for vm in arr {
+                    let mut v = vm.clone();
+                    v["type"] = serde_json::json!(kind);
+                    v["node"] = serde_json::json!(node);
+                    all.push(v);
                 }
             }
         }
     }
-
     all.sort_by_key(|v| v["vmid"].as_u64().unwrap_or(0));
     Ok(Json(serde_json::json!(all)))
 }
@@ -306,14 +309,9 @@ pub async fn list_storage(
     require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-    let res: serde_json::Value = client
-        .get(format!("{}/nodes/{}/storage", base, host.node))
-        .header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .json().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    Ok(Json(res["data"].clone()))
+    let auth = format!("PVEAPIToken={}", host.token);
+    let data = pve_get(&client, &format!("{}/nodes/{}/storage", proxmox_base(&host.url), host.node), &auth).await?;
+    Ok(Json(data))
 }
 
 pub async fn list_tasks(
@@ -324,14 +322,9 @@ pub async fn list_tasks(
     require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-    let res: serde_json::Value = client
-        .get(format!("{}/nodes/{}/tasks", base, host.node))
-        .header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .json().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    Ok(Json(res["data"].clone()))
+    let auth = format!("PVEAPIToken={}", host.token);
+    let data = pve_get(&client, &format!("{}/nodes/{}/tasks", proxmox_base(&host.url), host.node), &auth).await?;
+    Ok(Json(data))
 }
 
 // ── lifecycle action routes ───────────────────────────────────────────────────
@@ -616,14 +609,9 @@ pub async fn list_snapshots(
     require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
+    let auth = format!("PVEAPIToken={}", host.token);
     let kind = params.get("kind").map(|s| s.as_str()).unwrap_or("qemu");
-    let url = format!("{}/nodes/{}/{}/{}/snapshot", base, host.node, kind, vmid);
-    let res: serde_json::Value = client
-        .get(&url)
-        .header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .json().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    Ok(Json(res["data"].clone()))
+    let url = format!("{}/nodes/{}/{}/{}/snapshot", proxmox_base(&host.url), host.node, kind, vmid);
+    let data = pve_get(&client, &url, &auth).await?;
+    Ok(Json(data))
 }

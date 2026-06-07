@@ -377,7 +377,7 @@ pub async fn emergency_reset_admin(
 
     let temp_password = random_alphanum(16);
     let new_hash = auth::hash_password(&temp_password)
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     let now = unix_now();
     sqlx::query(

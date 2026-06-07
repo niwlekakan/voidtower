@@ -23,11 +23,12 @@ pub struct StreamQuery {
 /// `GET /api/events/stream`
 ///
 /// SSE endpoint that polls every 15 s and emits:
-///   - `high_cpu`          — CPU > 90 %
-///   - `high_memory`       — RAM > 90 %
-///   - `disk_nearly_full`  — any disk > 85 %
-///   - `service_failed`    — a systemd service entered the `failed` state
-///                           (deduplicated per service until it recovers)
+///
+/// - `high_cpu`         — CPU > 90 %
+/// - `high_memory`      — RAM > 90 %
+/// - `disk_nearly_full` — any disk > 85 %
+/// - `service_failed`   — a systemd service entered the `failed` state
+///   (deduplicated per service until it recovers)
 ///
 /// A `: keepalive` SSE comment is sent every 30 s automatically.
 ///

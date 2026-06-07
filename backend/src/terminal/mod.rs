@@ -197,12 +197,19 @@ fn which_bin(name: &str) -> bool {
 async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<()> {
     let reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
+    // Arc<Mutex> makes the !Sync master safe across async .await boundaries
+    let master = std::sync::Arc::new(std::sync::Mutex::new(pair.master));
+    // Parent slave fd isn't needed once the child is running; dropping it lets
+    // the PTY reader detect EOF cleanly when the child exits.
+    drop(pair.slave);
+
     let (mut ws_sink, mut ws_stream) = socket.split();
-    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Option<String>>(64);
-    // std::sync::mpsc has no tokio-runtime dependency — safe from spawn_blocking or OS thread
+    // Large buffer: fish produces heavy output per keystroke (highlighting, prompts)
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Option<String>>(256);
+    // std::sync::mpsc: no tokio runtime, safe in a plain OS thread
     let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<String>(256);
 
-    // Reader: blocking OS thread → async channel
+    // PTY reader thread → output channel
     tokio::task::spawn_blocking(move || {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
@@ -217,54 +224,44 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
         }
     });
 
-    // Writer: dedicated OS thread; exits when write_tx is dropped (loop exit)
+    // PTY writer thread — plain OS thread; exits when write_tx is dropped
     std::thread::spawn(move || {
-        let mut writer = writer;
-        for data in write_rx {
-            let _ = writer.write_all(data.as_bytes());
-        }
+        let mut w = writer;
+        for data in write_rx { let _ = w.write_all(data.as_bytes()); }
     });
 
-    loop {
-        // biased: always check incoming input before draining output — prevents
-        // fish prompt output from starving keystrokes when both are ready
-        tokio::select! {
-            biased;
-            msg = ws_stream.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        match serde_json::from_str::<ClientMessage>(&text) {
-                            Ok(ClientMessage::Input { data }) => {
-                                let _ = write_tx.try_send(data);
-                            }
-                            Ok(ClientMessage::Resize { cols, rows }) => {
-                                let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-                            }
-                            Ok(ClientMessage::Ping) => {
-                                let msg = serde_json::to_string(&ServerMessage::Pong).unwrap_or_default();
-                                let _ = ws_sink.send(Message::Text(msg.into())).await;
-                            }
-                            Err(_) => {}
-                        }
-                    }
-                    Some(Ok(Message::Close(_))) | None => break,
-                    _ => {}
-                }
-            }
-            item = output_rx.recv() => {
-                match item {
-                    Some(Some(data)) => {
-                        let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
-                        if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
-                    }
-                    Some(None) | None => {
-                        let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
-                        let _ = ws_sink.send(Message::Text(msg.into())).await;
-                        break;
+    // Two independent async loops via top-level select!:
+    //   output_fut owns ws_sink and drains PTY output → WS
+    //   input_fut  owns ws_stream and routes WS input → PTY
+    // Neither can block the other, eliminating fish's output/input flow-control deadlock.
+    let output_fut = async {
+        while let Some(item) = output_rx.recv().await {
+            let done = item.is_none();
+            let msg = match item {
+                Some(data) => serde_json::to_string(&ServerMessage::Output { data }),
+                None       => serde_json::to_string(&ServerMessage::Closed),
+            }.unwrap_or_default();
+            if ws_sink.send(Message::Text(msg.into())).await.is_err() || done { break; }
+        }
+    };
+
+    let input_fut = async {
+        while let Some(Ok(Message::Text(text))) = ws_stream.next().await {
+            match serde_json::from_str::<ClientMessage>(&text) {
+                Ok(ClientMessage::Input { data }) => { let _ = write_tx.send(data); }
+                Ok(ClientMessage::Resize { cols, rows }) => {
+                    if let Ok(m) = master.lock() {
+                        let _ = m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
                     }
                 }
+                Ok(ClientMessage::Ping) | Err(_) => {}
             }
         }
+    };
+
+    tokio::select! {
+        _ = output_fut => {}
+        _ = input_fut  => {}
     }
     Ok(())
 }

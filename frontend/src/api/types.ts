@@ -646,3 +646,11 @@ export interface PveTask {
   node: string
   id?: string
 }
+
+export interface PveSnapshot {
+  name: string
+  description?: string
+  snaptime?: number
+  parent?: string
+  vmstate?: boolean
+}

@@ -1,8 +1,9 @@
 use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
+use std::collections::HashMap;
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 
@@ -284,7 +285,7 @@ pub async fn list_vms(
                 if let Some(arr) = body["data"].as_array() {
                     for vm in arr {
                         let mut v = vm.clone();
-                        v["kind"] = serde_json::json!(kind);
+                        v["type"] = serde_json::json!(kind);
                         v["node"] = serde_json::json!(node);
                         all.push(v);
                     }
@@ -604,4 +605,25 @@ pub async fn vm_delete_snapshot(
         let msg = res.text().await.unwrap_or_default();
         Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
     }
+}
+
+pub async fn list_snapshots(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth_header = format!("PVEAPIToken={}", host.token);
+    let kind = params.get("kind").map(|s| s.as_str()).unwrap_or("qemu");
+    let url = format!("{}/nodes/{}/{}/{}/snapshot", base, host.node, kind, vmid);
+    let res: serde_json::Value = client
+        .get(&url)
+        .header("Authorization", &auth_header)
+        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .json().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    Ok(Json(res["data"].clone()))
 }

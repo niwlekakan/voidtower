@@ -424,7 +424,15 @@ export const api = {
     getVms:     (hostId: string) => request<import('./types').PveVm[]>(`/api/proxmox/${hostId}/vms`),
     getStorage: (hostId: string) => request<import('./types').PveStorage[]>(`/api/proxmox/${hostId}/storage`),
     getTasks:   (hostId: string) => request<import('./types').PveTask[]>(`/api/proxmox/${hostId}/tasks`),
-    vmAction:   (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot') =>
+    vmAction:     (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot') =>
       request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
+    getSnapshots: (hostId: string, vmid: number, kind: 'qemu' | 'lxc') =>
+      request<import('./types').PveSnapshot[]>(`/api/proxmox/${hostId}/vms/${vmid}/snapshots?kind=${kind}`),
+    createSnapshot: (hostId: string, vmid: number, name: string, desc: string) =>
+      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
+    deleteSnapshot: (hostId: string, vmid: number, snapname: string) =>
+      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
+    rollbackSnapshot: (hostId: string, vmid: number, snapname: string) =>
+      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
   },
 }

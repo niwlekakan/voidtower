@@ -296,6 +296,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxmox/:host_id/vms/:vmid/snapshot",            post(proxmox::vm_snapshot))
         .route("/api/proxmox/:host_id/vms/:vmid/rollback/:snapname",  post(proxmox::vm_rollback))
         .route("/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",  delete(proxmox::vm_delete_snapshot))
+        .route("/api/proxmox/:host_id/vms/:vmid/snapshots",           get(proxmox::list_snapshots))
         // Mods
         .route("/api/mods",              get(mods::get_status))
         .route("/api/mods/config",       post(mods::save_config))

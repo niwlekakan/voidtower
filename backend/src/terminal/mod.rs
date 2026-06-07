@@ -114,10 +114,8 @@ async fn run_ssh(
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
 
-    // Write a temp askpass script when password is set — works even without sshpass
     let askpass_path: Option<String> = if let Some(ref pw) = password {
         let path = format!("/tmp/.vt-askpass-{}.sh", uuid::Uuid::new_v4());
-        // Escape single quotes in password for shell safety
         let safe_pw = pw.replace('\'', "'\\''");
         let script = format!("#!/bin/sh\nprintf '%s' '{}'\n", safe_pw);
         if std::fs::write(&path, &script).is_ok() {
@@ -137,7 +135,6 @@ async fn run_ssh(
     let use_sshpass = password.is_some() && which_bin("sshpass");
 
     let mut cmd = if use_sshpass {
-        // sshpass reads password from SSHPASS env var via -e flag
         let mut c = CommandBuilder::new("sshpass");
         c.arg("-e");
         c.args(["ssh",
@@ -159,13 +156,11 @@ async fn run_ssh(
             "-p", &port.to_string(),
         ]);
         if let Some(ref kp) = key_path { c.args(["-i", kp]); }
-        // SSH_ASKPASS path — works on OpenSSH 8.4+ with SSH_ASKPASS_REQUIRE=force
-        // On older versions falls back to interactive prompt
         if let Some(ref ap) = askpass_path {
             c.args(["-o", "BatchMode=no"]);
             c.env("SSH_ASKPASS", ap);
             c.env("SSH_ASKPASS_REQUIRE", "force");
-            c.env("DISPLAY", ":0"); // needed for older OpenSSH fallback
+            c.env("DISPLAY", ":0");
         }
         c.arg(format!("{}@{}", username, host));
         c
@@ -173,14 +168,12 @@ async fn run_ssh(
 
     cmd.env("TERM", "xterm-256color");
     cmd.env("PATH", default_path());
-    // For sshpass -e: set SSHPASS in env
     if let Some(ref pw) = password {
         cmd.env("SSHPASS", pw);
     }
 
     let _child = pair.slave.spawn_command(cmd)?;
 
-    // Clean up askpass script after session ends
     let result = run_pty_loop(socket, pair).await;
     if let Some(path) = askpass_path {
         let _ = std::fs::remove_file(&path);
@@ -193,23 +186,30 @@ fn which_bin(name: &str) -> bool {
         .map(|o| o.status.success()).unwrap_or(false)
 }
 
-// Shared PTY↔WebSocket relay loop
+// PTY↔WebSocket relay loop.
+//
+// Four independent workers so no single blocking operation can stall the others:
+//   reader_thread — blocking PTY read  → output_tx channel
+//   writer_thread — write_rx channel   → blocking PTY write  (plain OS thread)
+//   out_task      — output_rx channel  → ws_sink.send        (separate tokio::spawn task)
+//   input loop    — ws_stream.next     → write_tx.try_send   (this async task)
+//
+// out_task is a separate spawned task, NOT a future inside select!, so a slow
+// WebSocket send (browser receive buffer full) can never starve the input loop.
+// fish produces heavy output per keypress (syntax highlighting, right-prompt redraws);
+// without task separation that output backs up the single-task select! and drops input.
 async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<()> {
     let reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
-    // Arc<Mutex> makes the !Sync master safe across async .await boundaries
-    let master = std::sync::Arc::new(std::sync::Mutex::new(pair.master));
-    // Parent slave fd isn't needed once the child is running; dropping it lets
-    // the PTY reader detect EOF cleanly when the child exits.
+    // Drop parent's slave fd; child keeps its own copy. This lets the reader
+    // thread detect EOF cleanly when the child process exits.
     drop(pair.slave);
 
     let (mut ws_sink, mut ws_stream) = socket.split();
-    // Large buffer: fish produces heavy output per keystroke (highlighting, prompts)
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Option<String>>(256);
-    // std::sync::mpsc: no tokio runtime, safe in a plain OS thread
     let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<String>(256);
 
-    // PTY reader thread → output channel
+    // PTY reader: blocking reads on a dedicated thread
     tokio::task::spawn_blocking(move || {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
@@ -224,44 +224,47 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
         }
     });
 
-    // PTY writer thread — plain OS thread; exits when write_tx is dropped
+    // PTY writer: plain OS thread — no tokio runtime dependency
     std::thread::spawn(move || {
-        let mut w = writer;
-        for data in write_rx { let _ = w.write_all(data.as_bytes()); }
+        let mut writer = writer;
+        for data in write_rx { let _ = writer.write_all(data.as_bytes()); }
     });
 
-    // Two independent async loops via top-level select!:
-    //   output_fut owns ws_sink and drains PTY output → WS
-    //   input_fut  owns ws_stream and routes WS input → PTY
-    // Neither can block the other, eliminating fish's output/input flow-control deadlock.
-    let output_fut = async {
+    // Output task: its own tokio task so ws_sink.send().await blocking on a full
+    // WS buffer is completely independent from the input loop below.
+    let out_task = tokio::spawn(async move {
         while let Some(item) = output_rx.recv().await {
-            let done = item.is_none();
-            let msg = match item {
-                Some(data) => serde_json::to_string(&ServerMessage::Output { data }),
-                None       => serde_json::to_string(&ServerMessage::Closed),
-            }.unwrap_or_default();
-            if ws_sink.send(Message::Text(msg.into())).await.is_err() || done { break; }
-        }
-    };
-
-    let input_fut = async {
-        while let Some(Ok(Message::Text(text))) = ws_stream.next().await {
-            match serde_json::from_str::<ClientMessage>(&text) {
-                Ok(ClientMessage::Input { data }) => { let _ = write_tx.send(data); }
-                Ok(ClientMessage::Resize { cols, rows }) => {
-                    if let Ok(m) = master.lock() {
-                        let _ = m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-                    }
+            match item {
+                Some(data) => {
+                    let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
+                    if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
                 }
-                Ok(ClientMessage::Ping) | Err(_) => {}
+                None => {
+                    let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
+                    let _ = ws_sink.send(Message::Text(msg.into())).await;
+                    break;
+                }
             }
         }
-    };
+    });
 
-    tokio::select! {
-        _ = output_fut => {}
-        _ = input_fut  => {}
+    // Input loop: purely async, never touches blocking I/O
+    loop {
+        match ws_stream.next().await {
+            Some(Ok(Message::Text(text))) => {
+                match serde_json::from_str::<ClientMessage>(&text) {
+                    Ok(ClientMessage::Input { data }) => { let _ = write_tx.try_send(data); }
+                    Ok(ClientMessage::Resize { cols, rows }) => {
+                        let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+                    }
+                    Ok(ClientMessage::Ping) | Err(_) => {}
+                }
+            }
+            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+            _ => {}
+        }
     }
+
+    out_task.abort();
     Ok(())
 }

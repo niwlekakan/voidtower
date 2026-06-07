@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useThemeStore } from '@/store/theme'
 import { applyTheme } from './themes'
 
-const BG_VARS = ['--bg-root', '--bg-panel', '--bg-card', '--bg-elevated']
+const BG_VARS = ['--bg-root', '--bg-panel']
 
 function hexToRgba(hex: string, alpha: number): string | null {
   const h = hex.replace(/\s/g, '')
@@ -45,8 +45,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [activeTheme, panelOpacity, a11y.reduceTransparency])
 
   useEffect(() => {
-    // --radius is what global.css .panel/.card actually use
-    document.documentElement.style.setProperty('--radius', `${panelRadius}px`)
+    document.documentElement.style.setProperty('--panel-radius', `${panelRadius}px`)
   }, [panelRadius])
 
   useEffect(() => {

@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '@/api/client'
-import type { ApiToken, OdysseusConfig } from '@/api/types'
+import type { ApiToken, OdysseusConfig, Tag, TagMap } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { useFiltersStore } from '@/store/filters'
+import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import {
   Key, Plus, Trash2, Copy, RefreshCw,
   ShieldAlert, ShieldCheck, PlugZap, Zap, BookOpen,
   AlertTriangle, CheckCircle, Clock, ChevronDown, ChevronUp,
-  Cpu,
+  Cpu, Tag as TagIcon,
 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
@@ -63,6 +65,14 @@ function CreateTokenModal({ scopes, onClose, onCreated }: CreateTokenModalProps)
   const [selectedScopes, setSelectedScopes] = useState<string[]>([])
   const [expiresDays, setExpiresDays] = useState<string>('90')
   const [loading, setLoading] = useState(false)
+  // Item #7B: secret restriction
+  const [secrets, setSecrets] = useState<{ id: string; name: string }[]>([])
+  const [selectedSecretIds, setSelectedSecretIds] = useState<string[]>([])
+  const [restrictSecrets, setRestrictSecrets] = useState(false)
+
+  useEffect(() => {
+    api.secrets.list().then(r => setSecrets(r.secrets.map(s => ({ id: s.id, name: s.name })))).catch(() => {})
+  }, [])
 
   const scopeDesc = Object.fromEntries(scopes.map(s => [s.name, s.description]))
 
@@ -75,14 +85,19 @@ function CreateTokenModal({ scopes, onClose, onCreated }: CreateTokenModalProps)
     else setSelectedScopes(p => [...new Set([...p, ...group])])
   }
 
+  const toggleSecret = (id: string) =>
+    setSelectedSecretIds(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id])
+
   const handleCreate = async () => {
     if (!name.trim()) { notify.warning('Token name required'); return }
     if (selectedScopes.length === 0) { notify.warning('Select at least one scope'); return }
+    if (restrictSecrets && selectedSecretIds.length === 0) { notify.warning('Select at least one secret or disable restriction'); return }
     setLoading(true)
     try {
       const days = parseInt(expiresDays)
-      const resp = await api.integrations.createToken(name.trim(), selectedScopes, days > 0 ? days : undefined)
-      onCreated({ id: resp.id, name: resp.name, scopes: resp.scopes, last_used_at: null, expires_at: null, created_at: resp.created_at }, resp.token)
+      const secret_ids = restrictSecrets ? selectedSecretIds : undefined
+      const resp = await api.integrations.createToken(name.trim(), selectedScopes, days > 0 ? days : undefined, secret_ids)
+      onCreated({ id: resp.id, name: resp.name, scopes: resp.scopes, last_used_at: null, expires_at: null, created_at: resp.created_at, secret_ids: resp.secret_ids }, resp.token)
     } catch (e: any) {
       notify.error('Failed to create token', e.message)
     } finally {
@@ -155,6 +170,42 @@ function CreateTokenModal({ scopes, onClose, onCreated }: CreateTokenModalProps)
             </div>
           </div>
         </div>
+
+          {/* Item #7B: secret scope restriction */}
+          <div className="border border-zinc-700 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-zinc-300">Restrict to secrets</span>
+              <button
+                className={`relative w-9 h-5 rounded-full transition-colors ${restrictSecrets ? 'bg-violet-600' : 'bg-zinc-700'}`}
+                onClick={() => setRestrictSecrets(p => !p)}
+                type="button"
+              >
+                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${restrictSecrets ? 'translate-x-4' : 'translate-x-0.5'}`} />
+              </button>
+            </div>
+            {restrictSecrets && (
+              secrets.length === 0 ? (
+                <p className="text-xs text-zinc-500">No secrets stored yet.</p>
+              ) : (
+                <div className="space-y-1 max-h-40 overflow-y-auto">
+                  {secrets.map(s => (
+                    <label key={s.id} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="accent-violet-500"
+                        checked={selectedSecretIds.includes(s.id)}
+                        onChange={() => toggleSecret(s.id)}
+                      />
+                      <span className="text-xs font-mono text-zinc-200">{s.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )
+            )}
+            {!restrictSecrets && (
+              <p className="text-xs text-zinc-500">When enabled, this token can only read/reveal the selected secrets.</p>
+            )}
+          </div>
 
         <div className="flex gap-3 mt-6">
           <button
@@ -234,6 +285,18 @@ function TokensSection() {
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [revealToken, setRevealToken] = useState<string | null>(null)
+  const [allTags, setAllTags] = useState<Tag[]>([])
+  const [tagMap, setTagMap] = useState<TagMap>({})
+  const [popover, setPopover] = useState<string | null>(null)
+  const globalTag = useFiltersStore((s) => s.globalTag)
+
+  const loadTags = useCallback(async () => {
+    try {
+      const [tags, map] = await Promise.all([api.tags.list(), api.tags.map('token')])
+      setAllTags(tags)
+      setTagMap(map)
+    } catch { /* empty */ }
+  }, [])
 
   const load = useCallback(async () => {
     try {
@@ -244,7 +307,7 @@ function TokensSection() {
     setLoading(false)
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(); loadTags() }, [load, loadTags])
 
   const revoke = async (id: string, name: string) => {
     if (!confirm(`Revoke token "${name}"? This cannot be undone.`)) return
@@ -262,6 +325,8 @@ function TokensSection() {
     setTokens(p => [token, ...p])
     setRevealToken(raw)
   }
+
+  const displayed = globalTag ? tokens.filter(t => (tagMap[t.id] || []).some(tag => tag.id === globalTag)) : tokens
 
   return (
     <section className="card p-5">
@@ -285,9 +350,11 @@ function TokensSection() {
         <div className="text-sm text-zinc-500 py-4 text-center">
           No tokens yet. Create one to connect Odysseus.
         </div>
+      ) : displayed.length === 0 ? (
+        <div className="text-sm text-zinc-500 py-4 text-center">No tokens with this tag.</div>
       ) : (
         <div className="space-y-3">
-          {tokens.map(t => (
+          {displayed.map(t => (
             <div key={t.id} className="bg-zinc-800/60 rounded-lg p-3 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="font-medium text-sm">{t.name}</div>
@@ -304,6 +371,16 @@ function TokensSection() {
                   {t.expires_at && <span className={t.expires_at < Date.now() / 1000 ? 'text-red-400' : ''}>
                     Expires {ts(t.expires_at)}
                   </span>}
+                </div>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6, alignItems: 'center', position: 'relative' }}>
+                  {(tagMap[t.id] || []).map(tag => <TagPill key={tag.id} tag={tag} />)}
+                  <button onClick={() => setPopover(popover === t.id ? null : t.id)} style={{
+                    background: 'none', border: '1px dashed #52525b', borderRadius: 10,
+                    cursor: 'pointer', color: '#71717a', fontSize: 11, padding: '0px 6px', lineHeight: '18px',
+                  }}><TagIcon size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /></button>
+                  {popover === t.id && (
+                    <TagPopover resourceType="token" resourceId={t.id} allTags={allTags} assigned={tagMap[t.id] || []} onClose={() => { setPopover(null); loadTags() }} />
+                  )}
                 </div>
               </div>
               <button

@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { Settings2, X, Clock, CloudSun, Cpu, HardDrive, Network, Activity, Bell, Container, GripVertical } from 'lucide-react'
+import { Settings2, X, Clock, CloudSun, Cpu, HardDrive, Network, Activity, Bell, Container, GripVertical, ShieldCheck, Shield, ShieldAlert, ShieldX, Undo2 } from 'lucide-react'
 import { useMetricsStore } from '@/store/metrics'
 import MetricCard from '@/components/ui/MetricCard'
 import MetricChart from '@/components/ui/MetricChart'
@@ -7,7 +7,7 @@ import { api } from '@/api/client'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type WidgetId = 'clock' | 'weather' | 'system' | 'charts' | 'containers' | 'alerts' | 'disks' | 'network' | 'processes' | 'gpu'
+type WidgetId = 'clock' | 'weather' | 'system' | 'charts' | 'containers' | 'alerts' | 'disks' | 'network' | 'processes' | 'gpu' | 'backup_health'
 
 interface WidgetDef { id: WidgetId; label: string; icon: React.ReactNode; defaultOn: boolean }
 
@@ -21,7 +21,8 @@ const WIDGET_DEFS: WidgetDef[] = [
   { id: 'disks',      label: 'Disk Usage',          icon: <HardDrive size={14} />, defaultOn: true },
   { id: 'network',    label: 'Network',             icon: <Network size={14} />,   defaultOn: false },
   { id: 'processes',  label: 'Top Processes',       icon: <Activity size={14} />,  defaultOn: false },
-  { id: 'gpu',        label: 'GPU Stats',           icon: <Cpu size={14} />,       defaultOn: true },
+  { id: 'gpu',           label: 'GPU Stats',           icon: <Cpu size={14} />,          defaultOn: true },
+  { id: 'backup_health', label: 'Backup Health',       icon: <ShieldCheck size={14} />,  defaultOn: true },
 ]
 
 function loadWidgetConfig(): Record<WidgetId, boolean> {
@@ -38,17 +39,18 @@ function saveWidgetConfig(cfg: Record<WidgetId, boolean>) {
 
 // ─── Section ordering ─────────────────────────────────────────────────────────
 
-type SectionId = 'time' | 'system' | 'services' | 'charts' | 'disks' | 'network_widget' | 'processes' | 'gpu_widget'
+type SectionId = 'time' | 'system' | 'services' | 'charts' | 'disks' | 'network_widget' | 'processes' | 'gpu_widget' | 'backup_health_section'
 
 const SECTION_DEFS: { id: SectionId; label: string; widgets: WidgetId[] }[] = [
-  { id: 'time',           label: 'Clock & Weather',       widgets: ['clock', 'weather'] },
-  { id: 'system',         label: 'System Overview',        widgets: ['system'] },
-  { id: 'services',       label: 'Containers & Alerts',   widgets: ['containers', 'alerts'] },
-  { id: 'charts',         label: 'CPU & RAM Charts',       widgets: ['charts'] },
-  { id: 'disks',          label: 'Disk Usage',             widgets: ['disks'] },
-  { id: 'network_widget', label: 'Network Rates',          widgets: ['network'] },
-  { id: 'processes',      label: 'Top Processes',          widgets: ['processes'] },
-  { id: 'gpu_widget',     label: 'GPU Stats',              widgets: ['gpu'] },
+  { id: 'time',                   label: 'Clock & Weather',       widgets: ['clock', 'weather'] },
+  { id: 'system',                 label: 'System Overview',        widgets: ['system'] },
+  { id: 'services',               label: 'Containers & Alerts',   widgets: ['containers', 'alerts'] },
+  { id: 'charts',                 label: 'CPU & RAM Charts',       widgets: ['charts'] },
+  { id: 'disks',                  label: 'Disk Usage',             widgets: ['disks'] },
+  { id: 'network_widget',         label: 'Network Rates',          widgets: ['network'] },
+  { id: 'processes',              label: 'Top Processes',          widgets: ['processes'] },
+  { id: 'gpu_widget',             label: 'GPU Stats',              widgets: ['gpu'] },
+  { id: 'backup_health_section',  label: 'Backup Health',          widgets: ['backup_health'] },
 ]
 
 const DEFAULT_SECTION_ORDER: SectionId[] = SECTION_DEFS.map(s => s.id)
@@ -277,6 +279,100 @@ function AlertsWidget() {
               <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Info</div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Backup Health Widget (Item #10B) ─────────────────────────────────────────
+
+type BackupConf = {
+  id: string; name: string; confidence: string
+  last_restore_test_at: number | null; last_restore_test_status: string | null
+}
+
+function confidenceColor(c: string): string {
+  switch (c) {
+    case 'high':     return 'var(--accent-success)'
+    case 'medium':   return 'var(--accent-warning)'
+    case 'low':      return 'color-mix(in srgb, var(--accent-error) 70%, var(--accent-warning))'
+    case 'critical': return 'var(--accent-error)'
+    default:         return 'var(--text-muted)'
+  }
+}
+
+function ConfidenceIcon({ c }: { c: string }) {
+  const color = confidenceColor(c)
+  switch (c) {
+    case 'high':     return <ShieldCheck size={13} style={{ color }} />
+    case 'medium':   return <Shield size={13} style={{ color }} />
+    case 'low':      return <ShieldAlert size={13} style={{ color }} />
+    case 'critical': return <ShieldX size={13} style={{ color }} />
+    default:         return <Shield size={13} style={{ color }} />
+  }
+}
+
+function fmtRelative(ts: number | null): string {
+  if (!ts) return 'Never tested'
+  const diff = Math.floor(Date.now() / 1000) - ts
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
+function BackupHealthWidget() {
+  const [configs, setConfigs] = useState<BackupConf[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    fetch('/api/backups', { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => setConfigs(d.configs ?? []))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const runTest = async (id: string) => {
+    setBusy(id)
+    try {
+      await fetch(`/api/backups/${id}/restore-test`, { method: 'POST', credentials: 'include' })
+      load()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="text-xs uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>Backup Health</div>
+      {configs.length === 0 ? (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No backup jobs configured.</p>
+      ) : (
+        <div className="space-y-2">
+          {configs.map(c => (
+            <div key={c.id} className="flex items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <ConfidenceIcon c={c.confidence} />
+                <span className="truncate font-medium" style={{ color: 'var(--text-primary)' }}>{c.name}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span style={{ color: c.last_restore_test_at ? 'var(--text-muted)' : 'var(--accent-error)' }}>
+                  {fmtRelative(c.last_restore_test_at)}
+                </span>
+                <button
+                  onClick={() => runTest(c.id)}
+                  disabled={!!busy}
+                  title="Run restore test"
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:opacity-80 disabled:opacity-40"
+                  style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+                >
+                  <Undo2 size={10} />{busy === c.id ? '…' : 'Test'}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -546,6 +642,9 @@ export default function DashboardPage() {
             </div>
           </div>
         )
+      case 'backup_health_section':
+        if (!on('backup_health')) return null
+        return <BackupHealthWidget key="backup_health_section" />
       default: return null
     }
   }

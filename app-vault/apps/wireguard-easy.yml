@@ -3,6 +3,7 @@ name: WireGuard Easy
 description: Easiest way to set up WireGuard VPN with a web UI for managing peers
 category: networking
 version_hint: "latest"
+web_port: 51821
 compose:
   services:
     wg-easy:

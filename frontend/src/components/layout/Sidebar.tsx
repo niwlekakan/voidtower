@@ -3,11 +3,12 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, Cpu, Stethoscope, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, Palette, ArrowUpCircle, PlugZap, Puzzle,
+  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
 import { api } from '@/api/client'
+import { useNavConfigStore, resolvedNavItems } from '@/store/navConfig'
 
 interface NavItem {
   to: string
@@ -31,27 +32,32 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: 'Infrastructure',
+    label: 'Resources',
     items: [
-      { to: '/services',   icon: Server,      label: 'Services',   requires: 'systemd'   },
-      { to: '/containers', icon: Container,   label: 'Containers' },
-      { to: '/vms',        icon: Monitor,     label: 'VMs',        requires: 'kvm'       },
-      { to: '/apps',       icon: Package,     label: 'App Vault'  },
-      { to: '/ai',         icon: BrainCircuit,label: 'AI'         },
-      { to: '/models',     icon: HardDrive,   label: 'Models'     },
+      { to: '/services',   icon: Server,    label: 'Services',  requires: 'systemd' },
+      { to: '/containers', icon: Container, label: 'Containers'                     },
+      { to: '/vms',        icon: Monitor,   label: 'VMs',       requires: 'kvm'     },
+      { to: '/apps',       icon: Package,   label: 'App Vault'                      },
+    ],
+  },
+  {
+    label: 'AI',
+    items: [
+      { to: '/ai',     icon: BrainCircuit, label: 'Workspace' },
+      { to: '/models', icon: HardDrive,    label: 'Models'    },
     ],
   },
   {
     label: 'Network',
     items: [
-      { to: '/network',   icon: Network, label: 'Network'   },
-      { to: '/proxies',   icon: Globe,   label: 'Proxies'   },
+      { to: '/network',   icon: Network, label: 'Network'                        },
+      { to: '/proxies',   icon: Globe,   label: 'Proxies'                        },
       { to: '/wireguard', icon: Wifi,    label: 'WireGuard', requires: 'wireguard' },
       { to: '/firewall',  icon: Flame,   label: 'Firewall',  requires: 'ufw'       },
     ],
   },
   {
-    label: 'Storage',
+    label: 'Data',
     items: [
       { to: '/storage', icon: HardDrive,  label: 'Storage' },
       { to: '/backups', icon: HardDrive,  label: 'Backups' },
@@ -61,24 +67,26 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Security',
     items: [
-      { to: '/security', icon: Lock,     label: 'Security'  },
-      { to: '/secrets',  icon: KeyRound, label: 'Secrets'   },
+      { to: '/security', icon: Lock,          label: 'Security'  },
+      { to: '/secrets',  icon: KeyRound,      label: 'Secrets'   },
       { to: '/audit',    icon: ClipboardList, label: 'Audit Log' },
+    ],
+  },
+  {
+    label: 'Ops',
+    items: [
+      { to: '/automation', icon: Zap,      label: 'Automation' },
+      { to: '/terminal',   icon: Terminal, label: 'Terminal'   },
+      { to: '/tags',       icon: Tag,      label: 'Tags'       },
     ],
   },
   {
     label: 'System',
     items: [
-      { to: '/tags',        icon: Tag,         label: 'Tags'         },
-      { to: '/automation',  icon: Zap,         label: 'Automation'   },
-      { to: '/terminal',    icon: Terminal,    label: 'Terminal'     },
-      { to: '/capabilities',icon: Cpu,         label: 'Capabilities' },
-      { to: '/diagnostics', icon: Stethoscope, label: 'Diagnostics'  },
-      { to: '/themes',      icon: Palette,     label: 'Themes'       },
-      { to: '/updates',       icon: ArrowUpCircle, label: 'Updates'      },
-      { to: '/mods',          icon: Puzzle,        label: 'Mods'         },
-      { to: '/integrations',  icon: PlugZap,       label: 'Integrations' },
-      { to: '/settings',    icon: Settings,      label: 'Settings'     },
+      { to: '/integrations', icon: PlugZap,       label: 'Integrations' },
+      { to: '/updates',      icon: ArrowUpCircle, label: 'Updates'      },
+      { to: '/mods',         icon: Puzzle,        label: 'Mods'         },
+      { to: '/settings',     icon: Settings,      label: 'Settings'     },
     ],
   },
 ]
@@ -86,8 +94,13 @@ const NAV_GROUPS: NavGroup[] = [
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const [available, setAvailable] = useState<Set<string> | null>(null)
+  const [instanceName, setInstanceName] = useState('VoidTower')
   const { user, logout } = useAuthStore()
   const navigate = useNavigate()
+  const navItems = useNavConfigStore((s) => s.items)
+  const resolved = resolvedNavItems(navItems)
+  // Build a lookup: id -> { label, visible }
+  const navMap = Object.fromEntries(resolved.map((n) => [n.id, n]))
 
   useEffect(() => {
     fetch('/api/capabilities', { credentials: 'include' })
@@ -99,6 +112,15 @@ export default function Sidebar() {
             .filter(c => c.detected)
             .map(c => c.id)
         ))
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    fetch('/api/settings/public')
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { instance_name?: string } | null) => {
+        if (d?.instance_name) setInstanceName(d.instance_name)
       })
       .catch(() => {})
   }, [])
@@ -121,7 +143,7 @@ export default function Sidebar() {
         <Shield size={20} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
         {!collapsed && (
           <span className="font-semibold tracking-wide text-sm" style={{ color: 'var(--text-primary)' }}>
-            VoidTower
+            {instanceName}
           </span>
         )}
         <button
@@ -150,29 +172,39 @@ export default function Sidebar() {
               <div className="mx-2 mb-2 mt-1" style={{ height: 1, background: 'var(--border-subtle)' }} />
             )}
             <div className="space-y-0.5">
-              {group.items.filter(({ requires }) =>
-                !requires || available === null || available.has(requires)
-              ).map(({ to, icon: Icon, label }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  onClick={() => document.body.classList.remove('mobile-nav-open')}
-                  className={({ isActive }) =>
-                    clsx(
-                      'flex items-center gap-3 px-2 py-2 rounded text-sm transition-colors',
-                      isActive ? 'font-medium' : 'hover:opacity-80',
-                    )
-                  }
-                  style={({ isActive }) => ({
-                    background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
-                    color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                  })}
-                  title={collapsed ? label : undefined}
-                >
-                  <Icon size={16} style={{ flexShrink: 0 }} />
-                  {!collapsed && <span>{label}</span>}
-                </NavLink>
-              ))}
+              {group.items.filter(({ requires, to }) => {
+                // capability filter
+                if (requires && available !== null && !available.has(requires)) return false
+                // nav config visibility: derive key from path (e.g. '/dashboard' -> 'dashboard')
+                const key = to.replace(/^\//, '')
+                const cfg = navMap[key]
+                if (cfg && !cfg.visible) return false
+                return true
+              }).map(({ to, icon: Icon, label }) => {
+                const key = to.replace(/^\//, '')
+                const displayLabel = navMap[key]?.label ?? label
+                return (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    onClick={() => document.body.classList.remove('mobile-nav-open')}
+                    className={({ isActive }) =>
+                      clsx(
+                        'flex items-center gap-3 px-2 py-2 rounded text-sm transition-colors',
+                        isActive ? 'font-medium' : 'hover:opacity-80',
+                      )
+                    }
+                    style={({ isActive }) => ({
+                      background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
+                      color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                    })}
+                    title={collapsed ? displayLabel : undefined}
+                  >
+                    <Icon size={16} style={{ flexShrink: 0 }} />
+                    {!collapsed && <span>{displayLabel}</span>}
+                  </NavLink>
+                )
+              })}
             </div>
           </div>
         ))}

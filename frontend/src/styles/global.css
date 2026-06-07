@@ -4,6 +4,10 @@
 
 /* ─── VoidTower Design Tokens ──────────────────────────────────────── */
 :root {
+  /* Glass blur — reference via var(--vt-blur) in all backdrop-filter values.
+     Cleared to none by .a11y-reduce-transparency so one toggle disables all glass. */
+  --vt-blur: blur(40px);
+
   /* Backgrounds */
   --bg-root:       #050509;
   --bg-panel:      #0b0d14;
@@ -298,6 +302,58 @@ body[data-glass="frosted"] header {
 
 /* All background presets are now canvas-based — no CSS rules needed here */
 
+/* ─── Panel Container Query Root ───────────────────────────────────── */
+.panel-content-root {
+  container-type: inline-size;
+  container-name: panel;
+  height: 100%;
+  overflow-y: auto;
+  /* Void Mode AI OS aesthetic — slightly different from Tower Mode */
+  background: var(--bg-panel, #0b0d14);
+  color: var(--text-primary);
+  font-size: 13px; /* denser/terminal-like vs Tower Mode's 14px */
+}
+/* Pages inside panels must not enforce viewport height */
+.panel-content-root > * { min-height: unset !important; }
+.panel-content-root .page-root,
+.panel-content-root .page-content,
+.panel-content-root main { min-height: 0 !important; height: auto !important; }
+
+/* ─── Services compact cards (panel ≤700px) ─────────────────────────── */
+@container panel (max-width: 700px) {
+  .services-table { display: none; }
+  .services-cards { display: grid !important; grid-template-columns: 1fr; gap: 8px; padding: 8px; }
+}
+@container panel (min-width: 701px) {
+  .services-cards { display: none; }
+}
+
+/* ─── Containers compact cards (panel ≤700px) ──────────────────────── */
+@container panel (max-width: 700px) {
+  .containers-table { display: none; }
+  .containers-cards { display: grid !important; grid-template-columns: 1fr; gap: 8px; padding: 8px; }
+}
+@container panel (min-width: 701px) {
+  .containers-cards { display: none; }
+}
+
+/* ─── Alerts compact cards (panel ≤700px) ──────────────────────────── */
+@container panel (max-width: 700px) {
+  .alerts-cards .alert-actions-wide { display: none; }
+  .alerts-cards .alert-actions-compact { display: flex !important; }
+  .alerts-cards .alert-message { -webkit-line-clamp: 2; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+}
+@container panel (min-width: 701px) {
+  .alerts-cards .alert-actions-compact { display: none; }
+}
+
+/* ─── AppVault deployed tab (panel ≤600px) ──────────────────────────── */
+@container panel (max-width: 600px) {
+  .deployed-app-detail { display: none; }
+  .deployed-app-row { flex-wrap: wrap; gap: 6px; }
+  .deployed-app-meta { font-size: 11px; }
+}
+
 /* ─── Mobile / Responsive ───────────────────────────────────────────── */
 @media (max-width: 768px) {
   :root {
@@ -344,4 +400,55 @@ body[data-glass="frosted"] header {
   aside[style*="--sidebar-collapsed-width"] {
     display: none;
   }
+}
+
+/* ─── Accessibility overrides ────────────────────────────────────────── */
+
+/* Reduce transparency: clear the --vt-blur variable so every element using
+   var(--vt-blur) for backdrop-filter automatically resolves to none.
+   Also strip any residual backdrop-filter on standard surface classes. */
+.a11y-reduce-transparency {
+  --vt-blur: none;
+}
+.a11y-reduce-transparency .panel,
+.a11y-reduce-transparency .card,
+.a11y-reduce-transparency aside,
+.a11y-reduce-transparency header,
+.a11y-reduce-transparency [data-glass] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Reduce motion: disable all transitions and animations */
+.a11y-reduce-motion *,
+.a11y-reduce-motion *::before,
+.a11y-reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+/* Large controls: increase tap targets and font sizes */
+.a11y-large-controls button,
+.a11y-large-controls a,
+.a11y-large-controls input,
+.a11y-large-controls select {
+  min-height: 44px !important;
+  min-width: 44px !important;
+  font-size: 1.1em !important;
+}
+
+/* Prefer stacked: force single-column/phone-style layout in Void Mode */
+.a11y-prefer-stacked [data-panel] {
+  position: fixed !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important;
+}
+
+/* ─── PanelShell: hide full-page headers inside floating panels ──────── */
+.panel-shell-active .page-header,
+.panel-shell-active .page-title-bar,
+.panel-shell-active h1.page-title {
+  display: none;
 }

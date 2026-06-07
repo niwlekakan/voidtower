@@ -1,5 +1,7 @@
 id: pihole
 name: Pi-hole
+web_port: 8180
+web_path: /admin
 description: Network-wide ad blocker and DNS sinkhole
 category: networking
 icon: ""

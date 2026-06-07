@@ -3,6 +3,9 @@ import { createPortal } from 'react-dom'
 import { useAiosStore, type PanelState, type LayoutMode, type SnapZone } from '@/aios/store/aios'
 import { getSnapZone, snapPreviewRect } from '@/aios/hooks/useSnapZones'
 import type { DeviceTier } from '@/aios/hooks/useDeviceTier'
+import { useTouchGestures } from '@/aios/hooks/useTouchGestures'
+import AiBadge from '@/components/ui/AiBadge'
+import type { AiLevel } from '@/components/ui/AiBadge'
 
 // ---------------------------------------------------------------------------
 // Public interface
@@ -14,22 +17,53 @@ export interface AiosPanelProps {
   children: React.ReactNode
   statusBarH?: number
   dockH?: number
+  /** AI integration level shown in panel chrome */
+  aiLevel?: AiLevel
+}
+
+// ---------------------------------------------------------------------------
+// AI level derived from known component keys
+// ---------------------------------------------------------------------------
+
+const COMPONENT_AI_LEVELS: Record<string, AiLevel> = {
+  ai:         'native',
+  services:   'aware',
+  containers: 'aware',
+  terminal:   'aware',
+}
+
+function deriveAiLevel(component: string, explicit?: AiLevel): AiLevel | undefined {
+  if (explicit !== undefined) return explicit
+  return COMPONENT_AI_LEVELS[component]
 }
 
 // ---------------------------------------------------------------------------
 // Snap geometry map  (non-floating, non-minimized)
 // ---------------------------------------------------------------------------
 
+// All snap positions respect the status bar (top) and dock (bottom).
+// --aios-status-h / --aios-dock-h are set on the layout root; fallbacks match known defaults.
+const SH  = 'var(--aios-status-h,36px)'
+const DH  = 'var(--aios-dock-h,62px)'
+const DL  = 'var(--aios-dock-left,0px)'
+// Canvas = full viewport minus status bar, dock, and left dock column
+const CW       = `calc(100vw - ${DL})`
+const CH       = `calc(100vh - ${SH} - ${DH})`
+const HALF_W   = `calc((100vw - ${DL}) / 2)`
+const HALF_H   = `calc((100vh - ${SH} - ${DH}) / 2)`
+const MID_X    = `calc(${DL} + (100vw - ${DL}) / 2)`
+const MID_Y    = `calc(${SH} + (100vh - ${SH} - ${DH}) / 2)`
+
 const SNAP_STYLES: Partial<Record<LayoutMode, React.CSSProperties>> = {
-  'left-half':    { left: 0,      top: 0,      width: '50vw',  height: '100vh' },
-  'right-half':   { left: '50vw', top: 0,      width: '50vw',  height: '100vh' },
-  'top-half':     { left: 0,      top: 0,      width: '100vw', height: '50vh'  },
-  'bottom-half':  { left: 0,      top: '50vh', width: '100vw', height: '50vh'  },
-  'top-left':     { left: 0,      top: 0,      width: '50vw',  height: '50vh'  },
-  'top-right':    { left: '50vw', top: 0,      width: '50vw',  height: '50vh'  },
-  'bottom-left':  { left: 0,      top: '50vh', width: '50vw',  height: '50vh'  },
-  'bottom-right': { left: '50vw', top: '50vh', width: '50vw',  height: '50vh'  },
-  'fullscreen':   { left: 0,      top: 0,      width: '100vw', height: '100vh' },
+  'left-half':    { left: DL,    top: SH,    width: HALF_W, height: CH     },
+  'right-half':   { left: MID_X, top: SH,    width: HALF_W, height: CH     },
+  'top-half':     { left: DL,    top: SH,    width: CW,     height: HALF_H },
+  'bottom-half':  { left: DL,    top: MID_Y, width: CW,     height: HALF_H },
+  'top-left':     { left: DL,    top: SH,    width: HALF_W, height: HALF_H },
+  'top-right':    { left: MID_X, top: SH,    width: HALF_W, height: HALF_H },
+  'bottom-left':  { left: DL,    top: MID_Y, width: HALF_W, height: HALF_H },
+  'bottom-right': { left: MID_X, top: MID_Y, width: HALF_W, height: HALF_H },
+  // fullscreen omitted — geometry stored on panel state via snapGeometry()
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +128,7 @@ interface ContextMenuProps {
   x: number
   y: number
   onClose: () => void
+  onInspect: () => void
 }
 
 const SNAP_PRESETS: { label: string; zone: SnapZone }[] = [
@@ -104,7 +139,7 @@ const SNAP_PRESETS: { label: string; zone: SnapZone }[] = [
   { label: 'Fullscreen',  zone: 'fullscreen'  },
 ]
 
-function PanelContextMenu({ panelId, x, y, onClose }: ContextMenuProps) {
+function PanelContextMenu({ panelId, x, y, onClose, onInspect }: ContextMenuProps) {
   const { snapPanel, closePanel } = useAiosStore()
 
   const run = (fn: () => void) => { fn(); onClose() }
@@ -158,6 +193,15 @@ function PanelContextMenu({ panelId, x, y, onClose }: ContextMenuProps) {
         </button>
         <div style={{ height: 1, background: 'rgba(255,255,255,0.1)', margin: '4px 0' }} />
         <button
+          onClick={() => run(onInspect)}
+          style={menuItemStyle}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+        >
+          Inspect
+        </button>
+        <div style={{ height: 1, background: 'rgba(255,255,255,0.1)', margin: '4px 0' }} />
+        <button
           onClick={() => run(() => closePanel(panelId))}
           style={{ ...menuItemStyle, color: 'var(--accent-danger, #f87171)' }}
           onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
@@ -188,10 +232,18 @@ const menuItemStyle: React.CSSProperties = {
 // ---------------------------------------------------------------------------
 
 function PhoneSheetPanel({ panel, children }: { panel: PanelState; children: React.ReactNode }) {
-  const { closePanel, minimizePanel } = useAiosStore()
+  const { closePanel, minimizePanel, restorePanel } = useAiosStore()
   const dragStartY = useRef<number | null>(null)
   const dragDeltaY = useRef(0)
   const [offsetY, setOffsetY] = useState(0)
+  const sheetRef = useRef<HTMLDivElement>(null)
+
+  // Wire touch gestures: swipe down → minimize, long-press title → context menu
+  useTouchGestures(sheetRef as React.RefObject<HTMLElement>, {
+    onSwipeDown: () => {
+      if (panel.layoutMode !== 'minimized') minimizePanel(panel.id)
+    },
+  })
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     dragStartY.current = e.clientY
@@ -214,8 +266,38 @@ function PhoneSheetPanel({ panel, children }: { panel: PanelState; children: Rea
     setOffsetY(0)
   }
 
+  // If minimized, render a collapsed pill that can be tapped to restore
+  if (panel.layoutMode === 'minimized') {
+    return (
+      <div
+        style={{
+          position: 'fixed',
+          bottom: 72,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: panel.zIndex,
+          background: 'rgba(0,0,0,0.85)',
+          backdropFilter: 'var(--vt-blur)',
+          WebkitBackdropFilter: 'var(--vt-blur)',
+          border: '1px solid rgba(255,255,255,0.12)',
+          borderRadius: 20,
+          padding: '6px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          cursor: 'pointer',
+        }}
+        onClick={() => restorePanel(panel.id)}
+      >
+        <span style={{ fontSize: 13 }}>{panel.icon}</span>
+        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.8)' }}>{panel.title}</span>
+      </div>
+    )
+  }
+
   return (
     <div
+      ref={sheetRef}
       style={{
         position: 'fixed',
         bottom: 0,
@@ -228,8 +310,8 @@ function PhoneSheetPanel({ panel, children }: { panel: PanelState; children: Rea
         display: 'flex',
         flexDirection: 'column',
         background: 'var(--bg-panel, rgba(0,0,0,0.8))',
-        backdropFilter: 'blur(24px)',
-        WebkitBackdropFilter: 'blur(24px)',
+        backdropFilter: 'var(--vt-blur)',
+        WebkitBackdropFilter: 'var(--vt-blur)',
         borderTop: '1px solid rgba(255,255,255,0.1)',
         borderRadius: '16px 16px 0 0',
         boxShadow: '0 -8px 40px rgba(0,0,0,0.5)',
@@ -278,11 +360,16 @@ const titleBtnBase: React.CSSProperties = {
   fontSize: 11, transition: 'color 0.12s',
 }
 
+// macOS-style traffic light dot colors
+const DOT_CLOSE    = '#ff5f57'
+const DOT_MINIMIZE = '#febc2e'
+const DOT_MAXIMIZE = '#28c840'
+
 // ---------------------------------------------------------------------------
 // Main AiosPanel
 // ---------------------------------------------------------------------------
 
-export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
+export default function AiosPanel({ panel, tier, children, aiLevel: aiLevelProp }: AiosPanelProps) {
   const {
     focusPanel,
     closePanel,
@@ -292,10 +379,15 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
     resizePanel,
     togglePinned,
     restorePanel,
+    openInspector,
     focusedId,
+    tileMode,
+    panels,
+    activeWorkspace,
   } = useAiosStore()
 
   const isFocused = focusedId === panel.id
+  const resolvedAiLevel = deriveAiLevel(panel.component, aiLevelProp)
 
   // Drag refs
   const panelRef = useRef<HTMLDivElement>(null)
@@ -304,6 +396,11 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
   const dragStart = useRef({ px: 0, py: 0, ox: 0, oy: 0 })
   const [snapPreview, setSnapPreview] = useState<SnapZone | null>(null)
 
+  // Snap guide lines for freeform mode
+  type GuideAxis = 'h' | 'v'
+  interface SnapGuide { axis: GuideAxis; pos: number }
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([])
+
   // Resize refs
   const resizingRef = useRef(false)
   const resizeEdgeRef = useRef<ResizeEdge | null>(null)
@@ -311,6 +408,13 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
 
   // Context menu
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null)
+
+  // Wire touch gestures to title bar: swipe down → minimize
+  useTouchGestures(titlebarRef as React.RefObject<HTMLElement>, {
+    onSwipeDown: () => {
+      if (panel.layoutMode !== 'minimized') minimizePanel(panel.id)
+    },
+  })
 
   // ── Phone tier ─────────────────────────────────────────────────────────────
   if (tier === 'phone') {
@@ -325,6 +429,7 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
         tabIndex={0}
         role="region"
         aria-label={panel.title}
+        data-focused={isFocused ? '' : undefined}
         style={{
           position: 'static',
           display: 'flex', flexDirection: 'column',
@@ -341,6 +446,9 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {panel.title}
           </span>
+          {resolvedAiLevel && resolvedAiLevel !== 'none' && (
+            <AiBadge level={resolvedAiLevel} compact />
+          )}
           <button
             onClick={() => closePanel(panel.id)}
             style={{ ...titleBtnBase, color: 'rgba(255,255,255,0.4)' }}
@@ -358,9 +466,13 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
   // ── Desktop / tablet / large / kiosk ───────────────────────────────────────
 
   const { layoutMode, x, y, w, h, zIndex } = panel
-  const isFloating  = layoutMode === 'floating'
-  const isMinimized = layoutMode === 'minimized'
+  const isFloating   = layoutMode === 'floating'
+  const isFullscreen = layoutMode === 'fullscreen'
+  const isMinimized  = layoutMode === 'minimized'
   const cornerSize  = tier === 'tablet' ? 24 : 8
+
+  // Accent line color: red for 'danger'-type panels, default accent-primary
+  const accentLineColor = 'var(--accent-primary, #8b5cf6)'
 
   // Panel CSS
   let panelStyle: React.CSSProperties = {
@@ -370,23 +482,29 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
     flexDirection: 'column',
     borderRadius: 10,
     overflow: 'hidden',
-    background: 'var(--bg-panel, rgba(0,0,0,0.6))',
-    backdropFilter: 'blur(24px)',
-    WebkitBackdropFilter: 'blur(24px)',
-    border: `1px solid ${isFocused ? 'var(--accent-primary,#6366f1)' : 'rgba(255,255,255,0.08)'}`,
+    background: 'linear-gradient(135deg, rgba(139,92,246,0.05) 0%, transparent 100%), var(--bg-panel, #0b0d14)',
+    backdropFilter: 'var(--vt-blur)',
+    WebkitBackdropFilter: 'var(--vt-blur)',
+    border: isFocused
+      ? '1px solid rgba(139,92,246,0.4)'
+      : '1px solid rgba(255,255,255,0.06)',
     boxShadow: isFocused
-      ? '0 0 0 1px var(--accent-primary,#6366f1), 0 12px 48px rgba(0,0,0,0.55)'
-      : '0 8px 32px rgba(0,0,0,0.4)',
+      ? '0 0 0 1px rgba(139,92,246,0.5), 0 8px 40px rgba(0,0,0,0.5)'
+      : '0 4px 24px rgba(0,0,0,0.3)',
     outline: 'none',
     transition: isFloating ? 'box-shadow 0.15s, border-color 0.15s' : 'all 0.18s cubic-bezier(.4,0,.2,1)',
   }
 
-  if (isFloating || isMinimized) {
+  if (isFloating || isMinimized || isFullscreen) {
+    // fullscreen geometry is stored on panel state by snapGeometry() in the store,
+    // so it correctly respects the status-bar and dock insets.
     panelStyle = {
       ...panelStyle,
       transform: `translate(${x}px, ${y}px)`,
       width: w,
       height: isMinimized ? 40 : h,
+      // Remove border-radius in fullscreen for a clean edge-to-edge look
+      borderRadius: isFullscreen ? 0 : 10,
     }
   } else {
     const snapStyle = SNAP_STYLES[layoutMode]
@@ -398,31 +516,80 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
   const onTitlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     if ((e.target as HTMLElement).closest('button')) return
+    if (tileMode) return  // drag disabled in tile mode
+    // Dragging a fullscreen panel restores it to floating first
+    if (isFullscreen) { restorePanel(panel.id); return }
     if (!isFloating) return
     e.preventDefault()
     focusPanel(panel.id)
     draggingRef.current = true
     dragStart.current = { px: e.clientX, py: e.clientY, ox: panel.x, oy: panel.y }
     ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
-    if (panelRef.current) panelRef.current.style.willChange = 'transform'
-  }, [isFloating, panel.id, panel.x, panel.y, focusPanel])
+    if (panelRef.current) {
+      panelRef.current.style.willChange = 'transform'
+      panelRef.current.style.backdropFilter = 'none'
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(panelRef.current.style as any).webkitBackdropFilter = 'none'
+    }
+  }, [isFloating, tileMode, panel.id, panel.x, panel.y, focusPanel])
 
   const onTitlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return
     e.preventDefault()
     const dx = e.clientX - dragStart.current.px
     const dy = e.clientY - dragStart.current.py
-    movePanel(panel.id, dragStart.current.ox + dx, dragStart.current.oy + dy)
+    const nx = dragStart.current.ox + dx
+    const ny = dragStart.current.oy + dy
+    movePanel(panel.id, nx, ny)
     if (tier === 'desktop' || tier === 'large' || tier === 'tablet') {
       setSnapPreview(getSnapZone(e.clientX, e.clientY))
     }
-  }, [panel.id, movePanel, tier])
+    // Snap guide lines — check edges of other panels on the same workspace
+    const SNAP_THRESHOLD = 80
+    const otherPanels = panels.filter(
+      (p) => p.id !== panel.id && p.workspaceIndex === activeWorkspace && p.layoutMode !== 'minimized',
+    )
+    const guides: SnapGuide[] = []
+    const myEdges = { left: nx, right: nx + panel.w, top: ny, bottom: ny + panel.h }
+    for (const other of otherPanels) {
+      const edges = [
+        { axis: 'v' as const, pos: other.x },
+        { axis: 'v' as const, pos: other.x + other.w },
+        { axis: 'h' as const, pos: other.y },
+        { axis: 'h' as const, pos: other.y + other.h },
+      ]
+      for (const edge of edges) {
+        if (edge.axis === 'v') {
+          if (Math.abs(myEdges.left - edge.pos) < SNAP_THRESHOLD ||
+              Math.abs(myEdges.right - edge.pos) < SNAP_THRESHOLD) {
+            if (!guides.some((g) => g.axis === 'v' && g.pos === edge.pos)) {
+              guides.push(edge)
+            }
+          }
+        } else {
+          if (Math.abs(myEdges.top - edge.pos) < SNAP_THRESHOLD ||
+              Math.abs(myEdges.bottom - edge.pos) < SNAP_THRESHOLD) {
+            if (!guides.some((g) => g.axis === 'h' && g.pos === edge.pos)) {
+              guides.push(edge)
+            }
+          }
+        }
+      }
+    }
+    setSnapGuides(guides)
+  }, [panel.id, panel.w, panel.h, panels, activeWorkspace, movePanel, tier])
 
   const onTitlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return
     draggingRef.current = false
     ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
-    if (panelRef.current) panelRef.current.style.willChange = 'auto'
+    if (panelRef.current) {
+      panelRef.current.style.willChange = 'auto'
+      panelRef.current.style.backdropFilter = 'var(--vt-blur)'
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(panelRef.current.style as any).webkitBackdropFilter = 'var(--vt-blur)'
+    }
+    setSnapGuides([])
     if (snapPreview) {
       snapPanel(panel.id, snapPreview)
       setSnapPreview(null)
@@ -491,6 +658,12 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
     setCtxMenu({ x: e.clientX, y: e.clientY })
   }, [])
 
+  // ── Inspect ───────────────────────────────────────────────────────────────
+
+  const handleInspect = useCallback(() => {
+    openInspector(panel.id)
+  }, [panel.id, openInspector])
+
   // ── Resize handle size helper ─────────────────────────────────────────────
 
   const resizeZoneStyle = (zone: ResizeZoneDesc): React.CSSProperties => {
@@ -514,6 +687,27 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
         document.body,
       )}
 
+      {/* Snap guide lines — freeform drag only */}
+      {snapGuides.length > 0 && createPortal(
+        <>
+          {snapGuides.map((guide, i) => (
+            <div
+              key={i}
+              style={{
+                position: 'fixed',
+                pointerEvents: 'none',
+                zIndex: 99997,
+                background: 'var(--accent-secondary, #06b6d4)',
+                ...(guide.axis === 'v'
+                  ? { left: guide.pos, top: 0, width: 1, height: '100vh' }
+                  : { top: guide.pos, left: 0, height: 1, width: '100vw' }),
+              }}
+            />
+          ))}
+        </>,
+        document.body,
+      )}
+
       {/* Context menu */}
       {ctxMenu && (
         <PanelContextMenu
@@ -521,6 +715,7 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
           x={ctxMenu.x}
           y={ctxMenu.y}
           onClose={() => setCtxMenu(null)}
+          onInspect={handleInspect}
         />
       )}
 
@@ -532,62 +727,48 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
         tabIndex={0}
         role="dialog"
         aria-label={panel.title}
+        data-focused={isFocused ? '' : undefined}
       >
-        {/* Titlebar */}
-        <div
-          ref={titlebarRef}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            height: 40, padding: '0 10px', flexShrink: 0,
-            background: 'var(--bg-elevated, rgba(0,0,0,0.4))',
-            borderBottom: '1px solid rgba(255,255,255,0.08)',
+        {/* 2px accent line at top edge — focused only */}
+        {isFocused && (
+          <div style={{
+            position: 'absolute',
+            top: 0, left: 0, right: 0,
+            height: 2,
+            background: accentLineColor,
+            pointerEvents: 'none',
+            zIndex: 5,
             borderRadius: '10px 10px 0 0',
-            cursor: isFloating ? 'grab' : 'default',
-            userSelect: 'none',
-            touchAction: 'none',
-          }}
+          }} />
+        )}
+
+        {/* Titlebar */}
+        <TitleBar
+          titlebarRef={titlebarRef}
+          panel={panel}
+          isFocused={isFocused}
+          isFloating={isFloating}
+          layoutMode={layoutMode}
+          resolvedAiLevel={resolvedAiLevel}
           onPointerDown={onTitlePointerDown}
           onPointerMove={onTitlePointerMove}
           onPointerUp={onTitlePointerUp}
           onDoubleClick={onTitleDblClick}
           onContextMenu={onTitleContextMenu}
-        >
-          <span style={{ fontSize: 14, pointerEvents: 'none' }}>{panel.icon}</span>
-          <span style={{
-            flex: 1, fontSize: 12, fontWeight: 600,
-            color: 'rgba(255,255,255,0.9)',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            pointerEvents: 'none',
-          }}>
-            {panel.title}
-          </span>
-
-          {/* Pin */}
-          <TitleBtn
-            label="⊤"
-            title={panel.pinned ? 'Unpin' : 'Pin on top'}
-            active={panel.pinned}
-            onClick={() => togglePinned(panel.id)}
-          />
-
-          {/* Minimize */}
-          <TitleBtn label="─" title="Minimize" onClick={() => minimizePanel(panel.id)} />
-
-          {/* Maximize / Restore */}
-          <TitleBtn
-            label="⬜"
-            title={layoutMode === 'fullscreen' ? 'Restore' : 'Maximize'}
-            onClick={() => layoutMode === 'fullscreen' ? restorePanel(panel.id) : snapPanel(panel.id, 'fullscreen')}
-          />
-
-          {/* Close */}
-          <TitleBtn label="✕" title="Close" danger onClick={() => closePanel(panel.id)} />
-        </div>
+          onClose={() => closePanel(panel.id)}
+          onMinimize={() => minimizePanel(panel.id)}
+          onMaximize={() => layoutMode === 'fullscreen' ? restorePanel(panel.id) : snapPanel(panel.id, 'fullscreen')}
+          onTogglePin={() => togglePinned(panel.id)}
+        />
 
         {/* Body – hidden when minimized */}
         {!isMinimized && (
           <div
-            style={{ flex: 1, overflow: 'hidden', position: 'relative' }}
+            style={{
+              flex: 1, overflow: 'hidden', position: 'relative',
+              // Add inner breathing room except in fullscreen (edge-to-edge)
+              padding: isFullscreen ? 0 : 12,
+            }}
             onPointerMove={resizingRef.current ? onResizePointerMove : undefined}
             onPointerUp={resizingRef.current ? onResizePointerUp : undefined}
           >
@@ -595,8 +776,8 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
           </div>
         )}
 
-        {/* 8-zone resize handles — floating panels, non-minimized */}
-        {isFloating && !isMinimized && RESIZE_ZONES.map((zone) => (
+        {/* 8-zone resize handles — floating panels, non-minimized, freeform only */}
+        {isFloating && !isMinimized && !tileMode && RESIZE_ZONES.map((zone) => (
           <div
             key={zone.id}
             style={resizeZoneStyle(zone)}
@@ -611,52 +792,163 @@ export default function AiosPanel({ panel, tier, children }: AiosPanelProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Small reusable titlebar button
+// macOS-style traffic-light titlebar
 // ---------------------------------------------------------------------------
 
-interface TitleBtnProps {
-  label: string
-  title: string
-  onClick: () => void
-  active?: boolean
-  danger?: boolean
+interface TitleBarProps {
+  titlebarRef: React.RefObject<HTMLDivElement>
+  panel: PanelState
+  isFocused: boolean
+  isFloating: boolean
+  layoutMode: LayoutMode
+  resolvedAiLevel: AiLevel | undefined
+  onPointerDown: React.PointerEventHandler<HTMLDivElement>
+  onPointerMove: React.PointerEventHandler<HTMLDivElement>
+  onPointerUp: React.PointerEventHandler<HTMLDivElement>
+  onDoubleClick: () => void
+  onContextMenu: React.MouseEventHandler<HTMLDivElement>
+  onClose: () => void
+  onMinimize: () => void
+  onMaximize: () => void
+  onTogglePin: () => void
 }
 
-function TitleBtn({ label, title, onClick, active, danger }: TitleBtnProps) {
+function TitleBar({
+  titlebarRef, panel, isFocused, isFloating, layoutMode,
+  resolvedAiLevel,
+  onPointerDown, onPointerMove, onPointerUp, onDoubleClick, onContextMenu,
+  onClose, onMinimize, onMaximize, onTogglePin,
+}: TitleBarProps) {
+  const [hovering, setHovering] = useState(false)
+
+  return (
+    <div
+      ref={titlebarRef}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        height: 30, padding: '0 8px', flexShrink: 0,
+        background: 'rgba(10,8,20,0.95)',
+        backdropFilter: 'var(--vt-blur)',
+        WebkitBackdropFilter: 'var(--vt-blur)',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        borderRadius: '10px 10px 0 0',
+        cursor: isFloating ? 'grab' : 'default',
+        userSelect: 'none',
+        touchAction: 'none',
+      }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+    >
+      {/* Traffic light dots */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+        <TrafficDot
+          color={DOT_CLOSE}
+          label="×"
+          title="Close"
+          showLabel={hovering}
+          onClick={(e) => { e.stopPropagation(); onClose() }}
+        />
+        <TrafficDot
+          color={DOT_MINIMIZE}
+          label="−"
+          title="Minimize"
+          showLabel={hovering}
+          onClick={(e) => { e.stopPropagation(); onMinimize() }}
+        />
+        <TrafficDot
+          color={DOT_MAXIMIZE}
+          label="⤢"
+          title={layoutMode === 'fullscreen' ? 'Restore' : 'Maximize'}
+          showLabel={hovering}
+          onClick={(e) => { e.stopPropagation(); onMaximize() }}
+        />
+      </div>
+
+      {/* Icon + title */}
+      <span style={{ fontSize: 12, pointerEvents: 'none', opacity: 0.7 }}>{panel.icon}</span>
+      <span style={{
+        flex: 1, fontSize: 11, fontWeight: 500,
+        color: isFocused ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.45)',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        pointerEvents: 'none',
+        letterSpacing: '0.01em',
+      }}>
+        {panel.title}
+      </span>
+
+      {/* AI badge */}
+      {resolvedAiLevel && resolvedAiLevel !== 'none' && (
+        <div style={{ pointerEvents: 'none', flexShrink: 0 }}>
+          <AiBadge level={resolvedAiLevel} compact />
+        </div>
+      )}
+
+      {/* Pin indicator (subtle, icon-only) */}
+      {panel.pinned && (
+        <button
+          title="Unpin"
+          onClick={(e) => { e.stopPropagation(); onTogglePin() }}
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'var(--accent-primary, #8b5cf6)',
+            fontSize: 10, padding: '0 2px', flexShrink: 0,
+          }}
+        >
+          ⊤
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Traffic light dot
+// ---------------------------------------------------------------------------
+
+interface TrafficDotProps {
+  color: string
+  label: string
+  title: string
+  showLabel: boolean
+  onClick: React.MouseEventHandler<HTMLButtonElement>
+}
+
+function TrafficDot({ color, label, title, showLabel, onClick }: TrafficDotProps) {
   return (
     <button
       title={title}
-      onClick={(e) => { e.stopPropagation(); onClick() }}
+      onClick={onClick}
       onPointerDown={(e) => e.stopPropagation()}
       style={{
-        ...titleBtnBase,
-        color: active
-          ? 'var(--accent-primary, #6366f1)'
-          : danger
-          ? 'var(--text-muted, rgba(255,255,255,0.4))'
-          : 'var(--text-muted, rgba(255,255,255,0.4))',
-      }}
-      onMouseEnter={(e) => {
-        const el = e.currentTarget
-        if (danger) el.style.color = 'var(--accent-danger, #f87171)'
-        else if (!active) el.style.color = 'rgba(255,255,255,0.85)'
-      }}
-      onMouseLeave={(e) => {
-        const el = e.currentTarget
-        if (active) el.style.color = 'var(--accent-primary, #6366f1)'
-        else if (danger) el.style.color = 'var(--text-muted, rgba(255,255,255,0.4))'
-        else el.style.color = 'var(--text-muted, rgba(255,255,255,0.4))'
+        width: 10, height: 10,
+        borderRadius: '50%',
+        background: color,
+        border: 'none', cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexShrink: 0, padding: 0,
+        fontSize: 7, fontWeight: 700,
+        color: 'rgba(0,0,0,0.7)',
+        lineHeight: 1,
+        transition: 'opacity 0.12s',
       }}
     >
-      {label}
+      {showLabel ? label : null}
     </button>
   )
 }
 
 const titlebatStaticStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 8,
-  height: 40, padding: '0 10px', flexShrink: 0,
-  background: 'var(--bg-elevated, rgba(0,0,0,0.4))',
-  borderBottom: '1px solid rgba(255,255,255,0.08)',
+  display: 'flex', alignItems: 'center', gap: 6,
+  height: 30, padding: '0 8px', flexShrink: 0,
+  background: 'rgba(10,8,20,0.95)',
+  backdropFilter: 'blur(40px)',
+  WebkitBackdropFilter: 'blur(40px)',
+  borderBottom: '1px solid rgba(255,255,255,0.06)',
   borderRadius: '10px 10px 0 0',
 }

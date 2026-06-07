@@ -32,6 +32,7 @@ pub struct TimelineEvent {
     pub outcome: String,
     pub details: Option<String>,
     pub ip_address: Option<String>,
+    pub source: Option<String>,
 }
 
 fn classify(action: &str, resource_type: Option<&str>) -> &'static str {
@@ -101,10 +102,10 @@ pub async fn list(
 
     let where_sql = if wheres.is_empty() { String::new() } else { format!("WHERE {}", wheres.join(" AND ")) };
 
-    let rows = sqlx::query_as::<_, (String, i64, Option<String>, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>)>(
+    let rows = sqlx::query_as::<_, (String, i64, Option<String>, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>)>(
         &format!(
             "SELECT a.id, a.timestamp, a.user_id, a.actor_type, a.action,
-                    a.resource_type, a.resource_id, a.outcome, a.details, a.ip_address
+                    a.resource_type, a.resource_id, a.outcome, a.details, a.ip_address, a.source
              FROM audit_log a {where_sql}
              ORDER BY a.timestamp DESC LIMIT {limit} OFFSET {offset}",
             where_sql = where_sql, limit = limit, offset = q.offset
@@ -127,13 +128,13 @@ pub async fn list(
         }
     }
 
-    let mut events: Vec<TimelineEvent> = rows.into_iter().map(|(id, timestamp, user_id, actor_type, action, resource_type, resource_id, outcome, details, ip_address)| {
+    let mut events: Vec<TimelineEvent> = rows.into_iter().map(|(id, timestamp, user_id, actor_type, action, resource_type, resource_id, outcome, details, ip_address, source)| {
         let cat = classify(&action, resource_type.as_deref());
         let actor = user_id.as_ref()
             .and_then(|uid| username_map.get(uid))
             .cloned()
             .unwrap_or_else(|| if actor_type == "system" { "system".to_string() } else { "unknown".to_string() });
-        TimelineEvent { id, timestamp, category: cat.to_string(), action, actor, actor_type, resource_type, resource_id, outcome, details, ip_address }
+        TimelineEvent { id, timestamp, category: cat.to_string(), action, actor, actor_type, resource_type, resource_id, outcome, details, ip_address, source }
     }).collect();
 
     // Client-side category filter (done here to keep SQL simple)

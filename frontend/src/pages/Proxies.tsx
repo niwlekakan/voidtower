@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Globe, Trash2, Power, Plus, Lock, LockOpen, ExternalLink, CheckCircle, XCircle, ChevronDown, ChevronRight, AlertTriangle, Copy, Terminal } from 'lucide-react'
+import { Globe, Trash2, Power, Plus, Lock, LockOpen, ExternalLink, CheckCircle, XCircle, ChevronDown, ChevronRight, AlertTriangle, Copy, Terminal, Pencil, X } from 'lucide-react'
 import MiniTerminal from '@/components/ui/MiniTerminal'
 import { api, ApiClientError } from '@/api/client'
 import { notify } from '@/store/notifications'
 import type { ProxyConfig } from '@/api/types'
 import Button from '@/components/ui/Button'
+import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 
 function fmt(ts: number) {
   return new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -419,6 +420,16 @@ export default function ProxiesPage() {
   const [allowEmbed, setAllowEmbed] = useState(true)
   const [creating, setCreating] = useState(false)
   const [toggling, setToggling] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editDomain, setEditDomain] = useState('')
+  const [editUpstream, setEditUpstream] = useState('')
+  const [editSsl, setEditSsl] = useState(false)
+  const [editAllowEmbed, setEditAllowEmbed] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [pendingPlan, setPendingPlan] = useState<ChangePlan | null>(null)
+  const [pendingAction, setPendingAction] = useState<(() => Promise<void>) | null>(null)
+  const [executing, setExecuting] = useState(false)
 
   const refresh = useCallback(() => {
     setLoading(true)
@@ -439,26 +450,59 @@ export default function ProxiesPage() {
     e.preventDefault()
     setCreating(true)
     try {
-      const r = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed)
-      notify.success(`Proxy created — ${r.nginx}`)
-      setDomain(''); setUpstream('http://localhost:'); setSsl(false); setAllowEmbed(true)
-      setShowForm(false)
-      refresh()
+      const res = await api.proxy.plan(domain.trim(), upstream.trim(), ssl, allowEmbed)
+      setPendingPlan(res.plan)
+      setPendingAction(() => async () => {
+        const r = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed)
+        notify.success(`Proxy created — ${r.nginx}`)
+        setDomain(''); setUpstream('http://localhost:'); setSsl(false); setAllowEmbed(true)
+        setShowForm(false)
+        refresh()
+      })
     } catch (err) {
-      notify.error(err instanceof ApiClientError ? err.message : 'Failed to create proxy')
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to plan proxy')
     } finally {
       setCreating(false)
     }
   }
 
-  const handleDelete = async (p: ProxyConfig) => {
-    if (!confirm(`Remove proxy for "${p.domain}"? The nginx config will be deleted and nginx reloaded.`)) return
+  const handleDelete = async (id: string) => {
     try {
-      const r = await api.proxy.delete(p.id)
+      const r = await api.proxy.delete(id)
       notify.success(`Removed — ${r.nginx}`)
+      setConfirmDeleteId(null)
       refresh()
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Failed to remove')
+    }
+  }
+
+  const startEdit = (p: ProxyConfig) => {
+    setEditingId(p.id)
+    setEditDomain(p.domain)
+    setEditUpstream(p.upstream)
+    setEditSsl(p.ssl)
+    setEditAllowEmbed(p.allow_embed)
+  }
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingId) return
+    setSaving(true)
+    const id = editingId
+    try {
+      const res = await api.proxy.planUpdate(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed)
+      setPendingPlan(res.plan)
+      setPendingAction(() => async () => {
+        const r = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed)
+        notify.success(`Updated — ${r.nginx}`)
+        setEditingId(null)
+        refresh()
+      })
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to plan proxy update')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -689,7 +733,8 @@ backend servers
                 </thead>
                 <tbody>
                   {proxies.map((p) => (
-                    <tr key={p.id} style={{ borderBottom: '1px solid var(--border-subtle)', opacity: p.enabled ? 1 : 0.5 }}>
+                    <Fragment key={p.id}>
+                    <tr style={{ borderBottom: '1px solid var(--border-subtle)', opacity: p.enabled ? 1 : 0.5 }}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono font-medium" style={{ color: 'var(--text-primary)' }}>{p.domain}</span>
@@ -728,14 +773,82 @@ backend servers
                             style={{ color: p.enabled ? 'var(--accent-warning)' : 'var(--accent-success)' }}>
                             <Power size={13} />
                           </button>
-                          <button onClick={() => handleDelete(p)} title="Delete"
+                          <button onClick={() => { setConfirmDeleteId(null); startEdit(p) }} title="Edit"
                             className="p-1 rounded hover:opacity-80 transition-colors"
-                            style={{ color: 'var(--accent-danger)' }}>
-                            <Trash2 size={13} />
+                            style={{ color: editingId === p.id ? 'var(--accent-primary)' : 'var(--text-muted)' }}>
+                            <Pencil size={13} />
                           </button>
+                          {confirmDeleteId === p.id ? (
+                            <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                              Sure?
+                              <button onClick={() => handleDelete(p.id)}
+                                className="px-1.5 py-0.5 rounded hover:opacity-80"
+                                style={{ background: 'var(--accent-danger)', color: '#fff' }}>
+                                Delete
+                              </button>
+                              <button onClick={() => setConfirmDeleteId(null)}
+                                className="p-0.5 rounded hover:opacity-80"
+                                style={{ color: 'var(--text-muted)' }}>
+                                <X size={11} />
+                              </button>
+                            </span>
+                          ) : (
+                            <button onClick={() => { setEditingId(null); setConfirmDeleteId(p.id) }} title="Delete"
+                              className="p-1 rounded hover:opacity-80 transition-colors"
+                              style={{ color: 'var(--accent-danger)' }}>
+                              <Trash2 size={13} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
+                    {editingId === p.id && (
+                      <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td colSpan={7} className="px-4 py-3">
+                          <form onSubmit={handleUpdate} className="space-y-3">
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Domain</label>
+                                <input
+                                  value={editDomain}
+                                  onChange={(e) => setEditDomain(e.target.value)}
+                                  placeholder="app.example.com"
+                                  className="w-full px-3 py-2 rounded text-sm outline-none font-mono"
+                                  style={{ background: 'var(--bg-base)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+                                  required
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Upstream</label>
+                                <input
+                                  value={editUpstream}
+                                  onChange={(e) => setEditUpstream(e.target.value)}
+                                  placeholder="http://localhost:8080"
+                                  className="w-full px-3 py-2 rounded text-sm outline-none font-mono"
+                                  style={{ background: 'var(--bg-base)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+                                  required
+                                />
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-4">
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" checked={editSsl} onChange={(e) => setEditSsl(e.target.checked)} className="w-3.5 h-3.5 rounded" />
+                                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>SSL / HTTPS</span>
+                              </label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" checked={editAllowEmbed} onChange={(e) => setEditAllowEmbed(e.target.checked)} className="w-3.5 h-3.5 rounded" />
+                                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Allow iframe embedding</span>
+                              </label>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button size="sm" variant="primary" type="submit" loading={saving}>Save &amp; reload nginx</Button>
+                              <Button size="sm" variant="ghost" type="button" onClick={() => setEditingId(null)}>Cancel</Button>
+                            </div>
+                          </form>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -755,6 +868,20 @@ backend servers
         <div className="p-4 rounded text-xs text-center" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-muted)' }}>
           Install nginx above to start managing proxy rules from VoidTower.
         </div>
+      )}
+
+      {pendingPlan && pendingAction && (
+        <ChangePlanModal
+          plan={pendingPlan}
+          confirming={executing}
+          onConfirm={async () => {
+            setExecuting(true)
+            try { await pendingAction() }
+            catch (err) { notify.error(err instanceof ApiClientError ? (err as ApiClientError).message : 'Execution failed') }
+            finally { setExecuting(false); setPendingPlan(null); setPendingAction(null) }
+          }}
+          onCancel={() => { setPendingPlan(null); setPendingAction(null) }}
+        />
       )}
     </div>
   )

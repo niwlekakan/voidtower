@@ -1,48 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Tag as TagIcon } from 'lucide-react'
+import { Tag as TagIcon, Play, Square, RotateCcw } from 'lucide-react'
 import { api } from '@/api/client'
 import type { ContainerInfo, ContainerAction, Tag, TagMap } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { useFiltersStore } from '@/store/filters'
 import Button from '@/components/ui/Button'
 import LogViewer from '@/components/ui/LogViewer'
-import { TagPill } from '@/components/ui/TagPill'
+import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import SendToOdysseus from '@/components/ui/SendToOdysseus'
-
-function TagPopover({ resourceId, allTags, assigned, onClose }: {
-  resourceId: string; allTags: Tag[]; assigned: Tag[]; onClose: () => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  const assignedIds = new Set(assigned.map(t => t.id))
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose() }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [onClose])
-  const toggle = async (tag: Tag) => {
-    try {
-      if (assignedIds.has(tag.id)) await api.tags.unassign(tag.id, 'container', resourceId)
-      else await api.tags.assign(tag.id, 'container', resourceId)
-    } catch { notify.error('Failed to update tag') }
-    onClose()
-  }
-  if (allTags.length === 0) return (
-    <div ref={ref} style={{ position: 'absolute', zIndex: 50, top: '100%', left: 0, background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 10, minWidth: 160, boxShadow: '0 4px 16px rgba(0,0,0,0.3)' }}>
-      <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>No tags yet. Create some on the Tags page.</p>
-    </div>
-  )
-  return (
-    <div ref={ref} style={{ position: 'absolute', zIndex: 50, top: '100%', left: 0, background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 8, minWidth: 160, boxShadow: '0 4px 16px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', gap: 2 }}>
-      {allTags.map(tag => (
-        <button key={tag.id} onClick={() => toggle(tag)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', borderRadius: 5, background: assignedIds.has(tag.id) ? 'var(--accent-primary-subtle)' : 'transparent', border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left' }}>
-          <span style={{ width: 10, height: 10, borderRadius: '50%', background: tag.color, flexShrink: 0 }} />
-          <span style={{ fontSize: 12, color: 'var(--text-primary)' }}>{tag.name}</span>
-          {assignedIds.has(tag.id) && <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--accent-primary)' }}>✓</span>}
-        </button>
-      ))}
-    </div>
-  )
-}
 
 function stateColor(state: string): string {
   switch (state.toLowerCase()) {
@@ -86,6 +52,7 @@ export default function ContainersPage() {
   const [tagMap, setTagMap] = useState<TagMap>({})
   const [filterTag, setFilterTag] = useState<string | null>(null)
   const [popover, setPopover] = useState<string | null>(null)
+  const globalTag = useFiltersStore((s) => s.globalTag)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -188,7 +155,7 @@ export default function ContainersPage() {
 
       {tab === 'containers' && (
         <>
-          {allTags.length > 0 && (
+          {allTags.length > 0 && !globalTag && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Filter:</span>
               <button onClick={() => setFilterTag(null)} style={{ padding: '2px 10px', borderRadius: 12, fontSize: 11, fontWeight: 600, cursor: 'pointer', border: '1px solid var(--border-subtle)', background: filterTag === null ? 'var(--accent-primary)' : 'transparent', color: filterTag === null ? '#fff' : 'var(--text-muted)' }}>All</button>
@@ -197,7 +164,8 @@ export default function ContainersPage() {
               ))}
             </div>
           )}
-        <div className="panel overflow-hidden">
+        {/* Wide layout — table */}
+        <div className="containers-table panel overflow-hidden">
           <table className="w-full text-xs">
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
@@ -207,7 +175,7 @@ export default function ContainersPage() {
               </tr>
             </thead>
             <tbody>
-              {(filterTag ? containers.filter(c => (tagMap[c.name] || []).some(t => t.id === filterTag)) : containers).map((c) => {
+              {((globalTag ?? filterTag) ? containers.filter(c => (tagMap[c.name] || []).some(t => t.id === (globalTag ?? filterTag))) : containers).map((c) => {
                 const isRunning = c.state === 'running'
                 const actionKey = `${c.id}-`
                 return (
@@ -218,7 +186,7 @@ export default function ContainersPage() {
                       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3, alignItems: 'center', position: 'relative' }} onClick={e => e.stopPropagation()}>
                         {(tagMap[c.name] || []).map(t => <TagPill key={t.id} tag={t} />)}
                         <button onClick={() => setPopover(popover === c.name ? null : c.name)} style={{ background: 'none', border: '1px dashed var(--border-subtle)', borderRadius: 10, cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, padding: '0px 6px', lineHeight: '18px' }}><TagIcon size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /></button>
-                        {popover === c.name && <TagPopover resourceId={c.name} allTags={allTags} assigned={tagMap[c.name] || []} onClose={() => { setPopover(null); loadTags() }} />}
+                        {popover === c.name && <TagPopover resourceType="container" resourceId={c.name} allTags={allTags} assigned={tagMap[c.name] || []} onClose={() => { setPopover(null); loadTags() }} />}
                       </div>
                     </td>
                     <td className="px-4 py-2.5 max-w-48 truncate" style={{ color: 'var(--text-secondary)' }}>{c.image}</td>
@@ -262,6 +230,83 @@ export default function ContainersPage() {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* Narrow layout — compact cards (shown via container query) */}
+        <div className="containers-cards" style={{ display: 'none' }}>
+          {((globalTag ?? filterTag) ? containers.filter(c => (tagMap[c.name] || []).some(t => t.id === (globalTag ?? filterTag))) : containers).map((c) => {
+            const isRunning = c.state === 'running'
+            const dotColor = stateColor(c.state)
+            const actionKey = `${c.id}-`
+            const hostPorts = c.ports.filter(p => p.host_port)
+            return (
+              <div key={c.id} style={{
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 8,
+                padding: '10px 12px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
+                  <span
+                    className="font-mono"
+                    onClick={() => navigate(`/containers/${c.id}`)}
+                    style={{ flex: 1, fontWeight: 600, fontSize: 13, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}
+                  >
+                    {c.name}
+                  </span>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    {isRunning ? (
+                      <button title="Stop" onClick={() => doAction(c, 'stop')} style={{
+                        width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-subtle)',
+                        background: 'var(--bg-elevated)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-danger)',
+                      }}>
+                        {actionLoading === `${actionKey}stop` ? '…' : <Square size={12} />}
+                      </button>
+                    ) : (
+                      <button title="Start" onClick={() => doAction(c, 'start')} style={{
+                        width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-subtle)',
+                        background: 'var(--bg-elevated)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-success)',
+                      }}>
+                        {actionLoading === `${actionKey}start` ? '…' : <Play size={12} />}
+                      </button>
+                    )}
+                    <button title="Restart" onClick={() => doAction(c, 'restart')} style={{
+                      width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-subtle)',
+                      background: 'var(--bg-elevated)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)',
+                    }}>
+                      {actionLoading === `${actionKey}restart` ? '…' : <RotateCcw size={12} />}
+                    </button>
+                    <button title="Logs" onClick={() => openLogs(c)} style={{
+                      width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-subtle)',
+                      background: 'var(--bg-elevated)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: 10, fontWeight: 600,
+                    }}>
+                      log
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {c.image}
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, color: dotColor }}>{c.state}</span>
+                  {hostPorts.length > 0 && (
+                    <>
+                      <span style={{ fontSize: 11, color: 'var(--text-disabled)' }}>·</span>
+                      <span className="font-mono" style={{ fontSize: 11, color: 'var(--accent-secondary)' }}>
+                        {hostPorts.map(p => `${p.host_port}:${p.container_port}`).join(', ')}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+          {!loading && containers.length === 0 && (
+            <div style={{ padding: '32px 0', textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
+              No containers found.
+            </div>
+          )}
         </div>
         </>
       )}

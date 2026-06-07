@@ -46,6 +46,16 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN primary_port INTEGER").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_secret TEXT").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE audit_log ADD COLUMN source TEXT").execute(&pool).await;
+
+    // Item #7A: secret rotation version counter
+    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN version INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+    // Item #7B: per-token secret scope restriction (JSON array of secret IDs, NULL = unrestricted)
+    let _ = sqlx::query("ALTER TABLE api_tokens ADD COLUMN secret_ids TEXT").execute(&pool).await;
+    // Item #10A: scheduled restore-test cron expression
+    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN restore_test_schedule TEXT").execute(&pool).await;
+    // Disaster recovery import uses ON CONFLICT(name) — needs a unique index
+    let _ = sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_jobs_name ON automation_jobs(name)").execute(&pool).await;
 
     Ok(pool)
 }

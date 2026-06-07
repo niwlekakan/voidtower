@@ -1,6 +1,6 @@
 use aes_gcm::{aead::{Aead, KeyInit, OsRng}, Aes256Gcm, Nonce};
 use aes_gcm::aead::rand_core::RngCore;
-use axum::{extract::{Path, State}, Json};
+use axum::{extract::{Path, State}, http::HeaderMap, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +38,12 @@ pub struct SecretMeta {
     created_at: i64,
     updated_at: i64,
     last_used_at: Option<i64>,
+    version: i64,
+}
+
+#[derive(Deserialize)]
+pub struct RotateSecret {
+    new_value: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -54,14 +60,20 @@ pub struct UpdateSecret {
     value: Option<String>,
 }
 
-pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+pub async fn list(State(state): State<AppState>, jar: CookieJar, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
     auth_user(&state, &jar, false).await?;
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, Option<i64>)>(
-        "SELECT id, name, description, created_at, updated_at, last_used_at FROM secrets ORDER BY name"
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, Option<i64>, i64)>(
+        "SELECT id, name, description, created_at, updated_at, last_used_at, version FROM secrets ORDER BY name"
     ).fetch_all(&state.db).await.map_err(AppError::Database)?;
-    let secrets: Vec<SecretMeta> = rows.into_iter().map(|(id, name, description, created_at, updated_at, last_used_at)| {
-        SecretMeta { id, name, description, created_at, updated_at, last_used_at }
-    }).collect();
+
+    // Item #7B: if the Bearer token has secret_ids restrictions, filter the list
+    let allowed = token_secret_ids(&state, &headers).await;
+
+    let secrets: Vec<SecretMeta> = rows.into_iter()
+        .filter(|(id, ..)| allowed.as_ref().map(|ids| ids.contains(id)).unwrap_or(true))
+        .map(|(id, name, description, created_at, updated_at, last_used_at, version)| {
+            SecretMeta { id, name, description, created_at, updated_at, last_used_at, version }
+        }).collect();
     Ok(Json(serde_json::json!({ "secrets": secrets })))
 }
 
@@ -107,8 +119,17 @@ pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn reveal(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn reveal(State(state): State<AppState>, jar: CookieJar, headers: HeaderMap, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
+
+    // Item #7B: enforce scoped token restriction
+    let allowed = token_secret_ids(&state, &headers).await;
+    if let Some(ids) = &allowed {
+        if !ids.contains(&id) {
+            return Err(AppError::Forbidden);
+        }
+    }
+
     let row = sqlx::query_as::<_, (String, String)>("SELECT name, value_enc FROM secrets WHERE id=?")
         .bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?
         .ok_or(AppError::NotFound)?;
@@ -119,6 +140,40 @@ pub async fn reveal(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
     Ok(Json(serde_json::json!({ "value": value })))
 }
 
+pub async fn rotate(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<RotateSecret>) -> Result<Json<serde_json::Value>> {
+    let user = auth_user(&state, &jar, true).await?;
+
+    // Fetch name and existing value
+    let row = sqlx::query_as::<_, (String, String, i64)>("SELECT name, value_enc, version FROM secrets WHERE id=?")
+        .bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?
+        .ok_or(AppError::NotFound)?;
+    let (name, existing_enc, current_version) = row;
+
+    // Use provided new_value or generate a random 32-byte hex value
+    let new_value = match body.new_value {
+        Some(v) if !v.is_empty() => v,
+        _ => {
+            let mut bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            hex::encode(bytes)
+        }
+    };
+
+    // Verify the existing ciphertext is still valid (key hasn't changed)
+    let _ = decrypt(&state.secrets_key, &existing_enc).map_err(AppError::Internal)?;
+
+    let enc = encrypt(&state.secrets_key, &new_value).map_err(AppError::Internal)?;
+    let new_version = current_version + 1;
+    let now = now_ts();
+
+    sqlx::query("UPDATE secrets SET value_enc=?, version=?, updated_at=? WHERE id=?")
+        .bind(&enc).bind(new_version).bind(now).bind(&id)
+        .execute(&state.db).await.map_err(AppError::Database)?;
+
+    audit::log(&state.db, Some(&user.id), "human", "secret_rotated", Some("secret"), Some(&id), "success", None, Some(&format!("name={},version={}", name, new_version))).await;
+    Ok(Json(serde_json::json!({ "rotated": true, "version": new_version })))
+}
+
 async fn auth_user(state: &AppState, jar: &CookieJar, require_admin: bool) -> Result<auth::User> {
     let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id).await
@@ -127,6 +182,36 @@ async fn auth_user(state: &AppState, jar: &CookieJar, require_admin: bool) -> Re
         return Err(AppError::Forbidden);
     }
     Ok(user)
+}
+
+/// Item #7B: if the request carries a Bearer token that has `secret_ids` set,
+/// return Some(allowed_ids). Returns None when the token is unrestricted or
+/// the request is session-authenticated (no bearer token present).
+async fn token_secret_ids(state: &AppState, headers: &HeaderMap) -> Option<std::collections::HashSet<String>> {
+    use sha2::{Digest, Sha256};
+    let raw_token = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str().ok()?
+        .strip_prefix("Bearer ")?
+        .trim();
+
+    let mut h = Sha256::new();
+    h.update(raw_token.as_bytes());
+    let token_hash = hex::encode(h.finalize());
+
+    // fetch_optional returns Option<Option<String>> — outer = row found, inner = column value
+    let row: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT secret_ids FROM api_tokens WHERE token_hash = ?"
+    )
+    .bind(&token_hash)
+    .fetch_optional(&state.db)
+    .await
+    .ok()?;
+
+    // If no row found, or column is NULL, the token has no restriction
+    let secret_ids_json = row??.to_string();
+    let ids: Vec<String> = serde_json::from_str(&secret_ids_json).ok()?;
+    Some(ids.into_iter().collect())
 }
 
 fn now_ts() -> i64 {

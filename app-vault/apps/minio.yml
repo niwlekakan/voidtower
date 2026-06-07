@@ -4,6 +4,7 @@ description: S3-compatible object storage
 category: storage
 icon: ""
 version_hint: "latest"
+web_port: 9001
 compose:
   services:
     minio:

@@ -3,6 +3,8 @@ import { Search, Command } from 'lucide-react'
 import { DOCK_ITEMS } from '@/aios/AiosDock'
 import type { DockItem } from '@/aios/AiosDock'
 import { useAiosStore } from '@/aios/store/aios'
+import type { PresetName } from '@/aios/store/aios'
+import { PRESET_LIST } from '@/aios/AiosPresets'
 import type { DeviceTier } from '@/aios/hooks/useDeviceTier'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -38,18 +40,26 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const { openPanel, activeWorkspace, panels, focusPanel } = useAiosStore()
+  const { openPanel, activeWorkspace, panels, focusPanel, applyPreset } = useAiosStore()
 
   const isPhone  = tier === 'phone'
   const isTv     = tier === 'tv' || tier === 'kiosk'
   const isVerticalDock = typeof window !== 'undefined' && window.innerWidth >= 1400
   const dockOffset = isVerticalDock && !isPhone ? dockH / 2 : 0
 
-  // Route prefix: slash = Odysseus AI, http(s) = embed URL
+  // Route prefix: slash = Odysseus AI, http(s) = embed URL, > = preset
   const isOdysseus = query.startsWith('/') && !isUrl(query)
   const isEmbed    = isUrl(query)
+  const isPreset   = query.startsWith('>')
 
-  const results: DockItem[] = (isOdysseus || isEmbed)
+  const presetResults = isPreset
+    ? PRESET_LIST.filter((p) => {
+        const q = query.slice(1).toLowerCase().trim()
+        return !q || p.name.includes(q) || p.label.toLowerCase().includes(q)
+      })
+    : []
+
+  const results: DockItem[] = (isOdysseus || isEmbed || isPreset)
     ? []
     : DOCK_ITEMS.filter((item) => fuzzyMatch(item, query)).slice(0, 8)
 
@@ -89,6 +99,15 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
   const commit = useCallback((key?: string, label?: string) => {
     const q = query.trim()
 
+    if (isPreset) {
+      const presetKey = (key as PresetName | undefined) ?? (presetResults[selected]?.name as PresetName | undefined)
+      if (presetKey) {
+        applyPreset(presetKey)
+        setOpen(false); setQuery(''); setSelected(0)
+      }
+      return
+    }
+
     if (isEmbed) {
       // Open as embed panel
       doOpenPanel(q, q, 'embed')
@@ -97,13 +116,17 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
     }
 
     if (isOdysseus) {
-      // Odysseus passthrough — post message to the Odysseus iframe if active
       const text = q.slice(1).trim()
-      if (text) {
-        window.postMessage({ type: 'vt-command', text }, '*')
-        // Also try to bring the Odysseus panel to focus
-        const odysseusPanel = panels.find((p) => p.type === 'odysseus')
-        if (odysseusPanel) focusPanel(odysseusPanel.id)
+      if (_onOdysseus) {
+        // Open (or focus) the Odysseus panel via the layout callback, passing the query
+        _onOdysseus(text)
+      } else {
+        // Fallback: try to focus existing Odysseus panel and postMessage
+        const odysseusPanel = panels.find((p) => p.component === 'odysseus')
+        if (odysseusPanel) {
+          focusPanel(odysseusPanel.id)
+          window.postMessage({ type: 'vt-command', text }, '*')
+        }
       }
       setOpen(false); setQuery(''); setSelected(0)
       return
@@ -115,7 +138,7 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
 
     doOpenPanel(target, targetLabel)
     setOpen(false); setQuery(''); setSelected(0)
-  }, [query, isEmbed, isOdysseus, results, selected, doOpenPanel, panels, focusPanel])
+  }, [query, isEmbed, isOdysseus, isPreset, presetResults, results, selected, doOpenPanel, panels, focusPanel, applyPreset])
 
   // ── Keyboard shortcut ─────────────────────────────────────────────────────
 
@@ -133,6 +156,13 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [open])
+
+  // External trigger — dispatched by the phone dock "+more" button
+  useEffect(() => {
+    const handler = () => setOpen(true)
+    window.addEventListener('vt-open-command-bar', handler)
+    return () => window.removeEventListener('vt-open-command-bar', handler)
+  }, [])
 
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 50)
@@ -286,6 +316,41 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
               </div>
             )}
 
+            {/* Preset suggestions */}
+            {isPreset && presetResults.map((preset, i) => {
+              const active = i === selected
+              return (
+                <div
+                  key={preset.name}
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => commit(preset.name)}
+                  onMouseEnter={() => setSelected(i)}
+                  style={{
+                    padding: '10px 14px', cursor: 'pointer',
+                    background: active ? 'rgba(255,255,255,0.08)' : 'rgba(99,102,241,0.06)',
+                    display: 'flex', gap: 10, alignItems: 'center',
+                    borderBottom: '1px solid rgba(255,255,255,0.06)',
+                  }}
+                >
+                  <span style={{ fontSize: 16 }}>⊞</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: active ? 'var(--text-primary)' : 'rgba(255,255,255,0.8)' }}>
+                      {preset.label}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+                      {preset.description}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+            {isPreset && presetResults.length === 0 && (
+              <div style={{ padding: '10px 14px', fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>
+                No matching presets — try <code style={{ color: 'var(--accent-primary)' }}>&gt;ai-assist</code>, <code style={{ color: 'var(--accent-primary)' }}>&gt;debug</code>, <code style={{ color: 'var(--accent-primary)' }}>&gt;vm</code>, <code style={{ color: 'var(--accent-primary)' }}>&gt;android</code>
+              </div>
+            )}
+
             {/* URL embed suggestion */}
             {isEmbed && (
               <div
@@ -338,16 +403,16 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
             })}
 
             {/* Empty state */}
-            {!results.length && !isOdysseus && !isEmbed && query && (
+            {!results.length && !isOdysseus && !isEmbed && !isPreset && query && (
               <div style={{ padding: '12px 14px', fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>
-                No results — prefix with <code style={{ color: 'var(--accent-primary)' }}>/</code> to ask Odysseus
+                No results — prefix with <code style={{ color: 'var(--accent-primary)' }}>/</code> to ask Odysseus, or <code style={{ color: 'var(--accent-primary)' }}>&gt;</code> for presets
               </div>
             )}
 
             {/* Empty query hint */}
-            {!query && !isOdysseus && !isEmbed && (
+            {!query && !isOdysseus && !isEmbed && !isPreset && (
               <div style={{ padding: '10px 14px', fontSize: 11, color: 'rgba(255,255,255,0.25)' }}>
-                Type an app name, <code style={{ color: 'var(--accent-primary)' }}>/</code> to ask Odysseus, or paste a URL to embed
+                Type an app name, <code style={{ color: 'var(--accent-primary)' }}>/</code> to ask Odysseus, <code style={{ color: 'var(--accent-primary)' }}>&gt;</code> for presets, or paste a URL to embed
               </div>
             )}
           </div>

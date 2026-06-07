@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Tag as TagIcon } from 'lucide-react'
 import { api } from '@/api/client'
-import type { Alert } from '@/api/types'
+import type { Alert, Tag, TagMap } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { useFiltersStore } from '@/store/filters'
+import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import Button from '@/components/ui/Button'
 import SendToOdysseus from '@/components/ui/SendToOdysseus'
 
@@ -24,6 +27,10 @@ export default function AlertsPage() {
   const [loading, setLoading] = useState(true)
   const [stateFilter, setStateFilter] = useState<'active' | 'acknowledged' | 'resolved'>('active')
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [allTags, setAllTags] = useState<Tag[]>([])
+  const [tagMap, setTagMap] = useState<TagMap>({})
+  const [popover, setPopover] = useState<string | null>(null)
+  const globalTag = useFiltersStore((s) => s.globalTag)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -38,7 +45,15 @@ export default function AlertsPage() {
     }
   }, [stateFilter])
 
-  useEffect(() => { load() }, [load])
+  const loadTags = useCallback(async () => {
+    try {
+      const [tags, map] = await Promise.all([api.tags.list(), api.tags.map('alert')])
+      setAllTags(tags)
+      setTagMap(map)
+    } catch { /* empty */ }
+  }, [])
+
+  useEffect(() => { load(); loadTags() }, [load, loadTags])
 
   const doAck = async (id: string) => {
     setActionLoading(id + '-ack')
@@ -91,9 +106,9 @@ export default function AlertsPage() {
         ))}
       </div>
 
-      {/* Alert list */}
-      <div className="space-y-2">
-        {alerts.map((alert) => (
+      {/* Alert list — works at all widths; container query tweaks action placement at ≤700px */}
+      <div className="alerts-cards space-y-2">
+        {(globalTag ? alerts.filter(a => (tagMap[a.id] || []).some(t => t.id === globalTag)) : alerts).map((alert) => (
           <div
             key={alert.id}
             className="panel p-4"
@@ -116,14 +131,37 @@ export default function AlertsPage() {
                   )}
                 </div>
                 <div className="text-sm font-medium mb-0.5" style={{ color: 'var(--text-primary)' }}>{alert.title}</div>
-                <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{alert.message}</div>
+                <div className="alert-message text-xs" style={{ color: 'var(--text-secondary)' }}>{alert.message}</div>
                 <div className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
                   {fmtDate(alert.created_at)}
                   {alert.acknowledged_by && ` · Acknowledged by ${alert.acknowledged_by}`}
                 </div>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4, alignItems: 'center', position: 'relative' }}>
+                  {(tagMap[alert.id] || []).map(t => <TagPill key={t.id} tag={t} />)}
+                  <button onClick={() => setPopover(popover === alert.id ? null : alert.id)} style={{
+                    background: 'none', border: '1px dashed var(--border-subtle)', borderRadius: 10,
+                    cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, padding: '0px 6px', lineHeight: '18px',
+                  }}><TagIcon size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /></button>
+                  {popover === alert.id && (
+                    <TagPopover resourceType="alert" resourceId={alert.id} allTags={allTags} assigned={tagMap[alert.id] || []} onClose={() => { setPopover(null); loadTags() }} />
+                  )}
+                </div>
+                {/* Compact actions — shown at narrow width via container query */}
+                <div className="alert-actions-compact" style={{ display: 'none', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                  {stateFilter === 'active' && (
+                    <>
+                      <Button size="sm" variant="ghost" loading={actionLoading === alert.id + '-ack'} onClick={() => doAck(alert.id)}>Ack</Button>
+                      <Button size="sm" variant="ghost" loading={actionLoading === alert.id + '-resolve'} onClick={() => doResolve(alert.id)}>Resolve</Button>
+                    </>
+                  )}
+                  {stateFilter === 'acknowledged' && (
+                    <Button size="sm" variant="ghost" loading={actionLoading === alert.id + '-resolve'} onClick={() => doResolve(alert.id)}>Resolve</Button>
+                  )}
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
+              {/* Wide actions — hidden at narrow width via container query */}
+              <div className="alert-actions-wide flex items-center gap-2 shrink-0">
                 <SendToOdysseus
                   context={`Alert [${alert.severity.toUpperCase()}] ${alert.title}\n${alert.message}\nCategory: ${alert.category}${alert.resource_type ? `\nResource: ${alert.resource_type}${alert.resource_id ? `:${alert.resource_id}` : ''}` : ''}`}
                   label="Odysseus"

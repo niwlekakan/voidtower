@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Tag as TagIcon } from 'lucide-react'
 import { api } from '@/api/client'
-import type { LocalVm, ProxmoxVm, ProxmoxConfig } from '@/api/types'
+import type { LocalVm, ProxmoxVm, ProxmoxConfig, Tag, TagMap } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { useFiltersStore } from '@/store/filters'
+import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import Button from '@/components/ui/Button'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -72,11 +75,14 @@ const LOCAL_ACTIONS: { label: string; action: string; states: string[] }[] = [
   { label: 'Force off',action: 'destroy',  states: ['running', 'paused'] },
 ]
 
-function LocalVmsSection() {
+function LocalVmsSection({ allTags, tagMap, globalTag, onTagsChanged }: {
+  allTags: Tag[]; tagMap: TagMap; globalTag: string | null; onTagsChanged: () => void
+}) {
   const [vms, setVms] = useState<LocalVm[]>([])
   const [available, setAvailable] = useState(true)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
+  const [popover, setPopover] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -108,15 +114,17 @@ function LocalVmsSection() {
     </div>
   )
 
-  if (vms.length === 0) return (
+  const displayed = globalTag ? vms.filter(vm => (tagMap[vm.name] || []).some(t => t.id === globalTag)) : vms
+
+  if (displayed.length === 0) return (
     <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '16px 0' }}>
-      No VMs found. Create one with <code style={{ background: 'var(--bg-code)', padding: '1px 6px', borderRadius: 4 }}>virt-manager</code> or <code style={{ background: 'var(--bg-code)', padding: '1px 6px', borderRadius: 4 }}>virt-install</code>.
+      {globalTag ? 'No local VMs with this tag.' : 'No VMs found. Create one with virt-manager or virt-install.'}
     </div>
   )
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {vms.map(vm => (
+      {displayed.map(vm => (
         <div key={vm.name} style={{
           background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 8,
           padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
@@ -127,6 +135,16 @@ function LocalVmsSection() {
             {vm.id !== null && (
               <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)' }}>ID {vm.id}</span>
             )}
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4, alignItems: 'center', position: 'relative' }}>
+              {(tagMap[vm.name] || []).map(t => <TagPill key={t.id} tag={t} />)}
+              <button onClick={() => setPopover(popover === vm.name ? null : vm.name)} style={{
+                background: 'none', border: '1px dashed var(--border-subtle)', borderRadius: 10,
+                cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, padding: '0px 6px', lineHeight: '18px',
+              }}><TagIcon size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /></button>
+              {popover === vm.name && (
+                <TagPopover resourceType="vm" resourceId={vm.name} allTags={allTags} assigned={tagMap[vm.name] || []} onClose={() => { setPopover(null); onTagsChanged() }} />
+              )}
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {LOCAL_ACTIONS.filter(a => a.states.includes(vm.state.toLowerCase())).map(a => (
@@ -249,12 +267,15 @@ const PX_ACTIONS: { label: string; action: string; statuses: string[] }[] = [
   { label: 'Stop',     action: 'stop',     statuses: ['running', 'paused'] },
 ]
 
-function ProxmoxVmsSection({ reload }: { reload: number }) {
+function ProxmoxVmsSection({ reload, allTags, tagMap, globalTag, onTagsChanged }: {
+  reload: number; allTags: Tag[]; tagMap: TagMap; globalTag: string | null; onTagsChanged: () => void
+}) {
   const [vms, setVms] = useState<ProxmoxVm[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [configured, setConfigured] = useState(true)
+  const [popover, setPopover] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -289,60 +310,71 @@ function ProxmoxVmsSection({ reload }: { reload: number }) {
   )
   if (loading) return <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</p>
   if (error) return <p style={{ color: 'var(--accent-danger)', fontSize: 13 }}>{error}</p>
-  if (vms.length === 0) return <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>No VMs or containers found on the configured node.</p>
+
+  const displayed = globalTag ? vms.filter(vm => (tagMap[String(vm.vmid)] || []).some(t => t.id === globalTag)) : vms
+
+  if (displayed.length === 0) return <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>{globalTag ? 'No Proxmox VMs with this tag.' : 'No VMs or containers found on the configured node.'}</p>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {vms.map(vm => (
-        <div key={`${vm.node}-${vm.vmid}`} style={{
-          background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 8,
-          padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-        }}>
-          <div style={{ flex: '1 1 200px', minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-              <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)' }}>{vm.name || `VM ${vm.vmid}`}</span>
-              <span style={{
-                fontSize: 10, padding: '1px 6px', borderRadius: 4, fontWeight: 600, letterSpacing: '0.05em',
-                background: vm.kind === 'lxc' ? 'var(--accent-primary-subtle)' : 'var(--bg-code)',
-                color: vm.kind === 'lxc' ? 'var(--accent-primary)' : 'var(--text-muted)',
-                textTransform: 'uppercase',
-              }}>
-                {vm.kind === 'lxc' ? 'LXC' : 'VM'}
-              </span>
+      {displayed.map(vm => {
+        const vmKey = String(vm.vmid)
+        const popKey = `${vm.node}-${vm.vmid}`
+        return (
+          <div key={popKey} style={{
+            background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 8,
+            padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          }}>
+            <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)' }}>{vm.name || `VM ${vm.vmid}`}</span>
+                <span style={{
+                  fontSize: 10, padding: '1px 6px', borderRadius: 4, fontWeight: 600, letterSpacing: '0.05em',
+                  background: vm.kind === 'lxc' ? 'var(--accent-primary-subtle)' : 'var(--bg-code)',
+                  color: vm.kind === 'lxc' ? 'var(--accent-primary)' : 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                }}>
+                  {vm.kind === 'lxc' ? 'LXC' : 'VM'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                <StateDot state={vm.status} />
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>ID {vm.vmid} · {vm.node}</span>
+                {vm.status === 'running' && (
+                  <>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>CPU {(vm.cpu * 100).toFixed(1)}%</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fmtMem(vm.mem)} / {fmtMem(vm.maxmem)}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>up {fmtUptime(vm.uptime)}</span>
+                  </>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4, alignItems: 'center', position: 'relative' }}>
+                {(tagMap[vmKey] || []).map(t => <TagPill key={t.id} tag={t} />)}
+                <button onClick={() => setPopover(popover === popKey ? null : popKey)} style={{
+                  background: 'none', border: '1px dashed var(--border-subtle)', borderRadius: 10,
+                  cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, padding: '0px 6px', lineHeight: '18px',
+                }}><TagIcon size={10} style={{ display: 'inline', verticalAlign: 'middle' }} /></button>
+                {popover === popKey && (
+                  <TagPopover resourceType="vm" resourceId={vmKey} allTags={allTags} assigned={tagMap[vmKey] || []} onClose={() => { setPopover(null); onTagsChanged() }} />
+                )}
+              </div>
             </div>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-              <StateDot state={vm.status} />
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>ID {vm.vmid} · {vm.node}</span>
-              {vm.status === 'running' && (
-                <>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    CPU {(vm.cpu * 100).toFixed(1)}%
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    {fmtMem(vm.mem)} / {fmtMem(vm.maxmem)}
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    up {fmtUptime(vm.uptime)}
-                  </span>
-                </>
-              )}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {PX_ACTIONS.filter(a => a.statuses.includes(vm.status)).map(a => (
+                <Button
+                  key={a.action}
+                  size="sm"
+                  variant={a.action === 'stop' ? 'danger' : 'secondary'}
+                  loading={busy === `${vm.vmid}-${a.action}`}
+                  onClick={() => doAction(vm, a.action)}
+                >
+                  {a.label}
+                </Button>
+              ))}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {PX_ACTIONS.filter(a => a.statuses.includes(vm.status)).map(a => (
-              <Button
-                key={a.action}
-                size="sm"
-                variant={a.action === 'stop' ? 'danger' : 'secondary'}
-                loading={busy === `${vm.vmid}-${a.action}`}
-                onClick={() => doAction(vm, a.action)}
-              >
-                {a.label}
-              </Button>
-            ))}
-          </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -352,6 +384,19 @@ function ProxmoxVmsSection({ reload }: { reload: number }) {
 export default function VMsPage() {
   const [tab, setTab] = useState<'local' | 'proxmox'>('local')
   const [pxReload, setPxReload] = useState(0)
+  const [allTags, setAllTags] = useState<Tag[]>([])
+  const [tagMap, setTagMap] = useState<TagMap>({})
+  const globalTag = useFiltersStore((s) => s.globalTag)
+
+  const loadTags = useCallback(async () => {
+    try {
+      const [tags, map] = await Promise.all([api.tags.list(), api.tags.map('vm')])
+      setAllTags(tags)
+      setTagMap(map)
+    } catch { /* empty */ }
+  }, [])
+
+  useEffect(() => { loadTags() }, [loadTags])
 
   return (
     <div className="space-y-4">
@@ -367,12 +412,14 @@ export default function VMsPage() {
         <Tab label="Proxmox" active={tab === 'proxmox'} onClick={() => setTab('proxmox')} />
       </div>
 
-      {tab === 'local' && <LocalVmsSection />}
+      {tab === 'local' && (
+        <LocalVmsSection allTags={allTags} tagMap={tagMap} globalTag={globalTag} onTagsChanged={loadTags} />
+      )}
 
       {tab === 'proxmox' && (
         <>
           <ProxmoxConfigPanel onSaved={() => setPxReload(r => r + 1)} />
-          <ProxmoxVmsSection reload={pxReload} />
+          <ProxmoxVmsSection reload={pxReload} allTags={allTags} tagMap={tagMap} globalTag={globalTag} onTagsChanged={loadTags} />
         </>
       )}
     </div>

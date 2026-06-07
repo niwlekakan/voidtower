@@ -7,6 +7,7 @@ use crate::{
 };
 use axum::{
     extract::{ConnectInfo, Path, State},
+    http::HeaderMap,
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -43,6 +44,11 @@ pub struct AppDef {
     /// If the marker exists the deploy is rejected with a port-conflict error.
     #[serde(default)]
     pub system_conflict_check: Option<String>,
+    /// Explicit host port for the web UI. When set, overrides the first port
+    /// extracted from the compose file so that port badges and the embed proxy
+    /// point at the correct UI endpoint rather than an internal/API port.
+    #[serde(default)]
+    pub web_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +64,7 @@ pub struct DeployedApp {
 }
 
 /// Extract the first published host port from a docker-compose services block.
-fn extract_primary_port(compose: &Value) -> Option<u16> {
+fn first_port_from_compose(compose: &Value) -> Option<u16> {
     let services = compose.get("services")?.as_object()?;
     for svc in services.values() {
         let ports = svc.get("ports")?.as_array()?;
@@ -81,6 +87,14 @@ fn extract_primary_port(compose: &Value) -> Option<u16> {
         }
     }
     None
+}
+
+/// Return the host port that serves the web UI for a catalog app.
+///
+/// If the YAML declares `web_port`, that value wins. Otherwise the first
+/// published host port from the compose file is used.
+fn extract_primary_port(app: &AppDef) -> Option<u16> {
+    app.web_port.or_else(|| first_port_from_compose(&app.compose))
 }
 
 #[derive(Deserialize)]
@@ -521,7 +535,7 @@ pub async fn deploy(
         .unwrap_or_default()
         .as_secs() as i64;
 
-    let primary_port = extract_primary_port(&app.compose).map(|p| p as i64);
+    let primary_port = extract_primary_port(&app).map(|p| p as i64);
 
     sqlx::query(
         "INSERT OR REPLACE INTO deployed_apps \
@@ -612,8 +626,8 @@ pub async fn deploy_custom(
         "services": { &name: svc }
     });
 
-    // Extract primary port before writing
-    let primary_port = extract_primary_port(&compose_val).map(|p| p as i64);
+    // Extract primary port before writing (custom deploys have no AppDef)
+    let primary_port = first_port_from_compose(&compose_val).map(|p| p as i64);
 
     // Ensure any bind-mount host paths exist
     ensure_volume_dirs(&compose_val);
@@ -980,80 +994,74 @@ pub struct OpenUiRequest {
 pub async fn open_ui(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(req): Json<OpenUiRequest>,
 ) -> Result<Json<serde_json::Value>> {
     require_user(&state, &jar).await?;
 
-    let domain = format!("{}.local", req.project_name);
-    let port_suffix = format!(":{}", req.primary_port);
+    // Use the Host header so the returned URL works from any machine on the LAN,
+    // not just localhost. Strip the port portion if present (e.g. "192.168.1.5:8743" → "192.168.1.5").
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(|h| h.rsplit_once(':').map(|(h, _)| h).unwrap_or(h).to_string())
+        .unwrap_or_else(|| "localhost".to_string());
 
-    // Check for an existing proxy rule for this app
-    let existing: Option<(String, bool)> = sqlx::query_as(
-        "SELECT domain, allow_embed FROM proxy_configs WHERE domain = ? OR upstream LIKE ?",
+    let direct_url = format!("http://{}:{}", host, req.primary_port);
+
+    // Attempt to create an nginx embed proxy in the background so that apps
+    // sending X-Frame-Options can be re-opened via a domain that strips those
+    // headers. This is optional — the direct URL always works on the LAN.
+    let domain = format!("{}.embed", req.project_name);
+    let upstream = format!("http://localhost:{}", req.primary_port);
+
+    let existing: Option<(bool,)> = sqlx::query_as(
+        "SELECT allow_embed FROM proxy_configs WHERE domain = ?",
     )
     .bind(&domain)
-    .bind(format!("%{}", port_suffix))
     .fetch_optional(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    if let Some((existing_domain, allow_embed)) = existing {
-        if allow_embed {
-            return Ok(Json(serde_json::json!({
-                "url": format!("http://{}:8080", existing_domain),
-                "proxy_created": false,
-            })));
-        }
-        // Exists but embed not allowed — fall back to direct URL
-        return Ok(Json(serde_json::json!({
-            "url": format!("http://localhost:{}", req.primary_port),
-            "proxy_created": false,
-        })));
-    }
+    let proxy_created = if existing.is_none() {
+        let nginx_ok = tokio::task::spawn_blocking(|| {
+            crate::api::proxy::nginx_active_pub()
+        }).await.unwrap();
 
-    // Check if nginx is available
-    let nginx_ok = tokio::task::spawn_blocking(|| {
-        crate::api::proxy::nginx_active_pub()
-    }).await.unwrap();
+        if nginx_ok {
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
 
-    if !nginx_ok {
-        return Ok(Json(serde_json::json!({
-            "url": format!("http://localhost:{}", req.primary_port),
-            "proxy_created": false,
-        })));
-    }
+            let insert_ok = sqlx::query(
+                "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, created_at) VALUES (?,?,?,0,1,1,?)",
+            )
+            .bind(&id)
+            .bind(&domain)
+            .bind(&upstream)
+            .bind(now)
+            .execute(&state.db)
+            .await
+            .map(|_| true)
+            .unwrap_or(false);
 
-    // Create a proxy rule with allow_embed = true
-    let upstream = format!("http://localhost:{}", req.primary_port);
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    let insert_result = sqlx::query(
-        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, created_at) VALUES (?,?,?,0,1,1,?)",
-    )
-    .bind(&id)
-    .bind(&domain)
-    .bind(&upstream)
-    .bind(now)
-    .execute(&state.db)
-    .await;
-
-    if let Err(e) = insert_result {
-        // UNIQUE conflict means rule was just created by a concurrent request — still ok
-        if !e.to_string().contains("UNIQUE") {
-            return Err(AppError::Internal(e.into()));
+            if insert_ok {
+                let _ = crate::api::proxy::write_nginx_conf_pub(&domain, &upstream, false, true);
+                let _ = crate::api::proxy::reload_nginx_pub();
+            }
+            insert_ok
+        } else {
+            false
         }
     } else {
-        let _ = crate::api::proxy::write_nginx_conf_pub(&domain, &upstream, false, true);
-        let _ = crate::api::proxy::reload_nginx_pub();
-    }
+        false
+    };
 
     Ok(Json(serde_json::json!({
-        "url": format!("http://{}:8080", domain),
-        "proxy_created": true,
+        "url": direct_url,
+        "proxy_created": proxy_created,
     })))
 }
 

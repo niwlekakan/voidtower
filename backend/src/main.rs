@@ -75,9 +75,21 @@ struct Cli {
     #[arg(long)]
     doctor: bool,
 
+    /// Output diagnostics as JSON (use with --doctor)
+    #[arg(long)]
+    json: bool,
+
     /// Reset this node's identity (dangerous)
     #[arg(long)]
     reset_node: bool,
+
+    /// Export config to file (or stdout if path omitted) and exit
+    #[arg(long, value_name = "OUTPUT_PATH")]
+    export_config: Option<Option<String>>,
+
+    /// Import config from file and exit
+    #[arg(long, value_name = "INPUT_PATH")]
+    import_config: Option<String>,
 }
 
 #[tokio::main]
@@ -94,7 +106,21 @@ async fn main() -> Result<()> {
         .init();
 
     if cli.doctor {
-        run_doctor(&cfg);
+        run_doctor(&cfg, cli.json);
+        return Ok(());
+    }
+
+    // --export-config / --import-config: require DB but skip web server
+    if cli.export_config.is_some() || cli.import_config.is_some() {
+        std::fs::create_dir_all(&cfg.data_dir)?;
+        let pool = db::init_pool(&cfg.db_path()).await?;
+
+        if let Some(out_arg) = cli.export_config {
+            let path_opt = out_arg.as_deref();
+            api::disaster::cli_export(&pool, path_opt).await?;
+        } else if let Some(input_path) = cli.import_config {
+            api::disaster::cli_import(&pool, &input_path).await?;
+        }
         return Ok(());
     }
 
@@ -287,6 +313,76 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Item #10A: scheduled restore-test runner (checks every 60s against cron expressions)
+    let rt_pool = pool.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if !backups::is_restic_available() { continue; }
+            let Ok(cfgs) = sqlx::query_as::<_, backups::BackupConfig>(
+                &format!("SELECT {} FROM backup_configs WHERE enabled = 1 AND restore_test_schedule IS NOT NULL",
+                    "id, name, source_path, repo_path, schedule, retention_days, enabled, last_run_at, last_status, created_at, last_check_at, last_check_status, last_restore_test_at, last_restore_test_status, restore_test_schedule")
+            ).fetch_all(&rt_pool).await else { continue };
+
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+
+            for cfg in cfgs {
+                let Some(ref sched) = cfg.restore_test_schedule else { continue };
+                if !backups::cron_matches_now(sched) { continue; }
+
+                // Avoid re-running if already ran within this minute
+                if cfg.last_restore_test_at.map(|t| now_ts - t < 60).unwrap_or(false) { continue; }
+
+                let pool2 = rt_pool.clone();
+                let cfg2 = cfg.clone();
+                let password = std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into());
+                tokio::spawn(async move {
+                    let (status, _) = match backups::run_restore_test(&cfg2.repo_path, &password).await {
+                        Ok(s) => (s, None::<String>),
+                        Err(e) => ("failed".to_string(), Some(e.to_string())),
+                    };
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                    let _ = sqlx::query(
+                        "UPDATE backup_configs SET last_restore_test_at = ?, last_restore_test_status = ? WHERE id = ?"
+                    ).bind(ts).bind(&status).bind(&cfg2.id).execute(&pool2).await;
+                    tracing::info!("Scheduled restore test for '{}': {}", cfg2.name, status);
+                });
+            }
+        }
+    });
+
+    // Item #10C: daily alert for backup jobs never restore-tested (older than 7 days)
+    let ntpool = pool.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(86400));
+        interval.tick().await; // skip first immediate tick
+        loop {
+            interval.tick().await;
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            let seven_days_ago = now_ts - 7 * 86400;
+
+            let Ok(untested) = sqlx::query_as::<_, (String, String, i64)>(
+                "SELECT id, name, created_at FROM backup_configs WHERE enabled = 1 AND last_restore_test_at IS NULL AND created_at < ?"
+            ).bind(seven_days_ago).fetch_all(&ntpool).await else { continue };
+
+            for (id, name, _) in untested {
+                api::alerts::create_alert(
+                    &ntpool,
+                    &format!("Backup '{}' never restore-tested", name),
+                    &format!("Backup job '{name}' has never been restore-tested"),
+                    "warning",
+                    "backups",
+                    Some("backup_config"),
+                    Some(&id),
+                ).await;
+            }
+        }
+    });
+
     // Spawn periodic session cleanup
     let pool_clone = pool.clone();
     tokio::spawn(async move {
@@ -328,41 +424,69 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_doctor(cfg: &config::Config) {
-    println!("VoidTower Doctor");
-    println!("================");
-    println!("  Config dir:   {}", cfg.config_dir.display());
-    println!("  Data dir:     {}", cfg.data_dir.display());
-    println!("  Frontend dir: {}", cfg.frontend_dir.display());
-    println!("  Catalog dir:  {}", cfg.catalog_dir.display());
-    println!("  Bind:         {}:{}", cfg.bind, cfg.port);
-    println!();
-
+fn run_doctor(cfg: &config::Config, as_json: bool) {
     let checks = api::diagnostics::run_all_checks(cfg);
 
-    let mut last_cat = "";
-    for c in &checks {
-        if c.category != last_cat {
-            println!("  --- {} ---", c.category);
-            last_cat = c.category;
+    let fail = checks.iter().filter(|c| c.status == api::diagnostics::CheckStatus::Fail).count();
+    let warn = checks.iter().filter(|c| c.status == api::diagnostics::CheckStatus::Warn).count();
+    let overall = if fail > 0 { "fail" } else if warn > 0 { "warn" } else { "pass" };
+
+    if as_json {
+        let json_checks: Vec<serde_json::Value> = checks.iter().map(|c| {
+            let status = match c.status {
+                api::diagnostics::CheckStatus::Pass => "pass",
+                api::diagnostics::CheckStatus::Warn => "warn",
+                api::diagnostics::CheckStatus::Fail => "fail",
+                api::diagnostics::CheckStatus::Info => "info",
+            };
+            let mut obj = serde_json::json!({
+                "name": c.name,
+                "status": status,
+                "message": c.message,
+            });
+            if let Some(detail) = &c.detail {
+                obj["detail"] = serde_json::Value::String(detail.clone());
+            }
+            obj
+        }).collect();
+        let output = serde_json::json!({
+            "checks": json_checks,
+            "overall": overall,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+    } else {
+        println!("VoidTower Doctor");
+        println!("================");
+        println!("  Config dir:   {}", cfg.config_dir.display());
+        println!("  Data dir:     {}", cfg.data_dir.display());
+        println!("  Frontend dir: {}", cfg.frontend_dir.display());
+        println!("  Catalog dir:  {}", cfg.catalog_dir.display());
+        println!("  Bind:         {}:{}", cfg.bind, cfg.port);
+        println!();
+
+        let mut last_cat = "";
+        for c in &checks {
+            if c.category != last_cat {
+                println!("  --- {} ---", c.category);
+                last_cat = c.category;
+            }
+            let icon = match c.status {
+                api::diagnostics::CheckStatus::Pass => "✓",
+                api::diagnostics::CheckStatus::Warn => "⚠",
+                api::diagnostics::CheckStatus::Fail => "✗",
+                api::diagnostics::CheckStatus::Info => "·",
+            };
+            println!("  [{}] {}  {}", icon, c.name, c.message);
+            if let Some(detail) = &c.detail {
+                println!("        → {}", detail);
+            }
         }
-        let icon = match c.status {
-            api::diagnostics::CheckStatus::Pass => "✓",
-            api::diagnostics::CheckStatus::Warn => "⚠",
-            api::diagnostics::CheckStatus::Fail => "✗",
-            api::diagnostics::CheckStatus::Info => "·",
-        };
-        println!("  [{}] {}  {}", icon, c.name, c.message);
-        if let Some(detail) = &c.detail {
-            println!("        → {}", detail);
-        }
+
+        println!();
+        let pass = checks.iter().filter(|c| c.status == api::diagnostics::CheckStatus::Pass).count();
+        println!("  Result: {} pass  {} warn  {} fail", pass, warn, fail);
     }
 
-    println!();
-    let pass = checks.iter().filter(|c| c.status == api::diagnostics::CheckStatus::Pass).count();
-    let warn = checks.iter().filter(|c| c.status == api::diagnostics::CheckStatus::Warn).count();
-    let fail = checks.iter().filter(|c| c.status == api::diagnostics::CheckStatus::Fail).count();
-    println!("  Result: {} pass  {} warn  {} fail", pass, warn, fail);
     if fail > 0 {
         std::process::exit(1);
     }

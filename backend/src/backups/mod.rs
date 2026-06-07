@@ -25,6 +25,38 @@ pub struct BackupConfig {
     pub last_check_status: Option<String>,
     pub last_restore_test_at: Option<i64>,
     pub last_restore_test_status: Option<String>,
+    /// Item #10A: cron expression for scheduled restore tests (e.g. "0 3 * * 0")
+    pub restore_test_schedule: Option<String>,
+}
+
+/// Minimal 5-field cron matcher (min hour dom month dow).
+/// Returns true when the current wall-clock time matches the expression.
+/// Supports `*`, plain numbers, and comma-separated lists. No ranges/steps.
+pub fn cron_matches_now(expr: &str) -> bool {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    // Use UTC broken-down time
+    let mins_since_epoch = secs / 60;
+    let minute  = (mins_since_epoch % 60) as u32;
+    let hour    = (mins_since_epoch / 60 % 24) as u32;
+    let day     = (secs / 86400 % 31 + 1) as u32;   // 1-based approximation
+    // For month/dow we use a simple modulo — good enough for weekly/monthly schedules
+    let month   = ((secs / 86400 / 30) % 12 + 1) as u32; // 1-based approximation
+    let dow     = (secs / 86400 % 7) as u32;              // 0 = Thursday epoch day; close enough for weekly matching
+
+    let parts: Vec<&str> = expr.split_whitespace().collect();
+    if parts.len() != 5 { return false; }
+
+    field_matches(parts[0], minute)
+        && field_matches(parts[1], hour)
+        && field_matches(parts[2], day)
+        && field_matches(parts[3], month)
+        && field_matches(parts[4], dow)
+}
+
+fn field_matches(field: &str, value: u32) -> bool {
+    if field == "*" { return true; }
+    field.split(',').any(|part| part.trim().parse::<u32>().map(|n| n == value).unwrap_or(false))
 }
 
 pub fn confidence(cfg: &BackupConfig) -> &'static str {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Trash2, Plus, AlertTriangle } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
+import { clearOdysseusConfigCache } from '@/aios/AiosOdysseus'
 
 interface Token { id: string; name: string; scope?: string; last_used?: string; expires_at?: string }
 interface OdyConfig { enabled: boolean; mcp_enabled: boolean; allowed_url?: string; emergency_disabled?: boolean }
@@ -47,6 +48,7 @@ export default function NativeIntegrationsPanel() {
   }
   async function patchOdy(patch: Partial<OdyConfig>) {
     await fetch('/api/integrations/odysseus/config', { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) })
+    clearOdysseusConfigCache()
     loadOdy()
   }
   async function emergencyDisable() {

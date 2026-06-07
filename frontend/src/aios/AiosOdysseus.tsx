@@ -11,15 +11,20 @@ interface OdysseusConfig {
 }
 
 let _configCache: OdysseusConfig | null | undefined = undefined
+let _cacheAt = 0
+const CACHE_TTL = 10_000 // 10 s — short enough to pick up URL changes
+
+export function clearOdysseusConfigCache() { _configCache = undefined; _cacheAt = 0 }
 
 async function fetchOdysseusConfig(): Promise<OdysseusConfig | null> {
-  if (_configCache !== undefined) return _configCache
+  if (_configCache !== undefined && Date.now() - _cacheAt < CACHE_TTL) return _configCache
   try {
     const r = await fetch('/api/integrations/odysseus/config', { credentials: 'include' })
-    if (!r.ok) { _configCache = null; return null }
+    if (!r.ok) { _configCache = null; _cacheAt = Date.now(); return null }
     _configCache = await r.json() as OdysseusConfig
+    _cacheAt = Date.now()
   } catch {
-    _configCache = null
+    _configCache = null; _cacheAt = Date.now()
   }
   return _configCache
 }

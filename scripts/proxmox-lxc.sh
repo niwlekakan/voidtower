@@ -99,8 +99,16 @@ echo
 
 # Next available container ID
 if [[ -z "$CT_ID" ]]; then
-  CT_ID=$(pct nextid 2>/dev/null || echo "")
-  [[ -n "$CT_ID" ]] || die "Could not determine next container ID — set with --id"
+  CT_ID=$(pct nextid 2>/dev/null || true)
+  # pct nextid is absent or broken on some PVE versions — scan manually
+  if [[ -z "$CT_ID" || ! "$CT_ID" =~ ^[0-9]+$ ]]; then
+    for _id in $(seq 100 999); do
+      if ! pct status "$_id" >/dev/null 2>&1 && ! qm status "$_id" >/dev/null 2>&1; then
+        CT_ID="$_id"; break
+      fi
+    done
+  fi
+  [[ -n "$CT_ID" ]] || die "Could not find a free container ID — set one with --id"
 fi
 
 # Storage: prefer local-lvm or local-zfs, fall back to local

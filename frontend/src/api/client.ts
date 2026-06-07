@@ -413,4 +413,18 @@ export const api = {
       return token ? `${base}/api/integrations/events?token=${encodeURIComponent(token)}` : `${base}/api/integrations/events`
     },
   },
+
+  proxmox: {
+    listHosts:  () => request<import('./types').ProxmoxHost[]>('/api/proxmox/hosts'),
+    addHost:    (data: import('./types').AddHostRequest) =>
+      request<{ ok: boolean }>('/api/proxmox/hosts', { method: 'POST', body: JSON.stringify(data) }),
+    deleteHost: (id: string) =>
+      request<{ ok: boolean }>(`/api/proxmox/hosts/${id}`, { method: 'DELETE' }),
+    getNodes:   (hostId: string) => request<import('./types').PveNode[]>(`/api/proxmox/${hostId}/nodes`),
+    getVms:     (hostId: string) => request<import('./types').PveVm[]>(`/api/proxmox/${hostId}/vms`),
+    getStorage: (hostId: string) => request<import('./types').PveStorage[]>(`/api/proxmox/${hostId}/storage`),
+    getTasks:   (hostId: string) => request<import('./types').PveTask[]>(`/api/proxmox/${hostId}/tasks`),
+    vmAction:   (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot') =>
+      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
+  },
 }

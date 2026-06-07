@@ -60,6 +60,7 @@ import NativeServicesPanel     from '@/aios/panels/services'
 import NativeContainersPanel   from '@/aios/panels/containers'
 import NativeAlertsPanel       from '@/aios/panels/alerts'
 import NativeProxiesPanel      from '@/aios/panels/proxies'
+import NativeProxmoxPanel      from '@/aios/panels/proxmox'
 import NativeFirewallPanel     from '@/aios/panels/firewall'
 import NativeAutomationPanel   from '@/aios/panels/automation'
 import NativeSecretsPanel      from '@/aios/panels/secrets'
@@ -118,6 +119,7 @@ const NATIVE_PANEL_REGISTRY: Record<string, React.ComponentType> = {
   wireguard:    NativeWireGuardPanel,
   backups:      NativeBackupsPanel,
   vms:          NativeVMsPanel,
+  proxmox:      NativeProxmoxPanel,
   network:      NativeNetworkPanel,
   storage:      NativeStoragePanel,
   files:        NativeFilesPanel,

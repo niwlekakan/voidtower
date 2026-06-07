@@ -42,6 +42,7 @@ const DOCK_ITEMS: DockItem[] = [
   { key: 'models',       icon: HardDrive,       label: 'Models'       },
   { key: 'network',      icon: Network,         label: 'Network'      },
   { key: 'proxies',      icon: Globe,           label: 'Proxies'      },
+  { key: 'proxmox',     icon: Server,          label: 'Proxmox'      },
   { key: 'wireguard',    icon: Wifi,            label: 'WireGuard'    },
   { key: 'firewall',     icon: Flame,           label: 'Firewall'     },
   { key: 'storage',      icon: HardDrive,       label: 'Storage'      },

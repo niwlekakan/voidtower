@@ -49,6 +49,10 @@ pub struct AppDef {
     /// point at the correct UI endpoint rather than an internal/API port.
     #[serde(default)]
     pub web_port: Option<u16>,
+    /// URL path prefix for the web UI (e.g. "/admin" for Pi-hole).
+    /// Appended to the embed URL so the iframe lands on the right page.
+    #[serde(default)]
+    pub web_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

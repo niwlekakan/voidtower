@@ -7,6 +7,12 @@ export interface NavItem {
   visible: boolean
 }
 
+export interface StoredNavGroup {
+  id: string
+  label: string
+  itemIds: string[]
+}
+
 // Default ordered list derived from DOCK_ITEMS in AiosDock.tsx
 export const DEFAULT_NAV_ITEMS: NavItem[] = [
   { id: 'dashboard',    label: 'Dashboard',    visible: true },
@@ -42,10 +48,24 @@ export const DEFAULT_NAV_ITEMS: NavItem[] = [
   { id: 'timeline',     label: 'Timeline',     visible: true },
 ]
 
+export const DEFAULT_NAV_GROUPS: StoredNavGroup[] = [
+  { id: 'overview',  label: 'Overview',  itemIds: ['dashboard', 'alerts', 'timeline'] },
+  { id: 'resources', label: 'Resources', itemIds: ['services', 'containers', 'vms', 'proxmox', 'apps'] },
+  { id: 'ai',        label: 'AI',        itemIds: ['ai', 'models'] },
+  { id: 'network',   label: 'Network',   itemIds: ['network', 'proxies', 'wireguard', 'firewall'] },
+  { id: 'data',      label: 'Data',      itemIds: ['storage', 'backups', 'files'] },
+  { id: 'security',  label: 'Security',  itemIds: ['security', 'secrets', 'audit'] },
+  { id: 'ops',       label: 'Ops',       itemIds: ['automation', 'terminal', 'tags'] },
+  { id: 'system',    label: 'System',    itemIds: ['integrations', 'updates', 'mods', 'themes', 'settings'] },
+]
+
 interface NavConfigState {
   items: NavItem[]
   setItems: (items: NavItem[]) => void
   resetItems: () => void
+  navGroups: StoredNavGroup[]
+  setNavGroups: (groups: StoredNavGroup[]) => void
+  resetNavGroups: () => void
 }
 
 export const useNavConfigStore = create<NavConfigState>()(
@@ -54,19 +74,28 @@ export const useNavConfigStore = create<NavConfigState>()(
       items: [],
       setItems: (items) => set({ items }),
       resetItems: () => set({ items: [] }),
+      navGroups: [],
+      setNavGroups: (navGroups) => set({ navGroups }),
+      resetNavGroups: () => set({ navGroups: [] }),
     }),
     { name: 'vt-nav-config' },
   ),
 )
 
 /**
- * Returns the effective ordered nav items, merging persisted config over defaults.
+ * Returns effective ordered nav items, merging persisted config over defaults.
  * If items is empty (never configured), returns DEFAULT_NAV_ITEMS.
  */
 export function resolvedNavItems(items: NavItem[]): NavItem[] {
   if (items.length === 0) return DEFAULT_NAV_ITEMS
-  // Merge: add any defaults not present in stored list (e.g. newly added pages)
   const stored = new Set(items.map((i) => i.id))
   const extras = DEFAULT_NAV_ITEMS.filter((d) => !stored.has(d.id))
   return [...items, ...extras]
+}
+
+/**
+ * Returns effective nav groups. If navGroups is empty (never configured), returns DEFAULT_NAV_GROUPS.
+ */
+export function resolvedNavGroups(navGroups: StoredNavGroup[]): StoredNavGroup[] {
+  return navGroups.length > 0 ? navGroups : DEFAULT_NAV_GROUPS
 }

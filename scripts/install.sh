@@ -9,6 +9,17 @@
 set -euo pipefail
 trap 'echo -e "\033[0;31m[ERROR]\033[0m Unexpected exit at line $LINENO: $BASH_COMMAND" >&2' ERR
 
+# Suppress man-db postinst trigger for the lifetime of this script.
+# Rebuilding the manual-page index takes 2–5 min per apt install and can
+# deadlock when stdin is not a real tty (curl|bash installs).
+_MAN_DB_SUPPRESSED=false
+_suppress_man_db() {
+  command -v debconf-set-selections &>/dev/null || return 0
+  echo 'man-db man-db/auto-update boolean false' | debconf-set-selections 2>/dev/null \
+    && _MAN_DB_SUPPRESSED=true || true
+}
+trap '[[ "$_MAN_DB_SUPPRESSED" == true ]] && echo "man-db man-db/auto-update boolean true" | debconf-set-selections 2>/dev/null || true' EXIT
+
 # ─── Colours ────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
@@ -234,6 +245,7 @@ install_deps() {
   case "$PKG_MGR" in
     apt)
       DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      _suppress_man_db
       # python3-pip intentionally omitted here — on Ubuntu 24.04+ it pulls in
       # python3-dev → build-essential → gcc (51 packages + slow man-db trigger).
       # pip and venv are only needed for Odysseus and are installed there.

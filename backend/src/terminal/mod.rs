@@ -262,49 +262,28 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
                 break;
             }
         }
-        tracing::debug!("terminal: writer thread exiting");
+        tracing::info!("terminal: writer thread exiting");
     });
 
-    // Output task: greedy batching — drain everything queued into one WS message.
-    // Fish re-renders its entire prompt on every keypress; sending each 4096-byte
-    // read as a separate WS frame floods the TCP buffer and backs up through
-    // output_rx → reader_thread → PTY output buffer → fish stalls → input frozen.
-    // Batching collapses many reads into one send, keeping the channel clear.
+    // Output task: separate tokio task so ws_sink.send() never blocks the input loop.
     let out_task = tokio::spawn(async move {
-        loop {
-            // Wait for at least one output chunk (yields properly when idle)
-            let first = match output_rx.recv().await {
-                Some(Some(data)) => data,
-                Some(None) | None => {
+        while let Some(item) = output_rx.recv().await {
+            match item {
+                Some(data) => {
+                    let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
+                    if ws_sink.send(Message::Text(msg.into())).await.is_err() {
+                        tracing::debug!("terminal: WS send failed — browser disconnected");
+                        break;
+                    }
+                }
+                None => {
                     let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
                     let _ = ws_sink.send(Message::Text(msg.into())).await;
                     break;
                 }
-            };
-            // Greedily drain everything currently queued — no waiting
-            let mut batch = first;
-            loop {
-                match output_rx.try_recv() {
-                    Ok(Some(data)) => batch.push_str(&data),
-                    Ok(None) => {
-                        // Process exited mid-drain: flush then close
-                        if !batch.is_empty() {
-                            let msg = serde_json::to_string(&ServerMessage::Output { data: batch }).unwrap_or_default();
-                            let _ = ws_sink.send(Message::Text(msg.into())).await;
-                        }
-                        let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
-                        let _ = ws_sink.send(Message::Text(msg.into())).await;
-                        return;
-                    }
-                    Err(_) => break, // Channel empty — send the batch
-                }
-            }
-            let msg = serde_json::to_string(&ServerMessage::Output { data: batch }).unwrap_or_default();
-            if ws_sink.send(Message::Text(msg.into())).await.is_err() {
-                tracing::debug!("terminal: WS send failed — browser disconnected");
-                break;
             }
         }
+        tracing::info!("terminal: output task exiting");
     });
 
     // Input loop: purely async, never touches blocking I/O

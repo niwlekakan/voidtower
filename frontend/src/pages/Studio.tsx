@@ -693,16 +693,158 @@ function GalleryTab() {
   )
 }
 
+// ── MCP Tools tab ─────────────────────────────────────────────────────────────
+
+interface McpTool {
+  name: string
+  description: string
+  inputSchema: {
+    type: string
+    properties?: Record<string, { type: string; description?: string }>
+    required?: string[]
+  }
+}
+
+function McpToolsTab() {
+  const [tools,    setTools]    = useState<McpTool[]>([])
+  const [selected, setSelected] = useState<McpTool | null>(null)
+  const [args,     setArgs]     = useState<Record<string, string>>({})
+  const [loading,  setLoading]  = useState(true)
+  const [running,  setRunning]  = useState(false)
+  const [result,   setResult]   = useState<{ ok: boolean; text: string } | null>(null)
+
+  useEffect(() => {
+    fetch('/api/studio/mcp/tools', { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => { setTools(d.tools ?? []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
+  function selectTool(t: McpTool) {
+    setSelected(t)
+    setArgs({})
+    setResult(null)
+  }
+
+  async function invoke() {
+    if (!selected) return
+    setRunning(true); setResult(null)
+    try {
+      const parsedArgs: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(args)) {
+        const propType = selected.inputSchema.properties?.[k]?.type
+        parsedArgs[k] = propType === 'number' || propType === 'integer' ? Number(v) : v
+      }
+      const r = await fetch('/api/studio/mcp/invoke', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: selected.name, arguments: parsedArgs }),
+      })
+      const d = await r.json()
+      let text = d.result ?? d.error ?? ''
+      try { text = JSON.stringify(JSON.parse(text), null, 2) } catch { /* use raw */ }
+      setResult({ ok: d.ok, text })
+    } catch (e: any) { setResult({ ok: false, text: e.message }) }
+    finally { setRunning(false) }
+  }
+
+  const props = selected?.inputSchema.properties ?? {}
+  const required = new Set(selected?.inputSchema.required ?? [])
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16, minHeight: 400 }}>
+      {/* Tool list */}
+      <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '10px 12px', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border)' }}>
+          VoidTower MCP Tools
+        </div>
+        {loading
+          ? <div style={{ padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
+          : tools.map(t => (
+            <div
+              key={t.name}
+              onClick={() => selectTool(t)}
+              style={{
+                padding: '9px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border-subtle)',
+                background: selected?.name === t.name ? 'var(--accent)1a' : 'transparent',
+                borderLeft: `3px solid ${selected?.name === t.name ? 'var(--accent)' : 'transparent'}`,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 500, fontFamily: 'monospace' }}>{t.name}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.description}</div>
+            </div>
+          ))
+        }
+      </div>
+
+      {/* Tool detail */}
+      {selected ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={card}>
+            <div style={{ fontSize: 14, fontWeight: 600, fontFamily: 'monospace', marginBottom: 4 }}>{selected.name}</div>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{selected.description}</div>
+          </div>
+
+          <div style={card}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
+              Arguments
+            </div>
+            {Object.keys(props).length === 0
+              ? <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>No arguments required</div>
+              : Object.entries(props).map(([name, schema]) => (
+                <div key={name} style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+                    <code style={{ fontFamily: 'monospace' }}>{name}</code>
+                    {required.has(name) && <span style={{ color: '#ef4444', marginLeft: 4 }}>*</span>}
+                    {schema.description && <span style={{ marginLeft: 6, fontStyle: 'italic' }}>{schema.description}</span>}
+                    <span style={{ marginLeft: 6, opacity: 0.5 }}>({schema.type})</span>
+                  </label>
+                  <input
+                    value={args[name] ?? ''}
+                    onChange={e => setArgs(a => ({ ...a, [name]: e.target.value }))}
+                    placeholder={schema.type}
+                    style={input}
+                  />
+                </div>
+              ))
+            }
+            <button onClick={invoke} disabled={running} style={{ ...btn(), opacity: running ? 0.6 : 1, marginTop: 8 }}>
+              {running ? <Loader2 size={13} className="animate-spin" /> : null}
+              {running ? 'Running…' : 'Invoke'}
+            </button>
+          </div>
+
+          {result && (
+            <div style={{ ...card, borderLeft: `3px solid ${result.ok ? 'var(--accent)' : '#ef4444'}` }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: result.ok ? 'var(--accent)' : '#ef4444', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {result.ok ? 'Result' : 'Error'}
+              </div>
+              <pre style={{ margin: 0, fontSize: 11, fontFamily: 'monospace', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 400, overflow: 'auto' }}>
+                {result.text}
+              </pre>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ ...card, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-disabled)', fontSize: 13 }}>
+          Select a tool from the list
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── main page ─────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'image' | 'tts' | 'stt' | 'gallery'
+type Tab = 'overview' | 'image' | 'tts' | 'stt' | 'gallery' | 'mcp'
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  { id: 'overview', label: 'Overview', icon: <Wand2 size={13} /> },
-  { id: 'image',    label: 'Image',    icon: <Image size={13} /> },
-  { id: 'tts',      label: 'TTS',      icon: <Volume2 size={13} /> },
-  { id: 'stt',      label: 'STT',      icon: <Mic size={13} /> },
-  { id: 'gallery',  label: 'Gallery',  icon: <Search size={13} /> },
+  { id: 'overview', label: 'Overview',  icon: <Wand2 size={13} /> },
+  { id: 'image',    label: 'Image',     icon: <Image size={13} /> },
+  { id: 'tts',      label: 'TTS',       icon: <Volume2 size={13} /> },
+  { id: 'stt',      label: 'STT',       icon: <Mic size={13} /> },
+  { id: 'gallery',  label: 'Gallery',   icon: <Search size={13} /> },
+  { id: 'mcp',      label: 'MCP Tools', icon: <ChevronRight size={13} /> },
 ]
 
 export default function StudioPage() {
@@ -773,6 +915,7 @@ export default function StudioPage() {
       {tab === 'tts'      && <TtsTab services={services} />}
       {tab === 'stt'      && <SttTab services={services} />}
       {tab === 'gallery'  && <GalleryTab />}
+      {tab === 'mcp'      && <McpToolsTab />}
     </div>
   )
 }

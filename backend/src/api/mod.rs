@@ -181,6 +181,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/studio/stt/transcribe",               post(studio::stt_transcribe))
         .route("/api/studio/gallery",                      get(studio::gallery_list))
         .route("/api/studio/gallery/:kind/:filename",      delete(studio::gallery_delete))
+        .route("/api/studio/mcp/tools",                    get(studio::mcp_tools))
+        .route("/api/studio/mcp/invoke",                   post(studio::mcp_invoke))
         // Models
         .route("/api/models",              get(models::list_models))
         .route("/api/models/download",     post(models::start_download))

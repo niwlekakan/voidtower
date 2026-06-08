@@ -72,7 +72,7 @@ async fn get_host_and_token(state: &AppState, host_id: &str) -> Result<HostInfo>
     .ok_or_else(|| AppError::BadRequest(format!("No token configured for host {}", host_id)))?;
 
     let token = decrypt_secret(&state.secrets_key, &enc_row.0)
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     Ok(HostInfo { url, node, token })
 }

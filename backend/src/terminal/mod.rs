@@ -338,14 +338,14 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
                     Some(data) => {
                         if !data.is_empty() {
                             let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
-                            if ws_sink.send(Message::Text(msg.into())).await.is_err() {
+                            if ws_sink.send(Message::Text(msg)).await.is_err() {
                                 break "WS send failed";
                             }
                         }
                     }
                     None => {
                         let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
-                        let _ = ws_sink.send(Message::Text(msg.into())).await;
+                        let _ = ws_sink.send(Message::Text(msg)).await;
                         break "process exited";
                     }
                 }

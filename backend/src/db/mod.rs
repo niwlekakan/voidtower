@@ -114,6 +114,20 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
         }
     }
 
+    // Plugin registry
+    let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS plugins (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        description  TEXT NOT NULL DEFAULT '',
+        version      TEXT NOT NULL DEFAULT '1.0.0',
+        author       TEXT,
+        entry        TEXT NOT NULL DEFAULT 'index.html',
+        icon         TEXT,
+        nav_group    TEXT,
+        enabled      INTEGER NOT NULL DEFAULT 1,
+        installed_at INTEGER NOT NULL
+    )"#).execute(&pool).await;
+
     Ok(pool)
 }
 

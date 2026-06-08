@@ -141,7 +141,7 @@ export const api = {
         method: 'POST', body: JSON.stringify(body),
       }),
     openUi: (projectName: string, primaryPort: number) =>
-      request<{ url: string; proxy_created: boolean }>('/api/apps/open-ui', {
+      request<{ url: string; embed_url: string | null; proxy_created: boolean }>('/api/apps/open-ui', {
         method: 'POST',
         body: JSON.stringify({ project_name: projectName, primary_port: primaryPort }),
       }),

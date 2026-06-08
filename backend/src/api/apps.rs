@@ -1012,7 +1012,7 @@ pub async fn open_ui(
     require_user(&state, &jar).await?;
 
     // Use the Host header so the returned URL works from any machine on the LAN,
-    // not just localhost. Strip the port portion if present (e.g. "192.168.1.5:8743" → "192.168.1.5").
+    // not just localhost. Strip the port portion if present.
     let host = headers
         .get("host")
         .and_then(|v| v.to_str().ok())
@@ -1021,60 +1021,135 @@ pub async fn open_ui(
 
     let direct_url = format!("http://{}:{}", host, req.primary_port);
 
-    // Attempt to create an nginx embed proxy in the background so that apps
-    // sending X-Frame-Options can be re-opened via a domain that strips those
-    // headers. This is optional — the direct URL always works on the LAN.
+    // Use a slug-based domain key for DB lookup (keep existing record format).
     let domain = format!("{}.embed", req.project_name);
     let upstream = format!("http://localhost:{}", req.primary_port);
 
-    let existing: Option<(bool,)> = sqlx::query_as(
-        "SELECT allow_embed FROM proxy_configs WHERE domain = ?",
+    // Look up existing embed record to get any already-allocated port.
+    let existing: Option<(bool, Option<i64>)> = sqlx::query_as(
+        "SELECT allow_embed, embed_port FROM proxy_configs WHERE domain = ?",
     )
     .bind(&domain)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let proxy_created = if existing.is_none() {
+    let embed_url: Option<String>;
+    let proxy_created: bool;
+
+    if let Some((_, Some(port))) = existing {
+        // Already set up — return the existing LAN URL.
+        embed_url = Some(format!("http://{}:{}", host, port));
+        proxy_created = false;
+    } else {
         let nginx_ok = tokio::task::spawn_blocking(|| {
             crate::api::proxy::nginx_active_pub()
-        }).await.unwrap();
+        }).await.unwrap_or(false);
 
         if nginx_ok {
-            let id = uuid::Uuid::new_v4().to_string();
+            // Allocate next free embed port in 8800–8899 range.
+            let next_port: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(embed_port), 8799) + 1 FROM proxy_configs WHERE embed_port IS NOT NULL",
+            )
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(8800);
+            let embed_port = (next_port as u16).clamp(8800, 8899);
+
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
 
-            let insert_ok = sqlx::query(
-                "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, created_at) VALUES (?,?,?,0,1,1,?)",
-            )
-            .bind(&id)
-            .bind(&domain)
-            .bind(&upstream)
-            .bind(now)
-            .execute(&state.db)
-            .await
-            .map(|_| true)
-            .unwrap_or(false);
+            let inserted = if existing.is_none() {
+                sqlx::query(
+                    "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, embed_port, created_at) VALUES (?,?,?,0,1,1,?,?)",
+                )
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&domain)
+                .bind(&upstream)
+                .bind(embed_port as i64)
+                .bind(now)
+                .execute(&state.db)
+                .await
+                .map(|_| true)
+                .unwrap_or(false)
+            } else {
+                // Record exists but has no port yet — patch it.
+                sqlx::query("UPDATE proxy_configs SET embed_port = ? WHERE domain = ?")
+                    .bind(embed_port as i64)
+                    .bind(&domain)
+                    .execute(&state.db)
+                    .await
+                    .map(|_| true)
+                    .unwrap_or(false)
+            };
 
-            if insert_ok {
-                let _ = crate::api::proxy::write_nginx_conf_pub(&domain, &upstream, false, true);
+            if inserted {
+                let _ = crate::api::proxy::write_nginx_port_conf(&req.project_name, &upstream, embed_port);
                 let _ = crate::api::proxy::reload_nginx_pub();
+                // Open the port in the local firewall non-blocking.
+                let port_str = embed_port.to_string();
+                tokio::task::spawn_blocking(move || {
+                    open_firewall_port(&port_str);
+                });
+                embed_url = Some(format!("http://{}:{}", host, embed_port));
+                proxy_created = true;
+            } else {
+                embed_url = None;
+                proxy_created = false;
             }
-            insert_ok
         } else {
-            false
+            embed_url = None;
+            proxy_created = false;
         }
-    } else {
-        false
-    };
+    }
 
     Ok(Json(serde_json::json!({
         "url": direct_url,
+        "embed_url": embed_url,
         "proxy_created": proxy_created,
     })))
+}
+
+fn open_firewall_port(port: &str) {
+    let tcp = format!("{port}/tcp");
+    // ufw
+    if std::process::Command::new("ufw")
+        .args(["status"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Status: active"))
+        .unwrap_or(false)
+    {
+        let _ = std::process::Command::new("ufw")
+            .args(["allow", &tcp, "comment", "VoidTower embed"])
+            .output();
+        return;
+    }
+    // firewalld
+    if std::process::Command::new("firewall-cmd")
+        .args(["--state"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        let _ = std::process::Command::new("firewall-cmd")
+            .args(["--permanent", "--add-port", &tcp, "--quiet"])
+            .output();
+        let _ = std::process::Command::new("firewall-cmd").args(["--reload", "--quiet"]).output();
+        return;
+    }
+    // iptables fallback
+    if std::process::Command::new("iptables")
+        .args(["-C", "INPUT", "-p", "tcp", "--dport", port, "-j", "ACCEPT"])
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
+    {
+        let _ = std::process::Command::new("iptables")
+            .args(["-I", "INPUT", "-p", "tcp", "--dport", port, "-j", "ACCEPT"])
+            .output();
+    }
 }
 
 pub async fn update_compose(

@@ -112,6 +112,41 @@ fn embed_headers() -> &'static str {
     "        proxy_hide_header X-Frame-Options;\n        add_header X-Frame-Options \"ALLOWALL\" always;\n        add_header Content-Security-Policy \"frame-ancestors *\" always;"
 }
 
+// Port-based nginx config for app embeds — no server_name, listen on a unique
+// port so any LAN client can reach it via http://<server-ip>:<embed_port>/
+// without requiring any DNS or /etc/hosts configuration.
+pub fn write_nginx_port_conf(slug: &str, upstream: &str, port: u16) -> Result<()> {
+    let path = conf_path(&format!("embed-port-{slug}"));
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let content = format!(
+        r#"# Managed by VoidTower — do not edit manually
+server {{
+    listen 0.0.0.0:{port};
+
+    location / {{
+        proxy_pass {upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_hide_header X-Frame-Options;
+        add_header X-Frame-Options "ALLOWALL" always;
+        add_header Content-Security-Policy "frame-ancestors *" always;
+    }}
+}}
+"#
+    );
+    std::fs::write(&path, content)
+        .map_err(|e| AppError::BadRequest(format!("Cannot write nginx config: {e}")))?;
+    Ok(())
+}
+
 fn write_nginx_conf(domain: &str, upstream: &str, ssl: bool, allow_embed: bool) -> Result<()> {
     let path = conf_path(domain);
     if let Some(dir) = path.parent() {

@@ -1489,8 +1489,84 @@ run_readiness_check() {
   fi
 }
 
+# ─── Firewall ────────────────────────────────────────────────────────────────
+
+open_firewall_ports() {
+  # Only open ports when binding to a non-loopback address
+  if [[ "$VT_BIND" == "127.0.0.1" || "$VT_BIND" == "::1" ]]; then
+    return 0
+  fi
+
+  local ports=("$VT_PORT")
+  [[ "$WITH_ODYSSEUS" == true ]] && ports+=("$ODYSSEUS_PORT")
+
+  # ufw (Ubuntu/Debian default)
+  if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "^Status: active"; then
+    for p in "${ports[@]}"; do
+      if ufw status | grep -qw "${p}/tcp"; then
+        info "ufw: port ${p}/tcp already allowed"
+      else
+        ufw allow "${p}/tcp" comment "VoidTower" &>/dev/null \
+          && success "ufw: opened port ${p}/tcp" \
+          || warn "ufw: failed to open port ${p}/tcp — run: ufw allow ${p}/tcp"
+      fi
+    done
+    return 0
+  fi
+
+  # firewalld (Fedora/RHEL/CentOS)
+  if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+    for p in "${ports[@]}"; do
+      firewall-cmd --quiet --permanent --add-port="${p}/tcp" 2>/dev/null \
+        && success "firewalld: opened port ${p}/tcp" \
+        || info "firewalld: port ${p}/tcp may already be open"
+    done
+    firewall-cmd --quiet --reload 2>/dev/null || true
+    return 0
+  fi
+
+  # iptables fallback (any distro)
+  if command -v iptables &>/dev/null; then
+    for p in "${ports[@]}"; do
+      if iptables -C INPUT -p tcp --dport "$p" -j ACCEPT &>/dev/null; then
+        info "iptables: port ${p}/tcp already allowed"
+      else
+        iptables -I INPUT -p tcp --dport "$p" -j ACCEPT \
+          && success "iptables: opened port ${p}/tcp" \
+          || warn "iptables: failed to open port ${p}/tcp — run: iptables -I INPUT -p tcp --dport ${p} -j ACCEPT"
+      fi
+    done
+    # Persist if iptables-save is available
+    if command -v iptables-save &>/dev/null; then
+      local rules_file=""
+      for f in /etc/iptables/rules.v4 /etc/iptables.rules; do
+        [[ -f "$f" ]] && rules_file="$f" && break
+      done
+      [[ -n "$rules_file" ]] && iptables-save > "$rules_file" 2>/dev/null || true
+    fi
+    return 0
+  fi
+
+  info "No active firewall detected — skipping port rules (ufw/firewalld/iptables not found or inactive)"
+}
+
 # ─── Final summary ────────────────────────────────────────────────────────────
+_lan_ip() {
+  # Pick the first non-loopback IPv4 address (works on Linux with ip or ifconfig)
+  local ip=""
+  if command -v ip &>/dev/null; then
+    ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+  fi
+  if [[ -z "$ip" ]] && command -v hostname &>/dev/null; then
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  fi
+  echo "${ip:-}"
+}
+
 print_summary() {
+  local lan_ip
+  lan_ip=$(_lan_ip)
+
   echo
   echo -e "${BOLD}${GREEN}══════════════════════════════════════════════════${RESET}"
   echo -e "${BOLD}${GREEN}  Installation Complete!${RESET}"
@@ -1498,6 +1574,8 @@ print_summary() {
   echo
   echo -e "  ${BOLD}VoidTower${RESET}"
   echo -e "    URL:    ${CYAN}http://localhost:${VT_PORT}${RESET}"
+  [[ -n "$lan_ip" && "$VT_BIND" != "127.0.0.1" ]] && \
+    echo -e "    LAN:    ${CYAN}http://${lan_ip}:${VT_PORT}${RESET}"
   [[ -n "$VOIDTOWER_DOMAIN" ]] && echo -e "    Domain: ${CYAN}http://${VOIDTOWER_DOMAIN}${RESET}"
   echo -e "    Setup:  ${CYAN}http://localhost:${VT_PORT}/bootstrap${RESET}"
   echo -e "    Creds:  ${CYAN}/root/voidtower-bootstrap-token${RESET}"
@@ -1507,6 +1585,8 @@ print_summary() {
     echo
     echo -e "  ${BOLD}Odysseus${RESET}"
     echo -e "    URL:    ${CYAN}http://localhost:${ODYSSEUS_PORT}${RESET}"
+    [[ -n "$lan_ip" && "$ODYSSEUS_BIND" != "127.0.0.1" ]] && \
+      echo -e "    LAN:    ${CYAN}http://${lan_ip}:${ODYSSEUS_PORT}${RESET}"
     echo -e "    Creds:  ${CYAN}/root/odysseus-bootstrap-token${RESET}"
     echo -e "    Logs:   ${CYAN}journalctl -u odysseus -f${RESET}"
   fi
@@ -1958,6 +2038,7 @@ main() {
   # Voidwatch is auto-wired by voidwatch-configure.service after bootstrap —
   # no manual configure_voidwatch call needed here.
 
+  open_firewall_ports
   run_readiness_check
   print_summary
 }

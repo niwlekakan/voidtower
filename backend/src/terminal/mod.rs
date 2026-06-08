@@ -27,13 +27,21 @@ struct UserInfo {
     shell: String,
     home:  String,
     name:  String,
+    uid:   Option<u32>,
+    gid:   Option<u32>,
 }
 
 fn detect_user_info() -> UserInfo {
     #[cfg(unix)]
     {
         use nix::unistd::{getuid, User};
-        if let Ok(Some(u)) = User::from_uid(getuid()) {
+        // When the backend runs as root (sudo/doas), use the original caller's identity
+        let by_name = std::env::var("SUDO_USER")
+            .or_else(|_| std::env::var("DOAS_USER"))
+            .ok()
+            .and_then(|n| User::from_name(&n).ok().flatten());
+        let u = by_name.or_else(|| User::from_uid(getuid()).ok().flatten());
+        if let Some(u) = u {
             let shell = u.shell.to_string_lossy().to_string();
             let home  = u.dir.to_string_lossy().to_string();
             let name  = u.name.clone();
@@ -42,6 +50,8 @@ fn detect_user_info() -> UserInfo {
                 shell: if valid { shell } else { "/bin/bash".into() },
                 home:  if home.is_empty() { std::env::var("HOME").unwrap_or_else(|_| "/root".into()) } else { home },
                 name,
+                uid: Some(u.uid.as_raw()),
+                gid: Some(u.gid.as_raw()),
             };
         }
     }
@@ -49,6 +59,8 @@ fn detect_user_info() -> UserInfo {
         shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into()),
         home:  std::env::var("HOME").unwrap_or_else(|_| "/root".into()),
         name:  std::env::var("USER").unwrap_or_else(|_| "root".into()),
+        uid:   None,
+        gid:   None,
     }
 }
 
@@ -79,11 +91,25 @@ async fn run_terminal(socket: WebSocket, shell: Option<String>) -> Result<()> {
 
     let mut cmd = CommandBuilder::new(binary);
     if !args.is_empty() { cmd.args(&args); }
+
+    // CommandBuilder clears the env — repopulate what fish needs to behave correctly
     cmd.env("HOME",    &info.home);
     cmd.env("USER",    &info.name);
     cmd.env("LOGNAME", &info.name);
+    cmd.env("SHELL",   binary);
     cmd.env("TERM",    "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
     cmd.env("PATH",    default_path());
+
+    // Forward locale, XDG dirs, and session bus so fish finds its config and renders correctly
+    for key in ["LANG", "LC_ALL", "LC_CTYPE", "LANGUAGE",
+                "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+                "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY"] {
+        if let Ok(val) = std::env::var(key) {
+            cmd.env(key, val);
+        }
+    }
+
     cmd.cwd(&info.home);
     let _child = pair.slave.spawn_command(cmd)?;
 

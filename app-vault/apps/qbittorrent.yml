@@ -1,0 +1,46 @@
+id: qbittorrent
+name: qBittorrent
+description: Feature-rich torrent client with web UI — route through Gluetun for VPN kill-switch
+category: downloads
+version_hint: "latest"
+compose:
+  services:
+    qbittorrent:
+      image: lscr.io/linuxserver/qbittorrent:latest
+      restart: unless-stopped
+      # To route through Gluetun VPN, replace the network_mode line:
+      #   network_mode: "service:gluetun"
+      # and remove the ports block (expose via Gluetun instead).
+      ports:
+        - "8080:8080"
+        - "6881:6881"
+        - "6881:6881/udp"
+      environment:
+        - PUID=1000
+        - PGID=1000
+        - TZ=Etc/UTC
+        - WEBUI_PORT=8080
+        - VIRTUAL_HOST=qbittorrent.local
+        - VIRTUAL_PORT=8080
+      volumes:
+        - qbittorrent_config:/config
+        - /downloads:/downloads
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - qbittorrent
+  volumes:
+    qbittorrent_config:
+
+  networks:
+    vt-proxy:
+      external: true
+
+web_port: 8080
+web_path: /
+ai_integration:
+  level: none
+links:
+  home: https://www.qbittorrent.org
+  docs: https://github.com/qbittorrent/qBittorrent/wiki

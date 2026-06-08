@@ -1,0 +1,38 @@
+id: lidarr
+name: Lidarr
+description: Music collection manager — monitors for new albums and automatically downloads, sorts, and tags music files
+category: downloads
+version_hint: "latest"
+compose:
+  services:
+    lidarr:
+      image: lscr.io/linuxserver/lidarr:latest
+      restart: unless-stopped
+      ports:
+        - "8686:8686"
+      environment:
+        - PUID=1000
+        - PGID=1000
+        - TZ=Etc/UTC
+        - VIRTUAL_HOST=lidarr.local
+        - VIRTUAL_PORT=8686
+      volumes:
+        - lidarr_config:/config
+        - /media/music:/music
+        - /downloads:/downloads
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - lidarr
+  volumes:
+    lidarr_config:
+
+  networks:
+    vt-proxy:
+      external: true
+
+web_port: 8686
+links:
+  home: https://lidarr.audio
+  docs: https://wiki.servarr.com/lidarr

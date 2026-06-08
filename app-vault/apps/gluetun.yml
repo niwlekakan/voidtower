@@ -1,0 +1,42 @@
+id: gluetun
+name: Gluetun
+description: VPN client container — routes traffic from other containers through a VPN tunnel with kill-switch
+category: network
+version_hint: "latest"
+compose:
+  services:
+    gluetun:
+      image: qmcgaw/gluetun:latest
+      restart: unless-stopped
+      cap_add:
+        - NET_ADMIN
+      devices:
+        - /dev/net/tun:/dev/net/tun
+      ports:
+        - "8888:8888/tcp"   # HTTP proxy (optional)
+        - "8388:8388/tcp"   # Shadowsocks (optional)
+        - "8388:8388/udp"
+      environment:
+        - VPN_SERVICE_PROVIDER=mullvad      # change to your provider
+        - VPN_TYPE=wireguard                 # or openvpn
+        - WIREGUARD_PRIVATE_KEY=changeme     # your WireGuard private key
+        - WIREGUARD_ADDRESSES=changeme       # e.g. 10.68.x.x/32
+        - SERVER_COUNTRIES=Netherlands       # or SERVER_CITIES, SERVER_HOSTNAMES
+      volumes:
+        - gluetun_data:/gluetun
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - gluetun
+  volumes:
+    gluetun_data:
+
+  networks:
+    vt-proxy:
+      external: true
+
+web_port: 8888
+links:
+  home: https://github.com/qdm12/gluetun
+  docs: https://github.com/qdm12/gluetun/wiki

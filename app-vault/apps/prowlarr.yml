@@ -1,0 +1,36 @@
+id: prowlarr
+name: Prowlarr
+description: Indexer manager and proxy for the *arr stack — manages torrent and Usenet indexers in one place
+category: downloads
+version_hint: "latest"
+compose:
+  services:
+    prowlarr:
+      image: lscr.io/linuxserver/prowlarr:latest
+      restart: unless-stopped
+      ports:
+        - "9696:9696"
+      environment:
+        - PUID=1000
+        - PGID=1000
+        - TZ=Etc/UTC
+        - VIRTUAL_HOST=prowlarr.local
+        - VIRTUAL_PORT=9696
+      volumes:
+        - prowlarr_config:/config
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - prowlarr
+  volumes:
+    prowlarr_config:
+
+  networks:
+    vt-proxy:
+      external: true
+
+web_port: 9696
+links:
+  home: https://prowlarr.com
+  docs: https://wiki.servarr.com/prowlarr

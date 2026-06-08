@@ -1,0 +1,31 @@
+id: flaresolverr
+name: FlareSolverr
+description: Proxy server to bypass Cloudflare and DDoS-GUARD protection — used by Prowlarr for protected indexers
+category: downloads
+version_hint: "latest"
+compose:
+  services:
+    flaresolverr:
+      image: ghcr.io/flaresolverr/flaresolverr:latest
+      restart: unless-stopped
+      ports:
+        - "8191:8191"
+      environment:
+        - LOG_LEVEL=info
+        - LOG_HTML=false
+        - CAPTCHA_SOLVER=none
+        - TZ=Etc/UTC
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - flaresolverr
+
+  networks:
+    vt-proxy:
+      external: true
+
+web_port: 8191
+links:
+  home: https://github.com/FlareSolverr/FlareSolverr
+  docs: https://github.com/FlareSolverr/FlareSolverr#readme

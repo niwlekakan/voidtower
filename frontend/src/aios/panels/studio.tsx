@@ -128,7 +128,7 @@ export default function NativeStudioPanel() {
         services.length === 0 ? <EmptyState text="No services found" /> :
         services.map(svc => (
           <NativeRow key={svc.name}>
-            <StatusDot color={svc.status === 'online' ? '#22c55e' : '#94a3b8'} />
+            <StatusDot color={svc.status === 'online' ? 'var(--accent-success)' : '#94a3b8'} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{svc.name}</div>
               <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{svc.kind} · {svc.status}</div>
@@ -141,7 +141,7 @@ export default function NativeStudioPanel() {
       {tab === 'image' && !imgAvailable && (
         <div style={{ padding: '12px 10px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
           SD WebUI or ComfyUI not running.<br />
-          <a href="/apps" style={{ color: 'var(--accent)' }}>Deploy via App Vault</a>
+          <a href="/apps" style={{ color: 'var(--accent-primary)' }}>Deploy via App Vault</a>
         </div>
       )}
       {tab === 'image' && imgAvailable && (
@@ -161,7 +161,7 @@ export default function NativeStudioPanel() {
       {tab === 'audio' && !ttsAvailable && (
         <div style={{ padding: '12px 10px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
           Kokoro TTS not running.<br />
-          <a href="/apps" style={{ color: 'var(--accent)' }}>Deploy via App Vault</a>
+          <a href="/apps" style={{ color: 'var(--accent-primary)' }}>Deploy via App Vault</a>
         </div>
       )}
       {tab === 'audio' && ttsAvailable && (

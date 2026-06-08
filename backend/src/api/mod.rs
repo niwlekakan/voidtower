@@ -70,6 +70,7 @@ pub mod webhooks;
 pub mod mcp;
 pub mod proxmox;
 pub mod disaster;
+pub mod policy;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -322,6 +323,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/disaster/import-config",          post(disaster::import_config))
         .route("/api/disaster/emergency-reset-admin",  post(disaster::emergency_reset_admin))
         .route("/api/disaster/emergency-disable",      post(disaster::emergency_disable))
+        // Policy engine
+        .route("/api/policy/rules",      get(policy::list_rules).post(policy::create_rule))
+        .route("/api/policy/rules/:id",  patch(policy::update_rule).delete(policy::delete_rule))
+        .route("/api/policy/check",      post(policy::check_policy))
         // Notification webhooks
         .route("/api/webhooks",           get(webhooks::list).post(webhooks::create))
         .route("/api/webhooks/:id",       patch(webhooks::update).delete(webhooks::delete))

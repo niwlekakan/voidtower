@@ -2,6 +2,7 @@ use crate::{
     audit,
     auth,
     error::{AppError, Result},
+    policy::{self, MaybeTokenActor},
     services::{self, ServiceAction, ServiceInfo},
     AppState,
 };
@@ -64,6 +65,7 @@ pub async fn get(
 pub async fn action(
     State(state): State<AppState>,
     jar: CookieJar,
+    MaybeTokenActor(is_token): MaybeTokenActor,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(name): Path<String>,
     Json(req): Json<ActionRequest>,
@@ -76,6 +78,14 @@ pub async fn action(
     }
 
     let action_str = format!("{:?}", req.action).to_lowercase();
+
+    if is_token {
+        if let policy::PolicyVerdict::Deny(reason) =
+            policy::check(&state.db, "api_token", &action_str, "service", &name).await
+        {
+            return Err(AppError::PolicyDenied(reason));
+        }
+    }
     services::run_service_action(&name, req.action)
         .map_err(AppError::Internal)?;
 

@@ -702,3 +702,21 @@ export interface PveBackupArchive {
   node: string
   storage: string
 }
+
+export interface PolicyRule {
+  id: string
+  name: string
+  actor_type: 'api_token' | 'automation' | '*'
+  action: string
+  resource_type: string
+  resource_tag: string | null
+  effect: 'allow' | 'deny'
+  priority: number
+  enabled: boolean
+  created_at: number
+}
+
+export interface PolicyCheckResult {
+  verdict: 'allow' | 'deny'
+  reason: string | null
+}

@@ -69,6 +69,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Security',
     items: [
       { to: '/security', icon: Lock,          label: 'Security'  },
+      { to: '/policy',   icon: Shield,        label: 'Policy'    },
       { to: '/secrets',  icon: KeyRound,      label: 'Secrets'   },
       { to: '/audit',    icon: ClipboardList, label: 'Audit Log' },
     ],

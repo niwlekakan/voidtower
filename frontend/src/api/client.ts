@@ -462,4 +462,17 @@ export const api = {
     getBackupJobs: (hostId: string) =>
       request<{ jobs: import('./types').PveBackupJob[]; archives: import('./types').PveBackupArchive[] }>(`/api/proxmox/${hostId}/backup-jobs`),
   },
+
+  policy: {
+    list: () =>
+      request<import('./types').PolicyRule[]>('/api/policy/rules'),
+    create: (rule: { name: string; actor_type: string; action: string; resource_type: string; resource_tag?: string | null; effect: string; priority?: number }) =>
+      request<import('./types').PolicyRule>('/api/policy/rules', { method: 'POST', body: JSON.stringify(rule) }),
+    update: (id: string, patch: Partial<{ name: string; actor_type: string; action: string; resource_type: string; resource_tag: string | null; effect: string; priority: number; enabled: boolean }>) =>
+      request<import('./types').PolicyRule>(`/api/policy/rules/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    delete: (id: string) =>
+      request<{ ok: boolean }>(`/api/policy/rules/${id}`, { method: 'DELETE' }),
+    check: (params: { actor_type: string; action: string; resource_type: string; resource_id: string }) =>
+      request<import('./types').PolicyCheckResult>('/api/policy/check', { method: 'POST', body: JSON.stringify(params) }),
+  },
 }

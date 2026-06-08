@@ -68,7 +68,7 @@ From `future_plan.md` — 10 non-negotiable items for a credible first public re
 | OIDC / passkeys (WebAuthn) | Not started — username/password + TOTP only |
 | Plugin system / SDK | **Done** (`f38e640`) — zip install, iframe host, dynamic sidebar, plugin.json manifest |
 | WireGuard manager | Partial — peer add/remove/list; missing peer stats, QR export |
-| LXC management page | Not started — no `/lxc` page; local `pct` mgmt absent |
+| LXC management page | **Done** (`418963f`) — list/start/stop/shutdown/restart via `pct`; capability-gated nav item |
 | Agent / multi-node mode | Not started — `--agent` flag parsed but mode not implemented |
 
 ---
@@ -80,7 +80,7 @@ These items transform VoidTower from an admin panel into a true local-first AI o
 ### Bug Fixes (blocking polish)
 
 - [ ] **Fix "Open WebUI in VoidTower" button** — App Vault deploy creates a proxy entry but routing is wrong for apps with `web_path` (e.g. Pi-hole `/admin`) or non-standard `web_port`. Fix: auto-creation must pull `web_port`/`web_path` from YAML catalog and strip iframe-blocking headers on the generated proxy rule.
-- [ ] **Fix theme randomizer** — randomizer skips some of the 14 animation parameters and not all color tokens are cycled.
+- [x] **Fix theme randomizer** — Done (`1d638a3`): `--text-disabled` + all 5 `*-subtle` rgba tokens now generated and cleared on reset.
 - [x] **Fix proxy edit/delete** — Done: inline edit form (dry-run plan + save) and delete with confirmation are both present.
 
 ### Full UI Customization
@@ -334,7 +334,7 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 - **Odysseus `voidlink-latest` Docker image CI workflow** — no GitHub Actions workflow builds or publishes `aio-latest` from this repo; image must be built manually
 - **TrueNAS AIO end-to-end test pending** — pool name in docs defaults to `tank` but actual user pool is `main`; deploy/truenas YAML needs pool-name verification pass
 - **MCP server** — ~~stub~~ Done (`3a23ed3`) — full SSE+message MCP server with 13 tools
-- **LXC management missing** — was Phase 3 in plan.md; no LXC page or backend module exists
+- **LXC management** — ~~missing~~ Done (`418963f`) — `/lxc` page + `pct` backend
 - **Agent/multi-node mode missing** — was Phase 3 in plan.md; `--agent` flag in installer but no agent mode in the binary
 - **TOTP** — ~~`totp.rs` exists but no UI~~ Done (`16b3a59`) — Security page + login step
 

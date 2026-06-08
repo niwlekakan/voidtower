@@ -837,6 +837,128 @@ pub async fn vm_vncproxy(
     })))
 }
 
+async fn pve_post(
+    client: &reqwest::Client,
+    url: &str,
+    auth: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let res = client
+        .post(url)
+        .header("Authorization", auth)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Proxmox unreachable: {e}")))?;
+    let status = res.status();
+    let resp: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Proxmox response parse error: {e}")))?;
+    if !status.is_success() {
+        let msg = resp["errors"].to_string();
+        return Err(AppError::BadRequest(format!("Proxmox {status} — {msg}")));
+    }
+    Ok(resp["data"].clone())
+}
+
+#[derive(Deserialize)]
+pub struct DeployToLxcRequest {
+    pub node: String,
+    pub hostname: String,
+    pub ostemplate: String,
+    pub compose_yaml: String,
+    #[serde(default = "lxc_default_cores")]
+    pub cores: u32,
+    #[serde(default = "lxc_default_memory")]
+    pub memory: u32,
+    #[serde(default = "lxc_default_storage")]
+    pub storage: String,
+    #[serde(default = "lxc_default_disk")]
+    pub disk_gb: u32,
+}
+
+fn lxc_default_cores()   -> u32    { 2 }
+fn lxc_default_memory()  -> u32    { 1024 }
+fn lxc_default_storage() -> String { "local-lvm".into() }
+fn lxc_default_disk()    -> u32    { 20 }
+
+pub async fn deploy_app_to_lxc(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(host_id): Path<String>,
+    Json(req): Json<DeployToLxcRequest>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+
+    let host   = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let auth   = format!("PVEAPIToken={}", host.token);
+    let base   = proxmox_base(&host.url);
+
+    // Next available VMID
+    let vmid_val = pve_get(&client, &format!("{base}/cluster/nextid"), &auth).await?;
+    let vmid = vmid_val
+        .as_str()
+        .ok_or_else(|| AppError::BadRequest("Could not obtain next VMID".into()))?
+        .to_string();
+
+    // Create the LXC container
+    let create_body = serde_json::json!({
+        "vmid":     vmid,
+        "hostname": req.hostname,
+        "ostemplate": req.ostemplate,
+        "cores":    req.cores,
+        "memory":   req.memory,
+        "rootfs":   format!("{}:{}", req.storage, req.disk_gb),
+        "net0":     "name=eth0,bridge=vmbr0,ip=dhcp",
+        "start":    1,
+        "onboot":   1,
+        "features": "nesting=1",
+    });
+
+    pve_post(
+        &client,
+        &format!("{base}/nodes/{}/lxc", req.node),
+        &auth,
+        &create_body,
+    )
+    .await?;
+
+    // Ensure it starts (Proxmox may queue it; ignore if already running)
+    let _ = pve_post(
+        &client,
+        &format!("{base}/nodes/{}/lxc/{vmid}/status/start", req.node),
+        &auth,
+        &serde_json::json!({}),
+    )
+    .await;
+
+    let bootstrap = format!(
+        "#!/bin/bash\n\
+         # VoidTower bootstrap — {hostname}\n\
+         set -e\n\
+         apt-get update -q && apt-get install -y -q curl ca-certificates\n\
+         curl -fsSL https://get.docker.com | sh\n\
+         systemctl enable --now docker\n\
+         mkdir -p /opt/app\n\
+         cat > /opt/app/docker-compose.yml << 'COMPOSE_EOF'\n\
+         {compose}\n\
+         COMPOSE_EOF\n\
+         cd /opt/app && docker compose up -d\n\
+         echo \"Done — {hostname} is running.\"",
+        hostname = req.hostname,
+        compose  = req.compose_yaml,
+    );
+
+    Ok(Json(serde_json::json!({
+        "vmid":             vmid,
+        "hostname":         req.hostname,
+        "node":             req.node,
+        "bootstrap_script": bootstrap,
+    })))
+}
+
 pub async fn list_snapshots(
     State(state): State<AppState>,
     jar: CookieJar,

@@ -310,6 +310,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",  delete(proxmox::vm_delete_snapshot))
         .route("/api/proxmox/:host_id/vms/:vmid/snapshots",           get(proxmox::list_snapshots))
         .route("/api/proxmox/:host_id/vms/:vmid/vncproxy",            post(proxmox::vm_vncproxy))
+        .route("/api/proxmox/:host_id/lxc/deploy",                    post(proxmox::deploy_app_to_lxc))
         // Mods
         .route("/api/mods",              get(mods::get_status))
         .route("/api/mods/config",       post(mods::save_config))

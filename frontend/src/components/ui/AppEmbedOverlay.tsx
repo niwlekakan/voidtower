@@ -34,22 +34,28 @@ export default function AppEmbedOverlay() {
     setLoading(true)
     setShowBadge(false)
 
-    const path = def?.links?.web_ui ?? def?.web_path ?? '/'
-    const uiPort = def?.web_port ?? app.primary_port
+    const path    = def?.links?.web_ui ?? def?.web_path ?? '/'
+    const uiPort  = def?.web_port ?? app.primary_port
+    const fullPath = path.startsWith('/') ? path : '/' + path
 
-    // Use the embed proxy so X-Frame-Options / CSP headers are stripped server-side
-    const cleanPath = path.startsWith('/') ? path.slice(1) : path
-    const proxyUrl = `/api/apps/embed/${app.project_name}/${cleanPath}`
+    // Fallback: VoidTower backend proxy (GET-only, strips X-Frame-Options)
+    const cleanPath = fullPath.slice(1)
+    const backendProxy = `/api/apps/embed/${app.project_name}/${cleanPath}`
 
-    // Call openUi to provision the port-based LAN proxy (nginx, firewall)
+    // Prefer the nginx port proxy (transparent, handles auth flows and POST)
+    // Falls back to the backend proxy when nginx isn't configured.
     api.apps.openUi(app.project_name, uiPort ?? 0).then(r => {
-      if (r.embed_url) setEmbedUrl(r.embed_url + (path.startsWith('/') ? path : '/' + path))
+      if (seq !== resolveRef.current) return
+      const lanUrl = r.embed_url ? r.embed_url + fullPath : null
+      setEmbedUrl(lanUrl)
       if (r.proxy_created) setShowBadge(true)
-    }).catch(() => {})
-
-    if (seq !== resolveRef.current) return
-    setIframeSrc(proxyUrl)
-    setLoading(false)
+      setIframeSrc(lanUrl ?? backendProxy)
+      setLoading(false)
+    }).catch(() => {
+      if (seq !== resolveRef.current) return
+      setIframeSrc(backendProxy)
+      setLoading(false)
+    })
   }, [app, def])
 
   if (!app) return null

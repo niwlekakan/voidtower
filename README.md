@@ -588,30 +588,47 @@ OLLAMA_BASE_URL=http://192.168.1.5:11434
 
 ## Updates
 
-Both installation paths support in-UI updates from **VoidTower → Updates**.
-
 ### Docker
 
 The VoidTower image is published to `ghcr.io/niwlekakan/voidtower` on every push to this branch and on release tags. Updates are applied without touching the host.
 
-1. Open **VoidTower → Updates → VoidTower Application**
-2. Click **Check for update** — pulls the latest image manifest in the background
+1. Open **VoidTower → System → Updates → VoidTower Application**
+2. Click **Check for update** — pulls the latest image manifest
 3. If a newer image is available, click **Apply update** — VoidTower pulls the image and recreates its own container; the UI reconnects automatically when it comes back up
 
 Requires `/var/run/docker.sock` to be mounted (enabled by default in `docker-compose.yml`).
 
-To pin a release, set `VOIDTOWER_IMAGE=ghcr.io/niwlekakan/voidtower:aio-v1.2.3` in `.env` before restarting. Check available tags at `ghcr.io/niwlekakan/voidtower`.
+To pin a release, set `VOIDTOWER_IMAGE=ghcr.io/niwlekakan/voidtower:aio-v1.2.3` in `.env` before restarting.
 
-Companion containers (Odysseus, SearXNG, etc.) are updated from the **Docker Images** section on the same page.
+Companion containers (Odysseus, SearXNG, etc.) are updated from the same page under **Docker Images**.
 
-### Bare metal
+### Bare metal / LXC
 
-1. Open **VoidTower → Updates → VoidTower Application**
-2. The current commit is compared against the upstream branch — pending commits are listed with authors and dates
-3. Click **Apply update** — VoidTower tags the current commit as a rollback point, pulls from GitHub, rebuilds backend and frontend, and restarts
-4. If something goes wrong, expand **Rollback points** and click **Roll back** to return to a previous build
+**From the UI:** Open **VoidTower → System → Updates → VoidTower Application** — the current commit is compared against upstream, pending commits are listed, and **Apply update** tags a rollback point, pulls from GitHub, rebuilds, and restarts. The **OS Packages** section handles apt / pacman / dnf updates.
 
-The **OS Packages** section on the same page lists available package upgrades and can apply them (apt / pacman / dnf).
+**From the command line:**
+
+```bash
+# Latest release
+sudo bash scripts/install.sh --update
+
+# Specific version
+sudo bash scripts/install.sh --update --version v1.2.3
+```
+
+Data, config, and system users are untouched.
+
+### TrueNAS Option A
+
+TrueNAS shows an update banner when a newer image is available — click **Update** in **Apps → voidtower**. If no banner appears, edit the app YAML to reference the latest tag and save.
+
+### TrueNAS Option B
+
+```bash
+export POOL=tank   # replace with your pool name
+docker pull ghcr.io/niwlekakan/voidtower:aio-latest
+TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
+```
 
 ---
 
@@ -633,9 +650,12 @@ docker compose restart odysseus
 
 # Stop everything
 docker compose --profile aio --profile ai down
+
+# Start again
+docker compose --profile aio up -d
 ```
 
-### Bare metal (systemd)
+### Bare metal / LXC (systemd)
 
 ```bash
 systemctl status voidtower odysseus ollama
@@ -644,7 +664,31 @@ journalctl -u voidtower -f
 journalctl -u odysseus -f
 journalctl -u ollama -f
 
+systemctl restart voidtower
 systemctl restart odysseus
+```
+
+### TrueNAS Option A
+
+Use the TrueNAS UI: **Apps → voidtower → Start / Stop / Restart**. For logs, click the log icon next to each container under **Apps → voidtower → Logs**.
+
+### TrueNAS Option B
+
+```bash
+export POOL=tank
+
+# Status
+TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml ps
+
+# Logs
+docker logs -f voidtower
+docker logs -f odysseus
+
+# Restart a service
+docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml restart odysseus
+
+# Stop all
+docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
 ```
 
 ---
@@ -654,22 +698,323 @@ systemctl restart odysseus
 ### Docker
 
 ```bash
-# Stop and remove containers (preserves volumes)
+# Stop and remove containers (preserves volumes — data and config kept)
 docker compose --profile aio --profile ai down
 
-# Also remove all data
+# Also remove all data and config
 docker compose --profile aio --profile ai down -v
 ```
 
-### Bare metal
+### Bare metal / LXC
 
 ```bash
-# Interactive — choose what to remove
+# Interactive — choose what to remove (data, config, system users)
 sudo bash scripts/install.sh --uninstall
 
 # Non-interactive full purge
 sudo bash scripts/install.sh --uninstall --yes
 ```
+
+The interactive flow prompts separately for: database (`/var/lib/voidtower`), config and secrets (`/etc/voidtower`), Odysseus data and config, and system users `voidtower` / `odysseus`.
+
+### TrueNAS Option A
+
+1. Go to **Apps → voidtower → Delete** — TrueNAS removes the containers; your dataset at `/mnt/$POOL/voidtower` is preserved
+2. To also wipe persistent data, SSH into TrueNAS:
+   ```bash
+   rm -rf /mnt/tank/voidtower   # replace tank with your pool name
+   ```
+
+### TrueNAS Option B
+
+```bash
+export POOL=tank
+
+docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down -v
+rm -rf /mnt/$POOL/voidtower /mnt/$POOL/voidtower-app
+```
+
+---
+
+## Recovery & Maintenance
+
+### Recovering admin access
+
+Use this when you cannot log in to VoidTower — forgotten password, missing bootstrap token, or the setup wizard was never completed.
+
+#### Docker
+
+If the bootstrap wizard was never completed, the token is still unconsumed:
+
+```bash
+docker exec voidtower voidtower --show-token
+```
+
+If setup was already completed and you have lost the admin password, wipe the database and start fresh:
+
+```bash
+# Stop all services
+docker compose --profile aio --profile ai down
+
+# Delete only the database (other data in the volume is preserved)
+docker run --rm -v voidtower-data:/data alpine rm -f /data/voidtower.db
+
+# Start again
+docker compose --profile aio up -d
+
+# Retrieve the new bootstrap token
+docker exec voidtower voidtower --show-token
+```
+
+Open the UI and complete the setup wizard with a new admin account. Files, proxies, and other non-auth data remain intact in the volume.
+
+#### Bare metal / LXC
+
+If the token file still exists (setup was never completed):
+
+```bash
+sudo cat /etc/voidtower/bootstrap-token
+# or:
+sudo voidtower --show-token
+```
+
+If setup is complete and you are locked out:
+
+```bash
+# Interactive — prompts for each item; answer yes to database and bootstrap token, no to everything else
+sudo bash scripts/install.sh --reset
+
+# Non-interactive full state wipe
+sudo bash scripts/install.sh --reset --yes
+```
+
+After restart, a new bootstrap token is written to `/etc/voidtower/bootstrap-token` and printed in the journal:
+
+```bash
+sudo voidtower --show-token
+```
+
+#### TrueNAS Option A
+
+SSH into TrueNAS:
+
+```bash
+export POOL=tank
+
+# Read the token if setup was never completed
+cat /mnt/$POOL/voidtower/config/bootstrap-token
+
+# If locked out — wipe the database to trigger a fresh setup wizard
+rm -f /mnt/$POOL/voidtower/data/voidtower.db
+```
+
+Restart from **Apps → voidtower → Restart**, then find the new token in **Apps → voidtower → Logs (voidtower container)**.
+
+#### TrueNAS Option B
+
+```bash
+export POOL=tank
+
+# Read the token if setup was never completed
+cat /mnt/$POOL/voidtower/config/bootstrap-token
+
+# If locked out — wipe the database
+docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
+rm -f /mnt/$POOL/voidtower/data/voidtower.db
+TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
+docker logs voidtower 2>&1 | grep -i token
+```
+
+---
+
+### Odysseus password reset
+
+Use this when you have lost access to the Odysseus AI workspace.
+
+#### Docker
+
+```bash
+# 1. Update the password in .env
+nano .env
+#    ODYSSEUS_ADMIN_PASSWORD=yournewpassword
+
+# 2. Delete the stored credentials so Odysseus recreates them on next start
+docker compose exec odysseus rm -f /app/data/auth.json
+
+# 3. Restart Odysseus
+docker compose restart odysseus
+
+# 4. Confirm startup
+docker compose logs odysseus --tail 20
+```
+
+Then log in at `http://localhost:7000` with the new password.
+
+#### Bare metal / LXC
+
+```bash
+# 1. Delete stored credentials
+sudo rm -f /var/lib/odysseus/auth.json
+
+# 2. Set the new password
+sudo nano /opt/odysseus/.env
+#    ODYSSEUS_ADMIN_PASSWORD=yournewpassword
+
+# 3. Re-apply credentials
+sudo -u odysseus bash -c "
+  cd /opt/odysseus
+  ODYSSEUS_ADMIN_USER=admin \
+  ODYSSEUS_ADMIN_PASSWORD=yournewpassword \
+  venv/bin/python setup.py
+"
+
+# 4. Restart
+sudo systemctl restart odysseus
+```
+
+#### TrueNAS Option A
+
+SSH into TrueNAS:
+
+```bash
+export POOL=tank
+
+# 1. Delete stored credentials
+rm -f /mnt/$POOL/voidtower/odysseus/data/auth.json
+# If permission error: docker exec odysseus rm -f /app/data/auth.json
+```
+
+Then go to **Apps → voidtower → Edit**, update `ODYSSEUS_ADMIN_PASSWORD`, and click **Save** — TrueNAS restarts Odysseus automatically. Log in at `http://<truenas-ip>:7000`.
+
+#### TrueNAS Option B
+
+```bash
+export POOL=tank
+
+# 1. Set the new password in .env
+nano /mnt/$POOL/voidtower-app/.env
+#    ODYSSEUS_ADMIN_PASSWORD=yournewpassword
+
+# 2. Delete stored credentials
+rm -f /mnt/$POOL/voidtower/odysseus/data/auth.json
+# If permission error: docker exec odysseus rm -f /app/data/auth.json
+
+# 3. Restart Odysseus
+docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml restart odysseus
+docker logs odysseus --tail 20
+```
+
+---
+
+### Full reset (wipe data, keep binary)
+
+Clears all users, proxies, secrets, and settings. The binary, service unit, and system users are preserved.
+
+#### Docker
+
+```bash
+docker compose --profile aio --profile ai down -v
+docker compose --profile aio up -d
+```
+
+The `-v` flag removes all named volumes. Containers are recreated with fresh empty volumes.
+
+#### Bare metal / LXC
+
+```bash
+# Interactive
+sudo bash scripts/install.sh --reset
+
+# Non-interactive
+sudo bash scripts/install.sh --reset --yes
+```
+
+After restart, the new bootstrap token is available via `sudo voidtower --show-token`.
+
+#### TrueNAS Option A
+
+SSH into TrueNAS:
+
+```bash
+export POOL=tank
+rm -rf /mnt/$POOL/voidtower/data /mnt/$POOL/voidtower/config
+```
+
+Restart from **Apps → voidtower → Restart**. VoidTower regenerates its config and bootstrap token on the next start — find the token in the app logs.
+
+#### TrueNAS Option B
+
+```bash
+export POOL=tank
+docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
+rm -rf /mnt/$POOL/voidtower/data /mnt/$POOL/voidtower/config
+TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
+docker logs voidtower 2>&1 | grep -i token
+```
+
+---
+
+### Full reinstall (clean slate)
+
+Removes everything — binary, data, config, and service — then starts over from scratch.
+
+#### Docker
+
+```bash
+docker compose --profile aio --profile ai down -v
+docker rmi ghcr.io/niwlekakan/voidtower:aio-latest
+docker compose --profile aio up -d
+```
+
+#### Bare metal / LXC
+
+```bash
+sudo bash scripts/install.sh --uninstall --yes
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+  | sudo bash -s -- --all-in-one
+```
+
+#### TrueNAS Option A
+
+1. Go to **Apps → voidtower → Delete**
+2. SSH into TrueNAS and remove the dataset:
+   ```bash
+   rm -rf /mnt/tank/voidtower   # replace tank with your pool name
+   ```
+3. Redeploy from **Apps → Discover Apps → Custom App** using the YAML from [`deploy/truenas/custom-app.yml`](deploy/truenas/custom-app.yml).
+
+#### TrueNAS Option B
+
+See [Option B — Manual reinstall](#option-b--manual-reinstall) above.
+
+---
+
+### Repair (service won't start, wrong permissions)
+
+Re-downloads the binary and reinstalls the service unit without touching any data or config.
+
+#### Docker
+
+```bash
+# Re-pull the image and force-recreate the container
+docker compose --profile aio pull voidtower
+docker compose --profile aio up -d --force-recreate voidtower
+```
+
+If Odysseus won't start:
+
+```bash
+docker compose logs odysseus --tail 50
+docker compose restart odysseus
+```
+
+#### Bare metal / LXC
+
+```bash
+sudo bash scripts/install.sh --repair
+```
+
+This re-downloads the binary, reinstalls the systemd service unit, fixes file ownership and permissions under `/opt/voidtower`, `/var/lib/voidtower`, and `/etc/voidtower`, then restarts the service. No data or config is changed.
 
 ---
 

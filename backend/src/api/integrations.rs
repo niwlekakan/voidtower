@@ -1,7 +1,10 @@
 use crate::{
     audit,
     auth,
+    containers::{self, ContainerAction},
     error::{AppError, Result},
+    policy,
+    services::{self, ServiceAction},
     AppState,
 };
 use axum::{
@@ -652,6 +655,11 @@ pub async fn event_stream(
 #[derive(Deserialize)]
 pub struct WebhookReq {
     pub automation_id: Option<String>,
+    /// Structured action: "container.restart" | "container.start" | "container.stop"
+    ///                   | "service.restart" | "service.start" | "service.stop"
+    pub action: Option<String>,
+    /// Resource ID — container ID or service name depending on action
+    pub resource_id: Option<String>,
     pub dry_run: Option<bool>,
 }
 
@@ -780,6 +788,59 @@ pub async fn webhook(
             "ok": true,
             "dry_run": dry_run,
             "automation_id": automation_id,
+        })));
+    }
+
+    // ── Structured resource actions ──────────────────────────────────────────
+    if let Some(action_str) = req.action {
+        let resource_id = req.resource_id.ok_or_else(|| AppError::BadRequest("resource_id required".into()))?;
+
+        let (resource_type, action_name, container_action, service_action) =
+            match action_str.as_str() {
+                "container.restart" => ("container", "restart", Some(ContainerAction::Restart), None),
+                "container.start"   => ("container", "start",   Some(ContainerAction::Start),   None),
+                "container.stop"    => ("container", "stop",    Some(ContainerAction::Stop),     None),
+                "service.restart"   => ("service",   "restart", None, Some(ServiceAction::Restart)),
+                "service.start"     => ("service",   "start",   None, Some(ServiceAction::Start)),
+                "service.stop"      => ("service",   "stop",    None, Some(ServiceAction::Stop)),
+                other => return Err(AppError::BadRequest(format!("Unknown action: {}", other))),
+            };
+
+        // Policy check — actor_type "automation" for webhook-sourced actions
+        let verdict = policy::check(&state.db, "automation", action_name, resource_type, &resource_id).await;
+        if let policy::PolicyVerdict::Deny(reason) = verdict {
+            audit::log_sourced(
+                &state.db, None, "agent",
+                &format!("integrations.webhook.{}.{}", resource_type, action_name),
+                Some(resource_type), Some(&resource_id), "blocked",
+                None, Some(&reason), Some("odysseus"),
+            ).await;
+            return Err(AppError::PolicyDenied(reason));
+        }
+
+        audit::log_sourced(
+            &state.db, None, "agent",
+            &format!("integrations.webhook.{}.{}", resource_type, action_name),
+            Some(resource_type), Some(&resource_id),
+            if dry_run { "dry_run" } else { "success" },
+            None, Some(&format!("dry_run={dry_run}")), Some("odysseus"),
+        ).await;
+
+        if !dry_run {
+            if let Some(ca) = container_action {
+                containers::container_action(&resource_id, ca).await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            } else if let Some(sa) = service_action {
+                services::run_service_action(&resource_id, sa)
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            }
+        }
+
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "dry_run": dry_run,
+            "action": action_str,
+            "resource_id": resource_id,
         })));
     }
 

@@ -76,6 +76,44 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
         created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     )"#).execute(&pool).await;
 
+    // Policy engine — rules governing what automated actors (API tokens, automations) may do
+    let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS policy_rules (
+        id            TEXT PRIMARY KEY,
+        name          TEXT NOT NULL,
+        actor_type    TEXT NOT NULL DEFAULT 'api_token',
+        action        TEXT NOT NULL DEFAULT '*',
+        resource_type TEXT NOT NULL DEFAULT '*',
+        resource_tag  TEXT,
+        effect        TEXT NOT NULL DEFAULT 'deny',
+        priority      INTEGER NOT NULL DEFAULT 100,
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        created_at    INTEGER NOT NULL
+    )"#).execute(&pool).await;
+
+    // Seed three default deny rules on first install (skip if any rules already exist)
+    let rule_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM policy_rules")
+        .fetch_one(&pool).await.unwrap_or(0);
+    if rule_count == 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let seeds = [
+            (uuid::Uuid::new_v4().to_string(), "Block AI access to ai-no-touch resources",   "api_token", "*",      "*",      Some("ai-no-touch"), "deny", 10i64),
+            (uuid::Uuid::new_v4().to_string(), "Block AI access to critical resources",       "api_token", "*",      "*",      Some("critical"),    "deny", 20i64),
+            (uuid::Uuid::new_v4().to_string(), "Block API tokens from deleting anything",     "api_token", "remove", "*",      None,                "deny", 30i64),
+        ];
+        for (id, name, actor_type, action, resource_type, resource_tag, effect, priority) in seeds {
+            let _ = sqlx::query(
+                "INSERT INTO policy_rules (id,name,actor_type,action,resource_type,resource_tag,effect,priority,enabled,created_at)
+                 VALUES (?,?,?,?,?,?,?,?,1,?)"
+            )
+            .bind(id).bind(name).bind(actor_type).bind(action)
+            .bind(resource_type).bind(resource_tag).bind(effect).bind(priority).bind(now)
+            .execute(&pool).await;
+        }
+    }
+
     Ok(pool)
 }
 

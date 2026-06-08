@@ -38,6 +38,7 @@ import ThemesPage from '@/pages/Themes'
 import ModelsPage from '@/pages/Models'
 import UpdatesPage from '@/pages/Updates'
 import IntegrationsPage from '@/pages/Integrations'
+import PolicyPage from '@/pages/Policy'
 import ModsPage from '@/pages/Mods'
 import NotFoundPage from '@/pages/NotFound'
 
@@ -128,6 +129,7 @@ export default function App() {
             <Route path="files"      element={<FilesPage />} />
             <Route path="proxies"    element={<ProxiesPage />} />
             <Route path="security"   element={<SecurityPage />} />
+            <Route path="policy"     element={<PolicyPage />} />
             <Route path="terminal"   element={<TerminalPage />} />
             <Route path="audit" element={<AuditPage />} />
             <Route path="automation"      element={<AutomationPage />} />

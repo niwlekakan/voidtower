@@ -1,4 +1,4 @@
-use crate::{auth, AppState};
+use crate::{auth, policy::ApiTokenActor, AppState};
 use axum::{
     extract::State,
     http::{header, HeaderMap, Request},
@@ -19,6 +19,8 @@ pub async fn middleware(
             if let Ok(val) = axum::http::HeaderValue::from_str(&cookie) {
                 req.headers_mut().insert(header::COOKIE, val);
             }
+            // Mark request so policy engine knows this came via API token
+            req.extensions_mut().insert(ApiTokenActor);
         }
     }
     next.run(req).await

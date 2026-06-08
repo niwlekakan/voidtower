@@ -2,6 +2,7 @@ mod alerts;
 mod api;
 mod audit;
 mod auth;
+mod policy;
 mod automation;
 mod backups;
 mod cluster;

@@ -3,6 +3,7 @@ use crate::{
     auth,
     containers::{self, ContainerAction},
     error::{AppError, Result},
+    policy::{self, MaybeTokenActor},
     AppState,
 };
 use axum::{
@@ -78,6 +79,7 @@ pub async fn list(
 pub async fn action(
     State(state): State<AppState>,
     jar: CookieJar,
+    MaybeTokenActor(is_token): MaybeTokenActor,
     Path(id): Path<String>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(req): Json<ActionRequest>,
@@ -87,6 +89,16 @@ pub async fn action(
 
     if !containers::is_docker_available() {
         return Err(AppError::FeatureUnavailable("Docker is not available".into()));
+    }
+
+    // Policy check for API-token-based requests (e.g. Odysseus direct calls)
+    if is_token {
+        let action_name = format!("{:?}", req.action).to_lowercase();
+        if let policy::PolicyVerdict::Deny(reason) =
+            policy::check(&state.db, "api_token", &action_name, "container", &id).await
+        {
+            return Err(AppError::PolicyDenied(reason));
+        }
     }
 
     // Dry-run: return a change plan without executing

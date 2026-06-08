@@ -27,8 +27,6 @@ struct UserInfo {
     shell: String,
     home:  String,
     name:  String,
-    uid:   Option<u32>,
-    gid:   Option<u32>,
 }
 
 fn detect_user_info() -> UserInfo {
@@ -50,8 +48,6 @@ fn detect_user_info() -> UserInfo {
                 shell: if valid { shell } else { "/bin/bash".into() },
                 home:  if home.is_empty() { std::env::var("HOME").unwrap_or_else(|_| "/root".into()) } else { home },
                 name,
-                uid: Some(u.uid.as_raw()),
-                gid: Some(u.gid.as_raw()),
             };
         }
     }
@@ -59,8 +55,6 @@ fn detect_user_info() -> UserInfo {
         shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into()),
         home:  std::env::var("HOME").unwrap_or_else(|_| "/root".into()),
         name:  std::env::var("USER").unwrap_or_else(|_| "root".into()),
-        uid:   None,
-        gid:   None,
     }
 }
 

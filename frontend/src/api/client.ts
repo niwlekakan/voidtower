@@ -463,6 +463,14 @@ export const api = {
       request<{ jobs: import('./types').PveBackupJob[]; archives: import('./types').PveBackupArchive[] }>(`/api/proxmox/${hostId}/backup-jobs`),
   },
 
+  proxmoxDeploy: {
+    deployToLxc: (hostId: string, req: {
+      node: string; hostname: string; ostemplate: string; compose_yaml: string;
+      cores?: number; memory?: number; storage?: string; disk_gb?: number;
+    }) => request<{ vmid: string; hostname: string; node: string; bootstrap_script: string }>(
+      `/api/proxmox/${hostId}/lxc/deploy`, { method: 'POST', body: JSON.stringify(req) }),
+  },
+
   plugins: {
     list:      () => request<import('./types').Plugin[]>('/api/plugins'),
     install:   (url: string) =>

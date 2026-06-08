@@ -10,6 +10,7 @@ import { notify } from '@/store/notifications'
 import { useEmbedStore } from '@/store/embedStore'
 import { useFiltersStore } from '@/store/filters'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
+import DeployToProxmoxModal from './DeployToProxmoxModal'
 import Button from '@/components/ui/Button'
 import AiBadge from '@/components/ui/AiBadge'
 
@@ -1157,6 +1158,7 @@ export default function AppVaultPage() {
   const [search, setSearch]             = useState('')
   const [category, setCategory]         = useState<string>('all')
   const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover' | 'custom' | 'external'>('catalog')
+  const [proxmoxDeployApp, setProxmoxDeployApp] = useState<AppDef | null>(null)
   const [allTags, setAllTags]           = useState<Tag[]>([])
   const [tagMap, setTagMap]             = useState<TagMap>({})
   const globalTag = useFiltersStore((s) => s.globalTag)
@@ -1214,6 +1216,7 @@ export default function AppVaultPage() {
   const deployedIds = new Set(deployed.filter((d) => d.status === 'running').map((d) => d.app_id))
 
   return (
+    <>
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
@@ -1347,6 +1350,14 @@ export default function AppVaultPage() {
                         Deploy
                       </Button>
                     )}
+                    <button
+                      onClick={() => setProxmoxDeployApp(app)}
+                      className="text-xs px-2 py-1 rounded"
+                      style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-muted)', cursor: 'pointer' }}
+                      title="Deploy to Proxmox LXC"
+                    >
+                      → Proxmox
+                    </button>
                     {app.links.home && (
                       <a href={app.links.home} target="_blank" rel="noopener noreferrer"
                         className="text-xs" style={{ color: 'var(--accent-secondary)' }}>
@@ -1388,5 +1399,9 @@ export default function AppVaultPage() {
         />
       )}
     </div>
+    {proxmoxDeployApp && (
+      <DeployToProxmoxModal app={proxmoxDeployApp} onClose={() => setProxmoxDeployApp(null)} />
+    )}
+    </>
   )
 }

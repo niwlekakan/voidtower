@@ -148,6 +148,7 @@ export interface AppDef {
   no_web_ui?: boolean
   web_port?: number
   web_path?: string
+  compose?: Record<string, unknown>
 }
 
 export interface DeployedApp {

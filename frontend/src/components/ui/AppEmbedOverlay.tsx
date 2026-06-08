@@ -9,6 +9,7 @@ export default function AppEmbedOverlay() {
   const close = useEmbedStore(s => s.close)
 
   const [iframeSrc, setIframeSrc] = useState<string | null>(null)
+  const [embedUrl,  setEmbedUrl]  = useState<string | null>(null)
   const [loading,   setLoading]   = useState(false)
   const [showBadge, setShowBadge] = useState(false)
 
@@ -29,6 +30,7 @@ export default function AppEmbedOverlay() {
 
     const seq = ++resolveRef.current
     setIframeSrc(null)
+    setEmbedUrl(null)
     setLoading(true)
     setShowBadge(false)
 
@@ -39,12 +41,15 @@ export default function AppEmbedOverlay() {
     const cleanPath = path.startsWith('/') ? path.slice(1) : path
     const proxyUrl = `/api/apps/embed/${app.project_name}/${cleanPath}`
 
+    // Call openUi to provision the port-based LAN proxy (nginx, firewall)
+    api.apps.openUi(app.project_name, uiPort ?? 0).then(r => {
+      if (r.embed_url) setEmbedUrl(r.embed_url + (path.startsWith('/') ? path : '/' + path))
+      if (r.proxy_created) setShowBadge(true)
+    }).catch(() => {})
+
     if (seq !== resolveRef.current) return
     setIframeSrc(proxyUrl)
     setLoading(false)
-
-    // Still call openUi in background for proxy/tracking side-effects
-    api.apps.openUi(app.project_name, uiPort).catch(() => {})
   }, [app, def])
 
   if (!app) return null
@@ -94,12 +99,12 @@ export default function AppEmbedOverlay() {
           </span>
         )}
 
-        {iframeSrc && (
+        {(iframeSrc || embedUrl) && (
           <a
-            href={iframeSrc}
+            href={embedUrl ?? iframeSrc ?? '#'}
             target="_blank"
             rel="noopener noreferrer"
-            title="Open in new tab"
+            title={embedUrl ? `Open on LAN: ${embedUrl}` : 'Open in new tab'}
             style={{
               display: 'flex', alignItems: 'center', gap: 4,
               fontSize: 12, color: 'var(--accent-primary)',

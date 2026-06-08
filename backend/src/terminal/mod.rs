@@ -235,7 +235,16 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => { let _ = output_tx.blocking_send(None); break; }
+                Ok(0) => {
+                    tracing::info!("terminal: PTY EOF — process exited");
+                    let _ = output_tx.blocking_send(None);
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("terminal: PTY read error: {e}");
+                    let _ = output_tx.blocking_send(None);
+                    break;
+                }
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
                     if output_tx.blocking_send(Some(data)).is_err() { break; }
@@ -247,7 +256,13 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
     // PTY writer: plain OS thread — no tokio runtime dependency
     std::thread::spawn(move || {
         let mut writer = writer;
-        for data in write_rx { let _ = writer.write_all(data.as_bytes()); }
+        for data in write_rx {
+            if let Err(e) = writer.write_all(data.as_bytes()) {
+                tracing::warn!("terminal: PTY write error: {e}");
+                break;
+            }
+        }
+        tracing::debug!("terminal: writer thread exiting");
     });
 
     // Output task: its own tokio task so ws_sink.send().await blocking on a full
@@ -257,7 +272,10 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
             match item {
                 Some(data) => {
                     let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
-                    if ws_sink.send(Message::Text(msg.into())).await.is_err() { break; }
+                    if ws_sink.send(Message::Text(msg.into())).await.is_err() {
+                        tracing::debug!("terminal: WS send failed — browser disconnected");
+                        break;
+                    }
                 }
                 None => {
                     let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
@@ -269,21 +287,28 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
     });
 
     // Input loop: purely async, never touches blocking I/O
-    loop {
+    let exit_reason = loop {
         match ws_stream.next().await {
             Some(Ok(Message::Text(text))) => {
                 match serde_json::from_str::<ClientMessage>(&text) {
-                    Ok(ClientMessage::Input { data }) => { let _ = write_tx.try_send(data); }
+                    Ok(ClientMessage::Input { data }) => {
+                        if write_tx.try_send(data).is_err() {
+                            tracing::warn!("terminal: write channel full or disconnected — dropping input");
+                        }
+                    }
                     Ok(ClientMessage::Resize { cols, rows }) => {
                         let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
                     }
                     Ok(ClientMessage::Ping) | Err(_) => {}
                 }
             }
-            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+            Some(Ok(Message::Close(_))) => { break "browser closed"; }
+            None => { break "WS stream ended"; }
+            Some(Err(e)) => { tracing::warn!("terminal: WS error: {e}"); break "WS error"; }
             _ => {}
         }
-    }
+    };
+    tracing::info!("terminal: input loop exit — {exit_reason}");
 
     out_task.abort();
     Ok(())

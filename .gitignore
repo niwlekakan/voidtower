@@ -18,6 +18,25 @@ backend/dev-config/
 
 # Claude Code working files (agent worktrees, memory, session state)
 .claude/
+CLAUDE.md
+
+# Editor metadata
+.obsidian/
+.directory
+.vscode/
+*.code-workspace
+
+# Local planning / scratch docs
+plan.md
+future_plan.md
+UI_plan.md
+*_plan.md
+
+# Root-level dev database (backend/dev-data/ is already ignored above)
+dev-data/*.db
+dev-data/*.db-shm
+dev-data/*.db-wal
+dev-data/apps/
 
 # Environment / secrets
 .env

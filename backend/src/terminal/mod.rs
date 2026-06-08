@@ -265,21 +265,41 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
         tracing::info!("terminal: writer thread exiting");
     });
 
-    // Output task: separate tokio task so ws_sink.send() never blocks the input loop.
+    // Output task: accumulate PTY output and flush at 60fps.
+    // Sending each read as its own WS message overwhelms xterm.js when fish produces
+    // heavy prompt output — the browser falls behind, the TCP buffer fills, ws_sink
+    // blocks, output_rx fills, the reader stalls, and fish deadlocks on its own write.
+    // Flushing on a 16ms timer keeps send rate bounded regardless of PTY burst rate.
     let out_task = tokio::spawn(async move {
-        while let Some(item) = output_rx.recv().await {
-            match item {
-                Some(data) => {
-                    let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
-                    if ws_sink.send(Message::Text(msg.into())).await.is_err() {
-                        tracing::debug!("terminal: WS send failed — browser disconnected");
-                        break;
+        let mut ticker = tokio::time::interval(tokio::time::Duration::from_millis(16));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut buf = String::new();
+        let mut closed = false;
+
+        loop {
+            tokio::select! {
+                // Accumulate output as fast as it arrives without sending yet
+                item = output_rx.recv(), if !closed => {
+                    match item {
+                        Some(Some(data)) => buf.push_str(&data),
+                        Some(None) | None => closed = true,
                     }
                 }
-                None => {
-                    let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
-                    let _ = ws_sink.send(Message::Text(msg.into())).await;
-                    break;
+                // Flush the accumulated buffer at ~60fps
+                _ = ticker.tick() => {
+                    if !buf.is_empty() {
+                        let data = std::mem::take(&mut buf);
+                        let msg = serde_json::to_string(&ServerMessage::Output { data }).unwrap_or_default();
+                        if ws_sink.send(Message::Text(msg.into())).await.is_err() {
+                            tracing::debug!("terminal: WS send failed — browser disconnected");
+                            break;
+                        }
+                    }
+                    if closed {
+                        let msg = serde_json::to_string(&ServerMessage::Closed).unwrap_or_default();
+                        let _ = ws_sink.send(Message::Text(msg.into())).await;
+                        break;
+                    }
                 }
             }
         }

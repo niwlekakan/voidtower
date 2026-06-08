@@ -81,7 +81,7 @@ These items transform VoidTower from an admin panel into a true local-first AI o
 
 - [ ] **Fix "Open WebUI in VoidTower" button** — App Vault deploy creates a proxy entry but routing is wrong for apps with `web_path` (e.g. Pi-hole `/admin`) or non-standard `web_port`. Fix: auto-creation must pull `web_port`/`web_path` from YAML catalog and strip iframe-blocking headers on the generated proxy rule.
 - [ ] **Fix theme randomizer** — randomizer skips some of the 14 animation parameters and not all color tokens are cycled.
-- [ ] **Fix proxy edit/delete** — proxy rules are effectively create-only in current UI; add inline edit form and delete with confirmation. **NEXT**
+- [x] **Fix proxy edit/delete** — Done: inline edit form (dry-run plan + save) and delete with confirmation are both present.
 
 ### Full UI Customization
 

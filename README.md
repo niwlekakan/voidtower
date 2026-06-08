@@ -414,6 +414,38 @@ Then open `https://<truenas-ip>:8443` and enter the token to complete setup.
 
 ---
 
+### Resetting the Odysseus password (Option B)
+
+If the login credentials for Odysseus are unknown or not working:
+
+```bash
+export POOL=tank   # replace with your pool name
+
+# 1. Set the new password in .env
+nano /mnt/$POOL/voidtower-app/.env
+#    → update ODYSSEUS_ADMIN_PASSWORD=yournewpassword
+#    → update ODYSSEUS_ADMIN_USER=admin  (if you want to change the username too)
+
+# 2. Delete the stored credentials so Odysseus recreates them on next start
+rm -f /mnt/$POOL/voidtower/odysseus/data/auth.json
+
+# 3. Restart Odysseus
+docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml restart odysseus
+
+# 4. Confirm it came up cleanly
+docker logs odysseus --tail 30
+```
+
+Then open `http://<truenas-ip>:7000` and log in with the new credentials.
+
+> If you get a permission error on `rm`, the file is owned by the container user. Use:
+> ```bash
+> docker exec odysseus rm -f /app/data/auth.json
+> docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml restart odysseus
+> ```
+
+---
+
 ### Ollama on TrueNAS
 
 Ollama is commented out in the YAML by default (it's a large download and GPU passthrough requires extra config). To enable it:
@@ -423,6 +455,85 @@ Ollama is commented out in the YAML by default (it's a large download and GPU pa
 **Option B:** Uncomment the `ollama` block in `deploy/truenas/custom-app.yml` and run `docker compose ... up -d` again.
 
 For NVIDIA GPU passthrough on TrueNAS Scale, uncomment the `deploy.resources` block under `ollama` and ensure `nvidia-container-toolkit` is installed on the host. See the [GPU / Ollama](#gpu--ollama) section for full details.
+
+---
+
+## Proxmox LXC
+
+Running VoidTower in a Proxmox LXC container is the recommended approach for Proxmox users — it gives you a clean isolated environment with direct Docker access and full container management.
+
+### 1. Create the LXC
+
+In the Proxmox web UI:
+
+- **Template:** Ubuntu 22.04 or 24.04
+- **RAM:** 2 GB minimum (4 GB recommended if running Odysseus + Ollama)
+- **Disk:** 20 GB minimum on local-lvm or your preferred storage
+- **CPU:** 2 cores minimum
+- **Network:** DHCP or a static IP on your LAN bridge
+
+> **Unprivileged containers:** Docker requires kernel features that are blocked in unprivileged LXC by default. Either:
+> - Use a **privileged** container (simpler, fine for a homelab), or
+> - Use unprivileged with these options set in the LXC config (`/etc/pve/lxc/<id>.conf`):
+>   ```
+>   features: nesting=1,keyctl=1
+>   ```
+>   then add to the config:
+>   ```
+>   lxc.apparmor.profile: unconfined
+>   lxc.cap.drop:
+>   ```
+
+### 2. Start and SSH in
+
+```bash
+ssh root@<lxc-ip>
+```
+
+### 3. Run the installer
+
+Identical to any Ubuntu/Debian system — the installer handles Docker, systemd, and all dependencies automatically:
+
+```bash
+# VoidTower only
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+  | sudo bash
+
+# Full AIO stack with Odysseus and AI
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+  | sudo bash -s -- --all-in-one --pull-model
+```
+
+The installer will detect Ubuntu, install Docker Engine via the official apt repository, enable the `docker` service, and start VoidTower.
+
+### 4. Access
+
+Open `http://<lxc-ip>:8743` and complete the bootstrap. Credentials are saved to `/root/voidtower-bootstrap-token`.
+
+If you ran `--all-in-one`, Odysseus is at `http://<lxc-ip>:7000` — credentials in `/root/odysseus-bootstrap-token`.
+
+### Resetting the Odysseus password (LXC / bare metal)
+
+```bash
+# Find the Odysseus install dir (default: /opt/odysseus)
+sudo rm -f /var/lib/odysseus/auth.json
+
+# Set new credentials in the .env
+sudo nano /opt/odysseus/.env
+#  → update ODYSSEUS_ADMIN_PASSWORD=yournewpassword
+
+# Re-run setup to apply the new credentials
+sudo -u odysseus bash -c "
+  cd /opt/odysseus
+  ODYSSEUS_ADMIN_USER=admin \
+  ODYSSEUS_ADMIN_PASSWORD=yournewpassword \
+  venv/bin/python setup.py
+"
+
+sudo systemctl restart odysseus
+```
+
+Then log in at `http://<host>:7000` with the new password.
 
 ---
 

@@ -58,6 +58,7 @@ pub mod tags;
 pub mod ai;
 pub mod ai_ask;
 pub mod ai_context;
+pub mod studio;
 pub mod bearer_auth;
 pub mod integrations;
 pub mod models;
@@ -171,6 +172,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/ai/llama/unload", post(ai::llama_unload))
         .route("/api/ai/ask",          post(ai_ask::ask))
         .route("/api/ai/context",      get(ai_context::get_context))
+        // AI Studio
+        .route("/api/studio/status",                       get(studio::status))
+        .route("/api/studio/image/generate",               post(studio::image_generate))
+        .route("/api/studio/images/:filename",             get(studio::serve_image))
+        .route("/api/studio/tts/generate",                 post(studio::tts_generate))
+        .route("/api/studio/audio/:filename",              get(studio::serve_audio))
+        .route("/api/studio/stt/transcribe",               post(studio::stt_transcribe))
+        .route("/api/studio/gallery",                      get(studio::gallery_list))
+        .route("/api/studio/gallery/:kind/:filename",      delete(studio::gallery_delete))
         // Models
         .route("/api/models",              get(models::list_models))
         .route("/api/models/download",     post(models::start_download))

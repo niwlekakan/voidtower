@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Server, Plus, Trash2, Play, Square, RotateCcw, Camera, ChevronDown, ChevronRight,
-  RefreshCw, AlertCircle, Database, Cpu, MemoryStick, HardDrive,
+  RefreshCw, AlertCircle, Database, Cpu, MemoryStick, HardDrive, Monitor, X,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
 import { notify } from '@/store/notifications'
-import type { ProxmoxHost, PveVm, PveNode, PveStorage, PveTask, PveSnapshot, AddHostRequest } from '@/api/types'
+import type { ProxmoxHost, PveVm, PveNode, PveStorage, PveTask, PveSnapshot, AddHostRequest, Tag, TagMap } from '@/api/types'
 import Button from '@/components/ui/Button'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ function UsageBar({ used, total, label }: { used: number; total: number; label: 
 
 // ── sub-tabs ──────────────────────────────────────────────────────────────────
 
-type HostTab = 'vms' | 'storage' | 'tasks'
+type HostTab = 'vms' | 'storage' | 'tasks' | 'backups'
 
 // ── Add Host Modal ────────────────────────────────────────────────────────────
 
@@ -362,19 +362,125 @@ function SnapshotRow({ hostId, vm, onRefresh }: { hostId: string; vm: PveVm; onR
   )
 }
 
+// ── Console modal (noVNC via CDN) ─────────────────────────────────────────────
+
+interface ConsoleModalProps {
+  hostId: string
+  vm: PveVm
+  onClose: () => void
+}
+
+function ConsoleModal({ hostId, vm, onClose }: ConsoleModalProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const rfbRef       = useRef<{ disconnect: () => void } | null>(null)
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
+  const [errMsg, setErrMsg]  = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const init = async () => {
+      try {
+        setStatus('connecting')
+        const data = await api.proxmox.vncProxy(hostId, vm.vmid)
+        if (cancelled) return
+
+        const wsUrl = `wss://${data.proxmox_host}/api2/json/nodes/${data.node}/${data.kind}/${data.vmid}/vncwebsocket?port=${data.port}&vncticket=${encodeURIComponent(data.ticket)}`
+
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore — CDN import, no types
+        const { default: RFB } = await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js')
+        if (cancelled || !containerRef.current) return
+
+        const rfb = new RFB(containerRef.current, wsUrl) as { disconnect: () => void }
+        rfbRef.current = rfb
+        ;(rfb as unknown as EventTarget).addEventListener('connect',    () => { if (!cancelled) setStatus('connected') })
+        ;(rfb as unknown as EventTarget).addEventListener('disconnect', (e: unknown) => {
+          if (!cancelled) {
+            const ev = e as CustomEvent<{ clean: boolean }>
+            if (!ev.detail?.clean) setErrMsg('Connection closed unexpectedly')
+          }
+        })
+      } catch (e) {
+        if (!cancelled) { setStatus('error'); setErrMsg(String(e)) }
+      }
+    }
+    init()
+    return () => {
+      cancelled = true
+      rfbRef.current?.disconnect()
+    }
+  }, [hostId, vm.vmid])
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.92)', display: 'flex', flexDirection: 'column' }}
+      onKeyDown={e => e.key === 'Escape' && onClose()}
+      tabIndex={-1}
+    >
+      {/* Title bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', background: 'var(--bg-panel)', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+        <Monitor size={15} style={{ color: 'var(--accent-primary)' }} />
+        <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+          Console — {vm.name ?? `VM ${vm.vmid}`}
+          <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>
+            {vm.type?.toUpperCase()} · {vm.node}
+          </span>
+        </span>
+        {status === 'connecting' && (
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>Connecting…</span>
+        )}
+        {status === 'connected' && (
+          <span style={{ fontSize: 12, color: 'var(--accent-success)', marginLeft: 8 }}>Connected</span>
+        )}
+        <button onClick={onClose} title="Close"
+          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', padding: 4 }}>
+          <X size={16} />
+        </button>
+      </div>
+
+      {/* Canvas area */}
+      <div ref={containerRef} style={{ flex: 1, background: '#111', overflow: 'hidden', position: 'relative' }}>
+        {status === 'error' && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--accent-danger)' }}>
+            <AlertCircle size={28} />
+            <span style={{ fontSize: 13 }}>{errMsg || 'Failed to open console'}</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 420, textAlign: 'center' }}>
+              If you see a certificate error, open <code style={{ fontSize: 11 }}>https://{/* host is runtime only */}…</code> in a tab, accept the cert, then retry.
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── VMs table ─────────────────────────────────────────────────────────────────
 
 type SortKey = 'name' | 'vmid' | 'status' | 'cpu' | 'mem' | 'node'
 type StatusFilter = 'all' | 'running' | 'stopped'
 type TypeFilter   = 'all' | 'qemu' | 'lxc'
 
-function VmsTable({ hostId, vms, onRefresh }: { hostId: string; vms: PveVm[]; onRefresh: () => void }) {
+function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
+  hostId: string; vms: PveVm[]; tagsMap: TagMap; allTags: Tag[]
+  onRefresh: () => void; onTagsChange: () => void
+}) {
   const [sortKey, setSortKey]     = useState<SortKey>('vmid')
   const [sortAsc, setSortAsc]     = useState(true)
   const [statusF, setStatusF]     = useState<StatusFilter>('all')
   const [typeF, setTypeF]         = useState<TypeFilter>('all')
   const [search, setSearch]       = useState('')
   const [busy, setBusy]           = useState<string | null>(null)
+  const [consoleVm, setConsoleVm]   = useState<PveVm | null>(null)
+  const [tagPopover, setTagPopover] = useState<number | null>(null) // vmid
+
+  const toggleTag = async (vmid: number, tag: Tag, assigned: boolean) => {
+    const rid = String(vmid)
+    try {
+      if (assigned) await api.tags.unassign(tag.id, 'proxmox_vm', rid)
+      else          await api.tags.assign(tag.id, 'proxmox_vm', rid)
+      onTagsChange()
+    } catch { /* ignore */ }
+  }
 
   const onSort = (k: SortKey) => { if (k === sortKey) setSortAsc(a => !a); else { setSortKey(k); setSortAsc(true) } }
 
@@ -446,6 +552,7 @@ function VmsTable({ hostId, vms, onRefresh }: { hostId: string; vms: PveVm[]; on
               <SortTh k="mem"    label="RAM" />
               <th style={thStyle}>Disk</th>
               <SortTh k="node"   label="Node" />
+              <th style={thStyle}>Tags</th>
               <th style={thStyle}>Actions</th>
             </tr>
           </thead>
@@ -495,6 +602,37 @@ function VmsTable({ hostId, vms, onRefresh }: { hostId: string; vms: PveVm[]; on
                       ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                     </td>
                     <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 12 }}>{vm.node}</td>
+                    <td style={{ padding: '8px 12px', position: 'relative' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'center' }}>
+                        {(tagsMap[String(vm.vmid)] ?? []).map(t => (
+                          <span key={t.id} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: t.color + '33', color: t.color, border: `1px solid ${t.color}55`, cursor: 'pointer' }}
+                            title="Click to remove" onClick={() => toggleTag(vm.vmid, t, true)}>
+                            {t.name}
+                          </span>
+                        ))}
+                        {allTags.length > 0 && (
+                          <button onClick={e => { e.stopPropagation(); setTagPopover(tagPopover === vm.vmid ? null : vm.vmid) }}
+                            style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, border: '1px dashed var(--border-subtle)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                            +
+                          </button>
+                        )}
+                        {tagPopover === vm.vmid && (
+                          <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 20, background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 7, padding: 8, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 130, boxShadow: '0 4px 16px rgba(0,0,0,0.3)' }}>
+                            {allTags.map(t => {
+                              const assigned = (tagsMap[String(vm.vmid)] ?? []).some(a => a.id === t.id)
+                              return (
+                                <button key={t.id} onClick={() => { toggleTag(vm.vmid, t, assigned); setTagPopover(null) }}
+                                  style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '3px 6px', borderRadius: 5, border: 'none', background: assigned ? 'var(--accent-primary-subtle)' : 'transparent', color: 'var(--text-primary)', cursor: 'pointer', textAlign: 'left' }}>
+                                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
+                                  {t.name}
+                                  {assigned && <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)' }}>✓</span>}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </td>
                     <td style={{ padding: '10px 12px' }}>
                       <div style={{ display: 'flex', gap: 4 }}>
                         {vm.status !== 'running' && (
@@ -517,6 +655,12 @@ function VmsTable({ hostId, vms, onRefresh }: { hostId: string; vms: PveVm[]; on
                           style={{ padding: '4px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-muted)', cursor: 'pointer' }}>
                           <Camera size={12} />
                         </button>
+                        {vm.status === 'running' && (
+                          <button onClick={() => setConsoleVm(vm)} title="Open console"
+                            style={{ padding: '4px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--accent-primary)', cursor: 'pointer' }}>
+                            <Monitor size={12} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -532,6 +676,9 @@ function VmsTable({ hostId, vms, onRefresh }: { hostId: string; vms: PveVm[]; on
           </div>
         )}
       </div>
+      {consoleVm && (
+        <ConsoleModal hostId={hostId} vm={consoleVm} onClose={() => setConsoleVm(null)} />
+      )}
     </div>
   )
 }
@@ -630,6 +777,100 @@ function TasksTable({ tasks }: { tasks: PveTask[] }) {
   )
 }
 
+// ── Backups tab ───────────────────────────────────────────────────────────────
+
+function BackupsPanel({ hostId }: { hostId: string }) {
+  const [jobs, setJobs] = useState<import('@/api/types').PveBackupJob[]>([])
+  const [archives, setArchives] = useState<import('@/api/types').PveBackupArchive[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    api.proxmox.getBackupJobs(hostId)
+      .then(r => { setJobs(r.jobs ?? []); setArchives(r.archives ?? []) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [hostId])
+
+  if (loading) return <div style={{ padding: '32px 12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
+
+  return (
+    <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Scheduled backup jobs */}
+      <div>
+        <p style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontWeight: 500, marginBottom: 10 }}>
+          Scheduled Jobs ({jobs.length})
+        </p>
+        {jobs.length === 0
+          ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No backup jobs configured.</div>
+          : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    {['Job ID', 'Schedule', 'Storage', 'VMs', 'Mode', 'Enabled'].map(h => (
+                      <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobs.map(j => (
+                    <tr key={j.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-primary)', fontFamily: 'monospace', fontSize: 12 }}>{j.id}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 12 }}>{j.schedule ?? j.starttime ?? '—'}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{j.storage ?? '—'}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12, maxWidth: '16rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.vmid ?? 'all'}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{j.mode ?? '—'}</td>
+                      <td style={{ padding: '10px 12px', fontSize: 12 }}>
+                        <span style={{ color: j.enabled ? 'var(--accent-success)' : 'var(--text-disabled)' }}>{j.enabled ? 'yes' : 'no'}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </div>
+
+      {/* Recent backup archives */}
+      <div>
+        <p style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontWeight: 500, marginBottom: 10 }}>
+          Recent Archives ({archives.length})
+        </p>
+        {archives.length === 0
+          ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No backup archives found.</div>
+          : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    {['VM ID', 'Volume', 'Storage', 'Node', 'Created', 'Size'].map(h => (
+                      <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {archives.slice(0, 50).map((a, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-primary)', fontFamily: 'monospace', fontSize: 12 }}>{a.vmid}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 11, maxWidth: '20rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.volid}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{a.storage}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{a.node}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{fmtRelTime(a.ctime)}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{fmtBytes(a.size)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </div>
+    </div>
+  )
+}
+
 // ── Per-host panel ────────────────────────────────────────────────────────────
 
 function HostPanel({ host }: { host: ProxmoxHost }) {
@@ -640,6 +881,15 @@ function HostPanel({ host }: { host: ProxmoxHost }) {
   const [tasks, setTasks]     = useState<PveTask[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
+  const [tagsMap, setTagsMap] = useState<TagMap>({})
+  const [allTags, setAllTags] = useState<Tag[]>([])
+
+  const fetchTags = useCallback(async () => {
+    try {
+      const [m, all] = await Promise.all([api.tags.map('proxmox_vm'), api.tags.list()])
+      setTagsMap(m); setAllTags(all)
+    } catch { /* non-critical */ }
+  }, [])
 
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null)
@@ -661,9 +911,10 @@ function HostPanel({ host }: { host: ProxmoxHost }) {
 
   useEffect(() => {
     fetchAll()
+    fetchTags()
     const id = setInterval(fetchAll, 15_000)
     return () => clearInterval(id)
-  }, [fetchAll])
+  }, [fetchAll, fetchTags])
 
   if (loading) return (
     <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
@@ -692,9 +943,9 @@ function HostPanel({ host }: { host: ProxmoxHost }) {
 
       <div>
         <div style={{ display: 'flex', gap: 4, marginBottom: 0, borderBottom: '1px solid var(--border-subtle)', paddingBottom: 10 }}>
-          {(['vms', 'storage', 'tasks'] as HostTab[]).map(t => (
+          {(['vms', 'storage', 'tasks', 'backups'] as HostTab[]).map(t => (
             <button key={t} onClick={() => setTab(t)} style={{ padding: '5px 16px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 500, background: tab === t ? 'var(--accent-primary)' : 'transparent', color: tab === t ? '#fff' : 'var(--text-secondary)', transition: 'background 0.15s' }}>
-              {t === 'vms' ? `VMs & LXCs (${vms.length})` : t === 'storage' ? `Storage (${storage.length})` : `Tasks (${tasks.length})`}
+              {t === 'vms' ? `VMs & LXCs (${vms.length})` : t === 'storage' ? `Storage (${storage.length})` : t === 'tasks' ? `Tasks (${tasks.length})` : 'Backups'}
             </button>
           ))}
           <button onClick={fetchAll} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}>
@@ -703,9 +954,10 @@ function HostPanel({ host }: { host: ProxmoxHost }) {
         </div>
 
         <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderTop: 'none', borderRadius: '0 0 8px 8px', overflow: 'hidden' }}>
-          {tab === 'vms'     && <VmsTable hostId={host.id} vms={vms} onRefresh={fetchAll} />}
+          {tab === 'vms'     && <VmsTable hostId={host.id} vms={vms} tagsMap={tagsMap} allTags={allTags} onRefresh={fetchAll} onTagsChange={fetchTags} />}
           {tab === 'storage' && <StorageTable pools={storage} />}
           {tab === 'tasks'   && <TasksTable tasks={tasks} />}
+          {tab === 'backups' && <BackupsPanel hostId={host.id} />}
         </div>
       </div>
     </div>
@@ -753,49 +1005,87 @@ export default function ProxmoxPage() {
   const activeHost = hosts.find(h => h.id === activeHostId) ?? null
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Server size={18} style={{ color: 'var(--accent-primary)' }} />
-          <h1 style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>Proxmox</h1>
-        </div>
-        <Button size="sm" variant="primary" onClick={() => setShowAddModal(true)}>
-          <Plus size={13} style={{ marginRight: 5 }} /> Add Host
-        </Button>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 88px)', gap: 12 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+        <Server size={18} style={{ color: 'var(--accent-primary)' }} />
+        <h1 style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Proxmox</h1>
       </div>
 
-      {loading && <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Loading hosts…</div>}
+      {/* Sidebar + content */}
+      <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0, overflow: 'hidden' }}>
 
-      {!loading && hosts.length === 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '60px 0' }}>
-          <Server size={40} style={{ color: 'var(--text-muted)', opacity: 0.35 }} />
-          <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>No Proxmox hosts configured.</p>
-          <Button size="sm" variant="ghost" onClick={() => setShowAddModal(true)}>
-            <Plus size={12} style={{ marginRight: 5 }} /> Add your first host
-          </Button>
-        </div>
-      )}
-
-      {!loading && hosts.length > 0 && (
-        <>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-            {hosts.map(h => (
-              <div key={h.id} style={{ display: 'flex', alignItems: 'center' }}>
-                <button onClick={() => setActiveHostId(h.id)} style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border-subtle)', background: activeHostId === h.id ? 'var(--accent-primary-subtle)' : 'var(--bg-elevated)', color: activeHostId === h.id ? 'var(--accent-primary)' : 'var(--text-secondary)', cursor: 'pointer', fontSize: 13, fontWeight: activeHostId === h.id ? 600 : 400, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <HardDrive size={12} style={{ opacity: 0.7 }} />
-                  {h.name}
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{h.node}</span>
-                </button>
-                <button onClick={() => handleDelete(h)} disabled={deleting === h.id} title={`Remove ${h.name}`}
-                  style={{ marginLeft: 4, padding: '4px 5px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--accent-danger)', cursor: deleting === h.id ? 'not-allowed' : 'pointer', opacity: deleting === h.id ? 0.4 : 1 }}>
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
+        {/* Left sidebar */}
+        <div style={{
+          width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10,
+          overflowY: 'auto', paddingRight: 4,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Hosts</span>
+            <button onClick={() => setShowAddModal(true)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent-primary)', display: 'flex', alignItems: 'center', gap: 3, fontSize: 12 }}>
+              <Plus size={13} /> Add
+            </button>
           </div>
-          {activeHost && <HostPanel key={activeHost.id} host={activeHost} />}
-        </>
-      )}
+
+          {loading && (
+            <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: '16px 0', textAlign: 'center' }}>Loading…</div>
+          )}
+
+          {!loading && hosts.length === 0 && (
+            <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: '16px 0', textAlign: 'center' }}>
+              No hosts configured.
+            </div>
+          )}
+
+          {hosts.map(h => (
+            <div
+              key={h.id}
+              onClick={() => setActiveHostId(h.id)}
+              style={{
+                background: activeHostId === h.id ? 'var(--accent-primary-subtle)' : 'var(--bg-card)',
+                border: `1px solid ${activeHostId === h.id ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+                borderRadius: 8, padding: '10px 14px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 10,
+                transition: 'border-color 0.15s',
+              }}
+            >
+              <HardDrive size={18} style={{ color: activeHostId === h.id ? 'var(--accent-primary)' : 'var(--text-muted)', flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {h.node} · {h.url.replace(/^https?:\/\//, '')}
+                </div>
+              </div>
+              <button
+                onClick={e => { e.stopPropagation(); handleDelete(h) }}
+                disabled={deleting === h.id}
+                title={`Remove ${h.name}`}
+                style={{ background: 'none', border: 'none', cursor: deleting === h.id ? 'not-allowed' : 'pointer', color: 'var(--accent-danger)', padding: 4, flexShrink: 0, opacity: deleting === h.id ? 0.4 : 1 }}
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Right content */}
+        <div style={{ flex: 1, overflowY: 'auto', minWidth: 0 }}>
+          {activeHost ? (
+            <HostPanel key={activeHost.id} host={activeHost} />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 14, color: 'var(--text-muted)' }}>
+              <Server size={40} style={{ opacity: 0.25 }} />
+              <span style={{ fontSize: 13 }}>{loading ? 'Loading…' : 'Select a host or add one to get started'}</span>
+              {!loading && hosts.length === 0 && (
+                <Button size="sm" variant="ghost" onClick={() => setShowAddModal(true)}>
+                  <Plus size={12} /> Add your first host
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
       {showAddModal && <AddHostModal onClose={() => setShowAddModal(false)} onAdded={fetchHosts} />}
     </div>

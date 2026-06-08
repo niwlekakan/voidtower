@@ -159,6 +159,22 @@ export interface DeployedApp {
   deployed_at: number
   compose_path: string
   primary_port: number | null
+  origin: string  // 'voidtower' | 'adopted' | 'custom'
+}
+
+export interface ExternalContainer {
+  id: string
+  name: string
+  image: string
+  state: string
+  ports: string[]
+}
+
+export interface ExternalStack {
+  project_name: string
+  compose_path: string | null
+  containers: ExternalContainer[]
+  primary_port: number | null
 }
 
 export interface DeployedResponse {
@@ -353,6 +369,14 @@ export interface SshSession {
   username: string
   key_path?: string
   password_set?: boolean
+  created_at: number
+  last_used?: number
+}
+
+export interface LocalSession {
+  id: string
+  label: string
+  category?: string
   created_at: number
   last_used?: number
 }
@@ -654,4 +678,27 @@ export interface PveSnapshot {
   snaptime?: number
   parent?: string
   vmstate?: boolean
+}
+
+export interface PveBackupJob {
+  id: string
+  enabled: number
+  schedule?: string
+  starttime?: string
+  storage?: string
+  vmid?: string
+  node?: string
+  mode?: string
+  compress?: string
+  type?: string
+}
+
+export interface PveBackupArchive {
+  volid: string
+  vmid: number
+  ctime: number
+  size: number
+  format?: string
+  node: string
+  storage: string
 }

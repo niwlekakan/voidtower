@@ -38,11 +38,17 @@ fn decrypt_secret(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
     String::from_utf8(pt).map_err(Into::into)
 }
 
+#[derive(Deserialize)]
+pub struct LocalWsQuery {
+    pub session_id: Option<String>,
+}
+
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     jar: CookieJar,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Query(q): Query<LocalWsQuery>,
 ) -> Result<Response> {
     let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
@@ -51,6 +57,11 @@ pub async fn ws_handler(
     let user_id = user.id.clone();
     let db = state.db.clone();
     let ip = addr.ip().to_string();
+
+    if let Some(ref local_sid) = q.session_id {
+        sqlx::query("UPDATE local_sessions SET last_used = unixepoch() WHERE id = ?")
+            .bind(local_sid).execute(&db).await.ok();
+    }
 
     audit::log(&db, Some(&user.id), "human", "terminal.session.start",
         Some("terminal"), None, "success", Some(&ip), None).await;
@@ -64,6 +75,75 @@ pub async fn ws_handler(
         audit::log(&db2, Some(&user_id2), "human", "terminal.session.end",
             Some("terminal"), None, "success", Some(&ip2), None).await;
     }))
+}
+
+// ── Local sessions ────────────────────────────────────────────────────────────
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct LocalSession {
+    pub id:         String,
+    pub label:      String,
+    pub category:   Option<String>,
+    pub created_at: i64,
+    pub last_used:  Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateLocalSession {
+    pub label:    String,
+    pub category: Option<String>,
+}
+
+pub async fn list_local_sessions(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Vec<LocalSession>>> {
+    require_operator(&state, &jar).await?;
+    let sessions = sqlx::query_as::<_, LocalSession>(
+        "SELECT id, label, category, created_at, last_used FROM local_sessions ORDER BY last_used DESC NULLS LAST, created_at DESC"
+    ).fetch_all(&state.db).await?;
+    Ok(Json(sessions))
+}
+
+pub async fn create_local_session(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<CreateLocalSession>,
+) -> Result<Json<LocalSession>> {
+    require_operator(&state, &jar).await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let category = req.category.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
+    sqlx::query("INSERT INTO local_sessions (id, label, category) VALUES (?,?,?)")
+        .bind(&id).bind(&req.label).bind(&category)
+        .execute(&state.db).await?;
+    let s = sqlx::query_as::<_, LocalSession>(
+        "SELECT id, label, category, created_at, last_used FROM local_sessions WHERE id = ?"
+    ).bind(&id).fetch_one(&state.db).await?;
+    Ok(Json(s))
+}
+
+pub async fn update_local_session(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    Json(req): Json<CreateLocalSession>,
+) -> Result<Json<LocalSession>> {
+    require_operator(&state, &jar).await?;
+    let category = req.category.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
+    sqlx::query("UPDATE local_sessions SET label=?, category=? WHERE id=?")
+        .bind(&req.label).bind(&category).bind(&id)
+        .execute(&state.db).await?;
+    let s = sqlx::query_as::<_, LocalSession>(
+        "SELECT id, label, category, created_at, last_used FROM local_sessions WHERE id = ?"
+    ).bind(&id).fetch_one(&state.db).await?;
+    Ok(Json(s))
+}
+
+pub async fn delete_local_session(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    require_operator(&state, &jar).await?;
+    sqlx::query("DELETE FROM local_sessions WHERE id = ?").bind(&id).execute(&state.db).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ── SSH sessions ──────────────────────────────────────────────────────────────

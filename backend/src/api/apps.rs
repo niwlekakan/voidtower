@@ -67,7 +67,11 @@ pub struct DeployedApp {
     pub deployed_at: i64,
     pub compose_path: String,
     pub primary_port: Option<i64>,
+    #[serde(default = "default_origin")]
+    pub origin: String,
 }
+
+fn default_origin() -> String { "voidtower".into() }
 
 /// Extract the first published host port from a docker-compose services block.
 fn first_port_from_compose(compose: &Value) -> Option<u16> {
@@ -403,13 +407,14 @@ fn row_to_app(r: DeployedAppRow) -> DeployedApp {
         id: r.id, app_id: r.app_id, app_name: r.app_name,
         project_name: r.project_name, status: r.status,
         deployed_at: r.deployed_at, compose_path: r.compose_path,
-        primary_port: r.primary_port,
+        primary_port: r.primary_port, origin: r.origin,
     }
 }
 
 const SELECT_DEPLOYED: &str =
     "SELECT id, app_id, app_name, project_name, status, deployed_at, compose_path, \
-     COALESCE(primary_port, NULL) AS primary_port FROM deployed_apps";
+     COALESCE(primary_port, NULL) AS primary_port, \
+     COALESCE(origin, 'voidtower') AS origin FROM deployed_apps";
 
 #[derive(sqlx::FromRow)]
 struct DeployedAppRow {
@@ -421,6 +426,7 @@ struct DeployedAppRow {
     deployed_at: i64,
     compose_path: String,
     primary_port: Option<i64>,
+    origin: String,
 }
 
 pub async fn deploy(
@@ -545,8 +551,8 @@ pub async fn deploy(
 
     sqlx::query(
         "INSERT OR REPLACE INTO deployed_apps \
-         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port) \
-         VALUES (?, ?, ?, ?, 'running', ?, ?, ?)"
+         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin) \
+         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, 'voidtower')"
     )
     .bind(&id)
     .bind(&app.id)
@@ -665,8 +671,8 @@ pub async fn deploy_custom(
 
     sqlx::query(
         "INSERT OR REPLACE INTO deployed_apps \
-         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port) \
-         VALUES (?, 'custom', ?, ?, 'running', ?, ?, ?)"
+         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin) \
+         VALUES (?, 'custom', ?, ?, 'running', ?, ?, ?, 'voidtower')"
     )
     .bind(&id).bind(&name).bind(&project_name)
     .bind(now).bind(compose_path.to_string_lossy().as_ref()).bind(primary_port)
@@ -1174,4 +1180,248 @@ pub async fn embed_proxy(
 
     let body = Body::from_stream(upstream_resp.bytes_stream());
     (status, resp_headers, body).into_response()
+}
+
+// ── External app detection ────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ExternalContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub ports: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ExternalStack {
+    pub project_name: String,
+    pub compose_path: Option<String>,
+    pub containers: Vec<ExternalContainer>,
+    pub primary_port: Option<u16>,
+}
+
+/// Parse Docker's label string "k=v,k=v,…" into a HashMap.
+fn parse_docker_labels(s: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for pair in s.split(',') {
+        if let Some((k, v)) = pair.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    map
+}
+
+/// Extract host ports from a Docker ports string like "0.0.0.0:8080->80/tcp".
+fn parse_docker_ports(s: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out  = Vec::new();
+    for part in s.split(',') {
+        let part = part.trim();
+        if let Some(arrow) = part.find("->") {
+            let host = part[..arrow].rsplit(':').next().unwrap_or("").trim();
+            let cont = &part[arrow + 2..];
+            if !host.is_empty() {
+                let entry = format!("{host}:{cont}");
+                if seen.insert(entry.clone()) { out.push(entry); }
+            }
+        }
+    }
+    out
+}
+
+pub async fn detect_external(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<ExternalStack>>> {
+    require_user(&state, &jar).await?;
+
+    if !containers::is_docker_available() {
+        return Ok(Json(vec![]));
+    }
+
+    // Fetch all containers including stopped ones
+    let out = tokio::process::Command::new("docker")
+        .args(["ps", "-a", "--format", "{{json .}}"])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    // Already-managed project names
+    let managed: std::collections::HashSet<String> = sqlx::query_scalar(
+        "SELECT project_name FROM deployed_apps"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .collect();
+
+    // Group containers by compose project
+    let mut groups: std::collections::HashMap<String, (Option<String>, Vec<ExternalContainer>)> = std::collections::HashMap::new();
+
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+
+        let id    = obj["ID"].as_str().unwrap_or("").to_string();
+        let name  = obj["Names"].as_str().unwrap_or("").to_string();
+        let image = obj["Image"].as_str().unwrap_or("").to_string();
+        let state_str = obj["State"].as_str().unwrap_or("").to_string();
+        let ports_str = obj["Ports"].as_str().unwrap_or("");
+        let labels_str = obj["Labels"].as_str().unwrap_or("");
+
+        let labels = parse_docker_labels(labels_str);
+        let project = labels
+            .get("com.docker.compose.project")
+            .cloned()
+            .unwrap_or_else(|| format!("standalone-{}", name.trim_start_matches('/')));
+
+        // Skip anything already managed by VoidTower
+        if project.starts_with("vt-") || managed.contains(&project) { continue; }
+
+        let compose_path = labels
+            .get("com.docker.compose.project.working_dir")
+            .and_then(|dir| {
+                for f in &["docker-compose.yml","docker-compose.yaml","compose.yml","compose.yaml"] {
+                    let p = std::path::Path::new(dir).join(f);
+                    if p.exists() { return Some(p.to_string_lossy().into_owned()); }
+                }
+                None
+            });
+
+        let entry = groups.entry(project).or_insert((compose_path, vec![]));
+        entry.1.push(ExternalContainer {
+            id, name, image, state: state_str,
+            ports: parse_docker_ports(ports_str),
+        });
+    }
+
+    let mut stacks: Vec<ExternalStack> = groups
+        .into_iter()
+        .map(|(project_name, (compose_path, containers))| {
+            let primary_port = containers.iter()
+                .flat_map(|c| c.ports.iter())
+                .filter_map(|p| p.split(':').next()?.parse::<u16>().ok())
+                .min();
+            ExternalStack { project_name, compose_path, containers, primary_port }
+        })
+        .collect();
+    stacks.sort_by(|a, b| a.project_name.cmp(&b.project_name));
+
+    Ok(Json(stacks))
+}
+
+// ── Adopt external app ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct AdoptRequest {
+    pub project_name: String,
+    pub app_name: String,
+    pub compose_path: Option<String>,
+    pub primary_port: Option<i64>,
+}
+
+pub async fn adopt_app(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(req): Json<AdoptRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM deployed_apps WHERE project_name = ?"
+    ).bind(&req.project_name).fetch_optional(&state.db).await?;
+    if existing.is_some() {
+        return Err(AppError::BadRequest("Already managed by VoidTower".into()));
+    }
+
+    let id  = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let compose_path = req.compose_path.as_deref().unwrap_or("");
+
+    sqlx::query(
+        "INSERT INTO deployed_apps \
+         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin) \
+         VALUES (?, 'external', ?, ?, 'running', ?, ?, ?, 'adopted')"
+    )
+    .bind(&id).bind(&req.app_name).bind(&req.project_name)
+    .bind(now).bind(compose_path).bind(req.primary_port)
+    .execute(&state.db).await?;
+
+    // Connect all containers in the project to vt-proxy so the reverse proxy can reach them
+    ensure_vt_proxy_network().await;
+    let ps = tokio::process::Command::new("docker")
+        .args(["ps", "-q", "--filter", &format!("label=com.docker.compose.project={}", req.project_name)])
+        .output().await;
+    if let Ok(ps_out) = ps {
+        for cid in String::from_utf8_lossy(&ps_out.stdout).split_whitespace() {
+            let _ = tokio::process::Command::new("docker")
+                .args(["network", "connect", "vt-proxy", cid])
+                .output().await;
+        }
+    }
+
+    audit::log(&state.db, Some(&user.id), &user.username, "app.adopt",
+        Some("app"), Some(&req.project_name), "success",
+        Some(&addr.ip().to_string()), None).await;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ── Convert adopted app to VoidTower management ───────────────────────────────
+
+pub async fn convert_app(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(project_name): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+
+    let row = sqlx::query_as::<_, DeployedAppRow>(
+        &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
+    ).bind(&project_name).fetch_optional(&state.db).await?
+     .ok_or(AppError::NotFound)?;
+
+    if row.compose_path.is_empty() {
+        return Err(AppError::BadRequest(
+            "No compose file detected — cannot convert a standalone container automatically".into()
+        ));
+    }
+
+    let src = std::path::PathBuf::from(&row.compose_path);
+    if !src.exists() {
+        return Err(AppError::BadRequest(format!(
+            "Compose file not found at {}", src.display()
+        )));
+    }
+
+    let dest_dir = state.config.apps_dir().join(&project_name);
+    std::fs::create_dir_all(&dest_dir).map_err(|e| AppError::Internal(e.into()))?;
+    let dest = dest_dir.join("docker-compose.yml");
+
+    // Copy compose file only if destination differs from source
+    if src != dest {
+        std::fs::copy(&src, &dest).map_err(|e| AppError::Internal(e.into()))?;
+    }
+
+    sqlx::query(
+        "UPDATE deployed_apps SET compose_path = ?, origin = 'voidtower' WHERE project_name = ?"
+    ).bind(dest.to_string_lossy().as_ref()).bind(&project_name)
+     .execute(&state.db).await?;
+
+    ensure_vt_proxy_network().await;
+    containers::deploy_compose(&project_name, &dest)
+        .await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+
+    audit::log(&state.db, Some(&user.id), &user.username, "app.convert",
+        Some("app"), Some(&project_name), "success",
+        Some(&addr.ip().to_string()), None).await;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }

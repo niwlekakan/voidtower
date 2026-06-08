@@ -4,7 +4,7 @@ use axum::{
     http::HeaderValue,
     middleware::{self, Next},
     response::Response,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -57,6 +57,7 @@ pub mod vms;
 pub mod tags;
 pub mod ai;
 pub mod ai_ask;
+pub mod ai_context;
 pub mod bearer_auth;
 pub mod integrations;
 pub mod models;
@@ -130,9 +131,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps/:project_name/redeploy", post(apps::redeploy_app))
         .route("/api/apps/:project_name/logs",     get(apps::app_logs))
         .route("/api/apps/:project_name/status",  get(apps::app_status))
-        .route("/api/apps/:project_name/compose", get(apps::get_compose).post(apps::update_compose))
+        .route("/api/apps/:project_name/compose",  get(apps::get_compose).post(apps::update_compose))
+        .route("/api/apps/detect-external",        get(apps::detect_external))
+        .route("/api/apps/adopt",                  post(apps::adopt_app))
+        .route("/api/apps/:project_name/convert",  post(apps::convert_app))
         // Backups
         .route("/api/backups", get(backups::list).post(backups::create))
+        .route("/api/backups/:id/delete-plan", post(backups::delete_plan))
         .route("/api/backups/:id/run", post(backups::run_now))
         .route("/api/backups/:id/check", post(backups::check))
         .route("/api/backups/:id/restore-test", post(backups::restore_test))
@@ -161,6 +166,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/ai/llama",        get(ai::llama_status))
         .route("/api/ai/llama/unload", post(ai::llama_unload))
         .route("/api/ai/ask",          post(ai_ask::ask))
+        .route("/api/ai/context",      get(ai_context::get_context))
         // Models
         .route("/api/models",              get(models::list_models))
         .route("/api/models/download",     post(models::start_download))
@@ -196,6 +202,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/terminal/ssh/sessions", get(terminal::list_ssh_sessions).post(terminal::create_ssh_session))
         .route("/api/terminal/ssh/sessions/:id", delete(terminal::delete_ssh_session).put(terminal::update_ssh_session))
         .route("/api/terminal/ssh/ws", get(terminal::ssh_ws_handler))
+        .route("/api/terminal/local/sessions", get(terminal::list_local_sessions).post(terminal::create_local_session))
+        .route("/api/terminal/local/sessions/:id", put(terminal::update_local_session).delete(terminal::delete_local_session))
         // Audit
         .route("/api/audit", get(audit::list))
         // Timeline
@@ -289,6 +297,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxmox/:host_id/vms",                           get(proxmox::list_vms))
         .route("/api/proxmox/:host_id/storage",                       get(proxmox::list_storage))
         .route("/api/proxmox/:host_id/tasks",                         get(proxmox::list_tasks))
+        .route("/api/proxmox/:host_id/backup-jobs",                   get(proxmox::list_backup_jobs))
         .route("/api/proxmox/:host_id/vms/:vmid/start",               post(proxmox::vm_start))
         .route("/api/proxmox/:host_id/vms/:vmid/stop",                post(proxmox::vm_stop))
         .route("/api/proxmox/:host_id/vms/:vmid/shutdown",            post(proxmox::vm_shutdown))
@@ -297,6 +306,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxmox/:host_id/vms/:vmid/rollback/:snapname",  post(proxmox::vm_rollback))
         .route("/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",  delete(proxmox::vm_delete_snapshot))
         .route("/api/proxmox/:host_id/vms/:vmid/snapshots",           get(proxmox::list_snapshots))
+        .route("/api/proxmox/:host_id/vms/:vmid/vncproxy",            post(proxmox::vm_vncproxy))
         // Mods
         .route("/api/mods",              get(mods::get_status))
         .route("/api/mods/config",       post(mods::save_config))

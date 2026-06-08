@@ -141,6 +141,73 @@ pub struct ProxmoxHost {
     pub fingerprint: Option<String>,
 }
 
+// ── background VM state monitor ───────────────────────────────────────────────
+
+pub async fn run_vm_state_monitor(state: crate::AppState) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(90));
+    let mut known: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut initialised = false;
+
+    loop {
+        interval.tick().await;
+
+        let hosts: Vec<(String,)> = match sqlx::query_as("SELECT id FROM proxmox_hosts")
+            .fetch_all(&state.db).await { Ok(h) => h, Err(_) => continue };
+
+        for (host_id,) in &hosts {
+            let host = match get_host_and_token(&state, host_id).await {
+                Ok(h) => h, Err(_) => continue,
+            };
+            let client = match build_client() { Ok(c) => c, Err(_) => continue };
+            let base = proxmox_base(&host.url);
+            let auth = format!("PVEAPIToken={}", host.token);
+
+            let nodes = match pve_get(&client, &format!("{}/nodes", base), &auth).await {
+                Ok(v) => v, Err(_) => continue,
+            };
+            let node_names: Vec<String> = nodes.as_array().unwrap_or(&vec![])
+                .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+
+            for node in &node_names {
+                for kind in &["qemu", "lxc"] {
+                    let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/{}", base, node, kind), &auth).await
+                        else { continue };
+                    for vm in data.as_array().unwrap_or(&vec![]) {
+                        let vmid = vm["vmid"].as_u64().unwrap_or(0);
+                        if vmid == 0 { continue; }
+                        let status = vm["status"].as_str().unwrap_or("unknown").to_string();
+                        let name   = vm["name"].as_str().unwrap_or("unknown").to_string();
+                        let key    = format!("{}/{}", host_id, vmid);
+
+                        if initialised {
+                            if let Some(prev) = known.get(&key) {
+                                if *prev != status {
+                                    let (title, sev) = match (prev.as_str(), status.as_str()) {
+                                        ("running", s) if s != "running" =>
+                                            (format!("VM stopped: {name}"), "warning"),
+                                        (_, "running") =>
+                                            (format!("VM started: {name}"), "info"),
+                                        _ =>
+                                            (format!("VM state changed: {name}"), "info"),
+                                    };
+                                    super::alerts::create_alert(
+                                        &state.db, &title,
+                                        &format!("{name} on {node} ({host_id}): {prev} → {status}"),
+                                        sev, "containers",
+                                        Some("proxmox_vm"), Some(&vmid.to_string()),
+                                    ).await;
+                                }
+                            }
+                        }
+                        known.insert(key, status);
+                    }
+                }
+            }
+        }
+        initialised = true;
+    }
+}
+
 pub async fn list_hosts(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -387,6 +454,63 @@ pub async fn list_tasks(
     all_tasks.sort_by(|a, b| b["starttime"].as_u64().unwrap_or(0).cmp(&a["starttime"].as_u64().unwrap_or(0)));
     all_tasks.truncate(50);
     Ok(Json(serde_json::json!(all_tasks)))
+}
+
+// ── PBS backup jobs ───────────────────────────────────────────────────────────
+
+pub async fn list_backup_jobs(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(host_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+
+    // Cluster-level scheduled backup jobs
+    let jobs = pve_get(&client, &format!("{}/cluster/backup", base), &auth).await
+        .unwrap_or(serde_json::json!([]));
+
+    // Backup archives: query each node's storages and collect backup content
+    let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await
+        .unwrap_or(serde_json::json!([]));
+    let nodes: Vec<String> = node_list.as_array().unwrap_or(&vec![])
+        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+
+    let mut archives: Vec<serde_json::Value> = Vec::new();
+    for node in &nodes {
+        if let Ok(storages) = pve_get(&client, &format!("{}/nodes/{}/storage", base, node), &auth).await {
+            let storage_names: Vec<String> = storages.as_array().unwrap_or(&vec![])
+                .iter()
+                .filter(|s| s["content"].as_str().map(|c| c.contains("backup")).unwrap_or(false)
+                    && s["active"].as_u64().unwrap_or(0) == 1)
+                .filter_map(|s| s["storage"].as_str().map(String::from))
+                .collect();
+
+            for storage in &storage_names {
+                let url = format!("{}/nodes/{}/storage/{}/content?content=backup", base, node, storage);
+                if let Ok(content) = pve_get(&client, &url, &auth).await {
+                    if let Some(arr) = content.as_array() {
+                        for item in arr {
+                            let mut entry = item.clone();
+                            entry["node"] = serde_json::Value::String(node.clone());
+                            entry["storage"] = serde_json::Value::String(storage.clone());
+                            archives.push(entry);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    archives.sort_by(|a, b| b["ctime"].as_u64().unwrap_or(0).cmp(&a["ctime"].as_u64().unwrap_or(0)));
+
+    Ok(Json(serde_json::json!({
+        "jobs": jobs,
+        "archives": archives,
+    })))
 }
 
 // ── lifecycle action routes ───────────────────────────────────────────────────
@@ -660,6 +784,57 @@ pub async fn vm_delete_snapshot(
         let msg = res.text().await.unwrap_or_default();
         Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
     }
+}
+
+pub async fn vm_vncproxy(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, vmid)): Path<(String, u64)>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth_header = format!("PVEAPIToken={}", host.token);
+
+    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
+    let url = format!("{}/nodes/{}/{}/{}/vncproxy", base, host.node, kind.path_segment(), vmid);
+
+    let res = client
+        .post(&url)
+        .header("Authorization", &auth_header)
+        .form(&[("websocket", "1")])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("vncproxy request: {}", e)))?;
+
+    if !res.status().is_success() {
+        let msg = res.text().await.unwrap_or_default();
+        return Err(AppError::Internal(anyhow::anyhow!("vncproxy error: {}", msg)));
+    }
+
+    let body: serde_json::Value = res.json().await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("vncproxy parse: {}", e)))?;
+
+    let data = &body["data"];
+    let ticket = data["ticket"].as_str().unwrap_or("").to_string();
+    let port   = data["port"].as_u64().unwrap_or(5900);
+
+    // Strip scheme so the frontend can build wss:// from it
+    let proxmox_host = host.url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+
+    Ok(Json(serde_json::json!({
+        "ticket":       ticket,
+        "port":         port,
+        "proxmox_host": proxmox_host,
+        "node":         host.node,
+        "kind":         kind.as_str(),
+        "vmid":         vmid,
+    })))
 }
 
 pub async fn list_snapshots(

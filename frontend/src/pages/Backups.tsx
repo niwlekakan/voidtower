@@ -6,6 +6,7 @@ import { notify } from '@/store/notifications'
 import { useFiltersStore } from '@/store/filters'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import Button from '@/components/ui/Button'
+import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...init?.headers } })
@@ -70,6 +71,8 @@ export default function BackupsPage() {
   const [resticAvailable, setResticAvailable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<Record<string, string>>({})  // id -> action
+  const [deletePlan, setDeletePlan] = useState<{ plan: ChangePlan; id: string; name: string } | null>(null)
+  const [deleteConfirming, setDeleteConfirming] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ name: '', source_path: '', repo_path: '', retention_days: '30' })
   const [allTags, setAllTags] = useState<Tag[]>([])
@@ -122,16 +125,34 @@ export default function BackupsPage() {
   }
 
   const del = async (id: string, name: string) => {
-    if (!confirm(`Delete backup config "${name}"?`)) return
     try {
-      await apiFetch(`/api/backups/${id}`, { method: 'DELETE' })
+      const res = await apiFetch<{ plan: ChangePlan }>(`/api/backups/${id}/delete-plan`, { method: 'POST' })
+      setDeletePlan({ plan: res.plan, id, name })
+    } catch (e: any) { notify.error(e.message ?? 'Failed to fetch plan') }
+  }
+
+  const confirmDelete = async () => {
+    if (!deletePlan) return
+    setDeleteConfirming(true)
+    try {
+      await apiFetch(`/api/backups/${deletePlan.id}`, { method: 'DELETE' })
       notify.success('Deleted')
+      setDeletePlan(null)
       await load()
     } catch (e: any) { notify.error(e.message ?? 'Failed to delete') }
+    finally { setDeleteConfirming(false) }
   }
 
   return (
     <div className="space-y-4">
+      {deletePlan && (
+        <ChangePlanModal
+          plan={deletePlan.plan}
+          confirming={deleteConfirming}
+          onConfirm={confirmDelete}
+          onCancel={() => setDeletePlan(null)}
+        />
+      )}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Backups</h1>

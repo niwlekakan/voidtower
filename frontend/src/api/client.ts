@@ -97,6 +97,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ action }),
       }),
+    actionPlan: (id: string, action: import('./types').ContainerAction) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/containers/${id}/action`, {
+          method: 'POST',
+          body: JSON.stringify({ action, dry_run: true }),
+        }),
     logs: (id: string, tail = 200) =>
       request<{ lines: string[] }>(`/api/containers/${id}/logs?tail=${tail}`),
     images: () => request<{ images: import('./types').ImageInfo[] }>('/api/containers/images'),
@@ -139,6 +145,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ project_name: projectName, primary_port: primaryPort }),
       }),
+    detectExternal: () =>
+      request<import('./types').ExternalStack[]>('/api/apps/detect-external'),
+    adoptApp: (body: { project_name: string; app_name: string; compose_path?: string; primary_port?: number }) =>
+      request<{ ok: boolean }>('/api/apps/adopt', { method: 'POST', body: JSON.stringify(body) }),
+    convertApp: (projectName: string) =>
+      request<{ ok: boolean }>(`/api/apps/${projectName}/convert`, { method: 'POST' }),
   },
 
   alerts: {
@@ -227,9 +239,10 @@ export const api = {
   },
 
   terminal: {
-    wsUrl: () => {
+    wsUrl: (sessionId?: string) => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      return `${proto}://${location.host}/api/terminal/ws`
+      const base = `${proto}://${location.host}/api/terminal/ws`
+      return sessionId ? `${base}?session_id=${encodeURIComponent(sessionId)}` : base
     },
     sshWsUrl: (sessionId: string) => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -242,6 +255,13 @@ export const api = {
       request<import('./types').SshSession>(`/api/terminal/ssh/sessions/${id}`, { method: 'PUT', body: JSON.stringify(s) }),
     deleteSshSession: (id: string) =>
       request<{ ok: boolean }>(`/api/terminal/ssh/sessions/${id}`, { method: 'DELETE' }),
+    listLocalSessions: () => request<import('./types').LocalSession[]>('/api/terminal/local/sessions'),
+    createLocalSession: (s: { label: string; category?: string }) =>
+      request<import('./types').LocalSession>('/api/terminal/local/sessions', { method: 'POST', body: JSON.stringify(s) }),
+    updateLocalSession: (id: string, s: { label: string; category?: string }) =>
+      request<import('./types').LocalSession>(`/api/terminal/local/sessions/${id}`, { method: 'PUT', body: JSON.stringify(s) }),
+    deleteLocalSession: (id: string) =>
+      request<{ ok: boolean }>(`/api/terminal/local/sessions/${id}`, { method: 'DELETE' }),
   },
 
   timeline: {
@@ -436,5 +456,10 @@ export const api = {
       request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
     rollbackSnapshot: (hostId: string, vmid: number, snapname: string) =>
       request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
+    vncProxy: (hostId: string, vmid: number) =>
+      request<{ ticket: string; port: number; proxmox_host: string; node: string; kind: string; vmid: number }>(
+        `/api/proxmox/${hostId}/vms/${vmid}/vncproxy`, { method: 'POST' }),
+    getBackupJobs: (hostId: string) =>
+      request<{ jobs: import('./types').PveBackupJob[]; archives: import('./types').PveBackupArchive[] }>(`/api/proxmox/${hostId}/backup-jobs`),
   },
 }

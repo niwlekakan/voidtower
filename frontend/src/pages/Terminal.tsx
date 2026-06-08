@@ -5,10 +5,10 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import {
   Plus, Trash2, Server, Monitor, Key, X, Clipboard,
-  ChevronDown, ChevronUp, Pencil, Check, Wifi, WifiOff,
+  ChevronDown, ChevronUp, Pencil, Check, Wifi, WifiOff, Terminal,
 } from 'lucide-react'
 import { api } from '@/api/client'
-import type { SshSession } from '@/api/types'
+import type { SshSession, LocalSession } from '@/api/types'
 import { useAuthStore } from '@/store/auth'
 import { notify } from '@/store/notifications'
 import Button from '@/components/ui/Button'
@@ -114,6 +114,7 @@ function PtyTerminal({ wsUrl, label, onClose, reconnect = true }: PtyTerminalPro
     term.loadAddon(links)
     term.open(container)
     fit.fit()
+    term.focus()
     termRef.current = term
     fitRef.current  = fit
 
@@ -138,12 +139,30 @@ function PtyTerminal({ wsUrl, label, onClose, reconnect = true }: PtyTerminalPro
 
       ws.onopen = () => {
         setConnected(true)
+        term.focus()
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
       }
       ws.onmessage = e => {
         try {
           const msg = JSON.parse(e.data as string)
-          if (msg.type === 'output') term.write(msg.data as string)
+          if (msg.type === 'output') {
+            let data = msg.data as string
+            // Handle CPR queries (\x1b[6n) here rather than in the backend.
+            // Backend injection of CPR replies pollutes the PTY input stream and
+            // breaks TUIs like btop that use \x1b[6n to detect terminal size
+            // (move to 999,999 → query → response gives actual dimensions).
+            // We strip the query, respond immediately with the real terminal
+            // dimensions from xterm.js, and write the rest to the terminal.
+            if (data.includes('\x1b[6n')) {
+              data = data.split('\x1b[6n').join('')
+              if (ws.readyState === WebSocket.OPEN) {
+                const rows = termRef.current?.rows ?? term.rows
+                const cols = termRef.current?.cols ?? term.cols
+                ws.send(JSON.stringify({ type: 'input', data: `\x1b[${rows};${cols}R` }))
+              }
+            }
+            if (data) term.write(data)
+          }
           if (msg.type === 'closed') {
             term.writeln('\r\n\x1b[31m[session closed]\x1b[0m')
             if (!reconnect) deadRef.current = true
@@ -226,83 +245,196 @@ function PtyTerminal({ wsUrl, label, onClose, reconnect = true }: PtyTerminalPro
         )}
       </div>
 
-      <div ref={containerRef} style={{ flex: 1, background: TERM_THEME.background, minHeight: 0, overflow: 'hidden' }} />
+      <div ref={containerRef} onClick={() => termRef.current?.focus()} style={{ flex: 1, background: TERM_THEME.background, minHeight: 0, overflow: 'hidden' }} />
     </div>
   )
 }
 
-// ── Multi-tab local terminal ──────────────────────────────────────────────────
+// ── Local session form ────────────────────────────────────────────────────────
 
-interface LocalTab {
-  id: string
-  label: string
+interface LocalSessionFormProps {
+  initial?: LocalSession
+  onSaved: (s: LocalSession) => void
+  onCancel: () => void
 }
 
-function LocalTerminalArea() {
-  const [tabs, setTabs]       = useState<LocalTab[]>([{ id: crypto.randomUUID(), label: 'Shell 1' }])
-  const [activeId, setActiveId] = useState<string>(() => tabs[0].id)
+function LocalSessionForm({ initial, onSaved, onCancel }: LocalSessionFormProps) {
+  const uid = useId()
+  const [label, setLabel]       = useState(initial?.label ?? '')
+  const [category, setCategory] = useState(initial?.category ?? '')
+  const [saving, setSaving]     = useState(false)
 
-  const newTab = () => {
-    const id    = crypto.randomUUID()
-    const label = `Shell ${tabs.length + 1}`
-    setTabs(t => [...t, { id, label }])
-    setActiveId(id)
-  }
-
-  const closeTab = (id: string) => {
-    setTabs(t => {
-      const next = t.filter(x => x.id !== id)
-      if (next.length === 0) return [{ id: crypto.randomUUID(), label: 'Shell 1' }]
-      return next
-    })
-    setActiveId(cur => {
-      if (cur !== id) return cur
-      const idx = tabs.findIndex(t => t.id === id)
-      return tabs[idx + 1]?.id ?? tabs[idx - 1]?.id ?? tabs[0].id
-    })
+  const save = async () => {
+    if (!label.trim()) { notify.error('Label is required'); return }
+    setSaving(true)
+    try {
+      const payload = { label: label.trim(), category: category.trim() || undefined }
+      const saved = initial
+        ? await api.terminal.updateLocalSession(initial.id, payload)
+        : await api.terminal.createLocalSession(payload)
+      onSaved(saved)
+    } catch { notify.error('Failed to save session') }
+    finally { setSaving(false) }
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      {/* Tab bar */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 2,
-        background: 'var(--bg-panel)', borderBottom: '1px solid var(--border-subtle)',
-        padding: '0 8px', flexShrink: 0, overflowX: 'auto',
-      }}>
-        {tabs.map(tab => (
-          <div key={tab.id} style={{ display: 'flex', alignItems: 'center' }}>
-            <button
-              onClick={() => setActiveId(tab.id)}
-              style={{
-                padding: '6px 12px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500,
-                background: activeId === tab.id ? 'var(--bg-root)' : 'transparent',
-                color: activeId === tab.id ? 'var(--text-primary)' : 'var(--text-muted)',
-                borderBottom: activeId === tab.id ? '2px solid var(--accent-primary)' : '2px solid transparent',
-              }}
-            >
-              {tab.label}
-            </button>
-            {tabs.length > 1 && (
-              <button onClick={() => closeTab(tab.id)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-disabled)', padding: '0 2px', display: 'flex' }}>
-                <X size={11} />
-              </button>
-            )}
+    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 12 }}>
+        {initial ? 'Edit session' : 'New local session'}
+      </h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label htmlFor={uid + 'label'} style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>Label</label>
+          <input id={uid + 'label'} value={label} onChange={e => setLabel(e.target.value)} placeholder="Dev shell"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: 'var(--text-primary)', padding: '6px 10px', fontSize: 13, outline: 'none' }} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label htmlFor={uid + 'cat'} style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>Category (optional)</label>
+          <input id={uid + 'cat'} value={category} onChange={e => setCategory(e.target.value)} placeholder="e.g. work, personal"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 6, color: 'var(--text-primary)', padding: '6px 10px', fontSize: 13, outline: 'none' }} />
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button size="sm" onClick={save} loading={saving}><Check size={12} /> Save</Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
+  )
+}
+
+// ── Local session card ────────────────────────────────────────────────────────
+
+function LocalSessionCard({ session, active, onConnect, onEdit, onDelete }: {
+  session: LocalSession
+  active: boolean
+  onConnect: () => void
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const lastUsed = session.last_used
+    ? new Date(session.last_used * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'never'
+
+  return (
+    <div
+      onClick={onConnect}
+      style={{
+        background: active ? 'var(--accent-primary-subtle)' : 'var(--bg-card)',
+        border: `1px solid ${active ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+        borderRadius: 8, padding: '10px 14px', cursor: 'pointer',
+        display: 'flex', alignItems: 'center', gap: 10,
+        transition: 'border-color 0.15s',
+      }}
+    >
+      <Terminal size={18} style={{ color: active ? 'var(--accent-primary)' : 'var(--text-muted)', flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{session.label}</div>
+        {session.category && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+            <span style={{ background: 'var(--bg-elevated)', padding: '1px 6px', borderRadius: 10, border: '1px solid var(--border-subtle)' }}>
+              {session.category}
+            </span>
           </div>
-        ))}
-        <button onClick={newTab} title="New shell tab"
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: '6px 8px', display: 'flex', flexShrink: 0 }}>
-          <Plus size={13} />
-        </button>
+        )}
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--text-disabled)', textAlign: 'right', flexShrink: 0 }}>
+        {lastUsed}
+      </div>
+      <button onClick={e => { e.stopPropagation(); onEdit() }}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }} title="Edit">
+        <Pencil size={12} />
+      </button>
+      <button onClick={e => { e.stopPropagation(); onDelete() }}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent-danger)', padding: 4 }} title="Delete">
+        <Trash2 size={12} />
+      </button>
+    </div>
+  )
+}
+
+// ── Local terminal area ───────────────────────────────────────────────────────
+
+function LocalTerminalArea() {
+  const [sessions, setSessions]       = useState<LocalSession[]>([])
+  const [activeSession, setActive]    = useState<LocalSession | null>(null)
+  const [showNewForm, setShowNewForm] = useState(false)
+  const [editSession, setEditSession] = useState<LocalSession | null>(null)
+
+  const load = useCallback(async () => {
+    try { setSessions(await api.terminal.listLocalSessions()) } catch { /* empty */ }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const deleteSession = async (id: string) => {
+    if (!confirm('Delete this saved local session?')) return
+    try { await api.terminal.deleteLocalSession(id); load() }
+    catch { notify.error('Failed to delete session') }
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0, overflow: 'hidden' }}>
+
+      {/* Left sidebar */}
+      <div style={{
+        width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10,
+        overflowY: 'auto', paddingRight: 4,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Saved Sessions</span>
+          <button onClick={() => { setShowNewForm(true); setEditSession(null) }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent-primary)', display: 'flex', alignItems: 'center', gap: 3, fontSize: 12 }}>
+            <Plus size={13} /> New
+          </button>
+        </div>
+
+        {(showNewForm || editSession) && (
+          <LocalSessionForm
+            initial={editSession ?? undefined}
+            onSaved={s => {
+              load()
+              setShowNewForm(false)
+              setEditSession(null)
+              setActive(s)
+            }}
+            onCancel={() => { setShowNewForm(false); setEditSession(null) }}
+          />
+        )}
+
+        {sessions.length === 0 && !showNewForm ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: '16px 0', textAlign: 'center' }}>
+            No sessions saved yet.
+          </div>
+        ) : (
+          sessions.map(s => (
+            <LocalSessionCard key={s.id} session={s} active={activeSession?.id === s.id}
+              onConnect={() => setActive(s)}
+              onEdit={() => { setEditSession(s); setShowNewForm(false) }}
+              onDelete={() => { deleteSession(s.id); if (activeSession?.id === s.id) setActive(null) }}
+            />
+          ))
+        )}
       </div>
 
-      {/* Terminal panels — keep all mounted so they stay alive */}
-      {tabs.map(tab => (
-        <div key={tab.id} style={{ display: activeId === tab.id ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
-          <PtyTerminal wsUrl={api.terminal.wsUrl()} label={tab.label} />
-        </div>
-      ))}
+      {/* Right — terminal or prompt */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, border: '1px solid var(--border-subtle)', borderRadius: 8, overflow: 'hidden' }}>
+        {activeSession ? (
+          <PtyTerminal
+            key={activeSession.id}
+            wsUrl={api.terminal.wsUrl(activeSession.id)}
+            label={activeSession.label + (activeSession.category ? ` — ${activeSession.category}` : '')}
+            onClose={() => setActive(null)}
+          />
+        ) : (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, color: 'var(--text-muted)' }}>
+            <Monitor size={36} style={{ opacity: 0.25 }} />
+            <span style={{ fontSize: 13 }}>Select a session to open a shell</span>
+            <Button size="sm" variant="ghost" onClick={() => setShowNewForm(true)}>
+              <Plus size={12} /> New session
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

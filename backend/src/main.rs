@@ -393,6 +393,10 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Proxmox VM state-change alert monitor (90s poll)
+    let pmon_state = state.clone();
+    tokio::spawn(api::proxmox::run_vm_state_monitor(pmon_state));
+
     // Build router
     let api_routes = api::router(state);
 

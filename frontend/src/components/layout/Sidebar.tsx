@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks,
+  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
@@ -37,6 +37,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/services',   icon: Server,    label: 'Services',  requires: 'systemd' },
       { to: '/containers', icon: Container, label: 'Containers'                     },
       { to: '/vms',        icon: Monitor,   label: 'VMs',       requires: 'kvm'     },
+      { to: '/lxc',        icon: Box,       label: 'LXC',       requires: 'pct'     },
       { to: '/proxmox',    icon: Server,    label: 'Proxmox'                        },
       { to: '/apps',       icon: Package,   label: 'App Vault'                      },
     ],

@@ -72,6 +72,7 @@ pub mod proxmox;
 pub mod disaster;
 pub mod policy;
 pub mod plugins;
+pub mod lxc;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -333,6 +334,10 @@ pub fn router(state: AppState) -> Router {
         // Plugins
         .route("/api/plugins",         get(plugins::list).post(plugins::install))
         .route("/api/plugins/:id",     patch(plugins::update).delete(plugins::uninstall))
+        // LXC (local pct management)
+        .route("/api/lxc",                get(lxc::list))
+        .route("/api/lxc/:vmid/config",   get(lxc::get_config))
+        .route("/api/lxc/:vmid/action",   post(lxc::action))
         // Notification webhooks
         .route("/api/webhooks",           get(webhooks::list).post(webhooks::create))
         .route("/api/webhooks/:id",       patch(webhooks::update).delete(webhooks::delete))

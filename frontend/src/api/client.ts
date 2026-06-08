@@ -481,6 +481,15 @@ export const api = {
       request<{ ok: boolean }>(`/api/plugins/${id}`, { method: 'DELETE' }),
   },
 
+  lxc: {
+    list: () =>
+      request<import('./types').LxcListResponse>('/api/lxc'),
+    config: (vmid: number) =>
+      request<import('./types').LxcConfig>(`/api/lxc/${vmid}/config`),
+    action: (vmid: number, action: string) =>
+      request<{ ok: boolean; message: string }>(`/api/lxc/${vmid}/action`, { method: 'POST', body: JSON.stringify({ action }) }),
+  },
+
   policy: {
     list: () =>
       request<import('./types').PolicyRule[]>('/api/policy/rules'),

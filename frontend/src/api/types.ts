@@ -734,3 +734,23 @@ export interface Plugin {
   enabled: boolean
   installed_at: number
 }
+
+export interface LxcContainer {
+  vmid: number
+  name: string
+  status: string
+}
+
+export interface LxcListResponse {
+  available: boolean
+  containers: LxcContainer[]
+}
+
+export interface LxcConfig {
+  hostname: string
+  memory: number
+  cores: number
+  arch: string
+  rootfs: string
+  raw: Record<string, string>
+}

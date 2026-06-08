@@ -115,6 +115,26 @@ fn detect_lxc() -> Capability {
     }
 }
 
+fn detect_pct() -> Capability {
+    let detected = std::path::Path::new("/usr/sbin/pct").exists()
+        || std::path::Path::new("/usr/bin/pct").exists();
+    let version = if detected {
+        cmd_version("pct", &["version"])
+    } else {
+        None
+    };
+    Capability {
+        id: "pct",
+        name: "Proxmox Container Tools",
+        category: "Containers",
+        detected,
+        version,
+        description: "Proxmox pct CLI for managing local LXC containers on a PVE host.",
+        required_dep: "pve-container",
+        how_to_enable: "Install Proxmox VE — pct is part of the pve-container package.",
+    }
+}
+
 fn detect_systemd() -> Capability {
     let detected = which("systemctl")
         && std::process::Command::new("systemctl")
@@ -466,6 +486,7 @@ pub async fn get_capabilities(_state: State<AppState>) -> Json<serde_json::Value
         detect_docker(),
         detect_docker_compose(),
         detect_lxc(),
+        detect_pct(),
         detect_systemd(),
         detect_kvm(),
         detect_libvirt(),

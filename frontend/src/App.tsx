@@ -32,6 +32,7 @@ import CapabilitiesPage from '@/pages/Capabilities'
 import DiagnosticsPage from '@/pages/Diagnostics'
 import WireGuardPage from '@/pages/WireGuard'
 import VMsPage from '@/pages/VMs'
+import LxcPage from '@/pages/LxcPage'
 import ProxmoxPage from '@/pages/ProxmoxPage'
 import TagsPage from '@/pages/Tags'
 import ThemesPage from '@/pages/Themes'
@@ -144,6 +145,7 @@ export default function App() {
             <Route path="diagnostics"   element={<DiagnosticsPage />} />
             <Route path="wireguard"     element={<WireGuardPage />} />
             <Route path="vms"           element={<VMsPage />} />
+            <Route path="lxc"           element={<LxcPage />} />
             <Route path="proxmox"       element={<ProxmoxPage />} />
             <Route path="tags"          element={<TagsPage />} />
             <Route path="themes"        element={<ThemesPage />} />

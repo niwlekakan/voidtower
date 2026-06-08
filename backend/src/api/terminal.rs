@@ -224,7 +224,7 @@ pub async fn create_ssh_session(
         .filter(|p| !p.is_empty())
         .map(|p| encrypt_secret(&state.secrets_key, p))
         .transpose()
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     sqlx::query(
         "INSERT INTO ssh_sessions (id, label, host, port, username, key_path, password_enc) VALUES (?,?,?,?,?,?,?)"

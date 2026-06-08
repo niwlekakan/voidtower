@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import {
   type Theme, type GlassLevel, type BgPreset, type AnimConfig,
-  BUILTIN_THEMES, BG_PRESETS, DEFAULT_ANIM_CONFIG, randomizeAnimConfig, importTheme, applyTheme, hsl2hex,
+  BUILTIN_THEMES, BG_PRESETS, DEFAULT_ANIM_CONFIG, randomizeAnimConfig, importTheme, applyTheme, hsl2hex, hex2rgba,
 } from '@/theme/themes'
 import { type DeviceTier } from '../aios/store/aios'
 
@@ -113,28 +113,40 @@ export const useThemeStore = create<ThemeStore>()(
         const successH = (120 + Math.random() * 30) % 360
         const warningH = (38  + Math.random() * 20) % 360
         const dangerH  = (0   + Math.random() * 20) % 360
+        const successColor = hsl2hex(successH, 70, 50 + Math.random() * 15)
+        const warningColor = hsl2hex(warningH, 85, 52 + Math.random() * 12)
+        const dangerColor  = hsl2hex(dangerH,  75, 52 + Math.random() * 12)
         // Terminal
-        const termGreenH = (135 + Math.random() * 25) % 360
+        const termGreenH    = (135 + Math.random() * 25) % 360
+        const termGreenColor = hsl2hex(termGreenH, 80, 52 + Math.random() * 15)
+        // Disabled text: slightly lighter than muted
+        const txDisabled = isDark ? txL2 - 16 - Math.random() * 8 : txL2 + 20 + Math.random() * 8
         const tokens: Record<string, string> = {
-          '--bg-root':              hsl2hex(h, bgSat,     bgL0),
-          '--bg-panel':             hsl2hex(h, bgSat,     bgL1),
-          '--bg-card':              hsl2hex(h, bgSat,     bgL2),
-          '--bg-elevated':          hsl2hex(h, bgSat,     bgL3),
-          '--border-subtle':        hsl2hex(h, bgSat + 4, bdBase),
-          '--border-default':       hsl2hex(h, bgSat + 4, bdBase + (isDark ? 6 : -6)),
-          '--border-strong':        hsl2hex(h, bgSat + 4, bdBase + (isDark ? 14 : -14)),
-          '--text-primary':         hsl2hex(h, 12,        txL0),
-          '--text-secondary':       hsl2hex(h, 10,        txL1),
-          '--text-muted':           hsl2hex(h,  8,        txL2),
-          '--accent-primary':       accent,
-          '--accent-primary-hover': accentHover,
-          '--accent-secondary':     accentSecond,
-          '--accent-success':       hsl2hex(successH, 70, 50 + Math.random() * 15),
-          '--accent-warning':       hsl2hex(warningH, 85, 52 + Math.random() * 12),
-          '--accent-danger':        hsl2hex(dangerH,  75, 52 + Math.random() * 12),
-          '--terminal-green':       hsl2hex(termGreenH, 80, 52 + Math.random() * 15),
-          '--terminal-bg':          hsl2hex(h, bgSat, Math.max(bgL0 - 3, 3)),
-          '--terminal-cursor':      accent,
+          '--bg-root':                hsl2hex(h, bgSat,     bgL0),
+          '--bg-panel':               hsl2hex(h, bgSat,     bgL1),
+          '--bg-card':                hsl2hex(h, bgSat,     bgL2),
+          '--bg-elevated':            hsl2hex(h, bgSat,     bgL3),
+          '--border-subtle':          hsl2hex(h, bgSat + 4, bdBase),
+          '--border-default':         hsl2hex(h, bgSat + 4, bdBase + (isDark ? 6 : -6)),
+          '--border-strong':          hsl2hex(h, bgSat + 4, bdBase + (isDark ? 14 : -14)),
+          '--text-primary':           hsl2hex(h, 12,        txL0),
+          '--text-secondary':         hsl2hex(h, 10,        txL1),
+          '--text-muted':             hsl2hex(h,  8,        txL2),
+          '--text-disabled':          hsl2hex(h,  6,        Math.max(5, Math.min(95, txDisabled))),
+          '--accent-primary':         accent,
+          '--accent-primary-hover':   accentHover,
+          '--accent-secondary':       accentSecond,
+          '--accent-primary-subtle':  hex2rgba(accent,       0.12),
+          '--accent-secondary-subtle':hex2rgba(accentSecond, 0.12),
+          '--accent-success':         successColor,
+          '--accent-success-subtle':  hex2rgba(successColor, 0.10),
+          '--accent-warning':         warningColor,
+          '--accent-warning-subtle':  hex2rgba(warningColor, 0.10),
+          '--accent-danger':          dangerColor,
+          '--accent-danger-subtle':   hex2rgba(dangerColor,  0.10),
+          '--terminal-green':         termGreenColor,
+          '--terminal-bg':            hsl2hex(h, bgSat, Math.max(bgL0 - 3, 3)),
+          '--terminal-cursor':        accent,
         }
         const current = get().activeTheme
         const updated: Theme = { ...current, tokens }

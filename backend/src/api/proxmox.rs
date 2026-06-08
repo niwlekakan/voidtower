@@ -72,7 +72,7 @@ async fn get_host_and_token(state: &AppState, host_id: &str) -> Result<HostInfo>
     .ok_or_else(|| AppError::BadRequest(format!("No token configured for host {}", host_id)))?;
 
     let token = decrypt_secret(&state.secrets_key, &enc_row.0)
-        .map_err(AppError::Internal)?;
+        .map_err(|e| AppError::BadRequest(format!("Token decryption failed: {}", e)))?;
 
     Ok(HostInfo { url, node, token })
 }
@@ -316,13 +316,13 @@ pub async fn delete_host(
 /// GET a Proxmox API endpoint, unwrap `data`, propagate HTTP errors as 502.
 async fn pve_get(client: &reqwest::Client, url: &str, auth: &str) -> Result<serde_json::Value> {
     let res = client.get(url).header("Authorization", auth)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!("Proxmox unreachable: {}", e)))?;
+        .send().await.map_err(|e| AppError::BadRequest(format!("Proxmox unreachable: {}", e)))?;
     let status = res.status();
     let body: serde_json::Value = res.json().await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Proxmox response parse error: {}", e)))?;
+        .map_err(|e| AppError::BadRequest(format!("Proxmox response parse error: {}", e)))?;
     if !status.is_success() {
         let msg = body["errors"].to_string();
-        return Err(AppError::Internal(anyhow::anyhow!("Proxmox {} — {}", status, msg)));
+        return Err(AppError::BadRequest(format!("Proxmox {} — {}", status, msg)));
     }
     Ok(body["data"].clone())
 }

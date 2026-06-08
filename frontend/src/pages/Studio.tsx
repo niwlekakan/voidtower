@@ -70,15 +70,15 @@ function fmtDate(ts: number) {
 // ── shared ui ─────────────────────────────────────────────────────────────────
 
 const card: React.CSSProperties = {
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border)',
+  background: 'var(--bg-panel)',
+  border: '1px solid var(--border-default)',
   borderRadius: 10,
   padding: 16,
 }
 
 const input: React.CSSProperties = {
-  background: 'var(--bg-base)',
-  border: '1px solid var(--border)',
+  background: 'var(--bg-card)',
+  border: '1px solid var(--border-default)',
   borderRadius: 6,
   color: 'var(--text-primary)',
   padding: '6px 10px',
@@ -93,15 +93,15 @@ const btn = (variant: 'primary' | 'ghost' | 'danger' = 'primary'): React.CSSProp
   display: 'inline-flex', alignItems: 'center', gap: 6,
   padding: '7px 14px', borderRadius: 6, fontSize: 13, fontWeight: 500,
   cursor: 'pointer', border: 'none',
-  background: variant === 'primary' ? 'var(--accent)' : variant === 'danger' ? '#ef444422' : 'var(--bg-elevated)',
-  color: variant === 'primary' ? '#fff' : variant === 'danger' ? '#ef4444' : 'var(--text-primary)',
+  background: variant === 'primary' ? 'var(--accent-primary)' : variant === 'danger' ? 'var(--accent-danger-subtle)' : 'var(--bg-elevated)',
+  color: variant === 'primary' ? '#fff' : variant === 'danger' ? 'var(--accent-danger)' : 'var(--text-primary)',
 })
 
 function StatusDot({ online }: { online: boolean }) {
   return (
     <span style={{
       width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
-      background: online ? '#22c55e' : 'var(--text-disabled)',
+      background: online ? 'var(--accent-success)' : 'var(--text-disabled)',
       display: 'inline-block',
     }} />
   )
@@ -143,8 +143,8 @@ function OverviewTab({ studioStatus, onRefresh }: { studioStatus: StudioStatus |
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>
                   {svc.status === 'online'
-                    ? <span style={{ color: '#22c55e' }}>Online{svc.version ? ` · v${svc.version}` : ''}</span>
-                    : <span>Offline · <a href="/apps" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Deploy via App Vault <ChevronRight size={10} style={{ verticalAlign: 'middle' }} /></a></span>
+                    ? <span style={{ color: 'var(--accent-success)' }}>Online{svc.version ? ` · v${svc.version}` : ''}</span>
+                    : <span>Offline · <a href="/apps" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>Deploy via App Vault <ChevronRight size={10} style={{ verticalAlign: 'middle' }} /></a></span>
                   }
                 </div>
               </div>
@@ -277,17 +277,17 @@ function ImageTab({ services }: { services: StudioService[] }) {
             </div>
             <div>
               <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Steps: {steps}</label>
-              <input type="range" min={1} max={50} value={steps} onChange={e => setSteps(+e.target.value)} style={{ width: '100%', accentColor: 'var(--accent)' }} />
+              <input type="range" min={1} max={50} value={steps} onChange={e => setSteps(+e.target.value)} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
             </div>
             <div>
               <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>CFG scale: {cfg}</label>
-              <input type="range" min={1} max={20} step={0.5} value={cfg} onChange={e => setCfg(+e.target.value)} style={{ width: '100%', accentColor: 'var(--accent)' }} />
+              <input type="range" min={1} max={20} step={0.5} value={cfg} onChange={e => setCfg(+e.target.value)} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
             </div>
             <div>
               <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Seed</label>
               <input value={seed} onChange={e => setSeed(e.target.value)} placeholder="-1 (random)" style={input} />
             </div>
-            {err && <div style={{ fontSize: 12, color: '#ef4444', padding: '6px 8px', background: '#ef444411', borderRadius: 4 }}>{err}</div>}
+            {err && <div style={{ fontSize: 12, color: 'var(--accent-danger)', padding: '6px 8px', background: 'var(--accent-danger-subtle)', borderRadius: 4 }}>{err}</div>}
             <button onClick={generate} disabled={loading || !prompt.trim()} style={{ ...btn(), opacity: loading || !prompt.trim() ? 0.6 : 1 }}>
               {loading ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
               {loading ? 'Generating…' : 'Generate (Ctrl+Enter)'}
@@ -301,7 +301,7 @@ function ImageTab({ services }: { services: StudioService[] }) {
         <div style={{ ...card, minHeight: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {loading ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, color: 'var(--text-muted)' }}>
-              <Loader2 size={28} className="animate-spin" style={{ color: 'var(--accent)' }} />
+              <Loader2 size={28} className="animate-spin" style={{ color: 'var(--accent-primary)' }} />
               <span style={{ fontSize: 13 }}>Generating image…</span>
             </div>
           ) : result ? (
@@ -309,7 +309,7 @@ function ImageTab({ services }: { services: StudioService[] }) {
               <img
                 src={result.url}
                 alt="Generated"
-                style={{ maxWidth: '100%', maxHeight: 480, borderRadius: 6, border: '1px solid var(--border)' }}
+                style={{ maxWidth: '100%', maxHeight: 480, borderRadius: 6, border: '1px solid var(--border-default)' }}
               />
               <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 10 }}>
                 <a href={result.url} download={result.filename} style={{ ...btn('ghost'), textDecoration: 'none' }}>
@@ -337,7 +337,7 @@ function ImageTab({ services }: { services: StudioService[] }) {
                   onClick={() => setResult(item)}
                   style={{
                     width: 72, height: 72, objectFit: 'cover', borderRadius: 4,
-                    border: `2px solid ${result?.filename === item.filename ? 'var(--accent)' : 'var(--border)'}`,
+                    border: `2px solid ${result?.filename === item.filename ? 'var(--accent-primary)' : 'var(--border-default)'}`,
                     cursor: 'pointer',
                   }}
                 />
@@ -428,10 +428,10 @@ function TtsTab({ services }: { services: StudioService[] }) {
             </div>
             <div>
               <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Speed: {speed.toFixed(1)}×</label>
-              <input type="range" min={0.5} max={2.0} step={0.1} value={speed} onChange={e => setSpeed(+e.target.value)} style={{ width: '100%', marginTop: 10, accentColor: 'var(--accent)' }} />
+              <input type="range" min={0.5} max={2.0} step={0.1} value={speed} onChange={e => setSpeed(+e.target.value)} style={{ width: '100%', marginTop: 10, accentColor: 'var(--accent-primary)' }} />
             </div>
           </div>
-          {err && <div style={{ fontSize: 12, color: '#ef4444', padding: '6px 8px', background: '#ef444411', borderRadius: 4 }}>{err}</div>}
+          {err && <div style={{ fontSize: 12, color: 'var(--accent-danger)', padding: '6px 8px', background: 'var(--accent-danger-subtle)', borderRadius: 4 }}>{err}</div>}
           <button onClick={generate} disabled={loading || !text.trim()} style={{ ...btn(), opacity: loading || !text.trim() ? 0.6 : 1, alignSelf: 'flex-start' }}>
             {loading ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
             {loading ? 'Generating…' : 'Generate speech'}
@@ -551,9 +551,9 @@ function SttTab({ services }: { services: StudioService[] }) {
             <div
               onClick={() => fileRef.current?.click()}
               style={{
-                flex: 1, border: '2px dashed var(--border)', borderRadius: 8,
+                flex: 1, border: '2px dashed var(--border-default)', borderRadius: 8,
                 padding: '28px 20px', textAlign: 'center', cursor: 'pointer',
-                background: 'var(--bg-base)',
+                background: 'var(--bg-card)',
               }}
             >
               <Search size={22} style={{ color: 'var(--text-disabled)', marginBottom: 8 }} />
@@ -582,10 +582,10 @@ function SttTab({ services }: { services: StudioService[] }) {
 
           {loading && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 13 }}>
-              <Loader2 size={14} className="animate-spin" style={{ color: 'var(--accent)' }} /> Transcribing…
+              <Loader2 size={14} className="animate-spin" style={{ color: 'var(--accent-primary)' }} /> Transcribing…
             </div>
           )}
-          {err && <div style={{ fontSize: 12, color: '#ef4444', padding: '6px 8px', background: '#ef444411', borderRadius: 4 }}>{err}</div>}
+          {err && <div style={{ fontSize: 12, color: 'var(--accent-danger)', padding: '6px 8px', background: 'var(--accent-danger-subtle)', borderRadius: 4 }}>{err}</div>}
         </div>
       </div>
 
@@ -655,7 +655,7 @@ function GalleryTab() {
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
-          <Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent)' }} />
+          <Loader2 size={20} className="animate-spin" style={{ color: 'var(--accent-primary)' }} />
         </div>
       ) : visible.length === 0 ? (
         <div style={{ ...card, textAlign: 'center', padding: 40, color: 'var(--text-muted)', fontSize: 13 }}>
@@ -755,7 +755,7 @@ function McpToolsTab() {
     <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16, minHeight: 400 }}>
       {/* Tool list */}
       <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
-        <div style={{ padding: '10px 12px', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ padding: '10px 12px', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-default)' }}>
           VoidTower MCP Tools
         </div>
         {loading
@@ -766,8 +766,8 @@ function McpToolsTab() {
               onClick={() => selectTool(t)}
               style={{
                 padding: '9px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border-subtle)',
-                background: selected?.name === t.name ? 'var(--accent)1a' : 'transparent',
-                borderLeft: `3px solid ${selected?.name === t.name ? 'var(--accent)' : 'transparent'}`,
+                background: selected?.name === t.name ? 'var(--accent-primary)1a' : 'transparent',
+                borderLeft: `3px solid ${selected?.name === t.name ? 'var(--accent-primary)' : 'transparent'}`,
               }}
             >
               <div style={{ fontSize: 12, fontWeight: 500, fontFamily: 'monospace' }}>{t.name}</div>
@@ -795,7 +795,7 @@ function McpToolsTab() {
                 <div key={name} style={{ marginBottom: 10 }}>
                   <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
                     <code style={{ fontFamily: 'monospace' }}>{name}</code>
-                    {required.has(name) && <span style={{ color: '#ef4444', marginLeft: 4 }}>*</span>}
+                    {required.has(name) && <span style={{ color: 'var(--accent-danger)', marginLeft: 4 }}>*</span>}
                     {schema.description && <span style={{ marginLeft: 6, fontStyle: 'italic' }}>{schema.description}</span>}
                     <span style={{ marginLeft: 6, opacity: 0.5 }}>({schema.type})</span>
                   </label>
@@ -815,8 +815,8 @@ function McpToolsTab() {
           </div>
 
           {result && (
-            <div style={{ ...card, borderLeft: `3px solid ${result.ok ? 'var(--accent)' : '#ef4444'}` }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: result.ok ? 'var(--accent)' : '#ef4444', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            <div style={{ ...card, borderLeft: `3px solid ${result.ok ? 'var(--accent-primary)' : 'var(--accent-danger)'}` }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: result.ok ? 'var(--accent-primary)' : 'var(--accent-danger)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 {result.ok ? 'Result' : 'Error'}
               </div>
               <pre style={{ margin: 0, fontSize: 11, fontFamily: 'monospace', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 400, overflow: 'auto' }}>
@@ -869,7 +869,7 @@ export default function StudioPage() {
     <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-        <Wand2 size={20} style={{ color: 'var(--accent)' }} />
+        <Wand2 size={20} style={{ color: 'var(--accent-primary)' }} />
         <div>
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>AI Creative Studio</h1>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
@@ -890,7 +890,7 @@ export default function StudioPage() {
       </div>
 
       {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid var(--border-default)', paddingBottom: 0 }}>
         {TABS.map(t => (
           <button
             key={t.id}
@@ -899,8 +899,8 @@ export default function StudioPage() {
               display: 'inline-flex', alignItems: 'center', gap: 6,
               padding: '8px 14px', fontSize: 13, fontWeight: 500,
               background: 'none', border: 'none', cursor: 'pointer',
-              color: tab === t.id ? 'var(--accent)' : 'var(--text-muted)',
-              borderBottom: `2px solid ${tab === t.id ? 'var(--accent)' : 'transparent'}`,
+              color: tab === t.id ? 'var(--accent-primary)' : 'var(--text-muted)',
+              borderBottom: `2px solid ${tab === t.id ? 'var(--accent-primary)' : 'transparent'}`,
               marginBottom: -1,
             }}
           >

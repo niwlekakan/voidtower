@@ -833,6 +833,16 @@ Use this when you have lost access to the Odysseus AI workspace.
 
 #### Docker
 
+First, check whether the original configured password is still in the container environment:
+
+```bash
+docker exec odysseus env | grep ODYSSEUS_ADMIN_PASSWORD
+```
+
+If that returns a value and the password was never changed inside the Odysseus UI, use it — no restart needed.
+
+If the password was changed in-app or the env var isn't set, reset it:
+
 ```bash
 # 1. Update the password in .env
 nano .env

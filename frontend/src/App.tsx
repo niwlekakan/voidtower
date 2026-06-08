@@ -40,6 +40,8 @@ import UpdatesPage from '@/pages/Updates'
 import IntegrationsPage from '@/pages/Integrations'
 import PolicyPage from '@/pages/Policy'
 import ModsPage from '@/pages/Mods'
+import PluginsPage from '@/pages/Plugins'
+import PluginPage from '@/pages/PluginPage'
 import NotFoundPage from '@/pages/NotFound'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -125,6 +127,8 @@ export default function App() {
             <Route path="models"     element={<ModelsPage />} />
             <Route path="updates"        element={<UpdatesPage />} />
             <Route path="mods"           element={<ModsPage />} />
+            <Route path="plugins"        element={<PluginsPage />} />
+            <Route path="plugins/:id"    element={<PluginPage />} />
             <Route path="integrations"   element={<IntegrationsPage />} />
             <Route path="files"      element={<FilesPage />} />
             <Route path="proxies"    element={<ProxiesPage />} />

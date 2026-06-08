@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette,
+  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
@@ -88,6 +88,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/integrations', icon: PlugZap,       label: 'Integrations' },
       { to: '/updates',      icon: ArrowUpCircle, label: 'Updates'      },
       { to: '/mods',         icon: Puzzle,        label: 'Mods'         },
+      { to: '/plugins',      icon: Blocks,        label: 'Plugins'      },
       { to: '/themes',       icon: Palette,       label: 'Themes'       },
       { to: '/settings',     icon: Settings,      label: 'Settings'     },
     ],
@@ -103,6 +104,7 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const [available, setAvailable] = useState<Set<string> | null>(null)
   const [instanceName, setInstanceName] = useState('VoidTower')
+  const [activePlugins, setActivePlugins] = useState<{ id: string; name: string }[]>([])
   const { user, logout } = useAuthStore()
   const navigate = useNavigate()
   const navItems = useNavConfigStore((s) => s.items)
@@ -111,6 +113,15 @@ export default function Sidebar() {
   const activeGroups = resolvedNavGroups(storedGroups)
   // Build a lookup: id -> { label, visible }
   const navMap = Object.fromEntries(resolved.map((n) => [n.id, n]))
+
+  useEffect(() => {
+    fetch('/api/plugins', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : [])
+      .then((data: { id: string; name: string; enabled: boolean }[]) =>
+        setActivePlugins(data.filter(p => p.enabled).map(p => ({ id: p.id, name: p.name })))
+      )
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     fetch('/api/capabilities', { credentials: 'include' })
@@ -224,6 +235,39 @@ export default function Sidebar() {
             </div>
           )
         })}
+          {/* Dynamic plugin pages */}
+          {activePlugins.length > 0 && (
+            <div className="mt-3">
+              {!collapsed && (
+                <div className="px-2 mb-1 text-xs font-medium uppercase tracking-widest select-none" style={{ color: 'var(--text-disabled)', letterSpacing: '0.08em' }}>
+                  Plugins
+                </div>
+              )}
+              {collapsed && (
+                <div className="mx-2 mb-2 mt-1" style={{ height: 1, background: 'var(--border-subtle)' }} />
+              )}
+              <div className="space-y-0.5">
+                {activePlugins.map(p => (
+                  <NavLink
+                    key={p.id}
+                    to={`/plugins/${p.id}`}
+                    onClick={() => document.body.classList.remove('mobile-nav-open')}
+                    className={({ isActive }) =>
+                      clsx('flex items-center gap-3 px-2 py-2 rounded text-sm transition-colors', isActive ? 'font-medium' : 'hover:opacity-80')
+                    }
+                    style={({ isActive }) => ({
+                      background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
+                      color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                    })}
+                    title={collapsed ? p.name : undefined}
+                  >
+                    <Blocks size={16} style={{ flexShrink: 0 }} />
+                    {!collapsed && <span>{p.name}</span>}
+                  </NavLink>
+                ))}
+              </div>
+            </div>
+          )}
       </nav>
 
       {/* Footer */}

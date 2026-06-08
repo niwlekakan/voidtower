@@ -720,3 +720,16 @@ export interface PolicyCheckResult {
   verdict: 'allow' | 'deny'
   reason: string | null
 }
+
+export interface Plugin {
+  id: string
+  name: string
+  description: string
+  version: string
+  author: string | null
+  entry: string
+  icon: string | null
+  nav_group: string | null
+  enabled: boolean
+  installed_at: number
+}

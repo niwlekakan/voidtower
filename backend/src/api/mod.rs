@@ -71,6 +71,7 @@ pub mod mcp;
 pub mod proxmox;
 pub mod disaster;
 pub mod policy;
+pub mod plugins;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -82,6 +83,7 @@ pub fn router(state: AppState) -> Router {
     // the upstream response can use frame-ancestors * instead of DENY.
     let embed_router = Router::new()
         .route("/api/apps/embed/:project_name/*path", get(apps::embed_proxy))
+        .route("/plugin-assets/:id/*path", get(plugins::serve_asset))
         .layer(cors.clone())
         .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
         .with_state(state.clone());
@@ -327,6 +329,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/policy/rules",      get(policy::list_rules).post(policy::create_rule))
         .route("/api/policy/rules/:id",  patch(policy::update_rule).delete(policy::delete_rule))
         .route("/api/policy/check",      post(policy::check_policy))
+        // Plugins
+        .route("/api/plugins",         get(plugins::list).post(plugins::install))
+        .route("/api/plugins/:id",     patch(plugins::update).delete(plugins::uninstall))
         // Notification webhooks
         .route("/api/webhooks",           get(webhooks::list).post(webhooks::create))
         .route("/api/webhooks/:id",       patch(webhooks::update).delete(webhooks::delete))

@@ -463,6 +463,16 @@ export const api = {
       request<{ jobs: import('./types').PveBackupJob[]; archives: import('./types').PveBackupArchive[] }>(`/api/proxmox/${hostId}/backup-jobs`),
   },
 
+  plugins: {
+    list:      () => request<import('./types').Plugin[]>('/api/plugins'),
+    install:   (url: string) =>
+      request<import('./types').Plugin>('/api/plugins', { method: 'POST', body: JSON.stringify({ url }) }),
+    update:    (id: string, patch: { enabled?: boolean }) =>
+      request<{ ok: boolean }>(`/api/plugins/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    uninstall: (id: string) =>
+      request<{ ok: boolean }>(`/api/plugins/${id}`, { method: 'DELETE' }),
+  },
+
   policy: {
     list: () =>
       request<import('./types').PolicyRule[]>('/api/policy/rules'),

@@ -425,3 +425,27 @@ fn tool_search_code(state: &AppState, args: Value) -> std::result::Result<String
 // Silence unused import warning
 #[allow(dead_code)]
 fn _use_app_error(_: AppError) {}
+
+// ---------------------------------------------------------------------------
+// Public helpers for the Studio MCP panel (session-auth invocation)
+// ---------------------------------------------------------------------------
+
+pub fn tools_json() -> Value {
+    handle_tools_list(None).result.unwrap_or(serde_json::json!({"tools":[]}))
+}
+
+pub async fn invoke_tool(state: &AppState, name: &str, args: Value) -> std::result::Result<String, String> {
+    match name {
+        "list_nodes"         => tool_list_nodes(state).await,
+        "get_node_metrics"   => tool_get_node_metrics(state).await,
+        "list_containers"    => tool_list_containers().await,
+        "list_services"      => tool_list_services().await,
+        "list_alerts"        => tool_list_alerts(state).await,
+        "get_container_logs" => tool_get_container_logs(args).await,
+        "list_routes"        => tool_list_routes(state),
+        "read_file"          => tool_read_file(state, args),
+        "search_code"        => tool_search_code(state, args),
+        "get_template"       => tool_get_template(args),
+        other                => Err(format!("Unknown tool: {other}")),
+    }
+}

@@ -541,6 +541,33 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
+// ── MCP tool panel ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct McpInvokeRequest {
+    pub name:      String,
+    pub arguments: serde_json::Value,
+}
+
+pub async fn mcp_tools(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+    require_user(&state, &jar).await?;
+    Ok(Json(super::mcp::tools_json()))
+}
+
+pub async fn mcp_invoke(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<McpInvokeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    require_user(&state, &jar).await?;
+    match super::mcp::invoke_tool(&state, &req.name, req.arguments).await {
+        Ok(text)  => Ok(Json(serde_json::json!({ "ok": true, "result": text }))),
+        Err(e)    => Ok(Json(serde_json::json!({ "ok": false, "error": e }))),
+    }
+}
+
+// ── file serving ──────────────────────────────────────────────────────────────
+
 async fn serve_file(path: PathBuf, content_type: &'static str) -> Result<Response> {
     let bytes = fs::read(&path).await.map_err(|_| AppError::NotFound)?;
     let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();

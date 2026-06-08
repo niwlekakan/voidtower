@@ -1,0 +1,41 @@
+id: radarr
+name: Radarr
+description: Movie collection manager — monitors for new releases and automatically downloads, sorts, and renames films
+category: downloads
+version_hint: "latest"
+compose:
+  services:
+    radarr:
+      image: lscr.io/linuxserver/radarr:latest
+      restart: unless-stopped
+      ports:
+        - "7878:7878"
+      environment:
+        - PUID=1000
+        - PGID=1000
+        - TZ=Etc/UTC
+        - VIRTUAL_HOST=radarr.local
+        - VIRTUAL_PORT=7878
+      volumes:
+        - radarr_config:/config
+        - /media/movies:/movies
+        - /downloads:/downloads
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - radarr
+  volumes:
+    radarr_config:
+
+  networks:
+    vt-proxy:
+      external: true
+
+web_port: 7878
+ai_integration:
+  level: aware
+  description: "Odysseus can query movie library, wanted list, and download queue"
+links:
+  home: https://radarr.video
+  docs: https://wiki.servarr.com/radarr

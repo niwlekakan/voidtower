@@ -1,0 +1,33 @@
+id: recyclarr
+name: Recyclarr
+description: Syncs TRaSH Guides quality profiles, custom formats, and release profiles to Sonarr and Radarr automatically
+category: downloads
+version_hint: "latest"
+compose:
+  services:
+    recyclarr:
+      image: ghcr.io/recyclarr/recyclarr:latest
+      restart: unless-stopped
+      user: "1000:1000"
+      environment:
+        - TZ=Etc/UTC
+      volumes:
+        - recyclarr_config:/config
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - recyclarr
+  volumes:
+    recyclarr_config:
+
+  networks:
+    vt-proxy:
+      external: true
+
+# No web UI — CLI/config-file only. Configure /config/recyclarr.yml with
+# your Sonarr/Radarr URLs and API keys, then run:
+#   docker exec recyclarr recyclarr sync
+links:
+  home: https://recyclarr.dev
+  docs: https://recyclarr.dev/wiki

@@ -1,0 +1,38 @@
+id: jellyseerr
+name: Jellyseerr
+description: Media request and discovery tool for Jellyfin — lets users browse and request movies and TV shows
+category: media
+version_hint: "latest"
+compose:
+  services:
+    jellyseerr:
+      image: fallenbagel/jellyseerr:latest
+      restart: unless-stopped
+      ports:
+        - "5055:5055"
+      environment:
+        - LOG_LEVEL=debug
+        - TZ=Etc/UTC
+        - VIRTUAL_HOST=requests.local
+        - VIRTUAL_PORT=5055
+      volumes:
+        - jellyseerr_config:/app/config
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - jellyseerr
+  volumes:
+    jellyseerr_config:
+
+  networks:
+    vt-proxy:
+      external: true
+
+web_port: 5055
+ai_integration:
+  level: aware
+  description: "Odysseus can check pending requests and approval queue"
+links:
+  home: https://github.com/Fallenbagel/jellyseerr
+  docs: https://docs.jellyseerr.dev

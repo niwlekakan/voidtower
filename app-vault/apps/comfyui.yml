@@ -6,28 +6,33 @@ version_hint: "latest"
 compose:
   services:
     comfyui:
-      image: yanwk/comfyui-boot:latest
+      image: ghcr.io/radiatingreverberations/comfyui-extensions:latest
       restart: unless-stopped
       ports:
         - "8188:8188"
       volumes:
-        - comfyui_data:/root
-        - ${HOME}/.local/share/voidtower/models:/vt-models:ro
-      runtime: nvidia
+        - comfyui_models:/comfyui/models
+        - comfyui_user:/comfyui/user
+        - comfyui_output:/comfyui/output
       environment:
-        - NVIDIA_VISIBLE_DEVICES=all
-        - NVIDIA_DRIVER_CAPABILITIES=compute,utility
         - VIRTUAL_HOST=comfyui.local
         - VIRTUAL_PORT=8188
-      devices:
-        - /dev/dri:/dev/dri
+      deploy:
+        resources:
+          reservations:
+            devices:
+              - driver: nvidia
+                count: all
+                capabilities: [gpu]
       networks:
         default: {}
         vt-proxy:
           aliases:
             - comfyui
   volumes:
-    comfyui_data:
+    comfyui_models:
+    comfyui_user:
+    comfyui_output:
 
   networks:
     vt-proxy:

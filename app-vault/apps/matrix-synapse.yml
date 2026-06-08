@@ -9,6 +9,14 @@ compose:
     synapse:
       image: matrixdotorg/synapse:latest
       restart: unless-stopped
+      entrypoint:
+        - /bin/sh
+        - -c
+        - |
+          if [ ! -f /data/homeserver.yaml ]; then
+            /start.py generate
+          fi
+          exec /start.py
       ports:
         - "8448:8448"
         - "8008:8008"

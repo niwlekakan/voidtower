@@ -250,14 +250,21 @@ async fn ensure_vt_proxy_network() {
         .await;
 }
 
-/// Remove `deploy.resources.reservations.devices` (nvidia GPU requirement) from
-/// all services. Called when GPU is not detected so deployment doesn't fail with
-/// "unknown runtime" if NVIDIA Container Toolkit isn't configured.
+/// Remove GPU requirements from all services when NVIDIA hardware is not detected.
+/// Strips both `runtime: nvidia` (requires NVIDIA Container Toolkit) and
+/// `deploy.resources.reservations.devices` so deployment doesn't fail with
+/// "unknown runtime specified nvidia" on machines without NVIDIA drivers.
 fn strip_gpu_requirements(compose: &mut Value) {
     let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) else {
         return;
     };
     for svc in services.values_mut() {
+        // Remove `runtime: nvidia` — requires NVIDIA Container Toolkit
+        if let Some(obj) = svc.as_object_mut() {
+            if obj.get("runtime").and_then(|v| v.as_str()) == Some("nvidia") {
+                obj.remove("runtime");
+            }
+        }
         let Some(deploy) = svc.get_mut("deploy") else { continue };
         let Some(resources) = deploy.get_mut("resources") else { continue };
         let Some(reservations) = resources.get_mut("reservations") else { continue };

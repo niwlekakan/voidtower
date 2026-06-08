@@ -30,6 +30,7 @@ const TOKEN_GROUPS: { label: string; tokens: { var: string; label: string }[] }[
       { var: '--text-primary', label: 'Primary' },
       { var: '--text-secondary', label: 'Secondary' },
       { var: '--text-muted', label: 'Muted' },
+      { var: '--text-disabled', label: 'Disabled' },
     ],
   },
   {

@@ -34,6 +34,15 @@ export const DEFAULT_ANIM_CONFIG: AnimConfig = {
   glowIntensity: 12,
 }
 
+export function hex2rgba(hex: string, alpha: number): string {
+  const clean = hex.replace(/\s/g, '')
+  const m = clean.match(/^#([0-9a-f]{6})$/i) ?? clean.match(/^#([0-9a-f]{3})$/i)
+  if (!m) return `rgba(0,0,0,${alpha})`
+  const full = m[1].length === 3 ? m[1].split('').map(c => c + c).join('') : m[1]
+  const n = parseInt(full, 16)
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`
+}
+
 export function hsl2hex(h: number, s: number, l: number): string {
   s /= 100; l /= 100
   const k = (n: number) => (n + h / 30) % 12
@@ -129,9 +138,12 @@ export const BUILTIN_THEMES: Theme[] = [
 const CLEARABLE_VARS = [
   '--bg-root','--bg-panel','--bg-card','--bg-elevated',
   '--border-subtle','--border-default','--border-strong',
-  '--text-primary','--text-secondary','--text-muted',
+  '--text-primary','--text-secondary','--text-muted','--text-disabled',
   '--accent-primary','--accent-primary-hover','--accent-secondary',
-  '--accent-success','--accent-warning','--accent-danger',
+  '--accent-primary-subtle','--accent-secondary-subtle',
+  '--accent-success','--accent-success-subtle',
+  '--accent-warning','--accent-warning-subtle',
+  '--accent-danger','--accent-danger-subtle',
   '--terminal-green','--terminal-bg','--terminal-cursor',
 ]
 

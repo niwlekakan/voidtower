@@ -28,6 +28,8 @@ pub struct ImagesResponse {
 #[derive(Deserialize)]
 pub struct ActionRequest {
     pub action: ContainerAction,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +87,29 @@ pub async fn action(
 
     if !containers::is_docker_available() {
         return Err(AppError::FeatureUnavailable("Docker is not available".into()));
+    }
+
+    // Dry-run: return a change plan without executing
+    if req.dry_run && matches!(req.action, ContainerAction::Remove) {
+        // Fetch container info for a meaningful plan
+        let name = containers::list_containers().await
+            .ok()
+            .and_then(|cs| cs.into_iter().find(|c| c.id.starts_with(&id) || c.id == id))
+            .map(|c| c.name)
+            .unwrap_or_else(|| id.clone());
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "plan": {
+                "title": "Remove Container",
+                "risk": "high",
+                "changes": [
+                    { "label": "Action",    "value": "Permanently remove container" },
+                    { "label": "Container", "value": name },
+                    { "label": "Reversible","value": "No — data in unnamed volumes will be lost" }
+                ],
+                "preview": null
+            }
+        })));
     }
 
     let action_str = format!("{:?}", req.action).to_lowercase();

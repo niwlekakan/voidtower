@@ -60,6 +60,9 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     // SSH session encrypted password storage
     let _ = sqlx::query("ALTER TABLE ssh_sessions ADD COLUMN password_enc TEXT").execute(&pool).await;
 
+    // External / adopted app origin tracking
+    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN origin TEXT NOT NULL DEFAULT 'voidtower'").execute(&pool).await;
+
     // Proxmox multi-host management (added post-initial schema)
     let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS proxmox_hosts (
         id          TEXT PRIMARY KEY,
@@ -291,6 +294,14 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             port       INTEGER NOT NULL DEFAULT 22,
             username   TEXT NOT NULL,
             key_path   TEXT,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            last_used  INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS local_sessions (
+            id         TEXT PRIMARY KEY,
+            label      TEXT NOT NULL,
+            category   TEXT,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
             last_used  INTEGER
         );

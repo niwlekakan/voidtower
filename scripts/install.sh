@@ -38,7 +38,7 @@ VT_CONFIG_DIR="${VT_CONFIG_DIR:-/etc/voidtower}"
 VT_USER="${VT_USER:-voidtower}"
 VT_GROUP="${VT_GROUP:-voidtower}"
 VT_PORT="${VT_PORT:-8743}"
-VT_BIND="${VT_BIND:-127.0.0.1}"
+VT_BIND="${VT_BIND:-0.0.0.0}"
 SYSTEMD_DIR="/etc/systemd/system"
 BINARY_NAME="voidtower"
 REPO="niwlekakan/voidtower"
@@ -78,6 +78,7 @@ AI_PROVIDER="ollama"
 INSTALL_MODE="install"  # install | uninstall | reset | repair | update
 AI_MODEL=""
 ODYSSEUS_PORT="${ODYSSEUS_PORT:-7000}"
+ODYSSEUS_BIND="${ODYSSEUS_BIND:-0.0.0.0}"
 ODYSSEUS_INSTALL_DIR="${ODYSSEUS_INSTALL_DIR:-/opt/odysseus}"
 ODYSSEUS_DATA_DIR="${ODYSSEUS_DATA_DIR:-/var/lib/odysseus}"
 ODYSSEUS_CONFIG_DIR="${ODYSSEUS_CONFIG_DIR:-/etc/odysseus}"
@@ -153,6 +154,7 @@ while [[ $# -gt 0 ]]; do
     --pull-model)       PULL_MODEL=true ;;
     --skip-model-pull)  SKIP_MODEL_PULL=true ;;
     --odysseus-port)    ODYSSEUS_PORT="$2"; shift ;;
+    --odysseus-bind)    ODYSSEUS_BIND="$2"; shift ;;
     --no-ai)            WITH_AI=false; SKIP_AI=true ;;
     --musl)             MUSL_BUILD=true ;;
     --no-mcp)           NO_MCP=true ;;
@@ -921,7 +923,7 @@ install_odysseus() {
     odysseus_admin_pass=$(openssl rand -hex 16 2>/dev/null || cat /proc/sys/kernel/random/uuid | tr -d '-')
     cat > "$env_file" <<EOF
 # Odysseus configuration — managed by VoidTower installer
-APP_BIND=127.0.0.1
+APP_BIND=${ODYSSEUS_BIND}
 APP_PORT=${ODYSSEUS_PORT}
 AUTH_ENABLED=true
 SECURE_COOKIES=false
@@ -993,7 +995,7 @@ User=${ODYSSEUS_USER}
 Group=${ODYSSEUS_USER}
 WorkingDirectory=${ODYSSEUS_INSTALL_DIR}
 EnvironmentFile=-${ODYSSEUS_INSTALL_DIR}/.env
-ExecStart=${ODYSSEUS_INSTALL_DIR}/venv/bin/uvicorn app:app --host 127.0.0.1 --port ${ODYSSEUS_PORT}
+ExecStart=${ODYSSEUS_INSTALL_DIR}/venv/bin/uvicorn app:app --host ${ODYSSEUS_BIND} --port ${ODYSSEUS_PORT}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -1011,6 +1013,12 @@ EOF
     systemctl enable voidwatch-configure.path || true
     systemctl start voidwatch-configure.path 2>/dev/null || true
     success "odysseus.service installed and enabled"
+
+    # Pre-cache the Playwright MCP package so Odysseus doesn't warn on first start
+    if command -v npx &>/dev/null; then
+      info "Pre-caching Playwright MCP (optional, suppresses startup warning)…"
+      npx -y @playwright/mcp@latest --version &>/dev/null || true
+    fi
   else
     warn "systemd not available — start Odysseus manually:"
     warn "  cd ${ODYSSEUS_INSTALL_DIR} && venv/bin/uvicorn app:app --port ${ODYSSEUS_PORT}"

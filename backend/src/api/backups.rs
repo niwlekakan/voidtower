@@ -134,6 +134,28 @@ pub async fn restore_test(State(state): State<AppState>, jar: CookieJar, Path(id
     Ok(Json(serde_json::json!({ "status": status, "message": message })))
 }
 
+pub async fn delete_plan(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+    if user.role == "viewer" || user.role == "operator" { return Err(AppError::Forbidden); }
+    let row = sqlx::query_as::<_, (String, String)>("SELECT name, source_path FROM backup_configs WHERE id = ?")
+        .bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(serde_json::json!({
+        "dry_run": true,
+        "plan": {
+            "title": "Delete Backup Config",
+            "risk": "high",
+            "changes": [
+                { "label": "Config",      "value": row.0 },
+                { "label": "Source path", "value": row.1 },
+                { "label": "Effect",      "value": "Removes schedule and config — existing backup data on disk is NOT deleted" },
+                { "label": "Reversible",  "value": "No — config cannot be recovered" }
+            ],
+            "preview": null
+        }
+    })))
+}
+
 pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     if user.role == "viewer" || user.role == "operator" { return Err(AppError::Forbidden); }

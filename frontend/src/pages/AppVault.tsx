@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   BrainCircuit, Send, ExternalLink, Loader2, Play, Square, RotateCw,
   Trash2, ChevronDown, ChevronUp, Terminal, FileCode, Layers, RefreshCw,
-  Plus, X, Box, Tag as TagIcon,
+  Plus, X, Box, Tag as TagIcon, Search, Download, ArrowDownToLine,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
-import type { AppDef, DeployedApp, ComposeContainer, Tag, TagMap } from '@/api/types'
+import type { AppDef, DeployedApp, ComposeContainer, Tag, TagMap, ExternalStack } from '@/api/types'
 import { notify } from '@/store/notifications'
 import { useEmbedStore } from '@/store/embedStore'
 import { useFiltersStore } from '@/store/filters'
@@ -818,6 +818,187 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
 
 // ─── Deployed Tab ─────────────────────────────────────────────────────────────
 
+// ── External App Detection ────────────────────────────────────────────────────
+
+const PLATFORM_TEASERS = [
+  { id: 'portainer', name: 'Portainer', desc: 'Detect stacks managed by Portainer via its REST API.' },
+  { id: 'truenas',   name: 'TrueNAS SCALE', desc: 'Import apps managed by TrueNAS SCALE via its API.' },
+]
+
+function ExternalTab({ onAdopted }: { onAdopted: () => void }) {
+  const [scanning, setScanning]   = useState(false)
+  const [scanned, setScanned]     = useState(false)
+  const [stacks, setStacks]       = useState<ExternalStack[]>([])
+  const [adopting, setAdopting]   = useState<string | null>(null)
+  const [converting, setConverting] = useState<string | null>(null)
+  const [confirmConvert, setConfirmConvert] = useState<ExternalStack | null>(null)
+  const [adopted, setAdopted]     = useState<Set<string>>(new Set())
+
+  const scan = async () => {
+    setScanning(true)
+    try {
+      const results = await api.apps.detectExternal()
+      setStacks(results)
+      setScanned(true)
+    } catch { notify.error('Scan failed') }
+    finally { setScanning(false) }
+  }
+
+  const adopt = async (stack: ExternalStack) => {
+    setAdopting(stack.project_name)
+    try {
+      await api.apps.adoptApp({
+        project_name: stack.project_name,
+        app_name: stack.project_name,
+        compose_path: stack.compose_path ?? undefined,
+        primary_port: stack.primary_port ?? undefined,
+      })
+      setAdopted(prev => new Set([...prev, stack.project_name]))
+      notify.success(`${stack.project_name} invited to VoidTower`)
+      onAdopted()
+    } catch (e) { notify.error(e instanceof ApiClientError ? e.message : 'Adopt failed') }
+    finally { setAdopting(null) }
+  }
+
+  const convert = async (stack: ExternalStack) => {
+    setConverting(stack.project_name)
+    setConfirmConvert(null)
+    try {
+      await api.apps.convertApp(stack.project_name)
+      setAdopted(prev => new Set([...prev, stack.project_name]))
+      notify.success(`${stack.project_name} converted to VoidTower management`)
+      onAdopted()
+    } catch (e) { notify.error(e instanceof ApiClientError ? e.message : 'Convert failed') }
+    finally { setConverting(null) }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Scan section */}
+      <div className="flex items-center gap-3">
+        <Button onClick={scan} loading={scanning} size="sm">
+          <Search size={13} /> Scan local Docker
+        </Button>
+        {scanned && !scanning && (
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {stacks.length === 0 ? 'No unmanaged stacks found.' : `${stacks.length} external stack${stacks.length !== 1 ? 's' : ''} detected`}
+          </span>
+        )}
+        {!scanned && (
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Detects Docker Compose stacks and standalone containers not yet managed by VoidTower.
+          </span>
+        )}
+      </div>
+
+      {/* Results */}
+      {stacks.map(stack => {
+        const isAdopted = adopted.has(stack.project_name)
+        const isBusy = adopting === stack.project_name || converting === stack.project_name
+        return (
+          <div key={stack.project_name} className="rounded-lg overflow-hidden"
+            style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg-card)' }}>
+            <div className="flex items-center gap-3 px-4 py-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>
+                    {stack.project_name}
+                  </span>
+                  <span className="text-xs px-1.5 py-0.5 rounded"
+                    style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}>
+                    local Docker
+                  </span>
+                  {stack.primary_port && (
+                    <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>:{stack.primary_port}</span>
+                  )}
+                </div>
+                <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                  {stack.compose_path ?? 'No compose file detected'}
+                </div>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {stack.containers.map(c => (
+                    <span key={c.id} className="text-xs px-2 py-0.5 rounded font-mono flex items-center gap-1"
+                      style={{ background: 'var(--bg-elevated)', color: c.state === 'running' ? 'var(--accent-success)' : 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}>
+                      <span className="w-1.5 h-1.5 rounded-full inline-block"
+                        style={{ background: c.state === 'running' ? 'var(--accent-success)' : 'var(--text-disabled)' }} />
+                      {c.name.replace(/^\//, '')}
+                      {c.ports.length > 0 && <span style={{ color: 'var(--text-muted)' }}>·{c.ports[0].split(':')[0]}</span>}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              {isAdopted ? (
+                <span className="text-xs px-2 py-1 rounded"
+                  style={{ background: 'var(--accent-success-subtle)', color: 'var(--accent-success)', border: '1px solid var(--accent-success)' }}>
+                  Invited ✓
+                </span>
+              ) : (
+                <div className="flex gap-2 flex-shrink-0">
+                  <Button size="sm" loading={adopting === stack.project_name} disabled={isBusy}
+                    onClick={() => adopt(stack)} title="Register in VoidTower and connect to internal network">
+                    <Download size={12} /> Invite
+                  </Button>
+                  {stack.compose_path && (
+                    <Button size="sm" variant="ghost" loading={converting === stack.project_name} disabled={isBusy}
+                      onClick={() => setConfirmConvert(stack)} title="Copy compose file to VoidTower and manage fully">
+                      <ArrowDownToLine size={12} /> Convert
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })}
+
+      {/* Platform teasers */}
+      <div>
+        <p className="text-xs font-semibold mb-3 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+          More platforms — coming soon
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {PLATFORM_TEASERS.map(p => (
+            <div key={p.id} className="rounded-lg px-4 py-3 flex items-start gap-3 opacity-60"
+              style={{ border: '1px dashed var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>{p.name}</div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{p.desc}</div>
+              </div>
+              <span className="text-xs px-2 py-0.5 rounded flex-shrink-0"
+                style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}>
+                Soon
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Convert confirmation modal */}
+      {confirmConvert && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setConfirmConvert(null)}>
+          <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: 24, maxWidth: 440, width: '100%' }}
+            onClick={e => e.stopPropagation()}>
+            <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>Convert "{confirmConvert.project_name}"?</h2>
+            <p className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
+              VoidTower will copy the compose file to its app directory and take over management.
+              Running containers are restarted in-place — named Docker volumes stay untouched.
+            </p>
+            <p className="text-xs mb-4" style={{ color: 'var(--accent-warning)' }}>
+              Bind-mount host paths remain where they are. If your original compose file referenced
+              relative paths, verify they resolve correctly from the new location.
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => convert(confirmConvert)}>Convert</Button>
+              <Button size="sm" variant="ghost" onClick={() => setConfirmConvert(null)}>Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, onRefresh, onTagsChanged }: {
   deployed: DeployedApp[]; catalogApps: AppDef[];
   allTags: Tag[]; tagMap: TagMap; globalTag: string | null;
@@ -884,6 +1065,12 @@ function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, onRefr
                   <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
                     {app.project_name}
                   </span>
+                  {app.origin === 'adopted' && (
+                    <span className="text-xs px-1.5 py-0.5 rounded"
+                      style={{ background: 'var(--accent-primary-subtle)', color: 'var(--accent-primary)', border: '1px solid var(--accent-primary)', opacity: 0.8 }}>
+                      Adopted
+                    </span>
+                  )}
                   {app.primary_port && (() => {
                     const catalogDef = catalogApps.find(d => d.id === app.app_id)
                     const uiPort = catalogDef?.web_port ?? app.primary_port
@@ -969,7 +1156,7 @@ export default function AppVaultPage() {
   const [deployError, setDeployError]   = useState<string | null>(null)
   const [search, setSearch]             = useState('')
   const [category, setCategory]         = useState<string>('all')
-  const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover' | 'custom'>('catalog')
+  const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover' | 'custom' | 'external'>('catalog')
   const [allTags, setAllTags]           = useState<Tag[]>([])
   const [tagMap, setTagMap]             = useState<TagMap>({})
   const globalTag = useFiltersStore((s) => s.globalTag)
@@ -1043,6 +1230,7 @@ export default function AppVaultPage() {
         {([
           { id: 'catalog',  label: `Catalog (${apps.length})` },
           { id: 'deployed', label: `Deployed (${deployed.length})` },
+          { id: 'external', label: '⇣ External' },
           { id: 'discover', label: '✦ AI Discover' },
           { id: 'custom',   label: '⊕ Custom Deploy' },
         ] as const).map(({ id, label }) => (
@@ -1180,6 +1368,10 @@ export default function AppVaultPage() {
 
       {tab === 'deployed' && (
         <DeployedTab deployed={deployed} catalogApps={apps} allTags={allTags} tagMap={tagMap} globalTag={globalTag} onRefresh={load} onTagsChanged={loadTags} />
+      )}
+
+      {tab === 'external' && (
+        <ExternalTab onAdopted={load} />
       )}
 
       {tab === 'custom' && (

@@ -9,6 +9,7 @@ import Button from '@/components/ui/Button'
 import LogViewer from '@/components/ui/LogViewer'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import SendToOdysseus from '@/components/ui/SendToOdysseus'
+import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 
 function stateColor(state: string): string {
   switch (state.toLowerCase()) {
@@ -91,7 +92,19 @@ export default function ContainersPage() {
     if (tab === 'images') loadImages()
   }, [tab, loadImages])
 
+  const [removePlan, setRemovePlan] = useState<{ plan: ChangePlan; containerId: string } | null>(null)
+  const [removeConfirming, setRemoveConfirming] = useState(false)
+
   const doAction = async (container: ContainerInfo, action: ContainerAction) => {
+    if (action === 'remove') {
+      try {
+        const res = await api.containers.actionPlan(container.id, action)
+        setRemovePlan({ plan: res.plan, containerId: container.id })
+      } catch (e: unknown) {
+        notify.error(e instanceof Error ? e.message : 'Failed to fetch plan')
+      }
+      return
+    }
     setActionLoading(`${container.id}-${action}`)
     try {
       await api.containers.action(container.id, action)
@@ -101,6 +114,21 @@ export default function ContainersPage() {
       notify.error(e instanceof Error ? e.message : 'Action failed')
     } finally {
       setActionLoading(null)
+    }
+  }
+
+  const confirmRemove = async () => {
+    if (!removePlan) return
+    setRemoveConfirming(true)
+    try {
+      await api.containers.action(removePlan.containerId, 'remove')
+      notify.success('Container removed')
+      setRemovePlan(null)
+      await load()
+    } catch (e: unknown) {
+      notify.error(e instanceof Error ? e.message : 'Remove failed')
+    } finally {
+      setRemoveConfirming(false)
     }
   }
 
@@ -131,6 +159,14 @@ export default function ContainersPage() {
 
   return (
     <div className="space-y-4">
+      {removePlan && (
+        <ChangePlanModal
+          plan={removePlan.plan}
+          confirming={removeConfirming}
+          onConfirm={confirmRemove}
+          onCancel={() => setRemovePlan(null)}
+        />
+      )}
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Containers</h1>
         <Button size="sm" onClick={load} loading={loading}>Refresh</Button>

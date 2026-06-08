@@ -210,6 +210,44 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                     },
                     "required": ["container_id"]
                 }
+            },
+            {
+                "name": "list_routes",
+                "description": "List all registered VoidTower API routes",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "read_file",
+                "description": "Read a file from the VoidTower project (path relative to repo root, e.g. backend/src/api/apps.rs)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Relative path within project root" }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "search_code",
+                "description": "Search for a string/symbol across backend/src and frontend/src",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search string (grep)" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "get_template",
+                "description": "Get a VoidTower extension template. Names: new_api_endpoint, new_tower_page, new_native_panel, new_background, new_catalog_entry, new_mcp_tool",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" }
+                    },
+                    "required": ["name"]
+                }
             }
         ]
     }))
@@ -233,6 +271,10 @@ async fn handle_tools_call(state: &AppState, id: Option<Value>, params: Value) -
         "list_services"     => tool_list_services().await,
         "list_alerts"       => tool_list_alerts(state).await,
         "get_container_logs" => tool_get_container_logs(args).await,
+        "list_routes"  => tool_list_routes(state),
+        "read_file"    => tool_read_file(state, args),
+        "search_code"  => tool_search_code(state, args),
+        "get_template" => tool_get_template(args),
         _ => Err(format!("Unknown tool: {tool_name}")),
     };
 
@@ -344,7 +386,42 @@ async fn tool_get_container_logs(args: Value) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-// Silence unused import warning — AppError is imported for consistent error handling style
-// but direct status returns are used instead.
+fn tool_list_routes(state: &AppState) -> std::result::Result<String, String> {
+    let root = super::ai_context::safe_project_root_from_frontend_dir(&state.config.frontend_dir);
+    let src = std::fs::read_to_string(root.join("backend/src/api/mod.rs"))
+        .map_err(|e| format!("Could not read mod.rs: {e}"))?;
+    let lines: Vec<&str> = src.lines()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with(".route("))
+        .collect();
+    Ok(lines.join("\n"))
+}
+
+fn tool_read_file(state: &AppState, args: Value) -> std::result::Result<String, String> {
+    let path = args.get("path").and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'path' argument".to_string())?;
+    let root = super::ai_context::safe_project_root_from_frontend_dir(&state.config.frontend_dir);
+    let content = super::ai_context::read_project_file(&root, path)?;
+    if content.len() > 8000 {
+        Ok(format!("{}\n…(truncated)", &content[..8000]))
+    } else {
+        Ok(content)
+    }
+}
+
+fn tool_get_template(args: Value) -> std::result::Result<String, String> {
+    let name = args.get("name").and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'name' argument".to_string())?;
+    super::ai_context::get_template(name)
+}
+
+fn tool_search_code(state: &AppState, args: Value) -> std::result::Result<String, String> {
+    let query = args.get("query").and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'query' argument".to_string())?;
+    let root = super::ai_context::safe_project_root_from_frontend_dir(&state.config.frontend_dir);
+    super::ai_context::search_project_code(&root, query)
+}
+
+// Silence unused import warning
 #[allow(dead_code)]
 fn _use_app_error(_: AppError) {}

@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box,
+  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
@@ -45,8 +45,9 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'AI',
     items: [
-      { to: '/ai',     icon: BrainCircuit, label: 'Workspace' },
-      { to: '/models', icon: HardDrive,    label: 'Models'    },
+      { to: '/ai',      icon: BrainCircuit, label: 'Workspace' },
+      { to: '/models',  icon: HardDrive,    label: 'Models'    },
+      { to: '/studio',  icon: Wand2,        label: 'Studio'    },
     ],
   },
   {

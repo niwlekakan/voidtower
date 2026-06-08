@@ -37,6 +37,7 @@ import ProxmoxPage from '@/pages/ProxmoxPage'
 import TagsPage from '@/pages/Tags'
 import ThemesPage from '@/pages/Themes'
 import ModelsPage from '@/pages/Models'
+import StudioPage from '@/pages/Studio'
 import UpdatesPage from '@/pages/Updates'
 import IntegrationsPage from '@/pages/Integrations'
 import PolicyPage from '@/pages/Policy'
@@ -126,6 +127,7 @@ export default function App() {
             <Route path="network"    element={<NetworkPage />} />
             <Route path="ai"         element={<AIPage />} />
             <Route path="models"     element={<ModelsPage />} />
+            <Route path="studio"     element={<StudioPage />} />
             <Route path="updates"        element={<UpdatesPage />} />
             <Route path="mods"           element={<ModsPage />} />
             <Route path="plugins"        element={<PluginsPage />} />

@@ -51,6 +51,7 @@ import ModelsPage from '@/pages/Models'
 import UpdatesPage from '@/pages/Updates'
 import IntegrationsPage from '@/pages/Integrations'
 import ModsPage from '@/pages/Mods'
+import StudioPage from '@/pages/Studio'
 import AiosInspectorPanel from '@/aios/AiosInspectorPanel'
 import { PanelShell } from '@/aios/PanelShell'
 
@@ -76,6 +77,7 @@ import NativeTagsPanel         from '@/aios/panels/tags'
 import NativeSecurityPanel     from '@/aios/panels/security'
 import NativeIntegrationsPanel from '@/aios/panels/integrations'
 import NativeSettingsPanel     from '@/aios/panels/settings'
+import NativeStudioPanel       from '@/aios/panels/studio'
 
 // ── Error boundary — prevents one bad panel from blanking the whole page ─────
 
@@ -129,6 +131,7 @@ const NATIVE_PANEL_REGISTRY: Record<string, React.ComponentType> = {
   security:     NativeSecurityPanel,
   integrations: NativeIntegrationsPanel,
   settings:     NativeSettingsPanel,
+  studio:       NativeStudioPanel,
 }
 
 const PANEL_REGISTRY: Record<string, React.ComponentType> = {
@@ -161,6 +164,7 @@ const PANEL_REGISTRY: Record<string, React.ComponentType> = {
   updates:      UpdatesPage,
   integrations: IntegrationsPage,
   mods:         ModsPage,
+  studio:       StudioPage,
 }
 
 function PanelContent({ component, panelId, title }: { component: string; panelId: string; title: string }) {

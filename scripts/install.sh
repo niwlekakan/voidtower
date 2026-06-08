@@ -57,6 +57,7 @@ VOIDTOWER_DOMAIN=""
 MDNS_ENABLED=false
 HAVE_SYSTEMD=false
 HAVE_DOCKER=false
+SKIP_DOCKER=false
 HAVE_COMPOSE=false
 MUSL_BUILD="${MUSL_BUILD:-false}"
 
@@ -102,6 +103,7 @@ Core:
   --no-tls               No TLS (use behind a reverse proxy)
   --skip-systemd         Skip systemd service install
   --skip-ai              Skip AI setup
+  --skip-docker          Skip Docker install (use if Docker is already managed externally)
   --version VER          Specific VoidTower version (default: latest)
   --musl                 Build a fully-static musl binary (TrueNAS Scale, Alpine)
 
@@ -160,6 +162,7 @@ while [[ $# -gt 0 ]]; do
     --no-mcp)           NO_MCP=true ;;
     --no-webhooks)      NO_WEBHOOKS=true ;;
     --no-toolpacks)     NO_TOOLPACKS=true ;;
+    --skip-docker)      SKIP_DOCKER=true ;;
     --offline)          OFFLINE=true ;;
     --dry-run)          DRY_RUN=true ;;
     --uninstall)        INSTALL_MODE="uninstall" ;;
@@ -272,6 +275,81 @@ install_deps() {
       warn "Generic mode: ensure curl, tar, git, python3 are installed"
       ;;
   esac
+}
+
+# ─── Docker install ───────────────────────────────────────────────────────────
+install_docker() {
+  [[ "$SKIP_DOCKER" == true ]] && return 0
+  [[ "$OFFLINE" == true ]]     && return 0
+
+  if [[ "$HAVE_DOCKER" == true ]]; then
+    info "Docker already installed: $(docker --version 2>/dev/null)"
+    return 0
+  fi
+
+  info "Docker not found — installing Docker Engine…"
+
+  case "$PKG_MGR" in
+    apt)
+      # Official Docker apt repository (Ubuntu/Debian)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        ca-certificates gnupg lsb-release
+
+      local keyring="/etc/apt/keyrings/docker.gpg"
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL "https://download.docker.com/linux/${OS_ID}/gpg" \
+        | gpg --dearmor -o "$keyring" 2>/dev/null
+      chmod a+r "$keyring"
+
+      local arch; arch=$(dpkg --print-architecture)
+      local codename; codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-$UBUNTU_CODENAME}")
+      echo "deb [arch=${arch} signed-by=${keyring}] https://download.docker.com/linux/${OS_ID} ${codename} stable" \
+        > /etc/apt/sources.list.d/docker.list
+
+      DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      _suppress_man_db
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      ;;
+
+    dnf|yum)
+      $PKG_MGR install -y -q yum-utils 2>/dev/null || true
+      yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo 2>/dev/null || true
+      $PKG_MGR install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      ;;
+
+    pacman)
+      pacman -Sy --noconfirm --needed docker docker-compose
+      ;;
+
+    zypper)
+      zypper --non-interactive install -q docker docker-compose
+      ;;
+
+    *)
+      # Universal fallback: official get.docker.com convenience script
+      warn "Using get.docker.com convenience script for Docker install…"
+      curl -fsSL https://get.docker.com | sh
+      ;;
+  esac
+
+  if ! command -v docker &>/dev/null; then
+    warn "Docker install may have failed — app deployment will be unavailable"
+    warn "Install manually: https://docs.docker.com/engine/install/"
+    return 1
+  fi
+
+  # Enable and start Docker
+  if [[ "$HAVE_SYSTEMD" == true ]]; then
+    systemctl enable docker --now 2>/dev/null || true
+  fi
+
+  # Add VoidTower service user to docker group so it can manage containers
+  getent group docker &>/dev/null || groupadd docker
+  usermod -aG docker "${VT_USER}" 2>/dev/null || true
+
+  HAVE_DOCKER=true
+  success "Docker installed: $(docker --version)"
 }
 
 # ─── Binary download ──────────────────────────────────────────────────────────
@@ -1980,6 +2058,7 @@ main() {
   prompt_reinstall
 
   install_deps
+  install_docker
   setup_system
 
   if ! download_binary 2>/dev/null; then

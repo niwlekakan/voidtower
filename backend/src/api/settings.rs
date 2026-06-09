@@ -21,7 +21,7 @@ const NOTIF_NTFY_URL_KEY: &str = "notif_ntfy_url";
 const NOTIF_DISCORD_KEY: &str = "notif_discord_webhook";
 const NOTIF_SLACK_KEY: &str = "notif_slack_webhook";
 const AI_PORT_KEY: &str = "ai_proxy_port";
-const AI_PROXY_CONF: &str = "/etc/nginx/conf.d/voidtower-ai-proxy.conf";
+const AI_PROXY_CONF: &str = "/var/lib/voidtower/nginx/conf.d/voidtower-ai-proxy.conf";
 const DEFAULT_AI_PORT: u16 = 7001;
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
@@ -77,38 +77,11 @@ async fn db_delete(state: &AppState, key: &str) -> Result<()> {
     Ok(())
 }
 
-fn nginx_conf_path() -> &'static str {
-    if std::path::Path::new("/etc/nginx/nginx.conf").exists() { "/etc/nginx/nginx.conf" }
-    else if std::path::Path::new("/etc/nginx/conf/nginx.conf").exists() { "/etc/nginx/conf/nginx.conf" }
-    else { "/etc/nginx/nginx.conf" }
-}
-
-fn ensure_conf_d_include() {
-    let conf_path = nginx_conf_path();
-    let Ok(content) = std::fs::read_to_string(conf_path) else { return };
-    if content.contains("conf.d") { return }
-    // Try to inject the include line after the http { block
-    let patched = content.replacen(
-        "http {",
-        "http {\n    include /etc/nginx/conf.d/*.conf;",
-        1,
-    );
-    // Write back directly, or via sudo if needed
-    if std::fs::write(conf_path, &patched).is_err() {
-        let _ = std::process::Command::new("sudo")
-            .args(["-n", "tee", conf_path])
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut c| {
-                use std::io::Write;
-                c.stdin.as_mut().unwrap().write_all(patched.as_bytes())?;
-                c.wait()
-            });
-    }
-}
-
 fn write_ai_proxy_conf(port: u16, upstream: &str) -> std::io::Result<()> {
     let upstream = upstream.trim_end_matches('/');
+    if let Some(dir) = std::path::Path::new(AI_PROXY_CONF).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let content = format!(
         "# VoidTower AI proxy — auto-managed, do not edit\n\
 server {{\n\
@@ -195,28 +168,9 @@ pub async fn set_ai_url(
             db_set(&state, AI_URL_KEY, url).await?;
             db_set(&state, AI_PORT_KEY, &port.to_string()).await?;
 
-            // Write nginx conf and reload — auto-create conf.d if missing
+            // Write nginx conf and reload into Docker nginx conf.d
             let url_owned = url.to_string();
             let nginx_result = tokio::task::spawn_blocking(move || {
-                let conf_d = std::path::Path::new("/etc/nginx/conf.d");
-
-                if !conf_d.exists() {
-                    // Try to create it (works if sudoers grants mkdir, or if we already own it)
-                    let created = std::process::Command::new("sudo")
-                        .args(["-n", "mkdir", "-p", "/etc/nginx/conf.d"])
-                        .output()
-                        .map(|o| o.status.success())
-                        .unwrap_or(false)
-                        || std::fs::create_dir_all(conf_d).is_ok();
-
-                    if !created {
-                        return Err("Cannot create /etc/nginx/conf.d — run the setup command on the Proxies page first".to_string());
-                    }
-                }
-
-                // Ensure conf.d is included in nginx.conf
-                ensure_conf_d_include();
-
                 write_ai_proxy_conf(port, &url_owned)
                     .map_err(|e| format!("Failed to write nginx config: {e}"))?;
                 reload_nginx_pub()

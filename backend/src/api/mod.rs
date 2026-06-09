@@ -291,6 +291,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/integrations/tokens/:id",              delete(integrations::revoke_token))
         .route("/api/integrations/odysseus/config",         get(integrations::get_config).post(integrations::save_config))
         .route("/api/integrations/odysseus/manifest",       get(integrations::manifest))
+        .route("/api/integrations/odysseus/theme",          get(integrations::sync_theme))
         .route("/api/integrations/events",                  get(integrations::event_stream))
         .route("/api/integrations/webhooks",                post(integrations::webhook))
         .route("/api/integrations/actions",                 get(integrations::recent_actions))

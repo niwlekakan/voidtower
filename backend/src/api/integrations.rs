@@ -851,6 +851,52 @@ pub async fn webhook(
 // Recent AI-triggered actions (from audit log, actor_type = 'agent')
 // ---------------------------------------------------------------------------
 
+pub async fn sync_theme(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+
+    let raw_url = get_setting(&state, "odysseus.allowed_url").await;
+    if raw_url.is_empty() {
+        return Err(AppError::BadRequest("Odysseus URL not configured".into()));
+    }
+    let base = raw_url.trim_end_matches('/');
+    let endpoint = format!("{base}/api/prefs/theme");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let resp = client
+        .get(&endpoint)
+        .send()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Odysseus unreachable: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err(AppError::BadRequest(format!(
+            "Odysseus returned {}",
+            resp.status()
+        )));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Invalid response: {e}")))?;
+
+    let name = body
+        .get("value")
+        .and_then(|v| v.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("dark")
+        .to_string();
+
+    Ok(Json(serde_json::json!({ "name": name })))
+}
+
 pub async fn recent_actions(
     State(state): State<AppState>,
     jar: CookieJar,

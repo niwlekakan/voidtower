@@ -144,8 +144,6 @@ while [[ $# -gt 0 ]]; do
     --no-tls)      NO_TLS=true ;;
     --skip-systemd) SKIP_SYSTEMD=true ;;
     --skip-ai)     SKIP_AI=true ;;
-    --with-nginx)  INSTALL_NGINX="yes" ;;
-    --skip-nginx)  INSTALL_NGINX="no" ;;
     --version)     VT_VERSION="$2"; shift ;;
     --with-odysseus)    WITH_ODYSSEUS=true ;;
     --with-voidwatch)   WITH_VOIDWATCH=true; WITH_ODYSSEUS=true ;;
@@ -574,7 +572,7 @@ SyslogIdentifier=voidtower
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=${VT_DATA_DIR} ${VT_CONFIG_DIR} -/etc/nginx/conf.d -/etc/nginx/sites-enabled
+ReadWritePaths=${VT_DATA_DIR} ${VT_CONFIG_DIR}
 SupplementaryGroups=${SUPP_GROUPS}
 PrivateTmp=true
 CapabilityBoundingSet=
@@ -592,25 +590,6 @@ EOF
   if getent group adm &>/dev/null; then
     usermod -aG adm "${VT_USER}" 2>/dev/null || true
   fi
-
-  # Grant voidtower write access to nginx conf.d so it can manage proxy configs
-  if [[ -d /etc/nginx/conf.d ]]; then
-    chown -R "${VT_USER}:${VT_GROUP}" /etc/nginx/conf.d || true
-  fi
-
-  # Allow voidtower to manage nginx without a password
-  local sudoers_file="/etc/sudoers.d/voidtower-nginx"
-  local ng; ng=$(command -v nginx || echo /usr/sbin/nginx)
-  local sc; sc=$(command -v systemctl || echo /usr/bin/systemctl)
-  printf '%s ALL=(root) NOPASSWD: %s start nginx\n'                              "${VT_USER}" "$sc"  > "${sudoers_file}"
-  printf '%s ALL=(root) NOPASSWD: %s stop nginx\n'                               "${VT_USER}" "$sc" >> "${sudoers_file}"
-  printf '%s ALL=(root) NOPASSWD: %s restart nginx\n'                            "${VT_USER}" "$sc" >> "${sudoers_file}"
-  printf '%s ALL=(root) NOPASSWD: %s reload nginx\n'                             "${VT_USER}" "$sc" >> "${sudoers_file}"
-  printf '%s ALL=(root) NOPASSWD: %s -t\n'                                       "${VT_USER}" "$ng" >> "${sudoers_file}"
-  printf '%s ALL=(root) NOPASSWD: %s -s reload\n'                                "${VT_USER}" "$ng" >> "${sudoers_file}"
-  printf '%s ALL=(root) NOPASSWD: /usr/bin/tail -n 100 /var/log/nginx/error.log\n'  "${VT_USER}"    >> "${sudoers_file}"
-  printf '%s ALL=(root) NOPASSWD: /usr/bin/tail -n 100 /var/log/nginx/access.log\n' "${VT_USER}"   >> "${sudoers_file}"
-  chmod 440 "${sudoers_file}"
 
   local ody_sudoers="/etc/sudoers.d/voidtower-odysseus"
   sc=$(command -v systemctl 2>/dev/null || echo /bin/systemctl)
@@ -1368,37 +1347,10 @@ setup_ai_integrated() {
   fi
 }
 
-# ─── Domain / mDNS / nginx (existing) ────────────────────────────────────────
+# ─── Domain / mDNS ────────────────────────────────────────────────────────────
 _write_domain_cfg() {
   printf 'VOIDTOWER_DOMAIN=%s\n' "$1" > "${VT_CONFIG_DIR}/domain.env"
   chmod 644 "${VT_CONFIG_DIR}/domain.env"
-}
-
-_setup_nginx_voidtower() {
-  local domain="$1"
-  _install_nginx || return 0
-  local sites_dir="/etc/nginx/sites-enabled"
-  [[ -d "$sites_dir" ]] || sites_dir="/etc/nginx/conf.d"
-  cat > "${sites_dir}/voidtower.conf" <<NGXEOF
-server {
-    listen 80;
-    server_name ${domain};
-    location / {
-        proxy_pass http://127.0.0.1:${VT_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_hide_header X-Frame-Options;
-        add_header X-Frame-Options "ALLOWALL" always;
-        add_header Content-Security-Policy "frame-ancestors *" always;
-    }
-}
-NGXEOF
-  nginx -t &>/dev/null && { nginx -s reload &>/dev/null || systemctl reload nginx &>/dev/null || true; success "nginx proxy configured for ${domain}"; }
 }
 
 _install_avahi() {
@@ -1419,21 +1371,6 @@ _install_avahi() {
   esac
 }
 
-_install_nginx() {
-  command -v nginx &>/dev/null && return 0
-  [[ "$INSTALL_NGINX" == "no" ]] && return 1
-  if [[ "$INSTALL_NGINX" == "" && "$UNATTENDED" == false ]]; then
-    read -rp "  nginx not installed. Install it? [Y/n]: " _yn
-    case "${_yn:-Y}" in [Yy]*) INSTALL_NGINX="yes" ;; *) INSTALL_NGINX="no"; return 1 ;; esac
-  fi
-  case "$PKG_MGR" in
-    apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx ;;
-    dnf)    dnf install -y -q nginx; systemctl enable nginx ;;
-    pacman) pacman -S --noconfirm --needed nginx ;;
-    zypper) zypper --non-interactive install -q nginx; systemctl enable nginx ;;
-  esac
-  systemctl enable --now nginx &>/dev/null || true
-}
 
 setup_domain() {
   [[ "$UNATTENDED" == true ]] && return
@@ -1448,7 +1385,7 @@ setup_domain() {
        [[ "$new_host" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$ ]] && hostnamectl set-hostname "$new_host" 2>/dev/null || hostname "$new_host" 2>/dev/null || true
        _install_avahi && { VOIDTOWER_DOMAIN="${new_host}.local"; MDNS_ENABLED=true; _write_domain_cfg "$VOIDTOWER_DOMAIN"; } ;;
     4) read -rp "  Domain (e.g. vt.example.com): " pub_domain
-       [[ "$pub_domain" =~ ^[a-zA-Z0-9*._-]+$ ]] && { VOIDTOWER_DOMAIN="$pub_domain"; _write_domain_cfg "$pub_domain"; _setup_nginx_voidtower "$pub_domain"; } ;;
+       [[ "$pub_domain" =~ ^[a-zA-Z0-9*._-]+$ ]] && { VOIDTOWER_DOMAIN="$pub_domain"; _write_domain_cfg "$pub_domain"; info "Deploy the nginx-proxy app from App Vault to route ${pub_domain} → VoidTower"; } ;;
   esac
 }
 
@@ -1753,13 +1690,7 @@ cmd_uninstall() {
   [[ "$HAVE_SYSTEMD" == true ]] && systemctl daemon-reload
 
   # Sudoers
-  rm -f /etc/sudoers.d/voidtower-nginx /etc/sudoers.d/voidtower-odysseus
-
-  # nginx proxy config
-  rm -f /etc/nginx/conf.d/voidtower.conf \
-        /etc/nginx/sites-enabled/voidtower \
-        /etc/nginx/sites-available/voidtower 2>/dev/null || true
-  command -v nginx &>/dev/null && nginx -t &>/dev/null && nginx -s reload &>/dev/null || true
+  rm -f /etc/sudoers.d/voidtower-odysseus
 
   # Root credential / recovery files
   rm -f /root/voidtower-bootstrap-token \

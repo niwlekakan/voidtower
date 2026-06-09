@@ -7,6 +7,14 @@ Versioning is [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **nginx — Docker-only**: nginx is now exclusively managed through the App Vault nginx-proxy container. System nginx install, sudoers setup, and all system nginx fallback paths have been removed from the installer and backend. Deploy `nginx-proxy` from App Vault before using the Proxy Manager or embed proxy.
+
+---
+
 ## [0.9.0] — 2026-06-08
 
 First public release milestone. All planned must-have features are complete.

@@ -64,15 +64,6 @@ fn validate_upstream(u: &str) -> Result<()> {
     Ok(())
 }
 
-// Detect nginx sites directory (Debian/Ubuntu vs Arch/RHEL)
-fn nginx_sites_dir() -> &'static str {
-    if std::path::Path::new("/etc/nginx/sites-enabled").exists() {
-        "/etc/nginx/sites-enabled"
-    } else {
-        "/etc/nginx/conf.d"
-    }
-}
-
 /// Host-side bind-mount path for the Docker nginx-proxy container's conf.d.
 /// VoidTower writes proxy configs here; the container picks them up on reload.
 const DOCKER_NGINX_CONF_DIR: &str = "/var/lib/voidtower/nginx/conf.d";
@@ -93,19 +84,14 @@ fn docker_nginx_container_id() -> Option<String> {
     if id.is_empty() { None } else { Some(id) }
 }
 
-/// Returns the conf.d path to write proxy configs to — Docker bind-mount when
-/// nginx-proxy container is running, system nginx conf.d otherwise.
-fn effective_conf_dir() -> String {
-    if docker_nginx_container_id().is_some() {
-        DOCKER_NGINX_CONF_DIR.to_string()
-    } else {
-        nginx_sites_dir().to_string()
-    }
+fn effective_conf_dir() -> &'static str {
+    DOCKER_NGINX_CONF_DIR
 }
 
 fn conf_path(domain: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(effective_conf_dir())
         .join(format!("voidtower-{domain}.conf"))
+
 }
 
 fn embed_headers() -> &'static str {
@@ -276,90 +262,25 @@ server {{
     }
 }
 
-fn is_root() -> bool {
-    std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim() == "0")
-        .unwrap_or(false)
-}
-
-// nginx -t outputs "syntax is ok" to stderr even when it exits non-zero due to
-// permission errors on the PID file. Check the output text instead of exit code.
-fn nginx_test_ok() -> bool {
-    if let Some(id) = docker_nginx_container_id() {
-        let Ok(out) = std::process::Command::new("docker")
-            .args(["exec", &id, "nginx", "-t"])
-            .output()
-        else { return false; };
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return stderr.contains("syntax is ok") || stderr.contains("test is successful");
-    }
-    let nginx = nginx_bin();
-    let Ok(out) = std::process::Command::new(&nginx).args(["-t"]).output() else {
-        return false;
-    };
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    stderr.contains("syntax is ok") || stderr.contains("test is successful")
-}
-
 fn nginx_active() -> bool {
-    if docker_nginx_container_id().is_some() {
-        return true;
-    }
-    std::process::Command::new("systemctl")
-        .args(["is-active", "--quiet", "nginx"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    docker_nginx_container_id().is_some()
 }
 
 fn reload_nginx() -> std::result::Result<String, String> {
-    // Docker mode: reload nginx inside the running nginx-proxy container
-    if let Some(id) = docker_nginx_container_id() {
-        let out = std::process::Command::new("docker")
-            .args(["exec", &id, "nginx", "-s", "reload"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        return if out.status.success() {
-            Ok("nginx-proxy reloaded".into())
-        } else {
-            Err(format!(
-                "docker exec reload failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
-        };
+    let id = docker_nginx_container_id()
+        .ok_or_else(|| "nginx-proxy container is not running — deploy it from App Vault".to_string())?;
+    let out = std::process::Command::new("docker")
+        .args(["exec", &id, "nginx", "-s", "reload"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok("nginx-proxy reloaded".into())
+    } else {
+        Err(format!(
+            "docker exec reload failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
     }
-
-    // System nginx fallback
-    let nginx = nginx_bin();
-    if !nginx_test_ok() {
-        let msg = std::process::Command::new(&nginx)
-            .args(["-t"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
-            .unwrap_or_else(|e| format!("nginx not found: {e}"));
-        return Err(msg);
-    }
-
-    let systemctl = systemctl_bin();
-    let attempts: Vec<Vec<&str>> = vec![
-        vec![nginx.as_str(), "-s", "reload"],
-        vec!["sudo", "-n", "systemctl", "reload", "nginx"],
-        vec![systemctl.as_str(), "reload", "nginx"],
-        vec!["sudo", "-n", nginx.as_str(), "-s", "reload"],
-    ];
-
-    for args in &attempts {
-        let Ok(out) = std::process::Command::new(args[0]).args(&args[1..]).output() else { continue };
-        if out.status.success() {
-            return Ok("nginx reloaded".into());
-        }
-    }
-
-    Err("Could not reload nginx — ensure VoidTower has permission to reload nginx (see Proxies page for setup instructions)".into())
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -387,189 +308,42 @@ pub struct CreateRequest {
     pub dry_run: bool,
 }
 
-fn which_path(cmd: &str) -> Option<String> {
-    std::process::Command::new("which")
-        .arg(cmd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn nginx_bin() -> String {
-    which_path("nginx").unwrap_or_else(|| "/usr/sbin/nginx".into())
-}
-
-fn systemctl_bin() -> String {
-    which_path("systemctl").unwrap_or_else(|| "/usr/bin/systemctl".into())
-}
-
-fn which(cmd: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(cmd)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-#[allow(dead_code)]
-fn detect_package_manager() -> Option<(&'static str, Vec<&'static str>)> {
-    if which("pacman") {
-        Some(("pacman", vec!["-S", "--noconfirm", "nginx"]))
-    } else if which("apt-get") {
-        Some(("apt-get", vec!["install", "-y", "nginx"]))
-    } else if which("dnf") {
-        Some(("dnf", vec!["install", "-y", "nginx"]))
-    } else if which("yum") {
-        Some(("yum", vec!["install", "-y", "nginx"]))
-    } else if which("zypper") {
-        Some(("zypper", vec!["install", "-y", "nginx"]))
-    } else {
-        None
-    }
-}
-
-fn nginx_conf_path() -> &'static str {
-    if std::path::Path::new("/etc/nginx/nginx.conf").exists() {
-        "/etc/nginx/nginx.conf"
-    } else if std::path::Path::new("/etc/nginx/conf/nginx.conf").exists() {
-        "/etc/nginx/conf/nginx.conf"
-    } else {
-        "/etc/nginx/nginx.conf"
-    }
-}
-
-fn conf_d_has_include() -> bool {
-    let conf = std::fs::read_to_string(nginx_conf_path()).unwrap_or_default();
-    // sites-enabled and conf.d are both valid include targets
-    conf.contains("conf.d") || conf.contains("sites-enabled")
-}
-
-fn conf_d_writable() -> bool {
-    // Test the directory we actually write proxy configs to, not a hardcoded path
-    let dir = std::path::Path::new(nginx_sites_dir());
-    if !dir.exists() { return false; }
-    let tmp = dir.join(".voidtower-write-test");
-    if std::fs::write(&tmp, b"").is_ok() {
-        let _ = std::fs::remove_file(&tmp);
-        true
-    } else {
-        false
-    }
-}
-
-fn can_reload_nginx() -> bool {
-    // Root can always reload nginx directly (Docker container case)
-    if is_root() {
-        return true;
-    }
-    let sc = systemctl_bin();
-    // sudo -n -l <cmd> exits 0 if <cmd> is allowed without a password.
-    if let Ok(o) = std::process::Command::new("sudo")
-        .args(["-n", "-l", &sc, "reload", "nginx"])
-        .output()
-    {
-        let stderr = String::from_utf8_lossy(&o.stderr);
-        if stderr.contains("syntax error") || stderr.contains("parse error") {
-            return false; // broken sudoers
-        }
-        if o.status.success() {
-            return true;
-        }
-    }
-    // Fallback: our managed file exists and no broken sudoers detected
-    std::path::Path::new("/etc/sudoers.d/voidtower-nginx").exists()
-}
-
-fn current_username() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("LOGNAME"))
-        .unwrap_or_else(|_| {
-            std::process::Command::new("id")
-                .arg("-un")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "voidtower".to_string())
-        })
-}
-
 #[derive(Clone, Copy, PartialEq)]
-enum NginxMode { Docker, System, None }
+enum NginxMode { Docker, None }
 
 struct NginxSetupStatus {
     mode: NginxMode,
     conf_d_exists: bool,
     conf_d_writable: bool,
-    has_include: bool,
     can_reload: bool,
-    /// Docker mode only: false means the container is not running yet (vs socket access issue)
     container_running: bool,
 }
 
 fn check_nginx_setup() -> NginxSetupStatus {
     let docker_conf_d = std::path::Path::new(DOCKER_NGINX_CONF_DIR);
 
+    let writable = |dir: &std::path::Path| -> bool {
+        let tmp = dir.join(".vt-write-test");
+        if std::fs::write(&tmp, b"").is_ok() { let _ = std::fs::remove_file(&tmp); true } else { false }
+    };
+
     if let Some(id) = docker_nginx_container_id() {
         let conf_d_exists = docker_conf_d.exists();
-        let conf_d_writable = conf_d_exists && {
-            let tmp = docker_conf_d.join(".vt-write-test");
-            if std::fs::write(&tmp, b"").is_ok() { let _ = std::fs::remove_file(&tmp); true } else { false }
-        };
+        let conf_d_writable = conf_d_exists && writable(docker_conf_d);
         let can_reload = std::process::Command::new("docker")
             .args(["exec", &id, "echo", "ok"])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        return NginxSetupStatus {
-            mode: NginxMode::Docker,
-            conf_d_exists,
-            conf_d_writable,
-            has_include: true,
-            can_reload,
-            container_running: true,
-        };
+        return NginxSetupStatus { mode: NginxMode::Docker, conf_d_exists, conf_d_writable, can_reload, container_running: true };
     }
 
-    // Docker directory exists but container not yet running — user chose Docker mode.
-    // Stay in Docker mode so system nginx paths (which require root) are not used.
     if docker_conf_d.exists() {
-        let conf_d_writable = {
-            let tmp = docker_conf_d.join(".vt-write-test");
-            if std::fs::write(&tmp, b"").is_ok() { let _ = std::fs::remove_file(&tmp); true } else { false }
-        };
-        return NginxSetupStatus {
-            mode: NginxMode::Docker,
-            conf_d_exists: true,
-            conf_d_writable,
-            has_include: true,
-            can_reload: false,
-            container_running: false,
-        };
+        let conf_d_writable = writable(docker_conf_d);
+        return NginxSetupStatus { mode: NginxMode::Docker, conf_d_exists: true, conf_d_writable, can_reload: false, container_running: false };
     }
 
-    if which("nginx") {
-        let conf_d_exists = std::path::Path::new("/etc/nginx/conf.d").exists();
-        return NginxSetupStatus {
-            mode: NginxMode::System,
-            conf_d_exists,
-            conf_d_writable: conf_d_writable(),
-            has_include: conf_d_has_include(),
-            can_reload: can_reload_nginx(),
-            container_running: false,
-        };
-    }
-    NginxSetupStatus {
-        mode: NginxMode::None,
-        conf_d_exists: false,
-        conf_d_writable: false,
-        has_include: false,
-        can_reload: false,
-        container_running: false,
-    }
+    NginxSetupStatus { mode: NginxMode::None, conf_d_exists: false, conf_d_writable: false, can_reload: false, container_running: false }
 }
 
 // ─── Public wrappers for use by other modules ────────────────────────────────
@@ -591,7 +365,6 @@ pub async fn nginx_setup_status(
 
     let mode_str = match s.mode {
         NginxMode::Docker => "docker",
-        NginxMode::System => "system",
         NginxMode::None   => "none",
     };
 
@@ -617,60 +390,15 @@ pub async fn nginx_setup_status(
                     }));
                 } else {
                     steps.push(serde_json::json!({
-                        "label": "VoidTower needs Docker socket access",
-                        "cmd": format!("sudo usermod -aG docker {}", current_username())
+                        "label": "VoidTower needs Docker socket access — add user to docker group and restart VoidTower",
+                        "cmd": "sudo usermod -aG docker $(whoami)"
                     }));
                 }
             }
         }
-        NginxMode::System => {
-            let user = current_username();
-            let conf = nginx_conf_path();
-            if !s.conf_d_exists {
-                steps.push(serde_json::json!({
-                    "label": "Create conf.d directory",
-                    "cmd": "sudo mkdir -p /etc/nginx/conf.d"
-                }));
-            }
-            if !s.has_include {
-                steps.push(serde_json::json!({
-                    "label": "Add include to nginx.conf",
-                    "cmd": format!("sudo sed -i 's/http {{/http {{\\n    include \\/etc\\/nginx\\/conf.d\\/*.conf;/' {conf}")
-                }));
-            }
-            if !s.conf_d_writable {
-                let sites_dir = nginx_sites_dir();
-                steps.push(serde_json::json!({
-                    "label": format!("Grant write access to {sites_dir}"),
-                    "cmd": format!("sudo chown -R {user}:{user} {sites_dir}")
-                }));
-            }
-            if !s.can_reload {
-                let ng = nginx_bin();
-                let sc = systemctl_bin();
-                let args = [
-                    format!("{user} ALL=(ALL) NOPASSWD: {sc} start nginx"),
-                    format!("{user} ALL=(ALL) NOPASSWD: {sc} stop nginx"),
-                    format!("{user} ALL=(ALL) NOPASSWD: {sc} restart nginx"),
-                    format!("{user} ALL=(ALL) NOPASSWD: {sc} reload nginx"),
-                    format!("{user} ALL=(ALL) NOPASSWD: {ng} -t"),
-                    format!("{user} ALL=(ALL) NOPASSWD: {ng} -s reload"),
-                    format!("{user} ALL=(ALL) NOPASSWD: /usr/bin/tail -n 100 /var/log/nginx/error.log"),
-                    format!("{user} ALL=(ALL) NOPASSWD: /usr/bin/tail -n 100 /var/log/nginx/access.log"),
-                ]
-                .iter()
-                .map(|l| format!("  '{l}' \\"))
-                .collect::<Vec<_>>()
-                .join("\n");
-                steps.push(serde_json::json!({ "label": "Allow passwordless nginx management",
-                    "cmd": format!("printf '%s\\n' \\\n{args}\n  | sudo tee /etc/sudoers.d/voidtower-nginx > /dev/null")
-                }));
-            }
-        }
         NginxMode::None => {
-            // No nginx at all — suggest Docker app first, system nginx as fallback
             steps.push(serde_json::json!({
-                "label": "Deploy nginx-proxy from App Vault (recommended)",
+                "label": "Deploy nginx-proxy from App Vault",
                 "cmd": null,
                 "app_id": "nginx-proxy"
             }));
@@ -690,7 +418,6 @@ pub async fn nginx_setup_status(
         "checks": {
             "conf_d_exists": s.conf_d_exists,
             "conf_d_writable": s.conf_d_writable,
-            "has_include": s.has_include,
             "can_reload": s.can_reload,
         },
         "steps": steps,
@@ -698,34 +425,6 @@ pub async fn nginx_setup_status(
     })))
 }
 
-pub async fn nginx_install_cmd(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-
-    let (pm, install_cmd, enable_cmd) = if which("pacman") {
-        ("pacman", "sudo pacman -S --noconfirm nginx", "sudo systemctl enable --now nginx")
-    } else if which("apt-get") {
-        ("apt-get", "sudo apt-get install -y nginx", "sudo systemctl enable --now nginx")
-    } else if which("dnf") {
-        ("dnf", "sudo dnf install -y nginx", "sudo systemctl enable --now nginx")
-    } else if which("yum") {
-        ("yum", "sudo yum install -y nginx", "sudo systemctl enable --now nginx")
-    } else if which("zypper") {
-        ("zypper", "sudo zypper install -y nginx", "sudo systemctl enable --now nginx")
-    } else {
-        return Err(AppError::BadRequest(
-            "No supported package manager detected (apt/dnf/pacman/zypper)".into(),
-        ));
-    };
-
-    Ok(Json(serde_json::json!({
-        "pm": pm,
-        "cmd": format!("{install_cmd} && {enable_cmd}"),
-        "docker_app_id": "nginx-proxy",
-    })))
-}
 
 pub async fn list(
     State(state): State<AppState>,
@@ -740,19 +439,13 @@ pub async fn list(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let (nginx_ok, nginx_backend) = tokio::task::spawn_blocking(|| {
-        let docker = docker_nginx_container_id().is_some();
-        let system = !docker && which("nginx") && (nginx_test_ok() || nginx_active());
-        let ok = docker || system;
-        let backend = if docker { "docker" } else if system { "system" } else { "none" };
-        (ok, backend)
-    }).await.unwrap();
+    let nginx_ok = tokio::task::spawn_blocking(|| docker_nginx_container_id().is_some()).await.unwrap();
 
     Ok(Json(serde_json::json!({
         "proxies": proxies,
         "nginx_available": nginx_ok,
-        "nginx_backend": nginx_backend,
-        "sites_dir": if nginx_ok { effective_conf_dir() } else { nginx_sites_dir().to_string() },
+        "nginx_backend": if nginx_ok { "docker" } else { "none" },
+        "sites_dir": effective_conf_dir(),
     })))
 }
 
@@ -1080,32 +773,13 @@ pub async fn nginx_action(
     match action {
         "test" => {
             let out = tokio::task::spawn_blocking(|| {
-                if let Some(id) = docker_nginx_container_id() {
-                    if let Ok(o) = std::process::Command::new("docker")
-                        .args(["exec", &id, "nginx", "-t"])
-                        .output()
-                    {
-                        let output = format!(
-                            "{}{}",
-                            String::from_utf8_lossy(&o.stdout),
-                            String::from_utf8_lossy(&o.stderr),
-                        );
-                        return (o.status.success(), output);
-                    }
-                    return (false, "docker exec failed".to_string());
+                let Some(id) = docker_nginx_container_id() else {
+                    return (false, "nginx-proxy container is not running — deploy it from App Vault".to_string());
+                };
+                match std::process::Command::new("docker").args(["exec", &id, "nginx", "-t"]).output() {
+                    Ok(o) => (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))),
+                    Err(e) => (false, format!("docker exec failed: {e}")),
                 }
-                let nginx = nginx_bin();
-                for cmd in &[
-                    vec!["sudo", nginx.as_str(), "-t"],
-                    vec![nginx.as_str(), "-t"],
-                ] {
-                    if let Ok(o) = std::process::Command::new(cmd[0]).args(&cmd[1..]).output() {
-                        let stdout = String::from_utf8_lossy(&o.stdout).into_owned();
-                        let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
-                        return (o.status.success(), format!("{stdout}{stderr}"));
-                    }
-                }
-                (false, "nginx binary not found".to_string())
             })
             .await
             .unwrap();
@@ -1142,29 +816,7 @@ pub async fn nginx_action(
             };
         }
 
-        // System nginx fallback
-        let systemctl = systemctl_bin();
-        let cmds: &[&[&str]] = &[
-            &["sudo", systemctl.as_str(), action.as_str(), "nginx"],
-            &[systemctl.as_str(), action.as_str(), "nginx"],
-        ];
-        for cmd in cmds {
-            if let Ok(out) = std::process::Command::new(cmd[0]).args(&cmd[1..]).output() {
-                if out.status.success() {
-                    return Ok(format!("nginx {action} succeeded"));
-                }
-                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-                if !stderr.is_empty()
-                    && !stderr.contains("not found")
-                    && !stderr.contains("No such file")
-                {
-                    return Err(stderr.trim().to_string());
-                }
-            }
-        }
-        Err(format!(
-            "Could not {action} nginx — run the sudoers setup command on the Proxies page"
-        ))
+        Err("nginx-proxy container is not running — deploy it from App Vault".to_string())
     })
     .await
     .unwrap();
@@ -1198,31 +850,7 @@ pub async fn nginx_logs(
             }
         }
 
-        // System nginx fallback
-        let candidates = [
-            "/var/log/nginx/error.log",
-            "/var/log/nginx/access.log",
-        ];
-        for path in &candidates {
-            for cmd in &[
-                vec!["sudo", "/usr/bin/tail", "-n", "100", path],
-                vec!["tail", "-n", "100", path],
-            ] {
-                if let Ok(out) = std::process::Command::new(cmd[0]).args(&cmd[1..]).output() {
-                    if out.status.success() {
-                        let text = String::from_utf8_lossy(&out.stdout).into_owned();
-                        let lines: Vec<String> = text.lines().map(String::from).collect();
-                        return (path.to_string(), lines);
-                    }
-                }
-            }
-            if let Ok(content) = std::fs::read_to_string(path) {
-                let lines: Vec<String> = content.lines().map(String::from).collect();
-                let lines: Vec<String> = lines.into_iter().rev().take(100).collect::<Vec<_>>().into_iter().rev().collect();
-                return (path.to_string(), lines);
-            }
-        }
-        (String::new(), vec!["No nginx log files readable. Run the sudoers setup command on the Proxies page.".to_string()])
+        (String::new(), vec!["nginx-proxy container is not running — deploy it from App Vault".to_string()])
     })
     .await
     .unwrap();
@@ -1258,41 +886,7 @@ pub async fn nginx_status(
             }
         }
 
-        // System nginx fallback
-        let systemctl = systemctl_bin();
-        let out = std::process::Command::new(&systemctl)
-            .args(["status", "nginx", "--no-pager", "-l"])
-            .output();
-
-        let Ok(out) = out else {
-            return serde_json::json!({ "active": false, "state": "unknown", "pid": null, "mode": "system" });
-        };
-
-        let text = String::from_utf8_lossy(&out.stdout).into_owned();
-        let mut state_str = "inactive".to_string();
-        let mut pid: Option<u32> = None;
-
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("Active:") {
-                state_str = trimmed
-                    .trim_start_matches("Active:")
-                    .split_whitespace()
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-            }
-            if trimmed.starts_with("Main PID:") {
-                pid = trimmed
-                    .trim_start_matches("Main PID:")
-                    .split_whitespace()
-                    .next()
-                    .and_then(|s| s.parse().ok());
-            }
-        }
-
-        let active = state_str.contains("active (running)");
-        serde_json::json!({ "active": active, "state": state_str, "pid": pid, "mode": "system" })
+        serde_json::json!({ "active": false, "state": "not deployed", "pid": null, "mode": "docker" })
     })
     .await
     .unwrap();

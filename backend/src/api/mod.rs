@@ -139,7 +139,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps/:project_name/compose",  get(apps::get_compose).post(apps::update_compose))
         .route("/api/apps/detect-external",        get(apps::detect_external))
         .route("/api/apps/adopt",                  post(apps::adopt_app))
-        .route("/api/apps/:project_name/convert",  post(apps::convert_app))
+        .route("/api/apps/:project_name/convert",        post(apps::convert_app))
+        .route("/api/apps/:project_name/pull",           post(apps::pull_app))
+        .route("/api/apps/:project_name/env",            post(apps::patch_app_env))
+        .route("/api/apps/:project_name/expose",         post(apps::expose_app))
+        .route("/api/apps/:project_name/delete-volumes", post(apps::delete_app_volumes))
+        .route("/api/apps/:project_name/purge",          post(apps::purge_app))
         // Backups
         .route("/api/backups", get(backups::list).post(backups::create))
         .route("/api/backups/:id/delete-plan", post(backups::delete_plan))

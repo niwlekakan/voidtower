@@ -205,6 +205,19 @@ pub async fn deploy_compose(
     Ok(())
 }
 
+pub async fn pull_compose(project_name: &str, compose_path: &std::path::Path) -> Result<()> {
+    let out = tokio::process::Command::new("docker")
+        .args(["compose", "-p", project_name, "-f"])
+        .arg(compose_path)
+        .arg("pull")
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!("docker compose pull failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(())
+}
+
 pub async fn stop_compose(project_name: &str, compose_path: &std::path::Path) -> Result<()> {
     tokio::process::Command::new("docker")
         .args(["compose", "-p", project_name, "-f"])

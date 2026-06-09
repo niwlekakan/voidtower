@@ -3,6 +3,7 @@ import { useAuthStore } from '@/store/auth'
 import { api, ApiClientError } from '@/api/client'
 import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
+import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import { notify } from '@/store/notifications'
 import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight, Cpu, Stethoscope, Palette, AlertTriangle, Upload, Copy, ShieldOff, Eye, EyeOff, Navigation, GripVertical, Pencil } from 'lucide-react'
 import { useThemeStore, type UiMode } from '@/store/theme'
@@ -1318,6 +1319,7 @@ function SystemSection() {
   const [checking, setChecking] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [updating, setUpdating] = useState(false)
+  const [pendingAction, setPendingAction] = useState<'restart' | 'update' | null>(null)
 
   useEffect(() => {
     fetch('/api/system/version', { credentials: 'include' })
@@ -1332,34 +1334,65 @@ function SystemSection() {
     } finally { setChecking(false) }
   }
 
-  const doRestart = async () => {
-    if (!confirm('Restart VoidTower now? You will be disconnected briefly.')) return
+  const confirmRestart = async () => {
+    setPendingAction(null)
     setRestarting(true)
     try {
       await fetch('/api/system/restart', { method: 'POST', credentials: 'include' })
-      // Poll until server comes back
+      let wentDown = false
+      let elapsed = 0
       const poll = setInterval(async () => {
+        elapsed += 1500
+        if (elapsed > 60_000) {
+          clearInterval(poll)
+          setRestarting(false)
+          notify.error('Restart is taking too long — check server logs.')
+          return
+        }
         try {
           const r = await fetch('/api/system/version', { credentials: 'include' })
-          if (r.ok) { clearInterval(poll); setRestarting(false); notify.success('VoidTower restarted.') }
-        } catch { /* empty */ }
+          if (r.ok && wentDown) { clearInterval(poll); setRestarting(false); notify.success('VoidTower restarted.') }
+          else if (!r.ok) { wentDown = true }
+        } catch { wentDown = true }
       }, 1500)
-    } catch { setRestarting(false) }
+    } catch {
+      setRestarting(false)
+      notify.error('Failed to send restart request')
+    }
   }
 
-  const doUpdate = async () => {
-    if (!confirm('Pull latest from GitHub, rebuild, and restart? This may take a few minutes.')) return
+  const confirmUpdate = async () => {
+    setPendingAction(null)
     setUpdating(true)
-    notify.info('Update started', 'VoidTower will restart when done.')
+    notify.info('Update started', 'VoidTower will restart when done — this may take a few minutes.')
     try {
       await fetch('/api/system/update', { method: 'POST', credentials: 'include' })
+      let wentDown = false
+      let elapsed = 0
       const poll = setInterval(async () => {
+        elapsed += 3000
+        if (elapsed > 20 * 60_000) {
+          clearInterval(poll)
+          setUpdating(false)
+          notify.error('Update is taking too long — check server logs.')
+          return
+        }
         try {
           const r = await fetch('/api/system/version', { credentials: 'include' })
-          if (r.ok) { clearInterval(poll); setUpdating(false); setCheck(null); const v = await r.json(); setVersion(v); notify.success('Update complete.') }
-        } catch { /* empty */ }
+          if (r.ok && wentDown) {
+            clearInterval(poll)
+            setUpdating(false)
+            setCheck(null)
+            const v = await r.json()
+            setVersion(v)
+            notify.success('Update complete.')
+          } else if (!r.ok) { wentDown = true }
+        } catch { wentDown = true }
       }, 3000)
-    } catch { setUpdating(false) }
+    } catch {
+      setUpdating(false)
+      notify.error('Failed to start update')
+    }
   }
 
   return (
@@ -1397,18 +1430,38 @@ function SystemSection() {
             : <><RefreshCw size={13} className="mr-1.5" />Check for updates</>}
         </Button>
         {check?.can_update && (
-          <Button variant="secondary" size="sm" onClick={doUpdate} disabled={updating}>
+          <Button variant="secondary" size="sm" onClick={() => setPendingAction('update')} disabled={updating}>
             {updating
               ? <><Download size={13} className="animate-spin mr-1.5" />Updating…</>
               : <><Download size={13} className="mr-1.5" />Update &amp; restart</>}
           </Button>
         )}
-        <Button variant="danger" size="sm" onClick={doRestart} disabled={restarting}>
+        <Button variant="danger" size="sm" onClick={() => setPendingAction('restart')} disabled={restarting}>
           {restarting
             ? <><RefreshCw size={13} className="animate-spin mr-1.5" />Restarting…</>
             : <><RefreshCw size={13} className="mr-1.5" />Restart VoidTower</>}
         </Button>
       </div>
+
+      {pendingAction === 'restart' && (
+        <ConfirmDialog
+          title="Restart VoidTower"
+          message="VoidTower will restart now. You will be disconnected briefly."
+          confirmLabel="Restart"
+          danger
+          onConfirm={confirmRestart}
+          onCancel={() => setPendingAction(null)}
+        />
+      )}
+      {pendingAction === 'update' && (
+        <ConfirmDialog
+          title="Update & Restart"
+          message="Pull latest code, rebuild, and restart VoidTower? This may take a few minutes."
+          confirmLabel="Update & restart"
+          onConfirm={confirmUpdate}
+          onCancel={() => setPendingAction(null)}
+        />
+      )}
     </div>
   )
 }

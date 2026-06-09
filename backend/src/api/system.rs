@@ -162,8 +162,9 @@ pub async fn restart(State(state): State<AppState>, jar: CookieJar) -> Result<Js
 
     let script_path = "/tmp/voidtower-restart.sh";
     std::fs::write(script_path, &script).map_err(|e| AppError::Internal(e.into()))?;
-    std::process::Command::new("bash")
-        .args([script_path])
+    std::process::Command::new("setsid")
+        .args(["bash", script_path])
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn().map_err(|e| AppError::Internal(e.into()))?;
@@ -213,8 +214,9 @@ kill -TERM {pid}\n"
 
     let script_path = "/tmp/voidtower-update.sh";
     std::fs::write(script_path, &script).map_err(|e| AppError::Internal(e.into()))?;
-    std::process::Command::new("bash")
-        .args([script_path])
+    std::process::Command::new("setsid")
+        .args(["bash", script_path])
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn().map_err(|e| AppError::Internal(e.into()))?;

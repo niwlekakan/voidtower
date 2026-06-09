@@ -88,6 +88,47 @@ fn effective_conf_dir() -> &'static str {
     DOCKER_NGINX_CONF_DIR
 }
 
+/// Returns the IP the Docker nginx container should use to reach the host.
+/// Tries host.docker.internal → docker0 bridge addr → 172.17.0.1 fallback.
+pub(crate) fn docker_host_ip() -> String {
+    if let Ok(out) = std::process::Command::new("getent")
+        .args(["hosts", "host.docker.internal"])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&out.stdout);
+        if let Some(ip) = s.split_whitespace().next() {
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+    if let Ok(out) = std::process::Command::new("ip")
+        .args(["addr", "show", "docker0"])
+        .output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let t = line.trim();
+            if t.starts_with("inet ") {
+                if let Some(cidr) = t.split_whitespace().nth(1) {
+                    if let Some(ip) = cidr.split('/').next() {
+                        return ip.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "172.17.0.1".to_string()
+}
+
+/// Rewrite localhost/127.0.0.1 in an upstream URL to the Docker host gateway IP,
+/// so nginx inside Docker can reach services running on the host.
+fn rewrite_upstream_for_docker(upstream: &str) -> String {
+    let host_ip = docker_host_ip();
+    upstream
+        .replace("//localhost:", &format!("//{host_ip}:"))
+        .replace("//127.0.0.1:", &format!("//{host_ip}:"))
+}
+
 fn conf_path(domain: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(effective_conf_dir())
         .join(format!("voidtower-{domain}.conf"))
@@ -106,6 +147,7 @@ pub fn write_nginx_port_conf(slug: &str, upstream: &str, port: u16) -> Result<()
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    let upstream = rewrite_upstream_for_docker(upstream);
     let content = format!(
         r#"# Managed by VoidTower — do not edit manually
 server {{
@@ -138,6 +180,7 @@ fn write_nginx_conf(domain: &str, upstream: &str, ssl: bool, allow_embed: bool) 
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    let upstream = rewrite_upstream_for_docker(upstream);
     let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
     let content = if ssl {
         format!(

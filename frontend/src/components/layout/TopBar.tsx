@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Search, Bell, Menu, Tag as TagIcon, X } from 'lucide-react'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { Search, Bell, Menu, Tag as TagIcon, X, Cpu, Zap, ChevronDown } from 'lucide-react'
 import { useMetricsStore } from '@/store/metrics'
 import { useCmdPaletteStore } from '@/store/cmdpalette'
 import { useKeyboard } from '@/hooks/useKeyboard'
@@ -7,6 +7,129 @@ import { useFiltersStore } from '@/store/filters'
 import { api } from '@/api/client'
 import type { Tag } from '@/api/types'
 import UiModeToggle from '@/components/ui/UiModeToggle'
+import Button from '@/components/ui/Button'
+
+// ─── GPU / llama widget ───────────────────────────────────────────────────────
+
+interface LlamaProcess { pid: number; name: string; cmd: string }
+interface GpuInfo { name: string; vram_used_mb: number; vram_total_mb: number; utilization_pct: number }
+interface LlamaStatus { processes: LlamaProcess[]; gpu: GpuInfo | null }
+
+function GpuWidget() {
+  const [status, setStatus] = useState<LlamaStatus | null>(null)
+  const [open, setOpen] = useState(false)
+  const [unloading, setUnloading] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch('/api/ai/llama', { credentials: 'include' })
+      if (res.ok) setStatus(await res.json())
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => {
+    refresh()
+    const t = setInterval(refresh, 5000)
+    return () => clearInterval(t)
+  }, [refresh])
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  if (!status) return null
+
+  const hasLlama = status.processes.length > 0
+  const gpu = status.gpu
+  const pct = gpu && gpu.vram_total_mb > 0 ? Math.round((gpu.vram_used_mb / gpu.vram_total_mb) * 100) : null
+  const barColor = pct == null ? 'var(--text-muted)' : pct > 85 ? 'var(--accent-danger)' : pct > 60 ? 'var(--accent-warning)' : 'var(--accent-success)'
+
+  const unload = async () => {
+    setUnloading(true)
+    try {
+      await fetch('/api/ai/llama/unload', { method: 'POST', credentials: 'include' })
+      setTimeout(refresh, 1000)
+      setStatus(s => s ? { ...s, processes: [] } : s)
+    } catch { /* empty */ } finally { setUnloading(false) }
+  }
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="GPU controls"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 5,
+          padding: '4px 8px', borderRadius: 20, cursor: 'pointer',
+          border: '1px solid var(--border-subtle)',
+          background: open ? 'var(--bg-elevated)' : 'transparent',
+          color: hasLlama ? 'var(--accent-warning)' : 'var(--text-muted)',
+          fontSize: 11, fontWeight: 600, transition: 'all 0.15s',
+        }}
+      >
+        <Cpu size={12} style={{ flexShrink: 0 }} />
+        {pct != null && <span style={{ color: barColor }}>{pct}%</span>}
+        <ChevronDown size={10} style={{ color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', right: 0,
+          background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)',
+          borderRadius: 10, minWidth: 260, padding: 12,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)', zIndex: 200,
+          display: 'flex', flexDirection: 'column', gap: 10,
+        }}>
+          {gpu && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{gpu.name}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  <Zap size={10} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 2 }} />
+                  {gpu.utilization_pct}%
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ flex: 1, height: 6, background: 'var(--bg-elevated)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ width: `${pct ?? 0}%`, height: '100%', background: barColor, borderRadius: 3, transition: 'width 0.3s' }} />
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                  {gpu.vram_used_mb} / {gpu.vram_total_mb} MB
+                </span>
+              </div>
+            </div>
+          )}
+          <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>
+              llama.cpp {hasLlama ? `(${status.processes.length} running)` : '(not running)'}
+            </span>
+            {hasLlama && (
+              <>
+                {status.processes.map(p => (
+                  <div key={p.pid} style={{ fontSize: 10, fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    [{p.pid}] {p.name}
+                  </div>
+                ))}
+                <Button size="sm" variant="danger" onClick={unload} loading={unloading} style={{ width: '100%', marginTop: 6 }}>
+                  Unload from GPU
+                </Button>
+              </>
+            )}
+            {!hasLlama && <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>No llama.cpp processes found.</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function TopBar() {
   const connected = useMetricsStore((s) => s.connected)
@@ -61,6 +184,7 @@ export default function TopBar() {
       </button>
 
       <div className="flex items-center gap-3 ml-auto">
+        <GpuWidget />
         <UiModeToggle />
 
         {/* Global tag filter — hidden on mobile */}

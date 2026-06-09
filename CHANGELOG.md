@@ -9,6 +9,13 @@ Versioning is [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Odysseus themes** — 16 built-in themes ported from Odysseus's preset palette (Dark, Light, Midnight, Paper, Cyberpunk, Retrowave, Forest, Ocean, Ume, Copper, Terminal, Organs, Lavender, GPT, Claude, Cute). Available in Themes settings under a dedicated "Odysseus" section.
+- **Sync from Odysseus** — "Sync from Odysseus" button on the Themes page reads Odysseus's active theme via `/api/integrations/odysseus/theme` and applies the matching VoidTower preset.
+- **GPU controls in TopBar** — GPU widget (VRAM %, llama.cpp process list, Unload button) moved from the AI workspace overlay into the TopBar, sitting next to the Void Mode toggle. Always visible regardless of current page.
+- **Void Mode toggle** — Void Mode button redesigned as a pill-style on/off toggle (label + sliding knob) to communicate its experimental nature; compact icon-only variant used in the AIOS status bar.
+
 ### Fixed
 
 - **AI integration — proxy conf path**: AI proxy nginx config was being written to `/etc/nginx/conf.d/` (system nginx, read-only) instead of `/var/lib/voidtower/nginx/conf.d/` (Docker nginx bind-mount). Saving the Odysseus URL in Settings → Integrations now works without error.

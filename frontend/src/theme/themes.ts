@@ -86,6 +86,22 @@ export type ThemeId =
   | 'solar-breach'
   | 'light-ops'
   | 'high-contrast'
+  | 'od-dark'
+  | 'od-light'
+  | 'od-midnight'
+  | 'od-paper'
+  | 'od-cyberpunk'
+  | 'od-retrowave'
+  | 'od-forest'
+  | 'od-ocean'
+  | 'od-ume'
+  | 'od-copper'
+  | 'od-terminal'
+  | 'od-organs'
+  | 'od-lavender'
+  | 'od-gpt'
+  | 'od-claude'
+  | 'od-cute'
   | 'custom'
 
 export type GlassLevel = 'none' | 'blur' | 'acrylic' | 'frosted'
@@ -132,6 +148,23 @@ export const BUILTIN_THEMES: Theme[] = [
   { id: 'solar-breach',   name: 'Solar Breach',       mode: 'dark',   isBuiltin: true },
   { id: 'light-ops',      name: 'Light Ops',          mode: 'light',  isBuiltin: true },
   { id: 'high-contrast',  name: 'High Contrast',      mode: 'dark',   isBuiltin: true },
+  // ── Odysseus themes ──────────────────────────────────────────────────
+  { id: 'od-dark',        name: 'Odysseus Dark',      mode: 'dark',   isBuiltin: true },
+  { id: 'od-light',       name: 'Odysseus Light',     mode: 'light',  isBuiltin: true },
+  { id: 'od-midnight',    name: 'Midnight',           mode: 'dark',   isBuiltin: true },
+  { id: 'od-paper',       name: 'Paper',              mode: 'light',  isBuiltin: true },
+  { id: 'od-cyberpunk',   name: 'Cyberpunk',          mode: 'dark',   isBuiltin: true },
+  { id: 'od-retrowave',   name: 'Retrowave',          mode: 'dark',   isBuiltin: true },
+  { id: 'od-forest',      name: 'Forest',             mode: 'dark',   isBuiltin: true },
+  { id: 'od-ocean',       name: 'Ocean',              mode: 'dark',   isBuiltin: true },
+  { id: 'od-ume',         name: 'Ume',                mode: 'dark',   isBuiltin: true },
+  { id: 'od-copper',      name: 'Copper',             mode: 'dark',   isBuiltin: true },
+  { id: 'od-terminal',    name: 'Terminal',           mode: 'dark',   isBuiltin: true },
+  { id: 'od-organs',      name: 'Organs',             mode: 'dark',   isBuiltin: true },
+  { id: 'od-lavender',    name: 'Lavender',           mode: 'light',  isBuiltin: true },
+  { id: 'od-gpt',         name: 'GPT',                mode: 'dark',   isBuiltin: true },
+  { id: 'od-claude',      name: 'Claude',             mode: 'dark',   isBuiltin: true },
+  { id: 'od-cute',        name: 'Cute',               mode: 'light',  isBuiltin: true },
 ]
 
 // All CSS variable names that can be overridden via theme tokens

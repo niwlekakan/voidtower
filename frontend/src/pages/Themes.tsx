@@ -4,7 +4,7 @@ import { exportTheme, importTheme, type Theme, GLASS_LEVELS } from '@/theme/them
 import ThemeEditor from '@/components/ui/ThemeEditor'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
-import { Check, Shuffle, Trash2, Upload, Download, Clipboard } from 'lucide-react'
+import { Check, Shuffle, Trash2, Upload, Download, Clipboard, RefreshCw } from 'lucide-react'
 
 // Small swatch strip showing key colors for a theme
 function ThemeSwatch({ theme }: { theme: Theme }) {
@@ -39,6 +39,23 @@ const BUILTIN_SWATCH_COLORS: Record<string, string[]> = {
   'solar-breach':   ['#f59e0b', '#1a0a00', '#fef3c7', '#ef4444'],
   'light-ops':      ['#7c3aed', '#f8f9fa', '#1a1a2e', '#059669'],
   'high-contrast':  ['#ffff00', '#000000', '#ffffff', '#ff0000'],
+  // Odysseus themes
+  'od-dark':        ['#e06c75', '#282c34', '#9cdef2', '#50fa7b'],
+  'od-light':       ['#c47d5a', '#f0ebe3', '#5a5248', '#50fa7b'],
+  'od-midnight':    ['#f85149', '#0d1117', '#c9d1d9', '#50fa7b'],
+  'od-paper':       ['#c5ac4a', '#faf8f5', '#3b3836', '#50fa7b'],
+  'od-cyberpunk':   ['#e040fb', '#0a0a0f', '#0ff0fc', '#9b30ff'],
+  'od-retrowave':   ['#e94560', '#1a1a2e', '#e94560', '#533483'],
+  'od-forest':      ['#7cb871', '#1b2a1b', '#a8d5a2', '#50fa7b'],
+  'od-ocean':       ['#4facfe', '#0b1a2c', '#64d2ff', '#50fa7b'],
+  'od-ume':         ['#f5a0c0', '#2b1b2e', '#f5c2e7', '#50fa7b'],
+  'od-copper':      ['#d4764e', '#1c1410', '#e8c39e', '#50fa7b'],
+  'od-terminal':    ['#00ff41', '#000000', '#00ff41', '#50fa7b'],
+  'od-organs':      ['#c83240', '#0a0406', '#efe1c8', '#50fa7b'],
+  'od-lavender':    ['#9b6dcc', '#f3eef8', '#3d3551', '#50fa7b'],
+  'od-gpt':         ['#949494', '#212121', '#ececec', '#50fa7b'],
+  'od-claude':      ['#c6613f', '#262624', '#f5f4f0', '#50fa7b'],
+  'od-cute':        ['#ff6b9d', '#fff0f5', '#d4608a', '#50fa7b'],
 }
 
 function InterfaceCard() {
@@ -101,11 +118,34 @@ function InterfaceCard() {
 export default function ThemesPage() {
   const { activeTheme, setTheme, allThemes, addCustomTheme, removeCustomTheme, randomize } = useThemeStore()
   const [importText, setImportText] = useState('')
+  const [syncing, setSyncing] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const themes = allThemes()
-  const builtins = themes.filter(t => t.isBuiltin)
+  const vtThemes = themes.filter(t => t.isBuiltin && !t.id.startsWith('od-'))
+  const odThemes = themes.filter(t => t.isBuiltin && t.id.startsWith('od-'))
   const customs = themes.filter(t => !t.isBuiltin)
+
+  const syncFromOdysseus = async () => {
+    setSyncing(true)
+    try {
+      const res = await fetch('/api/integrations/odysseus/theme', { credentials: 'include' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json() as { name: string }
+      const targetId = `od-${data.name}`
+      const match = themes.find(t => t.id === targetId)
+      if (match) {
+        setTheme(match.id)
+        notify.success(`Synced to "${match.name}"`)
+      } else {
+        notify.warning(`Odysseus theme "${data.name}" has no VoidTower equivalent`)
+      }
+    } catch {
+      notify.error('Could not reach Odysseus — check integration settings')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const exportToClipboard = () => {
     const json = exportTheme(activeTheme)
@@ -151,9 +191,15 @@ export default function ThemesPage() {
     <div className="space-y-6 max-w-5xl">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Themes</h1>
-        <Button size="sm" variant="ghost" onClick={randomize}>
-          <Shuffle size={13} className="mr-1.5" /> Randomize
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="ghost" onClick={syncFromOdysseus} disabled={syncing}>
+            <RefreshCw size={13} className={`mr-1.5${syncing ? ' animate-spin' : ''}`} />
+            {syncing ? 'Syncing…' : 'Sync from Odysseus'}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={randomize}>
+            <Shuffle size={13} className="mr-1.5" /> Randomize
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
@@ -161,10 +207,23 @@ export default function ThemesPage() {
         {/* ── Left panel: theme list ─────────────────────────────────── */}
         <div className="space-y-4">
 
-          {/* Builtin themes */}
+          {/* VoidTower built-in themes */}
           <div className="card space-y-2">
-            <p className="text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Presets</p>
-            {builtins.map(t => (
+            <p className="text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>VoidTower</p>
+            {vtThemes.map(t => (
+              <ThemeCard
+                key={t.id}
+                theme={t}
+                active={activeTheme.id === t.id}
+                onSelect={() => setTheme(t.id)}
+              />
+            ))}
+          </div>
+
+          {/* Odysseus themes */}
+          <div className="card space-y-2">
+            <p className="text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Odysseus</p>
+            {odThemes.map(t => (
               <ThemeCard
                 key={t.id}
                 theme={t}

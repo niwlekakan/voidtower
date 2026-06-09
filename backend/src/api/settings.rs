@@ -120,6 +120,78 @@ fn remove_ai_proxy_conf() {
     let _ = std::fs::remove_file(AI_PROXY_CONF);
 }
 
+/// Patch `ports` in the nginx-proxy docker-compose.yml, then re-deploy to publish the change.
+/// `add_port`: port to add (as "{n}:{n}"); `remove_port`: old port to remove.
+/// Only calls `docker compose up -d` if the ports list actually changed.
+fn patch_nginx_compose_port(
+    compose_path: &str,
+    add_port: Option<u16>,
+    remove_port: Option<u16>,
+) -> std::result::Result<(), String> {
+    let content = std::fs::read_to_string(compose_path)
+        .map_err(|e| format!("Cannot read nginx-proxy compose file: {e}"))?;
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(&content)
+        .map_err(|e| format!("Cannot parse nginx-proxy compose YAML: {e}"))?;
+
+    // Locate the first service's ports list (nginx-proxy service)
+    let ports = doc
+        .get_mut("services")
+        .and_then(|s| {
+            if let serde_yaml::Value::Mapping(m) = s {
+                m.values_mut().next()
+            } else {
+                None
+            }
+        })
+        .and_then(|svc| svc.get_mut("ports"))
+        .and_then(|p| p.as_sequence_mut())
+        .ok_or_else(|| "ports list not found in nginx-proxy compose".to_string())?;
+
+    let mut changed = false;
+
+    if let Some(old) = remove_port {
+        let old_str = format!("{old}:{old}");
+        let before = ports.len();
+        ports.retain(|p| p.as_str().map(|s| s != old_str).unwrap_or(true));
+        changed |= ports.len() != before;
+    }
+
+    if let Some(new) = add_port {
+        let new_str = format!("{new}:{new}");
+        if !ports.iter().any(|p| p.as_str() == Some(&new_str)) {
+            ports.push(serde_yaml::Value::String(new_str));
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return Ok(());
+    }
+
+    let new_content = serde_yaml::to_string(&doc)
+        .map_err(|e| format!("Cannot serialize nginx-proxy compose YAML: {e}"))?;
+    std::fs::write(compose_path, new_content)
+        .map_err(|e| format!("Cannot write nginx-proxy compose file: {e}"))?;
+
+    // Re-deploy to apply port binding change (brief container restart)
+    let project = std::path::Path::new(compose_path)
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("vt-nginx-proxy");
+    let out = std::process::Command::new("docker")
+        .args(["compose", "-f", compose_path, "-p", project, "up", "-d", "--no-deps"])
+        .output()
+        .map_err(|e| format!("docker compose up failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "docker compose up failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 pub async fn get_ai_url(
@@ -160,6 +232,16 @@ pub async fn set_ai_url(
         return Err(AppError::BadRequest("Port must be >= 1024".into()));
     }
 
+    // Fetch current port and nginx-proxy compose path before making changes
+    let old_port: Option<u16> = db_get(&state, AI_PORT_KEY).await.and_then(|v| v.parse().ok());
+    let nginx_compose_path: Option<String> = sqlx::query_scalar(
+        "SELECT compose_path FROM deployed_apps WHERE app_id = 'nginx-proxy' LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
     match req.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(url) => {
             if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -168,11 +250,18 @@ pub async fn set_ai_url(
             db_set(&state, AI_URL_KEY, url).await?;
             db_set(&state, AI_PORT_KEY, &port.to_string()).await?;
 
-            // Write nginx conf and reload into Docker nginx conf.d
             let url_owned = url.to_string();
+            // Only patch compose + restart container when the port actually changed
+            let port_changed = old_port != Some(port);
             let nginx_result = tokio::task::spawn_blocking(move || {
                 write_ai_proxy_conf(port, &url_owned)
                     .map_err(|e| format!("Failed to write nginx config: {e}"))?;
+                if port_changed {
+                    if let Some(cp) = nginx_compose_path {
+                        patch_nginx_compose_port(&cp, Some(port), old_port)?;
+                        return Ok("nginx-proxy redeployed with updated port binding".to_string());
+                    }
+                }
                 reload_nginx_pub()
             })
             .await
@@ -201,10 +290,16 @@ pub async fn set_ai_url(
         }
         None => {
             db_delete(&state, AI_URL_KEY).await?;
-            tokio::task::spawn_blocking(|| { remove_ai_proxy_conf(); reload_nginx_pub() })
-                .await
-                .unwrap()
-                .ok();
+            tokio::task::spawn_blocking(move || {
+                remove_ai_proxy_conf();
+                if let Some(cp) = nginx_compose_path {
+                    let _ = patch_nginx_compose_port(&cp, None, old_port);
+                }
+                reload_nginx_pub()
+            })
+            .await
+            .unwrap()
+            .ok();
 
             audit::log(
                 &state.db, Some(&user.id), "human", "settings.ai-url.clear",

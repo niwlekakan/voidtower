@@ -824,6 +824,45 @@ pub async fn create(
     Ok(Json(serde_json::json!({ "ok": true, "id": id, "nginx": reload_msg })))
 }
 
+/// Shared helper: insert a proxy record and write/reload nginx.
+/// Used by both the HTTP `create` handler and `apps::expose_app`.
+pub async fn create_proxy_record(
+    db: &sqlx::SqlitePool,
+    domain: &str,
+    upstream: &str,
+    ssl: bool,
+    allow_embed: bool,
+) -> Result<String> {
+    validate_domain(domain)?;
+    validate_upstream(upstream)?;
+
+    let id = Uuid::new_v4().to_string();
+    let now = unix_now();
+
+    sqlx::query(
+        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, created_at) VALUES (?,?,?,?,1,?,?)",
+    )
+    .bind(&id)
+    .bind(domain)
+    .bind(upstream)
+    .bind(ssl)
+    .bind(allow_embed)
+    .bind(now)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            AppError::BadRequest(format!("Domain '{domain}' already has a proxy rule"))
+        } else {
+            AppError::Internal(e.into())
+        }
+    })?;
+
+    write_nginx_conf(domain, upstream, ssl, allow_embed)?;
+    let _ = reload_nginx();
+    Ok(id)
+}
+
 pub async fn delete_proxy(
     State(state): State<AppState>,
     jar: CookieJar,

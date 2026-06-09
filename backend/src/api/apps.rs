@@ -1507,3 +1507,190 @@ pub async fn convert_app(
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
+
+// ── Toolpack-backed handlers ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PatchEnvRequest {
+    pub env: HashMap<String, String>,
+    pub service: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ExposeAppRequest {
+    pub domain: String,
+    #[serde(default)]
+    pub ssl: bool,
+    #[serde(default = "default_true")]
+    pub allow_embed: bool,
+}
+fn default_true() -> bool { true }
+
+pub async fn pull_app(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(project_name): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+    let ip = addr.ip().to_string();
+    if !containers::is_docker_available() {
+        return Err(AppError::FeatureUnavailable("Docker is not available".into()));
+    }
+    let row = sqlx::query_as::<_, DeployedAppRow>(
+        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+        .bind(&project_name).fetch_optional(&state.db).await
+        .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
+    let compose_path = std::path::PathBuf::from(&row.compose_path);
+    if !compose_path.exists() {
+        return Err(AppError::BadRequest(format!("Compose file not found at {}", compose_path.display())));
+    }
+    containers::pull_compose(&project_name, &compose_path).await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+    containers::deploy_compose(&project_name, &compose_path).await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+    sqlx::query("UPDATE deployed_apps SET status = 'running' WHERE project_name = ?")
+        .bind(&project_name).execute(&state.db).await.map_err(AppError::Database)?;
+    audit::log(&state.db, Some(&user.id), &user.username, "app.pull",
+        Some("app"), Some(&project_name), "success", Some(&ip), None).await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn patch_app_env(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(project_name): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(req): Json<PatchEnvRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    let ip = addr.ip().to_string();
+    let row = sqlx::query_as::<_, DeployedAppRow>(
+        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+        .bind(&project_name).fetch_optional(&state.db).await
+        .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
+    let content = std::fs::read_to_string(&row.compose_path)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut compose: serde_json::Value = serde_yaml::from_str(&content)
+        .map_err(|e| AppError::BadRequest(format!("Invalid compose YAML: {e}")))?;
+    if let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) {
+        for (svc_name, svc) in services.iter_mut() {
+            if let Some(ref target) = req.service {
+                if svc_name != target { continue; }
+            }
+            let Some(svc_obj) = svc.as_object_mut() else { continue };
+            match svc_obj.get("environment") {
+                Some(serde_json::Value::Object(_)) => {
+                    if let Some(serde_json::Value::Object(map)) = svc_obj.get_mut("environment") {
+                        for (k, v) in &req.env {
+                            map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                        }
+                    }
+                }
+                Some(serde_json::Value::Array(arr)) => {
+                    let mut map = serde_json::Map::new();
+                    for item in arr.clone() {
+                        if let Some(s) = item.as_str() {
+                            if let Some((k, v)) = s.split_once('=') {
+                                map.insert(k.to_string(), serde_json::Value::String(v.to_string()));
+                            }
+                        }
+                    }
+                    for (k, v) in &req.env { map.insert(k.clone(), serde_json::Value::String(v.clone())); }
+                    svc_obj.insert("environment".to_string(), serde_json::Value::Object(map));
+                }
+                _ => {
+                    let map: serde_json::Map<_, _> = req.env.iter()
+                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                        .collect();
+                    svc_obj.insert("environment".to_string(), serde_json::Value::Object(map));
+                }
+            }
+        }
+    }
+    let new_content = serde_yaml::to_string(&compose)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    std::fs::write(&row.compose_path, &new_content)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let compose_path = std::path::PathBuf::from(&row.compose_path);
+    containers::deploy_compose(&project_name, &compose_path).await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+    audit::log(&state.db, Some(&user.id), &user.username, "app.env.patch",
+        Some("app"), Some(&project_name), "success", Some(&ip), None).await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn expose_app(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(project_name): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(req): Json<ExposeAppRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+    if user.role != "admin" { return Err(AppError::Forbidden); }
+    let ip = addr.ip().to_string();
+    let row = sqlx::query_as::<_, DeployedAppRow>(
+        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+        .bind(&project_name).fetch_optional(&state.db).await
+        .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
+    let port = row.primary_port.filter(|&p| p > 0)
+        .ok_or_else(|| AppError::BadRequest("No port configured for this app".into()))? as u16;
+    let upstream = format!("http://localhost:{port}");
+    let proxy_id = crate::api::proxy::create_proxy_record(
+        &state.db, &req.domain, &upstream, req.ssl, req.allow_embed,
+    ).await?;
+    audit::log(&state.db, Some(&user.id), &user.username, "app.expose",
+        Some("app"), Some(&project_name), "success", Some(&ip),
+        Some(&format!("domain={},proxy={proxy_id}", req.domain))).await;
+    Ok(Json(serde_json::json!({ "ok": true, "proxy_id": proxy_id, "upstream": upstream })))
+}
+
+pub async fn delete_app_volumes(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(project_name): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    let ip = addr.ip().to_string();
+    let row = sqlx::query_as::<_, DeployedAppRow>(
+        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+        .bind(&project_name).fetch_optional(&state.db).await
+        .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
+    let compose_path = std::path::PathBuf::from(&row.compose_path);
+    containers::remove_compose(&project_name, &compose_path).await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+    sqlx::query("UPDATE deployed_apps SET status = 'stopped' WHERE project_name = ?")
+        .bind(&project_name).execute(&state.db).await.map_err(AppError::Database)?;
+    audit::log(&state.db, Some(&user.id), &user.username, "app.delete_volumes",
+        Some("app"), Some(&project_name), "success", Some(&ip), None).await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn purge_app(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(project_name): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+    if user.role != "admin" { return Err(AppError::Forbidden); }
+    let ip = addr.ip().to_string();
+    let row = sqlx::query_as::<_, DeployedAppRow>(
+        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+        .bind(&project_name).fetch_optional(&state.db).await
+        .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
+    let compose_path = std::path::PathBuf::from(&row.compose_path);
+    let _ = containers::remove_compose(&project_name, &compose_path).await;
+    if let Some(dir) = compose_path.parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    sqlx::query("DELETE FROM deployed_apps WHERE project_name = ?")
+        .bind(&project_name).execute(&state.db).await.map_err(AppError::Database)?;
+    audit::log(&state.db, Some(&user.id), &user.username, "app.purge",
+        Some("app"), Some(&project_name), "success", Some(&ip), None).await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}

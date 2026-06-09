@@ -77,8 +77,46 @@ async fn db_delete(state: &AppState, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// Returns the IP address the Docker nginx container should use to reach the host.
+/// Tries host.docker.internal, then the docker0 bridge address, then falls back to 172.17.0.1.
+fn docker_host_ip() -> String {
+    if let Ok(out) = std::process::Command::new("getent")
+        .args(["hosts", "host.docker.internal"])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&out.stdout);
+        if let Some(ip) = s.split_whitespace().next() {
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+    if let Ok(out) = std::process::Command::new("ip")
+        .args(["addr", "show", "docker0"])
+        .output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let t = line.trim();
+            if t.starts_with("inet ") {
+                if let Some(cidr) = t.split_whitespace().nth(1) {
+                    if let Some(ip) = cidr.split('/').next() {
+                        return ip.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "172.17.0.1".to_string()
+}
+
 fn write_ai_proxy_conf(port: u16, upstream: &str) -> std::io::Result<()> {
     let upstream = upstream.trim_end_matches('/');
+    // nginx runs inside Docker; localhost/127.0.0.1 in the upstream URL refers to the
+    // container, not the host. Rewrite to the Docker host gateway so it reaches the host.
+    let host_ip = docker_host_ip();
+    let upstream = upstream
+        .replace("//localhost:", &format!("//{host_ip}:"))
+        .replace("//127.0.0.1:", &format!("//{host_ip}:"));
     if let Some(dir) = std::path::Path::new(AI_PROXY_CONF).parent() {
         let _ = std::fs::create_dir_all(dir);
     }

@@ -9,6 +9,12 @@ Versioning is [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **AI integration — proxy conf path**: AI proxy nginx config was being written to `/etc/nginx/conf.d/` (system nginx, read-only) instead of `/var/lib/voidtower/nginx/conf.d/` (Docker nginx bind-mount). Saving the Odysseus URL in Settings → Integrations now works without error.
+- **AI integration — port not published**: The AI proxy `listen {port}` directive was never exposed from the nginx-proxy Docker container (only 8080:80 and 8443:443 were published). When the AI port changes, the nginx-proxy `docker-compose.yml` is now patched to add the port binding and the container is redeployed. Saves with an unchanged port only reload nginx.
+- **AI integration — 502 bad gateway**: `proxy_pass http://localhost:{port}` inside the nginx container targeted the container itself, not the host. The upstream URL is now rewritten to the Docker host gateway IP (`host.docker.internal` → `docker0` bridge → `172.17.0.1` fallback) before the conf is written.
+
 ### Changed
 
 - **nginx — Docker-only**: nginx is now exclusively managed through the App Vault nginx-proxy container. System nginx install, sudoers setup, and all system nginx fallback paths have been removed from the installer and backend. Deploy `nginx-proxy` from App Vault before using the Proxy Manager or embed proxy.

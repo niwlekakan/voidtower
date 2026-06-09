@@ -163,13 +163,6 @@ auto-generated files (which nginx-proxy names after the virtual host).
 The two sets of files coexist without conflict because they use different naming
 schemes. nginx-proxy owns `<hostname>.conf`; VoidTower owns `voidtower-*.conf`.
 
-### nginx vs Docker mode detection
-
-VoidTower auto-detects whether nginx is running as a Docker container or a system
-service by looking for a running container with the label
-`com.docker.compose.project=vt-nginx-proxy`. If found it uses the Docker API to
-reload nginx; otherwise it falls back to `systemctl reload nginx`.
-
 ---
 
 ## 4. Port Reference

@@ -1042,7 +1042,7 @@ This re-downloads the binary, reinstalls the systemd service unit, fixes file ow
 | **VMs** | KVM/QEMU local VM management via libvirt (`virsh`). Proxmox integration — connect to any Proxmox host via API token, list QEMU VMs and LXC containers, start/stop/reboot with CPU/RAM/uptime stats. |
 | **Files** | Full filesystem browser — Monaco editor (25+ language detection), inline image viewer (PNG/JPG/GIF/WebP/SVG), PDF viewer, new file creation, per-file download, breadcrumb navigation, roots sidebar. |
 | **Terminal** | Full PTY browser terminal with shell auto-detection from `/etc/passwd`. SSH session manager — save hosts, connect with one click from a second tab. |
-| **Reverse Proxies** | nginx-backed proxy rule manager — domain + upstream + SSL + optional iframe-embed headers, configs written to sites-enabled, validated and reloaded automatically. |
+| **Reverse Proxies** | nginx-backed proxy rule manager — domain + upstream + SSL + optional iframe-embed headers, configs written to the Docker nginx-proxy container's conf.d and reloaded automatically. Deploy nginx-proxy from App Vault. |
 | **Firewall** | UFW rule management — add/delete rules (port, protocol, direction, source CIDR), enable/disable toggle, colour-coded allow/deny columns. |
 | **WireGuard** | Peer management — generate Curve25519 keypairs natively, allocate IPs from existing interface subnet, add/remove peers live, client config shown once with copy button. |
 | **Storage** | Block device tree, mount manager, fstab editor, format disks, SMART health, software RAID (mdadm) status and creation. Configurable storage paths for containers/VMs/backups. |

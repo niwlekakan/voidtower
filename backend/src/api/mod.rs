@@ -202,7 +202,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/models/:filename",       delete(models::delete_model))
         // Proxy manager
         .route("/api/proxy", get(proxy::list).post(proxy::create))
-        .route("/api/proxy/nginx-install-cmd", get(proxy::nginx_install_cmd))
         .route("/api/proxy/nginx-setup", get(proxy::nginx_setup_status))
         .route("/api/proxy/nginx/action", post(proxy::nginx_action))
         .route("/api/proxy/nginx/logs", get(proxy::nginx_logs))

@@ -7,6 +7,8 @@ use axum::{extract::State, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 
+use super::proxy::reload_nginx_pub;
+
 const AI_URL_KEY: &str = "ai_proxy_url";
 const INSTANCE_NAME_KEY: &str = "instance_name";
 const LOGIN_TAGLINE_KEY: &str = "login_tagline";
@@ -145,35 +147,6 @@ fn remove_ai_proxy_conf() {
     let _ = std::fs::remove_file(AI_PROXY_CONF);
 }
 
-fn reload_nginx() -> std::result::Result<String, String> {
-    let nginx = which_path("nginx").unwrap_or_else(|| "/usr/bin/nginx".into());
-    let systemctl = which_path("systemctl").unwrap_or_else(|| "/usr/bin/systemctl".into());
-    let attempts: &[&[&str]] = &[
-        &["sudo", "-n", systemctl.as_str(), "reload", "nginx"],
-        &[systemctl.as_str(), "reload", "nginx"],
-        &["sudo", "-n", nginx.as_str(), "-s", "reload"],
-        &[nginx.as_str(), "-s", "reload"],
-    ];
-    for cmd in attempts {
-        if let Ok(o) = std::process::Command::new(cmd[0]).args(&cmd[1..]).output() {
-            if o.status.success() {
-                return Ok("nginx reloaded".into());
-            }
-        }
-    }
-    Err("nginx reload failed — run sudoers setup on Proxies page".into())
-}
-
-fn which_path(cmd: &str) -> Option<String> {
-    std::process::Command::new("which")
-        .arg(cmd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 pub async fn get_ai_url(
@@ -246,7 +219,7 @@ pub async fn set_ai_url(
 
                 write_ai_proxy_conf(port, &url_owned)
                     .map_err(|e| format!("Failed to write nginx config: {e}"))?;
-                reload_nginx()
+                reload_nginx_pub()
             })
             .await
             .unwrap();
@@ -274,7 +247,7 @@ pub async fn set_ai_url(
         }
         None => {
             db_delete(&state, AI_URL_KEY).await?;
-            tokio::task::spawn_blocking(|| { remove_ai_proxy_conf(); reload_nginx() })
+            tokio::task::spawn_blocking(|| { remove_ai_proxy_conf(); reload_nginx_pub() })
                 .await
                 .unwrap()
                 .ok();

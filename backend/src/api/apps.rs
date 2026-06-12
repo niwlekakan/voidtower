@@ -199,12 +199,37 @@ pub async fn detect_llm_endpoint() -> Option<DetectedLlm> {
     None
 }
 
-/// Returns true if NVIDIA GPU is available (nvidia-smi exits 0).
-pub fn detect_gpu() -> bool {
-    std::process::Command::new("nvidia-smi")
+/// Returns true if NVIDIA GPU support is available for *deployed* containers.
+///
+/// Checks two things, because VoidTower itself may be running containerized
+/// (e.g. the TrueNAS SCALE AIO) without GPU passthrough into its own
+/// container — `nvidia-smi` would be absent there even on a GPU host:
+///
+///   1. `nvidia-smi -L` exits 0 — true on bare-metal/native installs where
+///      VoidTower runs directly on the host with the NVIDIA driver.
+///   2. The host Docker daemon (reached via the bind-mounted
+///      `/var/run/docker.sock`) has the `nvidia` runtime registered — true
+///      whenever nvidia-container-toolkit is configured on the host,
+///      regardless of whether VoidTower's own container has GPU access.
+///      This is the path that matters for TrueNAS SCALE, which configures
+///      the `nvidia` runtime on its Docker daemon when a GPU is assigned to
+///      apps in System Settings → Advanced.
+pub async fn detect_gpu() -> bool {
+    let local = tokio::process::Command::new("nvidia-smi")
         .arg("-L")
         .output()
+        .await
         .map(|o| o.status.success())
+        .unwrap_or(false);
+    if local {
+        return true;
+    }
+
+    tokio::process::Command::new("docker")
+        .args(["info", "--format", "{{json .Runtimes}}"])
+        .output()
+        .await
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("nvidia"))
         .unwrap_or(false)
 }
 
@@ -242,12 +267,190 @@ fn inject_external_networks(compose: &mut Value) {
     }
 }
 
-/// Ensure the vt-proxy Docker network exists (creates it if missing).
+/// Ensure the vt-proxy Docker network exists (creates it if missing), and is
+/// IPv4-only.
+///
+/// New networks are created with `--ipv6=false` so they never inherit the
+/// Docker daemon's IPv6 default address-pool. On hosts whose daemon enables
+/// an IPv6 ULA pool (e.g. TrueNAS SCALE, pool `fdd0::/48`), an auto-assigned
+/// IPv6 gateway gets stored with its CIDR suffix (`fdd0:0:0:2::1/64`) which
+/// later makes `docker compose up` fail with
+/// `ParseAddr("fdd0:0:0:2::1/64"): unexpected character, want colon`.
+///
+/// If `vt-proxy` already exists with IPv6 enabled (created by a VoidTower
+/// build before this fix), it's recreated IPv4-only — any containers
+/// currently attached are reconnected afterwards — so existing installs
+/// self-heal without a manual `docker network rm vt-proxy`.
 async fn ensure_vt_proxy_network() {
-    let _ = tokio::process::Command::new("docker")
-        .args(["network", "create", "vt-proxy"])
+    let inspect = tokio::process::Command::new("docker")
+        .args(["network", "inspect", "vt-proxy", "--format", "{{.EnableIPv6}}"])
         .output()
         .await;
+
+    match inspect {
+        // Network exists and is already IPv4-only — nothing to do.
+        Ok(out) if out.status.success()
+            && String::from_utf8_lossy(&out.stdout).trim() != "true" => (),
+        // Network exists but has IPv6 enabled — recreate it IPv4-only.
+        Ok(out) if out.status.success() => recreate_vt_proxy_network_ipv4().await,
+        // Network doesn't exist (or docker errored) — create it fresh.
+        _ => {
+            let _ = tokio::process::Command::new("docker")
+                .args(["network", "create", "--ipv6=false", "vt-proxy"])
+                .output()
+                .await;
+        }
+    }
+}
+
+/// Recreate the `vt-proxy` network IPv4-only, reconnecting any containers
+/// that were attached to the old (IPv6-enabled) network.
+async fn recreate_vt_proxy_network_ipv4() {
+    let containers = tokio::process::Command::new("docker")
+        .args(["network", "inspect", "vt-proxy", "--format", "{{range .Containers}}{{.Name}} {{end}}"])
+        .output()
+        .await
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    for name in &containers {
+        let _ = tokio::process::Command::new("docker")
+            .args(["network", "disconnect", "-f", "vt-proxy", name])
+            .output()
+            .await;
+    }
+
+    let _ = tokio::process::Command::new("docker")
+        .args(["network", "rm", "vt-proxy"])
+        .output()
+        .await;
+
+    let _ = tokio::process::Command::new("docker")
+        .args(["network", "create", "--ipv6=false", "vt-proxy"])
+        .output()
+        .await;
+
+    for name in &containers {
+        let _ = tokio::process::Command::new("docker")
+            .args(["network", "connect", "vt-proxy", name])
+            .output()
+            .await;
+    }
+}
+
+/// Force IPv4-only on every compose-managed network so deployments don't fail
+/// on hosts whose Docker daemon has an IPv6 default address-pool (see
+/// `ensure_vt_proxy_network` for the full failure mode). Ensures the implicit
+/// project `default` network is declared and pins `enable_ipv6: false` on all
+/// non-external networks. External networks are skipped — their config is fixed
+/// at creation time.
+fn force_ipv4_networks(compose: &mut Value) {
+    let Some(root) = compose.as_object_mut() else { return };
+    let nets = root
+        .entry("networks")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(nets_obj) = nets.as_object_mut() else { return };
+
+    // Pin the implicit project `default` network to IPv4 even when no app-level
+    // network is declared.
+    nets_obj
+        .entry("default")
+        .or_insert_with(|| serde_json::json!({}));
+
+    for cfg in nets_obj.values_mut() {
+        // A bare `network: ` entry deserialises as null — normalise to an object.
+        if cfg.is_null() {
+            *cfg = serde_json::json!({});
+        }
+        let Some(obj) = cfg.as_object_mut() else { continue };
+        // Cannot set options on external networks.
+        if obj.get("external").and_then(|v| v.as_bool()) == Some(true) {
+            continue;
+        }
+        obj.insert("enable_ipv6".into(), Value::Bool(false));
+    }
+}
+
+/// Rewrite VoidTower-managed bind-mount sources under `${HOME}/.local/share/voidtower/`
+/// (currently just Ollama's shared model directory) to live under VoidTower's own
+/// `data_dir` instead.
+///
+/// `${HOME}` in a compose file is expanded by the `docker compose` CLI using
+/// *VoidTower's own* process environment. That's correct on bare-metal (VoidTower's
+/// `$HOME` is the host user's home), but meaningless when VoidTower itself runs
+/// containerized (TrueNAS SCALE AIO): `$HOME` there is the container's home (e.g.
+/// `/root`), and the host Docker daemon then resolves that path against its own
+/// root filesystem, not VoidTower's data. Rewriting to `data_dir` keeps the path on
+/// the one VoidTower already knows how to translate for containerized installs —
+/// `rewrite_host_bind_mounts` (below) then maps it to `host_data_dir` on TrueNAS, or
+/// leaves it as-is on bare-metal.
+fn rewrite_voidtower_home_paths(compose: &mut Value, config: &crate::config::Config) {
+    const PREFIX: &str = "${HOME}/.local/share/voidtower/";
+    let data_dir = config.data_dir.to_string_lossy().trim_end_matches('/').to_string();
+
+    let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) else {
+        return;
+    };
+    for svc in services.values_mut() {
+        let Some(vols) = svc.get_mut("volumes").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for vol in vols.iter_mut() {
+            let Some(s) = vol.as_str() else { continue };
+            if let Some(rest) = s.strip_prefix(PREFIX) {
+                *vol = Value::String(format!("{data_dir}/{rest}"));
+            }
+        }
+    }
+}
+
+/// Rewrite bind-mount sources under `config.data_dir` to `config.host_data_dir`.
+///
+/// VoidTower writes files it wants to share with deployed containers (e.g.
+/// nginx-proxy's `conf.d`) under its own data directory and bind-mounts that
+/// path into the other container. On bare-metal installs this is a no-op —
+/// `data_dir` and `host_data_dir` are the same path.
+///
+/// When VoidTower itself runs containerized (TrueNAS SCALE Custom App), the
+/// `docker compose` CLI inside VoidTower's container talks to the *host's*
+/// Docker daemon over the bind-mounted socket. Bind-mount sources in compose
+/// files are resolved by that daemon against the host filesystem, not
+/// VoidTower's container filesystem — so a source of `/var/lib/voidtower/...`
+/// (valid inside VoidTower's container) would resolve to a nonexistent or
+/// unrelated path on the TrueNAS host instead of the actual dataset at
+/// `/mnt/<pool>/voidtower/data/...`. This rewrites such sources to
+/// `host_data_dir` so the host daemon finds the right files.
+fn rewrite_host_bind_mounts(compose: &mut Value, config: &crate::config::Config) {
+    if config.data_dir == config.host_data_dir {
+        return;
+    }
+    let data_dir = config.data_dir.to_string_lossy().trim_end_matches('/').to_string();
+    let host_data_dir = config.host_data_dir.to_string_lossy().trim_end_matches('/').to_string();
+
+    let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) else {
+        return;
+    };
+    for svc in services.values_mut() {
+        let Some(vols) = svc.get_mut("volumes").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for vol in vols.iter_mut() {
+            let Some(s) = vol.as_str() else { continue };
+            // Bind mounts are `<source>:<target>[:mode]`; named volumes have no
+            // leading `/` on the source and must be left untouched.
+            if let Some(rest) = s.strip_prefix(&format!("{data_dir}/")) {
+                *vol = Value::String(format!("{host_data_dir}/{rest}"));
+            } else if s == data_dir || s.starts_with(&format!("{data_dir}:")) {
+                let rest = s.strip_prefix(&data_dir).unwrap_or("");
+                *vol = Value::String(format!("{host_data_dir}{rest}"));
+            }
+        }
+    }
 }
 
 /// Remove GPU requirements from all services when NVIDIA hardware is not detected.
@@ -280,6 +483,36 @@ fn strip_gpu_requirements(compose: &mut Value) {
         }
         if deploy.as_object().map(|o| o.is_empty()).unwrap_or(false) {
             svc.as_object_mut().map(|o| o.remove("deploy"));
+        }
+    }
+}
+
+/// Remove `devices:` entries for host device nodes that don't exist, so deploys
+/// don't fail outright over optional hardware passthrough — e.g. Ollama's
+/// `/dev/dri:/dev/dri` (Intel/AMD VAAPI render node), which NVIDIA-only,
+/// virtualised, and most containerized-VoidTower (TrueNAS AIO) hosts don't have.
+/// NVIDIA GPU access goes through `runtime: nvidia` /
+/// `deploy.resources.reservations.devices`, handled separately by
+/// `strip_gpu_requirements` — this only covers raw `/dev/*` device-node mounts.
+fn strip_unavailable_devices(compose: &mut Value) {
+    let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) else {
+        return;
+    };
+    for svc in services.values_mut() {
+        let Some(obj) = svc.as_object_mut() else { continue };
+        let became_empty = match obj.get_mut("devices").and_then(|d| d.as_array_mut()) {
+            Some(devices) => {
+                devices.retain(|d| {
+                    let Some(s) = d.as_str() else { return true };
+                    let host_path = s.split(':').next().unwrap_or(s);
+                    std::path::Path::new(host_path).exists()
+                });
+                devices.is_empty()
+            }
+            None => false,
+        };
+        if became_empty {
+            obj.remove("devices");
         }
     }
 }
@@ -373,7 +606,7 @@ pub async fn detect_env(
 ) -> Result<Json<serde_json::Value>> {
     require_user(&state, &jar).await?;
     let llm = detect_llm_endpoint().await;
-    let gpu = detect_gpu();
+    let gpu = detect_gpu().await;
     Ok(Json(serde_json::json!({
         "gpu": gpu,
         "llm": llm.map(|d| serde_json::json!({ "label": d.label, "port": d.port, "url": d.url })),
@@ -519,7 +752,7 @@ pub async fn deploy(
 
     // Strip NVIDIA GPU requirements if no GPU is detected so deployment works
     // on machines that don't have NVIDIA Container Toolkit configured.
-    if !detect_gpu() {
+    if !detect_gpu().await {
         strip_gpu_requirements(&mut compose_val);
     }
 
@@ -534,6 +767,12 @@ pub async fn deploy(
 
     // Inject top-level external network declaration when services reference vt-proxy
     inject_external_networks(&mut compose_val);
+    // Pin all compose-managed networks to IPv4 (TrueNAS IPv6 pool workaround)
+    force_ipv4_networks(&mut compose_val);
+    // Rewrite VoidTower-data bind-mount sources for containerized installs (TrueNAS)
+    rewrite_voidtower_home_paths(&mut compose_val, &state.config);
+    rewrite_host_bind_mounts(&mut compose_val, &state.config);
+    strip_unavailable_devices(&mut compose_val);
 
     let compose_str = serde_yaml::to_string(&compose_val).map_err(|e| AppError::Internal(e.into()))?;
     let compose_path = app_dir.join("docker-compose.yml");
@@ -664,6 +903,13 @@ pub async fn deploy_custom(
         }
     }
 
+    // Pin all compose-managed networks to IPv4 (TrueNAS IPv6 pool workaround)
+    force_ipv4_networks(&mut compose_val);
+    // Rewrite VoidTower-data bind-mount sources for containerized installs (TrueNAS)
+    rewrite_voidtower_home_paths(&mut compose_val, &state.config);
+    rewrite_host_bind_mounts(&mut compose_val, &state.config);
+    strip_unavailable_devices(&mut compose_val);
+
     let compose_str = serde_yaml::to_string(&compose_val).map_err(|e| AppError::Internal(e.into()))?;
     let compose_path = app_dir.join("docker-compose.yml");
     std::fs::write(&compose_path, &compose_str).map_err(|e| AppError::Internal(e.into()))?;
@@ -780,12 +1026,16 @@ pub async fn redeploy_app(
                 }
             }
         }
-        if !detect_gpu() {
+        if !detect_gpu().await {
             strip_gpu_requirements(&mut compose_val);
         }
         ensure_volume_dirs(&compose_val);
         auto_inject_llm(&mut compose_val, &HashMap::new()).await;
         inject_external_networks(&mut compose_val);
+        force_ipv4_networks(&mut compose_val);
+        rewrite_voidtower_home_paths(&mut compose_val, &state.config);
+        rewrite_host_bind_mounts(&mut compose_val, &state.config);
+        strip_unavailable_devices(&mut compose_val);
         let compose_str = serde_yaml::to_string(&compose_val)
             .map_err(|e| AppError::Internal(e.into()))?;
         std::fs::write(&compose_path, &compose_str)

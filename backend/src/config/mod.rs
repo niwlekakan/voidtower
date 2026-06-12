@@ -14,6 +14,20 @@ pub struct Config {
     pub status_port: u16,
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
+    /// Host filesystem path that `data_dir` is bind-mounted from, as seen by
+    /// the Docker daemon VoidTower talks to over `/var/run/docker.sock`.
+    ///
+    /// On bare-metal installs VoidTower runs directly on the host, so this is
+    /// the same as `data_dir`. When VoidTower itself runs containerized
+    /// (e.g. the TrueNAS SCALE Custom App, where `data_dir` is
+    /// `/var/lib/voidtower` inside the container but the real data lives at
+    /// `/mnt/<pool>/voidtower/data` on the host), compose files VoidTower
+    /// writes must use *this* path for bind-mount sources under `data_dir` —
+    /// otherwise the host daemon resolves `/var/lib/voidtower/...` against
+    /// its own root filesystem instead of the mounted dataset. See
+    /// `rewrite_host_bind_mounts` in `api/apps.rs`.
+    #[serde(default = "default_data_dir")]
+    pub host_data_dir: PathBuf,
     #[serde(default = "default_config_dir")]
     pub config_dir: PathBuf,
     #[serde(default = "default_frontend_dir")]
@@ -71,6 +85,7 @@ impl Config {
             if let Ok(p) = v.parse() { config.port = p; }
         }
         if let Ok(v) = std::env::var("VOIDTOWER_DATA_DIR") { config.data_dir = PathBuf::from(v); }
+        let host_data_dir_override = std::env::var("VOIDTOWER_HOST_DATA_DIR").ok().map(PathBuf::from);
         if let Ok(v) = std::env::var("VOIDTOWER_CONFIG_DIR") { config.config_dir = PathBuf::from(v); }
         if let Ok(v) = std::env::var("VOIDTOWER_CATALOG_DIR") { config.catalog_dir = PathBuf::from(v); }
         if let Ok(v) = std::env::var("VOIDTOWER_FRONTEND_DIR") { config.frontend_dir = PathBuf::from(v); }
@@ -92,6 +107,20 @@ impl Config {
             config.frontend_dir = cwd.join(&config.frontend_dir);
         }
 
+        // host_data_dir defaults to the (now-resolved) data_dir for bare-metal
+        // installs, where VoidTower runs directly on the host and the two are
+        // identical. VOIDTOWER_HOST_DATA_DIR overrides this for containerized
+        // installs (e.g. TrueNAS SCALE) — see the field doc comment.
+        config.host_data_dir = match host_data_dir_override {
+            Some(mut p) => {
+                if p.is_relative() {
+                    p = cwd.join(&p);
+                }
+                p
+            }
+            None => config.data_dir.clone(),
+        };
+
         Ok(config)
     }
 
@@ -108,6 +137,7 @@ impl Default for Config {
             agent_port: default_agent_port(),
             status_port: default_status_port(),
             data_dir: default_data_dir(),
+            host_data_dir: default_data_dir(),
             config_dir: default_config_dir(),
             frontend_dir: default_frontend_dir(),
             catalog_dir: default_catalog_dir(),

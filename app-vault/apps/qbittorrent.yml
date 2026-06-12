@@ -12,7 +12,10 @@ compose:
       #   network_mode: "service:gluetun"
       # and remove the ports block (expose via Gluetun instead).
       ports:
-        - "8080:8080"
+        # Host 8080 collides with the VoidTower AIO container's own bundled
+        # proxy on TrueNAS — map the WebUI to 8780 instead. Container port
+        # stays 8080 (WEBUI_PORT / VIRTUAL_PORT / vt-proxy access unaffected).
+        - "8780:8080"
         - "6881:6881"
         - "6881:6881/udp"
       environment:

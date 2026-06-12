@@ -39,6 +39,11 @@ services:
       - VOIDTOWER_BIND=0.0.0.0
       - VOIDTOWER_PORT=8743
       - VOIDTOWER_DATA_DIR=/var/lib/voidtower
+      # Real host path that /var/lib/voidtower is bind-mounted from (above).
+      # Required so App Vault compose files VoidTower writes (e.g. nginx-proxy's
+      # conf.d bind mount) resolve correctly against the TrueNAS host's Docker
+      # daemon instead of /var/lib/voidtower on the host's own root filesystem.
+      - VOIDTOWER_HOST_DATA_DIR=/mnt/${TRUENAS_POOL:-tank}/voidtower/data
       - VOIDTOWER_CONFIG_DIR=/etc/voidtower
       - RUST_LOG=info
     healthcheck:

@@ -13,7 +13,13 @@ compose:
         - "11434:11434"
       volumes:
         - ollama_data:/root/.ollama
+        # Rewritten by VoidTower at deploy time: rewrite_voidtower_home_paths()
+        # maps this to {data_dir}/models, then rewrite_host_bind_mounts() maps
+        # that to the real host path on containerized installs (TrueNAS AIO).
         - ${HOME}/.local/share/voidtower/models:/vt-models:ro
+      # runtime: nvidia is kept/stripped by VoidTower's detect_gpu() check —
+      # works on bare-metal (local nvidia-smi) and TrueNAS (host Docker daemon's
+      # nvidia runtime, via /var/run/docker.sock).
       runtime: nvidia
       environment:
         - NVIDIA_VISIBLE_DEVICES=all
@@ -21,6 +27,9 @@ compose:
         - OLLAMA_VULKAN=1
         - VIRTUAL_HOST=ollama.local
         - VIRTUAL_PORT=11434
+      # Optional Intel/AMD VAAPI passthrough for Vulkan compute. Dropped by
+      # VoidTower's strip_unavailable_devices() if /dev/dri doesn't exist on
+      # the host (e.g. NVIDIA-only or virtualised hosts) — doesn't block deploy.
       devices:
         - /dev/dri:/dev/dri
       networks:

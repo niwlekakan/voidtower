@@ -10,6 +10,7 @@ import { useThemeStore, type UiMode } from '@/store/theme'
 import { setDeviceTierOverride, type DeviceTier } from '@/aios/hooks/useDeviceTier'
 import { Accessibility } from 'lucide-react'
 import { useNavConfigStore, DEFAULT_NAV_ITEMS, DEFAULT_NAV_GROUPS, resolvedNavItems, resolvedNavGroups, type NavItem, type StoredNavGroup } from '@/store/navConfig'
+import { useSidebarPrefsStore, SIDEBAR_ANIMATION_OPTIONS } from '@/store/sidebarPrefs'
 import { ICON_MAP } from '@/aios/AiosDock'
 
 function AppearanceSection() {
@@ -801,6 +802,34 @@ function GeneralSection() {
   )
 }
 
+function SidebarAnimationPicker() {
+  const animation = useSidebarPrefsStore((s) => s.animation)
+  const setAnimation = useSidebarPrefsStore((s) => s.setAnimation)
+
+  return (
+    <div className="space-y-1.5">
+      <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>Sidebar collapse animation</div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+        {SIDEBAR_ANIMATION_OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            onClick={() => setAnimation(opt.value)}
+            className="text-left px-2 py-1.5 rounded text-xs transition-colors"
+            style={{
+              background: animation === opt.value ? 'var(--accent-primary-subtle)' : 'var(--bg-elevated)',
+              border: `1px solid ${animation === opt.value ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+              color: animation === opt.value ? 'var(--accent-primary)' : 'var(--text-secondary)',
+            }}
+          >
+            <div className="font-medium">{opt.label}</div>
+            <div className="mt-0.5 text-[10px] leading-tight" style={{ color: 'var(--text-muted)' }}>{opt.description}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function NavigationSection() {
   const { items, setItems, resetItems, navGroups, setNavGroups, resetNavGroups } = useNavConfigStore()
   const [list, setList] = useState<NavItem[]>(() => resolvedNavItems(items))
@@ -873,6 +902,8 @@ function NavigationSection() {
       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
         Drag to reorder groups and items. Click a group name to rename it. Toggle visibility or rename individual items.
       </p>
+
+      <SidebarAnimationPicker />
 
       {groups.map((group, gi) => {
         const groupItems = group.itemIds.map(id => navMap[id]).filter((it): it is NavItem => !!it)

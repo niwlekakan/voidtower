@@ -80,13 +80,14 @@ export function StatusDot({ color }: { color: string }) {
   return <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0, display: 'inline-block' }} />
 }
 
-export function IconBtn({ title, onClick, children, danger }: {
-  title: string; onClick: () => void; children: React.ReactNode; danger?: boolean
+export function IconBtn({ title, onClick, children, danger, disabled }: {
+  title: string; onClick: () => void; children: React.ReactNode; danger?: boolean; disabled?: boolean
 }) {
   return (
-    <button title={title} onClick={onClick} style={{
-      background: 'none', border: 'none', cursor: 'pointer', padding: 3, borderRadius: 4,
+    <button title={title} onClick={onClick} disabled={disabled} style={{
+      background: 'none', border: 'none', cursor: disabled ? 'default' : 'pointer', padding: 3, borderRadius: 4,
       color: danger ? 'var(--accent-error, #ef4444)' : 'var(--text-muted)',
+      opacity: disabled ? 0.3 : 1,
       display: 'flex', alignItems: 'center',
     }}>{children}</button>
   )

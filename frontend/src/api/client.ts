@@ -502,4 +502,44 @@ export const api = {
     check: (params: { actor_type: string; action: string; resource_type: string; resource_id: string }) =>
       request<import('./types').PolicyCheckResult>('/api/policy/check', { method: 'POST', body: JSON.stringify(params) }),
   },
+
+  agents: {
+    wsUrl: () => {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+      return `${proto}://${location.host}/api/agents/ws`
+    },
+    list: () =>
+      request<import('./types').AgentWithStatus[]>('/api/agents'),
+    create: (req: import('./types').CreateAgentRequest) =>
+      request<import('./types').AgentWithStatus>('/api/agents', { method: 'POST', body: JSON.stringify(req) }),
+    update: (id: string, patch: import('./types').UpdateAgentRequest) =>
+      request<{ ok: boolean }>(`/api/agents/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
+    delete: (id: string) =>
+      request<{ ok: boolean }>(`/api/agents/${id}`, { method: 'DELETE' }),
+    getStatus: (id: string) =>
+      request<import('./types').AgentStatusUpdate>(`/api/agents/${id}/status`),
+    postStatus: (id: string, status: { state: string; activity?: string | null; task_id?: string | null }) =>
+      request<{ ok: boolean }>(`/api/agents/${id}/status`, { method: 'POST', body: JSON.stringify(status) }),
+    export: () =>
+      request<import('./types').ExportedAgent[]>('/api/agents/export'),
+    import: (agents: import('./types').ExportedAgent[]) =>
+      request<{ ok: boolean; imported: number }>('/api/agents/import', { method: 'POST', body: JSON.stringify({ agents }) }),
+  },
+
+  tabs: {
+    list: () =>
+      request<import('./types').CustomTab[]>('/api/tabs'),
+    create: (req: import('./types').CreateCustomTabRequest) =>
+      request<import('./types').CustomTab>('/api/tabs', { method: 'POST', body: JSON.stringify(req) }),
+    update: (id: string, patch: import('./types').UpdateCustomTabRequest) =>
+      request<{ ok: boolean }>(`/api/tabs/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
+    delete: (id: string) =>
+      request<{ ok: boolean }>(`/api/tabs/${id}`, { method: 'DELETE' }),
+    reorder: (ids: string[]) =>
+      request<{ ok: boolean }>('/api/tabs/order', { method: 'PUT', body: JSON.stringify({ ids }) }),
+    export: () =>
+      request<import('./types').ExportedTab[]>('/api/tabs/export'),
+    import: (tabs: import('./types').ExportedTab[]) =>
+      request<{ ok: boolean; imported: number }>('/api/tabs/import', { method: 'POST', body: JSON.stringify({ tabs }) }),
+  },
 }

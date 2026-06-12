@@ -39,6 +39,7 @@ pub struct AppState {
     pub config: Arc<config::Config>,
     pub metrics_tx: MetricsBroadcaster,
     pub latest_metrics: Arc<RwLock<Option<MetricsSnapshot>>>,
+    pub agents_tx: api::agents::AgentBroadcaster,
     pub secrets_key: Arc<[u8; 32]>,
     // token_hash -> (session_id, expires_at_unix) — avoids a DB write on every Bearer request
     pub token_sessions: Arc<RwLock<HashMap<String, (String, i64)>>>,
@@ -205,15 +206,22 @@ async fn main() -> Result<()> {
     let (metrics_tx, _) = broadcast::channel::<MetricsSnapshot>(16);
     let latest_metrics: Arc<RwLock<Option<MetricsSnapshot>>> = Arc::new(RwLock::new(None));
 
+    // Agent status broadcaster
+    let (agents_tx, _) = broadcast::channel::<api::agents::AgentStatusUpdate>(64);
+
     let state = AppState {
         db: pool.clone(),
         config: Arc::new(cfg.clone()),
         metrics_tx: metrics_tx.clone(),
         latest_metrics: latest_metrics.clone(),
+        agents_tx: agents_tx.clone(),
         secrets_key,
         token_sessions: Arc::new(RwLock::new(HashMap::new())),
         login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
+
+    // Spawn agent status heartbeat loop (marks stale agents offline)
+    tokio::spawn(api::agents::run_heartbeat_loop(state.clone()));
 
     // Spawn metrics collector
     let collector = MetricsCollector::new(metrics_tx.clone());

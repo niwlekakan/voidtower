@@ -6,6 +6,7 @@ import { useAiosStore } from '@/aios/store/aios'
 import { useDeviceTier } from '@/aios/hooks/useDeviceTier'
 import { LABEL_MAP } from '@/aios/AiosDock'
 import AiosStatusBar, { STATUS_BAR_H } from '@/aios/AiosStatusBar'
+import AgentActivityOverlay from '@/aios/AgentActivityOverlay'
 import AiosPanel from '@/aios/AiosPanel'
 import AiosDock from '@/aios/AiosDock'
 import AiosCommandBar from '@/aios/AiosCommandBar'
@@ -78,6 +79,8 @@ import NativeSecurityPanel     from '@/aios/panels/security'
 import NativeIntegrationsPanel from '@/aios/panels/integrations'
 import NativeSettingsPanel     from '@/aios/panels/settings'
 import NativeStudioPanel       from '@/aios/panels/studio'
+import NativeAgentsPanel       from '@/aios/panels/agents'
+import NativeTabsPanel         from '@/aios/panels/tabs'
 
 // ── Error boundary — prevents one bad panel from blanking the whole page ─────
 
@@ -132,6 +135,8 @@ const NATIVE_PANEL_REGISTRY: Record<string, React.ComponentType> = {
   integrations: NativeIntegrationsPanel,
   settings:     NativeSettingsPanel,
   studio:       NativeStudioPanel,
+  agents:       NativeAgentsPanel,
+  tabs:         NativeTabsPanel,
 }
 
 const PANEL_REGISTRY: Record<string, React.ComponentType> = {
@@ -516,6 +521,7 @@ export default function AiosLayout() {
     <div style={{ position: 'fixed', inset: 0, ['--aios-status-h' as any]: `${statusBarH}px`, ['--aios-dock-h' as any]: `${dockH}px`, ['--aios-dock-left' as any]: `${dockLeft}px` }}>
       <AnimatedBackground />
       <AiosStatusBar tier={tier} />
+      <AgentActivityOverlay />
 
       {/* Panel canvas */}
       <div style={canvasStyle}>

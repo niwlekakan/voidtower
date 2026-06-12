@@ -4,7 +4,7 @@ import {
   HardDrive, Network, Terminal, ClipboardList, Settings,
   Lock, BrainCircuit, FolderOpen, Globe, Cpu, Stethoscope,
   KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, Palette,
-  ArrowUpCircle, PlugZap, Puzzle, Bot, MoreHorizontal,
+  ArrowUpCircle, PlugZap, Puzzle, Bot, MoreHorizontal, Activity, LayoutPanelTop,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAiosStore } from '@/aios/store/aios'
@@ -51,6 +51,8 @@ const DOCK_ITEMS: DockItem[] = [
   { key: 'secrets',      icon: KeyRound,        label: 'Secrets'      },
   { key: 'audit',        icon: ClipboardList,   label: 'Audit Log'    },
   { key: 'automation',   icon: Zap,             label: 'Automation'   },
+  { key: 'agents',       icon: Activity,        label: 'Agents'       },
+  { key: 'tabs',         icon: LayoutPanelTop,  label: 'Custom Tabs'  },
   { key: 'tags',         icon: Tag,             label: 'Tags'         },
   { key: 'integrations', icon: PlugZap,         label: 'Integrations' },
   { key: 'updates',      icon: ArrowUpCircle,   label: 'Updates'      },

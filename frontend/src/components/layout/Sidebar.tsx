@@ -3,12 +3,13 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, ChevronRight, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2,
+  ChevronLeft, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
 import { api } from '@/api/client'
 import { useNavConfigStore, resolvedNavItems, resolvedNavGroups } from '@/store/navConfig'
+import { useSidebarPrefsStore, type SidebarAnimationStyle } from '@/store/sidebarPrefs'
 
 interface NavItem {
   to: string
@@ -102,6 +103,181 @@ const NAV_ITEMS_BY_ID: Record<string, NavItem> = Object.fromEntries(
   NAV_GROUPS.flatMap(g => g.items).map(item => [item.to.replace(/^\//, ''), item])
 )
 
+const EASE_STD    = 'cubic-bezier(0.4, 0, 0.2, 1)'
+const EASE_SPRING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
+
+function asideTransition(animation: SidebarAnimationStyle): string {
+  if (animation === 'squeeze') return `width 420ms ${EASE_SPRING}, box-shadow 280ms ease`
+  if (animation === 'bounce') return `width 460ms ${EASE_SPRING}, box-shadow 280ms ease`
+  if (animation === 'fade') return `width 220ms ease, box-shadow 220ms ease`
+  if (animation === 'flip') return `width 320ms ${EASE_STD}, box-shadow 280ms ease`
+  return `width 280ms ${EASE_STD}, box-shadow 280ms ease`
+}
+
+function labelStyle(collapsed: boolean, animation: SidebarAnimationStyle, index = 0): React.CSSProperties {
+  const base: React.CSSProperties = {
+    overflow: 'hidden',
+    whiteSpace: 'nowrap',
+    display: 'inline-block',
+    maxWidth: collapsed ? 0 : 160,
+    opacity: collapsed ? 0 : 1,
+  }
+
+  switch (animation) {
+    case 'fade':
+      return {
+        ...base,
+        transition: collapsed
+          ? `opacity 110ms ease, max-width 200ms ${EASE_STD}`
+          : `opacity 200ms ease, max-width 240ms ${EASE_STD}`,
+      }
+    case 'squeeze':
+      return {
+        ...base,
+        transform: `scale(${collapsed ? 0.85 : 1})`,
+        transformOrigin: 'left center',
+        transition: collapsed
+          ? `opacity 120ms ease, max-width 220ms ${EASE_STD}, transform 200ms ease`
+          : `opacity 220ms ease 80ms, max-width 340ms ${EASE_SPRING}, transform 340ms ${EASE_SPRING} 80ms`,
+      }
+    case 'stagger': {
+      const delay = collapsed ? (7 - index) * 18 : index * 28
+      return {
+        ...base,
+        transform: `translateX(${collapsed ? -8 : 0}px)`,
+        transition: collapsed
+          ? `opacity 110ms ease ${Math.max(delay, 0)}ms, max-width 200ms ${EASE_STD}, transform 160ms ease ${Math.max(delay, 0)}ms`
+          : `opacity 220ms ease ${60 + delay}ms, max-width 260ms ${EASE_STD}, transform 260ms ${EASE_STD} ${60 + delay}ms`,
+      }
+    }
+    case 'flip':
+      return {
+        ...base,
+        transformOrigin: 'left center',
+        transform: `perspective(400px) rotateY(${collapsed ? -90 : 0}deg)`,
+        transition: collapsed
+          ? `opacity 130ms ease, max-width 220ms ${EASE_STD}, transform 220ms ${EASE_STD}`
+          : `opacity 200ms ease 90ms, max-width 260ms ${EASE_STD}, transform 320ms ${EASE_SPRING} 60ms`,
+      }
+    case 'bounce':
+      return {
+        ...base,
+        transform: `translateY(${collapsed ? -8 : 0}px)`,
+        transition: collapsed
+          ? `opacity 120ms ease, max-width 200ms ${EASE_STD}, transform 180ms ease`
+          : `opacity 220ms ease 60ms, max-width 260ms ${EASE_STD}, transform 380ms ${EASE_SPRING} 60ms`,
+      }
+    case 'slide':
+    default:
+      return {
+        ...base,
+        transform: `translateX(${collapsed ? -5 : 0}px)`,
+        transition: collapsed
+          ? `opacity 130ms ease, max-width 220ms ${EASE_STD}, transform 200ms ease`
+          : `opacity 200ms ease 70ms, max-width 260ms ${EASE_STD}, transform 230ms ease 70ms`,
+      }
+  }
+}
+
+function groupHeaderStyle(collapsed: boolean, animation: SidebarAnimationStyle): React.CSSProperties {
+  const base: React.CSSProperties = {
+    color: 'var(--text-disabled)',
+    letterSpacing: '0.08em',
+    overflow: 'hidden',
+    maxHeight: collapsed ? 0 : 24,
+    opacity: collapsed ? 0 : 1,
+    marginBottom: collapsed ? 0 : 4,
+  }
+  if (animation === 'fade') {
+    return {
+      ...base,
+      transition: collapsed
+        ? `opacity 100ms ease, max-height 200ms ${EASE_STD}, margin-bottom 180ms ease`
+        : `opacity 180ms ease, max-height 240ms ${EASE_STD}, margin-bottom 240ms ease`,
+    }
+  }
+  if (animation === 'squeeze') {
+    return {
+      ...base,
+      transition: collapsed
+        ? `opacity 120ms ease, max-height 240ms ${EASE_STD}, margin-bottom 200ms ease`
+        : `opacity 220ms ease 80ms, max-height 360ms ${EASE_SPRING}, margin-bottom 360ms ${EASE_SPRING} 80ms`,
+    }
+  }
+  if (animation === 'flip') {
+    return {
+      ...base,
+      transformOrigin: 'top',
+      transform: `rotateX(${collapsed ? -90 : 0}deg)`,
+      transition: collapsed
+        ? `opacity 100ms ease, max-height 200ms ${EASE_STD}, margin-bottom 180ms ease, transform 200ms ${EASE_STD}`
+        : `opacity 180ms ease 80ms, max-height 240ms ${EASE_STD}, margin-bottom 240ms ease, transform 280ms ${EASE_SPRING} 60ms`,
+    }
+  }
+  if (animation === 'bounce') {
+    return {
+      ...base,
+      transform: `translateY(${collapsed ? -6 : 0}px)`,
+      transition: collapsed
+        ? `opacity 100ms ease, max-height 200ms ${EASE_STD}, margin-bottom 180ms ease, transform 160ms ease`
+        : `opacity 200ms ease 60ms, max-height 280ms ${EASE_STD}, margin-bottom 280ms ease, transform 380ms ${EASE_SPRING} 60ms`,
+    }
+  }
+  return {
+    ...base,
+    transition: collapsed
+      ? `opacity 120ms ease, max-height 240ms ${EASE_STD}, margin-bottom 200ms ease`
+      : `opacity 200ms ease 50ms, max-height 280ms ${EASE_STD}, margin-bottom 280ms ease 50ms`,
+  }
+}
+
+function dividerStyle(collapsed: boolean): React.CSSProperties {
+  return {
+    height: 1,
+    background: 'var(--border-subtle)',
+    opacity: collapsed ? 1 : 0,
+    marginBottom: collapsed ? 8 : 0,
+    marginTop: collapsed ? 4 : 0,
+    transition: `opacity 200ms ease, margin-bottom 250ms ease, margin-top 250ms ease`,
+  }
+}
+
+function chevronStyle(collapsed: boolean, animation: SidebarAnimationStyle): React.CSSProperties {
+  if (animation === 'fade') {
+    return {
+      flexShrink: 0,
+      transform: `rotate(${collapsed ? 180 : 0}deg)`,
+      transition: `transform 220ms ease`,
+    }
+  }
+  if (animation === 'squeeze') {
+    return {
+      flexShrink: 0,
+      transform: `rotate(${collapsed ? 180 : 0}deg) scale(${collapsed ? 0.85 : 1})`,
+      transition: `transform 360ms ${EASE_SPRING}`,
+    }
+  }
+  if (animation === 'flip') {
+    return {
+      flexShrink: 0,
+      transform: `perspective(200px) rotateY(${collapsed ? 180 : 0}deg)`,
+      transition: `transform 320ms ${EASE_SPRING}`,
+    }
+  }
+  if (animation === 'bounce') {
+    return {
+      flexShrink: 0,
+      transform: `rotate(${collapsed ? 180 : 0}deg)`,
+      transition: `transform 420ms ${EASE_SPRING}`,
+    }
+  }
+  return {
+    flexShrink: 0,
+    transform: `rotate(${collapsed ? 180 : 0}deg)`,
+    transition: `transform 300ms ${EASE_SPRING}`,
+  }
+}
+
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const [available, setAvailable] = useState<Set<string> | null>(null)
@@ -113,8 +289,8 @@ export default function Sidebar() {
   const storedGroups = useNavConfigStore((s) => s.navGroups)
   const resolved = resolvedNavItems(navItems)
   const activeGroups = resolvedNavGroups(storedGroups)
-  // Build a lookup: id -> { label, visible }
   const navMap = Object.fromEntries(resolved.map((n) => [n.id, n]))
+  const animation = useSidebarPrefsStore((s) => s.animation)
 
   useEffect(() => {
     fetch('/api/plugins', { credentials: 'include' })
@@ -160,17 +336,35 @@ export default function Sidebar() {
 
   return (
     <aside
-      style={{ width: collapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)', background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}
-      className="vt-sidebar flex flex-col h-full border-r transition-all duration-200"
+      style={{
+        width: collapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
+        background: 'var(--bg-panel)',
+        borderColor: 'var(--border-subtle)',
+        boxShadow: collapsed ? 'none' : '2px 0 12px rgba(0,0,0,0.18)',
+        transition: asideTransition(animation),
+      }}
+      className="vt-sidebar flex flex-col h-full border-r"
     >
       {/* Logo */}
       <div className="flex items-center gap-2 px-3 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
         <Shield size={20} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
-        {!collapsed && (
-          <span className="font-semibold tracking-wide text-sm" style={{ color: 'var(--text-primary)' }}>
-            {instanceName}
-          </span>
-        )}
+        <span
+          className="font-semibold tracking-wide text-sm"
+          style={{
+            color: 'var(--text-primary)',
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+            display: 'inline-block',
+            maxWidth: collapsed ? 0 : 160,
+            opacity: collapsed ? 0 : 1,
+            transform: `translateX(${collapsed ? -6 : 0}px)`,
+            transition: collapsed
+              ? `opacity 150ms ease, max-width 250ms ${EASE_STD}, transform 200ms ease`
+              : `opacity 220ms ease 60ms, max-width 280ms ${EASE_STD}, transform 250ms ease 60ms`,
+          }}
+        >
+          {instanceName}
+        </span>
         <button
           className="ml-auto md:hidden p-1 rounded"
           style={{ color: 'var(--text-muted)' }}
@@ -183,7 +377,7 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-2 overflow-y-auto">
-        {activeGroups.map((group, gi) => {
+        {(() => { let staggerIndex = -1; return activeGroups.map((group, gi) => {
           const visibleItems = group.itemIds
             .map(id => NAV_ITEMS_BY_ID[id])
             .filter((item): item is NavItem => {
@@ -196,21 +390,19 @@ export default function Sidebar() {
           if (visibleItems.length === 0) return null
           return (
             <div key={group.id} className={gi > 0 ? 'mt-3' : ''}>
-              {!collapsed && (
-                <div
-                  className="px-2 mb-1 text-xs font-medium uppercase tracking-widest select-none"
-                  style={{ color: 'var(--text-disabled)', letterSpacing: '0.08em' }}
-                >
-                  {group.label}
-                </div>
-              )}
-              {collapsed && gi > 0 && (
-                <div className="mx-2 mb-2 mt-1" style={{ height: 1, background: 'var(--border-subtle)' }} />
-              )}
+              <div
+                className="px-2 text-xs font-medium uppercase tracking-widest select-none"
+                style={groupHeaderStyle(collapsed, animation)}
+              >
+                {group.label}
+              </div>
+              {gi > 0 && <div className="mx-2" style={dividerStyle(collapsed)} />}
               <div className="space-y-0.5">
                 {visibleItems.map(({ to, icon: Icon, label }) => {
                   const key = to.replace(/^\//, '')
                   const displayLabel = navMap[key]?.label ?? label
+                  staggerIndex += 1
+                  const itemIndex = staggerIndex
                   return (
                     <NavLink
                       key={to}
@@ -229,27 +421,26 @@ export default function Sidebar() {
                       title={collapsed ? displayLabel : undefined}
                     >
                       <Icon size={16} style={{ flexShrink: 0 }} />
-                      {!collapsed && <span>{displayLabel}</span>}
+                      <span style={labelStyle(collapsed, animation, itemIndex)}>{displayLabel}</span>
                     </NavLink>
                   )
                 })}
               </div>
             </div>
           )
-        })}
+        }) })()}
           {/* Dynamic plugin pages */}
           {activePlugins.length > 0 && (
             <div className="mt-3">
-              {!collapsed && (
-                <div className="px-2 mb-1 text-xs font-medium uppercase tracking-widest select-none" style={{ color: 'var(--text-disabled)', letterSpacing: '0.08em' }}>
-                  Plugins
-                </div>
-              )}
-              {collapsed && (
-                <div className="mx-2 mb-2 mt-1" style={{ height: 1, background: 'var(--border-subtle)' }} />
-              )}
+              <div
+                className="px-2 text-xs font-medium uppercase tracking-widest select-none"
+                style={groupHeaderStyle(collapsed, animation)}
+              >
+                Plugins
+              </div>
+              <div className="mx-2" style={dividerStyle(collapsed)} />
               <div className="space-y-0.5">
-                {activePlugins.map(p => (
+                {activePlugins.map((p, pi) => (
                   <NavLink
                     key={p.id}
                     to={`/plugins/${p.id}`}
@@ -264,7 +455,7 @@ export default function Sidebar() {
                     title={collapsed ? p.name : undefined}
                   >
                     <Blocks size={16} style={{ flexShrink: 0 }} />
-                    {!collapsed && <span>{p.name}</span>}
+                    <span style={labelStyle(collapsed, animation, pi)}>{p.name}</span>
                   </NavLink>
                 ))}
               </div>
@@ -286,19 +477,15 @@ export default function Sidebar() {
           title={collapsed ? 'Logout' : undefined}
         >
           <LogOut size={16} style={{ flexShrink: 0 }} />
-          {!collapsed && <span>Logout</span>}
+          <span style={labelStyle(collapsed, animation)}>Logout</span>
         </button>
         <button
           onClick={() => setCollapsed((c) => !c)}
           className="flex items-center gap-3 w-full px-2 py-2 rounded text-sm transition-colors hover:opacity-80"
           style={{ color: 'var(--text-muted)' }}
         >
-          {collapsed ? <ChevronRight size={16} /> : (
-            <>
-              <ChevronLeft size={16} />
-              <span>Collapse</span>
-            </>
-          )}
+          <ChevronLeft size={16} style={chevronStyle(collapsed, animation)} />
+          <span style={labelStyle(collapsed, animation)}>Collapse</span>
         </button>
       </div>
     </aside>

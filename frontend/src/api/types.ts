@@ -754,3 +754,86 @@ export interface LxcConfig {
   rootfs: string
   raw: Record<string, string>
 }
+
+// ── Agent visualization ──────────────────────────────────────────────────────
+
+export type AgentState = 'working' | 'idle' | 'error' | 'offline'
+
+export interface AgentWithStatus {
+  id: string
+  name: string
+  source: string
+  icon: string | null
+  color: string | null
+  enabled: boolean
+  created_at: number
+  state: AgentState
+  activity: string | null
+  task_id: string | null
+  status_updated_at: number | null
+}
+
+export interface AgentStatusUpdate {
+  agent_id: string
+  name: string
+  state: AgentState
+  activity: string | null
+  task_id: string | null
+  updated_at: number
+}
+
+export interface CreateAgentRequest {
+  name: string
+  source: string
+  icon?: string | null
+  color?: string | null
+}
+
+export interface UpdateAgentRequest {
+  name?: string
+  icon?: string | null
+  color?: string | null
+  enabled?: boolean
+}
+
+export interface ExportedAgent {
+  name: string
+  source: string
+  icon: string | null
+  color: string | null
+  enabled: boolean
+}
+
+// ── Custom tabs ───────────────────────────────────────────────────────────────
+
+export type CustomTabKind = 'iframe' | 'markdown' | 'builtin'
+
+export interface CustomTab {
+  id: string
+  title: string
+  icon: string | null
+  kind: CustomTabKind
+  config: Record<string, unknown>
+  sort_order: number
+  created_at: number
+}
+
+export interface CreateCustomTabRequest {
+  title: string
+  icon?: string | null
+  kind: CustomTabKind
+  config?: Record<string, unknown>
+}
+
+export interface UpdateCustomTabRequest {
+  title?: string
+  icon?: string | null
+  config?: Record<string, unknown>
+}
+
+export interface ExportedTab {
+  title: string
+  icon: string | null
+  kind: CustomTabKind
+  config: Record<string, unknown>
+}

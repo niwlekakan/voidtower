@@ -74,6 +74,8 @@ pub mod disaster;
 pub mod policy;
 pub mod plugins;
 pub mod lxc;
+pub mod agents;
+pub mod tabs;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -233,6 +235,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/automation/:id", delete(automation::delete).patch(automation::update))
         .route("/api/automation/:id/run", post(automation::run_now))
         .route("/api/automation/:id/runs", get(automation::runs))
+        // Agent visualization
+        .route("/api/agents", get(agents::list).post(agents::create))
+        .route("/api/agents/ws", get(agents::ws_handler))
+        .route("/api/agents/export", get(agents::export))
+        .route("/api/agents/import", post(agents::import))
+        .route("/api/agents/:id", put(agents::update).delete(agents::delete))
+        .route("/api/agents/:id/status", get(agents::get_status).post(agents::post_status))
+        // Custom tabs
+        .route("/api/tabs", get(tabs::list).post(tabs::create))
+        .route("/api/tabs/order", put(tabs::reorder))
+        .route("/api/tabs/export", get(tabs::export))
+        .route("/api/tabs/import", post(tabs::import))
+        .route("/api/tabs/:id", put(tabs::update).delete(tabs::delete))
         // Firewall
         .route("/api/firewall", get(firewall::get_status))
         .route("/api/firewall/rules", post(firewall::add_rule))

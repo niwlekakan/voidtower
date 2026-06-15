@@ -21,14 +21,14 @@ compose:
         - PAPERLESS_TIME_ZONE=UTC
         - VIRTUAL_HOST=paperless.local
         - VIRTUAL_PORT=8000
-    paperless-redis:
-      image: redis:7-alpine
-      restart: unless-stopped
       networks:
         default: {}
         vt-proxy:
           aliases:
             - paperless
+    paperless-redis:
+      image: redis:7-alpine
+      restart: unless-stopped
   volumes:
     paperless_data:
     paperless_media:

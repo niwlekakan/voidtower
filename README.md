@@ -242,6 +242,16 @@ Toolpacks live in `voidwatch/toolpacks/` inside the Odysseus install. Add your o
 
 ---
 
+## Networking & reverse proxy
+
+Apps deployed from App Vault are reachable directly via their host port, and
+optionally via `http://<app>.local:8080` through the bundled nginx-proxy +
+Pi-hole/AdGuard setup. For the full picture — vt-proxy/nginx-proxy internals,
+DNS setup (Pi-hole/AdGuard), Traefik/Caddy alternatives, and remote access via
+Tailscale or WireGuard — see [`docs/NETWORKING.md`](docs/NETWORKING.md).
+
+---
+
 ## TrueNAS Scale
 
 Two deployment paths depending on how much access you want. Both store all data on your TrueNAS datasets so nothing is lost across app updates.

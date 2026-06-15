@@ -182,7 +182,7 @@ schemes. nginx-proxy owns `<hostname>.conf`; VoidTower owns `voidtower-*.conf`.
 | gitea            | 3002                  | 3000              | Git web UI                                     |
 |                  | 2222                  | 22                | Git over SSH                                   |
 | grafana          | 3005                  | 3000              | Dashboards                                     |
-| immich           | 2283                  | 3001              | Photo management                               |
+| immich           | 2283                  | 2283              | Photo management                               |
 | jellyfin         | 8096                  | 8096              | Media server                                   |
 | jitsi            | 8083                  | 80                | Video conference HTTP                          |
 |                  | 8445                  | 443               | Video conference HTTPS                         |
@@ -461,3 +461,74 @@ sudo systemctl restart voidtower-llama.service
 
 And update `/var/lib/voidtower/config.json` to replace `8080` with `8090` in the
 `llm_base_url` field.
+
+---
+
+## 8. Catalog YAML Checklist — Wiring Up an App
+
+For any app-vault YAML with a web UI, the service that actually serves HTTP
+needs **all three** of the following, on the **same service block**:
+
+```yaml
+services:
+  myapp:                          # <-- the service with the published web port
+    ports:
+      - "1234:80"                 # host:container — VIRTUAL_PORT must match the container side
+    environment:
+      - VIRTUAL_HOST=myapp.local
+      - VIRTUAL_PORT=80           # omit only if the container listens on port 80
+    networks:
+      default: {}
+      vt-proxy:
+        aliases:
+          - myapp
+```
+
+A common bug pattern (found and fixed in `immich.yml`, `authentik.yml`,
+`jitsi.yml`, `outline.yml`, `paperless.yml`) is **copy-pasting the `vt-proxy` +
+`aliases` block onto a sidecar container** (redis, postgres, a worker) instead
+of the web-facing service. The symptom: the app is reachable at
+`http://<host-ip>:<port>` (Docker's port publishing doesn't care about
+vt-proxy) but **not** at `http://myapp.local:8080` — nginx-proxy and the app
+container aren't on a shared network, so nginx-proxy can't reach it even
+though it sees the `VIRTUAL_HOST` label via the Docker socket.
+
+To audit any app-vault YAML for this:
+
+1. Find the service with `VIRTUAL_HOST` in its `environment`.
+2. Confirm that *same service* has `networks.vt-proxy` declared.
+3. Confirm `VIRTUAL_PORT` matches the container-side port in `ports:` (the
+   number after the colon), not the host-side port.
+
+Apps with **no web UI** (CLI tools, sidecars like `recyclarr`, VPN containers
+like `gluetun`) should set `no_web_ui: true` instead of `VIRTUAL_HOST` —
+VoidTower's UI then skips showing an "Open" button. Apps using
+`network_mode: host` (e.g. `homeassistant`) intentionally skip nginx-proxy
+entirely — host-networked containers don't share a Docker network with
+nginx-proxy, so access them directly via `http://<host-ip>:<port>`.
+
+---
+
+## 9. Generic Access Recipe — Reaching Any App
+
+Once an app's YAML passes the checklist in section 8, here's how to reach it
+through each layer. Substitute `myapp` / `<port>` for the real
+`VIRTUAL_HOST` value and host port from section 4.
+
+| Access method | URL / config | Requirements |
+|---|---|---|
+| **Direct port (LAN)** | `http://<host-ip>:<port>` | Always works once the container is up — no extra config |
+| **nginx-proxy (LAN, hostname)** | `http://myapp.local:8080` | Section 8 checklist satisfied + `myapp.local` resolves to `<host-ip>` on the client |
+| **Pi-hole DNS** | same as above | Local DNS > DNS Records: `myapp.local → <host-ip>` (section 5a) |
+| **AdGuard DNS** | same as above | Filters > DNS Rewrites: `myapp.local → <host-ip>` or wildcard `*.local → <host-ip>` (section 5b) |
+| **VoidTower Proxy Manager (custom domain / TLS)** | `https://myapp.example.com` | Add a Proxy entry with upstream `http://localhost:<port>` — VoidTower rewrites `localhost` to the Docker host IP automatically |
+| **Tailscale (remote, direct port)** | `http://<tailscale-ip>:<port>` | Tailscale running on the host — no DNS needed, bypasses nginx-proxy entirely |
+| **Tailscale (remote, hostname routing)** | `http://myapp.local:8080` over the tailnet | Set Pi-hole/AdGuard as the tailnet's DNS (Tailscale admin > DNS > Nameservers), or `tailscale serve --bg http://localhost:8080` |
+| **WireGuard (remote, direct port)** | `http://10.8.0.1:<port>` | Connected to wireguard-easy's VPN subnet — no DNS needed |
+| **WireGuard (remote, hostname routing)** | `http://myapp.local:8080` over the VPN | Set the WireGuard peer's DNS to Pi-hole/AdGuard's host IP:5353/5354 (or vt-proxy IP) |
+
+**Rule of thumb:** direct-port and Tailscale/WireGuard direct-port access work
+for *any* app regardless of section 8 — they bypass nginx-proxy and just hit
+the published Docker port. Hostname-based access (`myapp.local`) always
+requires both the section 8 checklist *and* a DNS record/rewrite somewhere in
+the chain (Pi-hole, AdGuard, `/etc/hosts`, or Tailscale MagicDNS).

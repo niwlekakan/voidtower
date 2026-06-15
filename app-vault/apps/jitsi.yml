@@ -18,6 +18,11 @@ compose:
         - ENABLE_LETSENCRYPT=0
         - VIRTUAL_HOST=jitsi.local
         - VIRTUAL_PORT=80
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - jitsi
     jicofo:
       image: jitsi/jicofo:stable
       restart: unless-stopped
@@ -30,11 +35,6 @@ compose:
         - "10000:10000/udp"
       volumes:
         - jitsi_jvb:/config
-      networks:
-        default: {}
-        vt-proxy:
-          aliases:
-            - jitsi
   volumes:
     jitsi_web:
     jitsi_jicofo:

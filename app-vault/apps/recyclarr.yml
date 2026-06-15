@@ -3,6 +3,7 @@ name: Recyclarr
 description: Syncs TRaSH Guides quality profiles, custom formats, and release profiles to Sonarr and Radarr automatically
 category: downloads
 version_hint: "latest"
+no_web_ui: true
 compose:
   services:
     recyclarr:

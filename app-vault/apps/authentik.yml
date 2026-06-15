@@ -16,8 +16,6 @@ compose:
         - POSTGRES_PASSWORD=changeme
         - POSTGRES_USER=authentik
         - POSTGRES_DB=authentik
-        - VIRTUAL_HOST=authentik.local
-        - VIRTUAL_PORT=9000
     authentik-redis:
       image: redis:alpine
       restart: unless-stopped
@@ -38,7 +36,14 @@ compose:
         - AUTHENTIK_POSTGRESQL__NAME=authentik
         - AUTHENTIK_POSTGRESQL__PASSWORD=changeme
         - AUTHENTIK_SECRET_KEY=changeme-to-random-string
+        - VIRTUAL_HOST=authentik.local
+        - VIRTUAL_PORT=9000
       depends_on: [authentik-db, authentik-redis]
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - authentik
     authentik-worker:
       image: ghcr.io/goauthentik/server:latest
       restart: unless-stopped
@@ -54,11 +59,6 @@ compose:
         - AUTHENTIK_POSTGRESQL__PASSWORD=changeme
         - AUTHENTIK_SECRET_KEY=changeme-to-random-string
       depends_on: [authentik-db, authentik-redis]
-      networks:
-        default: {}
-        vt-proxy:
-          aliases:
-            - authentik
   volumes:
     authentik_db:
     authentik_media:

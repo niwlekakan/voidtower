@@ -9,7 +9,7 @@ compose:
       image: ghcr.io/immich-app/immich-server:release
       restart: unless-stopped
       ports:
-        - "2283:3001"
+        - "2283:2283"
       volumes:
         - immich_upload:/usr/src/app/upload
       environment:
@@ -19,7 +19,12 @@ compose:
         - DB_DATABASE_NAME=immich
         - REDIS_HOSTNAME=immich-redis
         - VIRTUAL_HOST=immich.local
-        - VIRTUAL_PORT=3001
+        - VIRTUAL_PORT=2283
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - immich
     immich-db:
       image: registry.hub.docker.com/tensorchord/pgvecto-rs:pg14-v0.2.0
       restart: unless-stopped
@@ -32,11 +37,6 @@ compose:
     immich-redis:
       image: redis:6-alpine
       restart: unless-stopped
-      networks:
-        default: {}
-        vt-proxy:
-          aliases:
-            - immich
   volumes:
     immich_upload:
     immich_db:

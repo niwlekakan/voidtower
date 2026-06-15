@@ -246,10 +246,40 @@ Pi-hole's own admin UI is reachable directly at `http://<host-ip>:8180` or
 through nginx-proxy at `http://pihole.local:8080` (VIRTUAL_HOST is set in
 `pihole.yml`).
 
+#### First-run setup
+
+Unlike AdGuard, Pi-hole v6 has no interactive setup wizard — everything is
+configured via env vars in `pihole.yml` before first deploy:
+
+- **Admin UI password:** `FTLCONF_webserver_api_password=changeme` — change
+  this before deploying (or update it later in Settings > Web Interface, or
+  via `docker exec pihole pihole setpassword`).
+- **Upstream DNS:** `FTLCONF_dns_upstreams=1.1.1.1;8.8.8.8` — semicolon-
+  separated list of resolvers Pi-hole forwards to.
+
+There's no "listen interface" step and no `127.x.x.x` candidate-address list
+like AdGuard's wizard — Pi-hole binds inside the container to all interfaces
+on the ports declared in `pihole.yml` (`5353:53` for DNS, `8180:80` for the
+admin UI), so no extra configuration is needed there.
+
+#### Pointing your router's DNS at Pi-hole
+
+Use the **TrueNAS/host's LAN IP** (e.g. `192.168.1.x`), not a container-
+internal address — that's the IP the `5353:53` mapping is published on.
+
 Pi-hole's DNS listener is on host port 5353 (not 53) to avoid conflicting with
-`systemd-resolved`. Point your router's DNS at `<host-ip>:5353`, or if your
-router does not support non-standard DNS ports, either disable
-systemd-resolved's stub listener or remap pihole to port 53 in `pihole.yml`.
+`systemd-resolved`. Most routers accept a DNS server *IP* but not a custom
+*port*, so `<host-ip>:5353` often isn't usable directly. Two options:
+
+1. **Remap Pi-hole to host port 53** in `pihole.yml` (change `"5353:53/tcp"` /
+   `"5353:53/udp"` to `"53:53/..."`), after disabling `systemd-resolved`'s
+   stub listener (`/etc/systemd/resolved.conf`: `DNSStubListener=no`, then
+   `systemctl restart systemd-resolved`) — see section 7.
+2. Set DNS to `<host-ip>:5353` on a per-device basis, if the OS/client
+   supports a custom DNS port (most routers don't, but some OSes/apps do).
+
+Option 1 is the common choice since the router is usually the one place a
+custom DNS port isn't supported.
 
 ### 5b. AdGuard Home instead of Pi-hole
 
@@ -271,6 +301,47 @@ AdGuard ports:
 The blocklist syntax differs from Pi-hole (AdGuard uses its own filter format
 or standard hosts-file format). Upstream DNS config is in Settings > DNS
 Settings > Upstream DNS servers.
+
+#### First-run setup wizard
+
+The wizard asks for a **Listen interface**, **Web interface port**, and **DNS
+server port**. These are all *container-internal* — pick values consistent
+with the port mappings in `adguardhome.yml`:
+
+- **Listen interface:** "All interfaces" / `0.0.0.0`
+- **DNS server port:** `53` — maps to host port `5354` via the existing
+  `5354:53` mapping
+- **Web interface port:** keep `3000` (matches `VIRTUAL_PORT=3000` in the
+  YAML — admin UI stays reachable at `<host-ip>:3000` and at
+  `adguard.local:8080` via nginx-proxy with no extra config). Choosing `80`
+  instead moves the admin UI to `<host-ip>:3001` (via the `3001:80` mapping)
+  but leaves `VIRTUAL_PORT=3000` stale — `adguard.local:8080` would 502 until
+  you redeploy with `VIRTUAL_PORT=80` (same bug class as section 8).
+
+The wizard also lists some `127.x.x.x` / container-internal IPs as candidate
+listen addresses — these are from inside the AdGuard container's network
+namespace and are **not reachable from your router or LAN devices**. Ignore
+them.
+
+#### Pointing your router's DNS at AdGuard
+
+Use the **TrueNAS/host's LAN IP** (e.g. `192.168.1.x`), not anything from the
+wizard's interface list — that's the IP the `5354:53` mapping is published
+on.
+
+Most routers accept a DNS server *IP* but not a custom *port*, so
+`<host-ip>:5354` often isn't usable directly. Two options:
+
+1. **Remap AdGuard to host port 53** in `adguardhome.yml` (change
+   `"5354:53/tcp"` / `"5354:53/udp"` to `"53:53/..."`), after disabling
+   `systemd-resolved`'s stub listener (`/etc/systemd/resolved.conf`:
+   `DNSStubListener=no`, then `systemctl restart systemd-resolved`) — see
+   section 7.
+2. Set DNS to `<host-ip>:5354` on a per-device basis, if the OS/client
+   supports a custom DNS port (most routers don't, but some OSes/apps do).
+
+Option 1 is the common choice since the router is usually the one place a
+custom DNS port isn't supported.
 
 ### 5c. Traefik instead of nginx-proxy
 

@@ -19,6 +19,8 @@ compose:
         - PROXY_HTTP_ADDR=0.0.0.0:9200
         - VIRTUAL_HOST=opencloud.local
         - VIRTUAL_PORT=9200
+        - OC_JWT_SECRET=
+        - OC_MACHINE_AUTH_API_KEY=
       networks:
         default: {}
         vt-proxy:
@@ -33,6 +35,13 @@ compose:
 ai_integration:
   level: aware
   description: "Odysseus can read file metadata and manage cloud storage via OpenCloud API"
+required_env:
+  - key: OC_JWT_SECRET
+    description: "JWT signing secret for OpenCloud tokens (auto-generated)"
+    generate: random_hex_32
+  - key: OC_MACHINE_AUTH_API_KEY
+    description: "Internal machine auth key (auto-generated)"
+    generate: random_hex_32
 links:
   home: https://opencloud.eu
   docs: https://docs.opencloud.eu

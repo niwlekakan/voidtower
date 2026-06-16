@@ -274,12 +274,60 @@ Pi-hole's DNS listener is on host port 5353 (not 53) to avoid conflicting with
 1. **Remap Pi-hole to host port 53** in `pihole.yml` (change `"5353:53/tcp"` /
    `"5353:53/udp"` to `"53:53/..."`), after disabling `systemd-resolved`'s
    stub listener (`/etc/systemd/resolved.conf`: `DNSStubListener=no`, then
-   `systemctl restart systemd-resolved`) — see section 7.
+   `systemctl restart systemd-resolved`) — see section 7. **Does not apply to
+   TrueNAS** — see below.
 2. Set DNS to `<host-ip>:5353` on a per-device basis, if the OS/client
    supports a custom DNS port (most routers don't, but some OSes/apps do).
 
-Option 1 is the common choice since the router is usually the one place a
-custom DNS port isn't supported.
+On a typical Linux box, option 1 is the common choice since the router is
+usually the one place a custom DNS port isn't supported.
+
+#### TrueNAS: port 53 is owned by dnsmasq, not systemd-resolved
+
+TrueNAS SCALE has no `/etc/systemd/resolved.conf` — port 53 on the host is
+held by TrueNAS's own `dnsmasq` (used for VM/bridge networking and the apps/
+k3s network). **Don't disable or remap it** — that can break VM networking and
+App Vault's container networking. So option 1 above doesn't apply on TrueNAS.
+
+If your router can't use a custom DNS port, two TrueNAS-friendly alternatives:
+
+**A. Give Pi-hole/AdGuard its own IP via macvlan (recommended)**
+
+```bash
+docker network create -d macvlan \
+  --subnet=192.168.1.0/24 \
+  --gateway=192.168.1.1 \
+  -o parent=eth0 \
+  pihole-macvlan
+```
+
+Attach the container to `pihole-macvlan` with a static IP (e.g.
+`192.168.1.53`) instead of publishing host ports. It binds port 53 on **its
+own IP**, with zero conflict with TrueNAS's dnsmasq (bound to the TrueNAS
+host's IP). Point your router's DNS at `192.168.1.53` — standard port 53,
+works with any router.
+
+Caveat: the TrueNAS host itself usually can't reach a macvlan container
+directly (a known Docker macvlan limitation) — not a problem here since DNS
+clients are other LAN devices, not the host.
+
+**B. DNAT port-redirect on the host**
+
+Add an iptables rule via TrueNAS's persistent Init/Shutdown Scripts (System
+Settings → Advanced → Init/Shutdown Scripts, type: Command, run at Post Init)
+to redirect inbound port 53 to Pi-hole's `5353`:
+
+```bash
+iptables -t nat -A PREROUTING -i <lan-iface> -p udp --dport 53 -j REDIRECT --to-port 5353
+iptables -t nat -A PREROUTING -i <lan-iface> -p tcp --dport 53 -j REDIRECT --to-port 5353
+```
+
+This intercepts packets before dnsmasq's socket sees them, so no conflict —
+but it's more fragile (only persists via the init script, and `<lan-iface>`
+must be the correct LAN-facing interface name).
+
+Option A is generally preferred — no iptables rules to maintain across
+reboots/upgrades, and router config stays at a normal port-53 IP.
 
 ### 5b. AdGuard Home instead of Pi-hole
 
@@ -336,12 +384,14 @@ Most routers accept a DNS server *IP* but not a custom *port*, so
    `"5354:53/tcp"` / `"5354:53/udp"` to `"53:53/..."`), after disabling
    `systemd-resolved`'s stub listener (`/etc/systemd/resolved.conf`:
    `DNSStubListener=no`, then `systemctl restart systemd-resolved`) — see
-   section 7.
+   section 7. **Does not apply to TrueNAS** — see the "TrueNAS: port 53 is
+   owned by dnsmasq" callout in section 5a, which applies equally here
+   (substitute AdGuard's `5354` for Pi-hole's `5353`).
 2. Set DNS to `<host-ip>:5354` on a per-device basis, if the OS/client
    supports a custom DNS port (most routers don't, but some OSes/apps do).
 
-Option 1 is the common choice since the router is usually the one place a
-custom DNS port isn't supported.
+On a typical Linux box, option 1 is the common choice since the router is
+usually the one place a custom DNS port isn't supported.
 
 ### 5c. Traefik instead of nginx-proxy
 

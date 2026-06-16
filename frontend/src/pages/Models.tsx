@@ -740,14 +740,21 @@ export default function ModelsPage() {
         {/* URL + filename inputs */}
         <div className="space-y-3">
           <div>
-            <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>URL</label>
+            <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+              Direct URL to <code>.gguf</code> file
+            </label>
             <input
               style={inputStyle}
-              placeholder="https://huggingface.co/…/model.gguf"
+              placeholder="https://huggingface.co/{user}/{repo}/resolve/main/model.gguf"
               value={url}
               onChange={e => setUrl(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleDownload()}
             />
+            {url && url.includes('huggingface.co') && !url.includes('/resolve/') && (
+              <p className="text-xs mt-1" style={{ color: 'var(--accent-warning)' }}>
+                This looks like a model page. Go to the <strong>Files</strong> tab on that page, click a <code>.gguf</code> file, and copy the download link.
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>

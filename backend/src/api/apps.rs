@@ -25,6 +25,16 @@ pub struct AiIntegration {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequiredEnvVar {
+    pub key: String,
+    pub description: String,
+    /// If set, auto-generate a value at deploy time when not supplied by the user.
+    /// Supported: "random_hex_32", "random_hex_64"
+    #[serde(default)]
+    pub generate: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppDef {
     pub id: String,
     pub name: String,
@@ -55,6 +65,11 @@ pub struct AppDef {
     /// Appended to the embed URL so the iframe lands on the right page.
     #[serde(default)]
     pub web_path: Option<String>,
+    /// Env vars this app needs at deploy time. Entries with `generate` are
+    /// auto-populated if the user doesn't provide them; others are shown as
+    /// required fields in the pre-deploy modal.
+    #[serde(default)]
+    pub required_env: Vec<RequiredEnvVar>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +183,7 @@ fn load_catalog(catalog_dir: &std::path::Path) -> Vec<AppDef> {
 /// Known local LLM services in priority order.
 /// Each entry: (port, path to probe, human label, OpenAI-compat /v1 base URL)
 const LLM_PROBES: &[(u16, &str, &str, &str)] = &[
+    (8090,  "/health",      "llama.cpp",               "http://host.docker.internal:8090/v1"),
     (8080,  "/health",      "llama.cpp",               "http://host.docker.internal:8080/v1"),
     (11434, "/api/version", "Ollama",                  "http://host.docker.internal:11434/v1"),
     (1234,  "/v1/models",   "LM Studio",               "http://host.docker.internal:1234/v1"),
@@ -733,6 +749,49 @@ pub async fn deploy(
                                         .unwrap_or(false)
                                 });
                                 arr.push(Value::String(format!("{}={}", k, v)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Auto-generate values for required_env entries that have a `generate` strategy
+    // and weren't supplied by the user. Then inject them as env overrides.
+    if !app.required_env.is_empty() {
+        if let Some(services) = compose_val.get_mut("services") {
+            if let Some(obj) = services.as_object_mut() {
+                for svc in obj.values_mut() {
+                    if let Some(env) = svc.get_mut("environment") {
+                        if let Some(arr) = env.as_array_mut() {
+                            for req_var in &app.required_env {
+                                let already_set = req.env_overrides.as_ref()
+                                    .map(|o| o.contains_key(&req_var.key))
+                                    .unwrap_or(false);
+                                if !already_set {
+                                    if let Some(gen) = &req_var.generate {
+                                        let generated = match gen.as_str() {
+                                            "random_hex_64" => {
+                                                let mut bytes = [0u8; 32];
+                                                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+                                                hex::encode(bytes)
+                                            }
+                                            _ => {
+                                                // default: random_hex_32
+                                                let mut bytes = [0u8; 16];
+                                                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+                                                hex::encode(bytes)
+                                            }
+                                        };
+                                        arr.retain(|e| {
+                                            !e.as_str()
+                                                .map(|s| s.starts_with(&format!("{}=", req_var.key)) || s == req_var.key.as_str())
+                                                .unwrap_or(false)
+                                        });
+                                        arr.push(Value::String(format!("{}={}", req_var.key, generated)));
+                                    }
+                                }
                             }
                         }
                     }

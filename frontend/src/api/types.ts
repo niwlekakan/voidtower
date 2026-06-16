@@ -149,6 +149,7 @@ export interface AppDef {
   web_port?: number
   web_path?: string
   compose?: Record<string, unknown>
+  required_env?: Array<{ key: string; description: string; generate?: string }>
 }
 
 export interface DeployedApp {

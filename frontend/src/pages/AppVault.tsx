@@ -11,6 +11,7 @@ import { useEmbedStore } from '@/store/embedStore'
 import { useFiltersStore } from '@/store/filters'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import DeployToProxmoxModal from './DeployToProxmoxModal'
+import DeployConfigModal from './DeployConfigModal'
 import Button from '@/components/ui/Button'
 import AiBadge from '@/components/ui/AiBadge'
 
@@ -1157,8 +1158,9 @@ export default function AppVaultPage() {
   const [deployError, setDeployError]   = useState<string | null>(null)
   const [search, setSearch]             = useState('')
   const [category, setCategory]         = useState<string>('all')
-  const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover' | 'custom' | 'external'>('catalog')
+  const [tab, setTab]                   = useState<'catalog' | 'deployed' | 'discover' | 'custom' | 'external'>('deployed')
   const [proxmoxDeployApp, setProxmoxDeployApp] = useState<AppDef | null>(null)
+  const [configModalApp, setConfigModalApp]     = useState<AppDef | null>(null)
   const [allTags, setAllTags]           = useState<Tag[]>([])
   const [tagMap, setTagMap]             = useState<TagMap>({})
   const globalTag = useFiltersStore((s) => s.globalTag)
@@ -1231,8 +1233,8 @@ export default function AppVaultPage() {
       {/* Tabs */}
       <div className="flex gap-1 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
         {([
-          { id: 'catalog',  label: `Catalog (${apps.length})` },
           { id: 'deployed', label: `Deployed (${deployed.length})` },
+          { id: 'catalog',  label: `Catalog (${apps.length})` },
           { id: 'external', label: '⇣ External' },
           { id: 'discover', label: '✦ AI Discover' },
           { id: 'custom',   label: '⊕ Custom Deploy' },
@@ -1344,8 +1346,7 @@ export default function AppVaultPage() {
                       <Button
                         size="sm"
                         disabled={!dockerAvailable}
-                        loading={deploying === app.id}
-                        onClick={() => deploy(app)}
+                        onClick={() => setConfigModalApp(app)}
                       >
                         Deploy
                       </Button>
@@ -1401,6 +1402,13 @@ export default function AppVaultPage() {
     </div>
     {proxmoxDeployApp && (
       <DeployToProxmoxModal app={proxmoxDeployApp} onClose={() => setProxmoxDeployApp(null)} />
+    )}
+    {configModalApp && (
+      <DeployConfigModal
+        app={configModalApp}
+        onClose={() => setConfigModalApp(null)}
+        onDeployed={async () => { setConfigModalApp(null); await load(); setTab('deployed') }}
+      />
     )}
     </>
   )

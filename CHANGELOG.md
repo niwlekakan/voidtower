@@ -11,6 +11,19 @@ Versioning is [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **App Vault — pre-deploy configuration modal** — clicking Deploy on a catalog app now opens a modal showing the full compose YAML, env var overrides, and any required secrets before deployment starts. After deploy, the modal streams the `docker compose up` log output so you can see exactly what happened.
+- **App Vault — `required_env` catalog field** — app definitions can declare required environment variables with an optional `generate` strategy (`random_hex_32`, `random_hex_64`). Auto-generated secrets are injected at deploy time with no user input; manually required fields are shown as validated inputs in the pre-deploy modal.
+- **OpenCloud — auto-generated secrets** — `OC_JWT_SECRET` and `OC_MACHINE_AUTH_API_KEY` are now auto-generated on deploy so OpenCloud starts up correctly out of the box.
+
+### Fixed
+
+- **App Vault — Proxmox deploy modal invisible**: The modal box used `var(--bg-surface)` which is not defined in any theme, rendering it fully transparent. Changed to `var(--bg-card)`.
+- **App Vault — Deployed tab is now the default**: Deployed apps tab is shown first; Catalog is second.
+- **App Vault — GGUF download silently accepted HTML**: Pasting a HuggingFace model page URL instead of a direct `.gguf` file URL returned an instant "Done" while saving an HTML file to disk. The download handler now rejects HTML `Content-Type` responses with a descriptive error, and validates GGUF magic bytes (`GGUF` header) after the download completes — non-GGUF files are deleted and the error surfaced. The URL input shows an inline warning when a model page URL is detected.
+- **App Vault — GGUF download failing on HuggingFace CDN**: Requests without a `User-Agent` header were being rejected. Downloader now sends a standard User-Agent.
+- **Models — llama.cpp active model always shown as unloaded**: Active model detection read the `command` field from the saved compose file, but `llama-cpp.yml` uses `entrypoint`. Detection now queries the live llama.cpp server's `/v1/models` API (port 8090 for Docker, 8080 for native) instead.
+- **Models — Docker-deployed llama.cpp not auto-detected**: `detect_llm_endpoint()` only probed port 8080 (native llama.cpp). The Docker catalog entry maps to host port 8090, so it was never detected for `LLM_API_BASE` injection. Port 8090 is now probed first.
+
 - **Odysseus themes** — 16 built-in themes ported from Odysseus's preset palette (Dark, Light, Midnight, Paper, Cyberpunk, Retrowave, Forest, Ocean, Ume, Copper, Terminal, Organs, Lavender, GPT, Claude, Cute). Available in Themes settings under a dedicated "Odysseus" section.
 - **Sync from Odysseus** — "Sync from Odysseus" button on the Themes page reads Odysseus's active theme via `/api/integrations/odysseus/theme` and applies the matching VoidTower preset.
 - **GPU controls in TopBar** — GPU widget (VRAM %, llama.cpp process list, Unload button) moved from the AI workspace overlay into the TopBar, sitting next to the Void Mode toggle. Always visible regardless of current page.

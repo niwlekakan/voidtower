@@ -73,16 +73,27 @@ async fn models_dir(state: &AppState) -> std::path::PathBuf {
     dir
 }
 
-fn get_active_model_from_compose(compose_path: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(compose_path).ok()?;
-    let val: serde_json::Value = serde_yaml::from_str(&content).ok()?;
-    let cmd = val.get("services")?.as_object()?.values().next()?
-        .get("command")?.as_str()?;
-    // Find "--model /models/<filename>"
-    let after = cmd.split("--model ").nth(1)?;
-    let filename = after.split_whitespace().next()?
-        .trim_start_matches("/models/").to_string();
-    if filename.is_empty() { None } else { Some(filename) }
+/// Query the running llama.cpp server for its loaded model.
+/// Tries the Docker host port (8090) first, then the native port (8080).
+async fn get_active_model_from_server() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build().ok()?;
+    for port in [8090u16, 8080] {
+        let url = format!("http://127.0.0.1:{port}/v1/models");
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    let model_id = body.get("data")?.as_array()?.first()?.get("id")?.as_str()?;
+                    // Strip any leading path prefix, keep just the filename
+                    let name = std::path::Path::new(model_id)
+                        .file_name()?.to_string_lossy().into_owned();
+                    return Some(name);
+                }
+            }
+        }
+    }
+    None
 }
 
 // ─── Ollama integration ───────────────────────────────────────────────────────
@@ -130,11 +141,8 @@ pub async fn list_models(State(state): State<AppState>, jar: CookieJar) -> Resul
     require_admin(&state, &jar).await?;
     let dir = models_dir(&state).await;
 
-    // Find active model
-    let active = sqlx::query_as::<_, (String,)>(
-        "SELECT compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1"
-    ).fetch_optional(&state.db).await.ok().flatten()
-     .and_then(|(p,)| get_active_model_from_compose(std::path::Path::new(&p)));
+    // Find active model by querying the live llama.cpp server (ports 8090/8080)
+    let active = get_active_model_from_server().await;
 
     let mut models = Vec::new();
 
@@ -227,11 +235,28 @@ pub async fn start_download(
 async fn download_file(id: &str, url: &str, dir: &std::path::Path, filename: &str) -> std::result::Result<(), String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
+        .user_agent("Mozilla/5.0 (compatible; VoidTower/1.0; +https://github.com/voidtower)")
         .build().map_err(|e| e.to_string())?;
 
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    let resp = client.get(url)
+        .header("Accept", "*/*")
+        .send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
+    }
+
+    // Reject HTML responses — user likely pasted a model page URL instead of a direct file link
+    let content_type = resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    if content_type.starts_with("text/html") {
+        return Err(
+            "Got an HTML page instead of a file. \
+             Use a direct download URL ending in .gguf — e.g. \
+             https://huggingface.co/{user}/{repo}/resolve/main/{file}.gguf".into()
+        );
     }
 
     let total = resp.content_length();
@@ -259,6 +284,24 @@ async fn download_file(id: &str, url: &str, dir: &std::path::Path, filename: &st
 
     file.flush().await.map_err(|e| e.to_string())?;
     drop(file);
+
+    // Verify GGUF magic bytes (0x47 0x47 0x55 0x46 = "GGUF") before keeping the file
+    {
+        use tokio::io::AsyncReadExt;
+        let mut f = tokio::fs::File::open(&tmp_path).await.map_err(|e| e.to_string())?;
+        let mut magic = [0u8; 4];
+        f.read_exact(&mut magic).await.map_err(|_| {
+            "Downloaded file is too small to be a valid GGUF model".to_string()
+        })?;
+        if &magic != b"GGUF" {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(
+                "Downloaded file is not a valid GGUF model (wrong magic bytes). \
+                 Make sure the URL points directly to a .gguf file, not a model page.".into()
+            );
+        }
+    }
+
     tokio::fs::rename(&tmp_path, &final_path).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -292,10 +335,7 @@ pub async fn get_active(
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let active = sqlx::query_as::<_, (String,)>(
-        "SELECT compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1"
-    ).fetch_optional(&state.db).await.ok().flatten()
-     .and_then(|(p,)| get_active_model_from_compose(std::path::Path::new(&p)));
+    let active = get_active_model_from_server().await;
     Ok(Json(serde_json::json!({ "filename": active })))
 }
 

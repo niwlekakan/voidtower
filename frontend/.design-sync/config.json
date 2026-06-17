@@ -1,0 +1,21 @@
+{
+  "projectId": "2c0ea0cf-d3f5-46e6-9479-9ff4e74e44a6",
+  "pkg": "voidtower-frontend",
+  "globalName": "VoidTowerUI",
+  "shape": "package",
+  "srcDir": "../src",
+  "tsconfig": "../tsconfig.json",
+  "componentSrcMap": {
+    "Button": "../src/components/ui/Button.tsx",
+    "StatusBadge": "../src/components/ui/StatusBadge.tsx",
+    "AiBadge": "../src/components/ui/AiBadge.tsx",
+    "MetricCard": "../src/components/ui/MetricCard.tsx",
+    "MetricChart": "../src/components/ui/MetricChart.tsx"
+  },
+  "cssEntry": "../.ds-sync/vt-styles.css",
+  "runtimeFontPrefixes": ["JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono"],
+  "overrides": {
+    "MetricCard": { "cardMode": "column" }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}

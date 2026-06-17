@@ -782,6 +782,17 @@ body[data-hoverfx="playful"] button:hover:not(:disabled) {
 }
 body[data-hoverfx="playful"] button:active:not(:disabled) { transform: translateY(0) scale(0.97); }
 
+/* Full-bleed row-toggle buttons (e.g. AppVault deployed-app rows) own none of
+   their own chrome — the rounded border/background lives on a parent div so
+   the row and its expanded panel share one outline. Lifting/scaling the
+   button here would float its text past that border, so keep brightness
+   only and drop the transform/shadow that the generic button rule adds. */
+body[data-hoverfx="normal"] button.vt-row-toggle:hover:not(:disabled),
+body[data-hoverfx="playful"] button.vt-row-toggle:hover:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
 /* Cards/panels — only the ones marked clickable (none currently are; this is
    for future card-as-link patterns). Every .card in the app today is a static
    layout container, so an unscoped .card:hover would lift/glow on mere mouse-over. */

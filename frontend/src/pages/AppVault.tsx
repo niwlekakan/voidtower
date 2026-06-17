@@ -1060,7 +1060,7 @@ function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, onRefr
           <div key={app.id} className="rounded-lg overflow-hidden"
             style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg-card)' }}>
             <button
-              className="w-full flex items-center gap-3 px-4 py-3 text-left hover:opacity-90 transition-opacity"
+              className="vt-row-toggle w-full flex items-center gap-3 px-4 py-3 text-left hover:opacity-90 transition-opacity"
               onClick={() => setExpanded(open ? null : app.project_name)}
             >
               {/* Status dot */}

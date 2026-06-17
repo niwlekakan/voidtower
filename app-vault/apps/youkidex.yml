@@ -28,7 +28,7 @@ compose:
       image: accetto/ubuntu-vnc-xfce-chromium-g3:latest
       restart: unless-stopped
       ports:
-        - "8888:6080"
+        - "8890:6080"
       environment:
         - VIRTUAL_HOST=youkidex.local
         - VIRTUAL_PORT=6080
@@ -52,8 +52,8 @@ setup_notes: |
     adb shell appops set com.youki.youkidex SYSTEM_ALERT_WINDOW allow
     adb shell settings put secure enabled_accessibility_services com.youki.youkidex/.service.YoukiDexAccessibilityService
     adb shell pm grant com.youki.youkidex android.permission.WRITE_SECURE_SETTINGS
-  Access the Android screen at http://localhost:8888 or http://youkidex.local via nginx-proxy.
+  Access the Android screen at http://localhost:8890 or http://youkidex.local via nginx-proxy.
 links:
   home: https://github.com/mrYouki/YoukiDex-Android-Desktop
-  web_ui: http://localhost:8888
+  web_ui: http://localhost:8890
   docs: https://github.com/mrYouki/YoukiDex-Android-Desktop/blob/main/README.md

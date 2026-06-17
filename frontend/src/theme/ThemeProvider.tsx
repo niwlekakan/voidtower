@@ -35,6 +35,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const glassLevel   = useThemeStore((s) => s.glassLevel)
   const panelOpacity = useThemeStore((s) => s.panelOpacity)
   const panelRadius  = useThemeStore((s) => s.panelRadius)
+  const hoverFx      = useThemeStore((s) => s.hoverFx)
   const a11y         = useThemeStore((s) => s.a11y)
 
   // Apply theme first (sets solid hex values), then apply alpha on top.
@@ -52,6 +53,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     if (glassLevel === 'none') document.body.removeAttribute('data-glass')
     else document.body.setAttribute('data-glass', glassLevel)
   }, [glassLevel])
+
+  useEffect(() => {
+    if (hoverFx === 'off') document.body.removeAttribute('data-hoverfx')
+    else document.body.setAttribute('data-hoverfx', hoverFx)
+  }, [hoverFx])
 
   useEffect(() => {
     const cl = document.documentElement.classList

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import {
-  type Theme, type GlassLevel, type BgPreset, type AnimConfig,
+  type Theme, type GlassLevel, type BgPreset, type AnimConfig, type HoverFxLevel,
   BUILTIN_THEMES, BG_PRESETS, DEFAULT_ANIM_CONFIG, randomizeAnimConfig, importTheme, applyTheme, hsl2hex, hex2rgba,
 } from '@/theme/themes'
 import { type DeviceTier } from '../aios/store/aios'
@@ -30,11 +30,13 @@ interface ThemeStore {
   panelRadius: number    // 0-20 px, border-radius for panels/cards
   bgPreset: BgPreset
   animConfig: AnimConfig
+  hoverFx: HoverFxLevel
   uiMode: UiMode
   deviceMode: DeviceTier | 'auto'
   a11y: A11yConfig
   setTheme: (id: string) => void
   setGlass: (level: GlassLevel) => void
+  setHoverFx: (level: HoverFxLevel) => void
   setPanelOpacity: (n: number) => void
   setPanelRadius: (n: number) => void
   setBgPreset: (preset: BgPreset) => void
@@ -63,6 +65,7 @@ export const useThemeStore = create<ThemeStore>()(
       panelRadius: 8,
       bgPreset: 'none',
       animConfig: { ...DEFAULT_ANIM_CONFIG },
+      hoverFx: 'normal' as HoverFxLevel,
       uiMode: 'tower' as UiMode,
       deviceMode: 'auto' as DeviceTier | 'auto',
       a11y: { ...DEFAULT_A11Y },
@@ -74,6 +77,7 @@ export const useThemeStore = create<ThemeStore>()(
       },
 
       setGlass: (level) => set({ glassLevel: level }),
+      setHoverFx: (level) => set({ hoverFx: level }),
       setPanelOpacity: (n) => set({ panelOpacity: Math.max(0, Math.min(100, n)) }),
       setPanelRadius: (n) => set({ panelRadius: Math.max(0, Math.min(20, n)) }),
 
@@ -186,6 +190,7 @@ export const useThemeStore = create<ThemeStore>()(
         panelRadius: s.panelRadius,
         bgPreset: s.bgPreset,
         animConfig: s.animConfig,
+        hoverFx: s.hoverFx,
         uiMode: s.uiMode,
         deviceMode: s.deviceMode,
         a11y: s.a11y,

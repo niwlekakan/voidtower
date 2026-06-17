@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
 import { useThemeStore } from '@/store/theme'
-import { exportTheme, importTheme, type Theme, GLASS_LEVELS } from '@/theme/themes'
+import { exportTheme, importTheme, type Theme, GLASS_LEVELS, HOVER_FX_LEVELS } from '@/theme/themes'
 import ThemeEditor from '@/components/ui/ThemeEditor'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
@@ -59,7 +59,7 @@ const BUILTIN_SWATCH_COLORS: Record<string, string[]> = {
 }
 
 function InterfaceCard() {
-  const { glassLevel, setGlass, panelOpacity, setPanelOpacity, panelRadius, setPanelRadius, a11y, setA11y } = useThemeStore()
+  const { glassLevel, setGlass, panelOpacity, setPanelOpacity, panelRadius, setPanelRadius, hoverFx, setHoverFx, a11y, setA11y } = useThemeStore()
 
   const slider = (label: string, value: number, min: number, max: number, onChange: (n: number) => void, fmt: (n: number) => string) => (
     <div>
@@ -96,6 +96,26 @@ function InterfaceCard() {
         </div>
         <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
           {GLASS_LEVELS.find(g => g.id === glassLevel)?.description ?? ''}
+        </p>
+      </div>
+
+      <div>
+        <span className="text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>Hover animations</span>
+        <div className="flex flex-wrap gap-1.5">
+          {HOVER_FX_LEVELS.map(h => (
+            <button key={h.id} onClick={() => setHoverFx(h.id)}
+              className="px-3 py-1 rounded text-xs transition-colors"
+              style={{
+                background: hoverFx === h.id ? 'var(--accent-primary)' : 'var(--bg-elevated)',
+                color: hoverFx === h.id ? '#fff' : 'var(--text-secondary)',
+                border: `1px solid ${hoverFx === h.id ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+              }}>
+              {h.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+          {HOVER_FX_LEVELS.find(h => h.id === hoverFx)?.description ?? ''}
         </p>
       </div>
 

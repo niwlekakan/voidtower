@@ -8,6 +8,8 @@ import ForcePasswordChange from '@/components/ui/ForcePasswordChange'
 import AnimatedBackground from '@/components/ui/AnimatedBackground'
 import { useMetrics } from '@/hooks/useMetrics'
 import { useAuthStore } from '@/store/auth'
+import { useSidebarPrefsStore } from '@/store/sidebarPrefs'
+import { MAIN_SCROLL_ID } from './Sidebar'
 import { BrainCircuit, Settings2 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import AppEmbedOverlay from '@/components/ui/AppEmbedOverlay'
@@ -87,17 +89,25 @@ export default function AppLayout() {
   const user = useAuthStore((s) => s.user)
   const { pathname } = useLocation()
   const isAI = pathname === '/ai'
+  const placement = useSidebarPrefsStore((s) => s.placement)
+  const horizontal = placement === 'top' || placement === 'bottom'
+  const sidebarFirst = placement === 'left' || placement === 'top'
 
   return (
-    <div className="flex h-full">
+    <div className={horizontal ? 'flex flex-col h-full' : 'flex h-full'}>
       <AnimatedBackground />
-      <Sidebar />
-      <div className="flex flex-col flex-1 min-w-0">
+      {/* Sidebar always renders in the same JSX slot (never unmounted by a placement change)
+          so its own enter/slide animation — keyed on placement — can run every time.
+          Visual position is controlled purely by CSS order, not by where it sits in the tree. */}
+      <div style={{ order: sidebarFirst ? -1 : 1 }}>
+        <Sidebar />
+      </div>
+      <div className="flex flex-col flex-1 min-w-0 min-h-0" style={{ order: 0 }}>
         <TopBar />
         {/* main is relative+overflow-hidden so the absolute iframe fills it exactly */}
         <main className="flex-1 relative overflow-hidden min-h-0">
           {/* Normal page content — always rendered, hidden behind iframe on /ai */}
-          <div className="absolute inset-0 overflow-auto p-4" style={{ display: isAI ? 'none' : 'block' }}>
+          <div id={MAIN_SCROLL_ID} className="absolute inset-0 overflow-auto p-4" style={{ display: isAI ? 'none' : 'block' }}>
             <Outlet />
           </div>
           {/* AI page outlet still needs to mount on /ai for router correctness, but renders nothing */}

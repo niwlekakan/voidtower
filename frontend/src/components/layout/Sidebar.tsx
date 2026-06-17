@@ -1,15 +1,20 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2,
+  ChevronLeft, ChevronDown, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2, LayoutPanelTop,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
 import { api } from '@/api/client'
 import { useNavConfigStore, resolvedNavItems, resolvedNavGroups } from '@/store/navConfig'
 import { useSidebarPrefsStore, type SidebarAnimationStyle } from '@/store/sidebarPrefs'
+import { ICON_REGISTRY } from '@/components/ui/iconRegistry'
+import { TopBarUtilities } from './TopBar'
+
+export const MAIN_SCROLL_ID = 'vt-main-scroll'
 
 interface NavItem {
   to: string
@@ -280,10 +285,13 @@ function chevronStyle(collapsed: boolean, animation: SidebarAnimationStyle): Rea
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
+  const [scrollHidden, setScrollHidden] = useState(false)
+  const [openGroup, setOpenGroup] = useState<{ id: string; left: number; top?: number; bottom?: number } | null>(null)
   const [available, setAvailable] = useState<Set<string> | null>(null)
   const [instanceName, setInstanceName] = useState('VoidTower')
   const [instanceLogo, setInstanceLogo] = useState('')
   const [activePlugins, setActivePlugins] = useState<{ id: string; name: string }[]>([])
+  const [customTabs, setCustomTabs] = useState<{ id: string; title: string; icon: string | null }[]>([])
   const { user, logout } = useAuthStore()
   const navigate = useNavigate()
   const navItems = useNavConfigStore((s) => s.items)
@@ -292,6 +300,47 @@ export default function Sidebar() {
   const activeGroups = resolvedNavGroups(storedGroups)
   const navMap = Object.fromEntries(resolved.map((n) => [n.id, n]))
   const animation = useSidebarPrefsStore((s) => s.animation)
+  const placement = useSidebarPrefsStore((s) => s.placement)
+  const autoHide = useSidebarPrefsStore((s) => s.autoHide)
+  const horizontal = placement === 'top' || placement === 'bottom'
+  const effectiveCollapsed = horizontal ? false : (collapsed || (autoHide && scrollHidden))
+
+  // Placement changes don't remount this component (AppLayout keeps it in a stable JSX
+  // slot, repositioned via CSS order) — but the horizontal/vertical branches below are
+  // structurally different <aside> trees, so there's no single box to morph smoothly.
+  // Instead, slide+fade the new shape in from the edge it's docking to.
+  const [entering, setEntering] = useState(false)
+  const prevPlacementRef = useRef(placement)
+  useEffect(() => {
+    if (prevPlacementRef.current === placement) return
+    prevPlacementRef.current = placement
+    setEntering(true)
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setEntering(false))
+    })
+    return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2) }
+  }, [placement])
+  const enterTransform =
+    placement === 'left' ? 'translateX(-28px)' :
+    placement === 'right' ? 'translateX(28px)' :
+    placement === 'top' ? 'translateY(-28px)' :
+    'translateY(28px)'
+
+  useEffect(() => {
+    if (!autoHide) { setScrollHidden(false); return }
+    const el = document.getElementById(MAIN_SCROLL_ID)
+    if (!el) return
+    let lastTop = el.scrollTop
+    const handler = () => {
+      const top = el.scrollTop
+      if (top > lastTop && top > 40) setScrollHidden(true)
+      else if (top < lastTop) setScrollHidden(false)
+      lastTop = top
+    }
+    el.addEventListener('scroll', handler, { passive: true })
+    return () => el.removeEventListener('scroll', handler)
+  }, [autoHide])
 
   useEffect(() => {
     fetch('/api/plugins', { credentials: 'include' })
@@ -299,6 +348,12 @@ export default function Sidebar() {
       .then((data: { id: string; name: string; enabled: boolean }[]) =>
         setActivePlugins(data.filter(p => p.enabled).map(p => ({ id: p.id, name: p.name })))
       )
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    api.tabs.list()
+      .then(tabs => setCustomTabs(tabs.map(t => ({ id: t.id, title: t.title, icon: t.icon }))))
       .catch(() => {})
   }, [])
 
@@ -341,16 +396,144 @@ export default function Sidebar() {
     navigate('/login')
   }
 
+  // Flatten + filter once, shared by both horizontal and vertical rendering
+  const visibleGroups = activeGroups
+    .map((group) => ({
+      group,
+      items: group.itemIds
+        .map(id => NAV_ITEMS_BY_ID[id])
+        .filter((item): item is NavItem => {
+          if (!item) return false
+          if (item.requires && available !== null && !available.has(item.requires)) return false
+          const cfg = navMap[item.to.replace(/^\//, '')]
+          if (cfg && !cfg.visible) return false
+          return true
+        }),
+    }))
+    .filter((g) => g.items.length > 0)
+
+  const renderDropdownGroup = (id: string, label: string, items: { to: string; icon: React.ElementType; label: string }[]) => {
+    const isOpen = openGroup?.id === id
+    const toggle = (e: React.MouseEvent<HTMLButtonElement>) => {
+      if (isOpen) { setOpenGroup(null); return }
+      const r = e.currentTarget.getBoundingClientRect()
+      if (placement === 'bottom') {
+        setOpenGroup({ id, left: r.left, bottom: window.innerHeight - r.top + 4 })
+      } else {
+        setOpenGroup({ id, left: r.left, top: r.bottom + 4 })
+      }
+    }
+    return (
+      <div key={id} style={{ flexShrink: 0 }}>
+        <button
+          onClick={toggle}
+          className="flex items-center gap-1 px-2 py-1.5 rounded text-sm whitespace-nowrap transition-colors hover:opacity-80"
+          style={{ color: 'var(--text-secondary)', background: isOpen ? 'var(--bg-elevated)' : 'transparent' }}
+        >
+          <span>{label}</span>
+          <ChevronDown size={12} style={{ transform: `rotate(${isOpen ? 180 : 0}deg)`, transition: 'transform 160ms ease', flexShrink: 0 }} />
+        </button>
+        {isOpen && openGroup && createPortal(
+          <>
+            <div onClick={() => setOpenGroup(null)} style={{ position: 'fixed', inset: 0, zIndex: 9998 }} />
+            <div
+              style={{
+                position: 'fixed', left: openGroup.left, top: openGroup.top, bottom: openGroup.bottom, zIndex: 9999,
+                minWidth: 180, padding: 4, borderRadius: 6,
+                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                boxShadow: '0 8px 20px rgba(0,0,0,0.25)',
+              }}
+            >
+              {items.map(({ to, icon: DefaultIcon, label: itemLabel }) => {
+                const key = to.replace(/^\//, '')
+                const cfg = navMap[key]
+                const displayLabel = cfg?.label ?? itemLabel
+                const Icon = (cfg?.icon && ICON_REGISTRY[cfg.icon]) || DefaultIcon
+                return (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    onClick={() => setOpenGroup(null)}
+                    className={({ isActive }) =>
+                      clsx('flex items-center gap-2 px-2 py-1.5 rounded text-sm whitespace-nowrap transition-colors', isActive ? 'font-medium' : 'hover:opacity-80')
+                    }
+                    style={({ isActive }) => ({
+                      background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
+                      color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                    })}
+                  >
+                    <Icon size={15} style={{ flexShrink: 0 }} />
+                    <span>{displayLabel}</span>
+                  </NavLink>
+                )
+              })}
+            </div>
+          </>,
+          document.body,
+        )}
+      </div>
+    )
+  }
+
+  if (horizontal) {
+    const isTop = placement === 'top'
+    return (
+      <aside
+        style={{
+          width: '100%',
+          height: 56,
+          background: 'var(--bg-panel)',
+          borderColor: 'var(--border-subtle)',
+          boxShadow: scrollHidden ? 'none' : `0 ${isTop ? '2px' : '-2px'} 12px rgba(0,0,0,0.18)`,
+          transform: entering ? enterTransform : `translateY(${scrollHidden ? (isTop ? '-100%' : '100%') : '0'})`,
+          opacity: entering ? 0 : 1,
+          transition: entering ? 'none' : `transform 280ms ${EASE_STD}, opacity 220ms ease, box-shadow 220ms ease`,
+          pointerEvents: scrollHidden ? 'none' : 'auto',
+        }}
+        className={clsx('vt-sidebar flex items-center px-3 gap-3 flex-shrink-0', isTop ? 'border-b' : 'border-t')}
+      >
+        {instanceLogo
+          ? <img src={instanceLogo} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0 }} />
+          : <Shield size={20} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+        }
+        <span className="font-semibold tracking-wide text-sm flex-shrink-0" style={{ color: 'var(--text-primary)' }}>
+          {instanceName}
+        </span>
+        <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
+          {visibleGroups.map(({ group, items }) => renderDropdownGroup(group.id, group.label, items))}
+          {activePlugins.length > 0 &&
+            renderDropdownGroup('plugins', 'Plugins', activePlugins.map((p) => ({ to: `/plugins/${p.id}`, icon: Blocks, label: p.name })))}
+          {customTabs.length > 0 &&
+            renderDropdownGroup('my-tabs', 'My Tabs', customTabs.map((t) => ({ to: `/tabs/${t.id}`, icon: (t.icon && ICON_REGISTRY[t.icon]) || LayoutPanelTop, label: t.title })))}
+        </div>
+        {/* Search/GPU/UI-mode/tag/status/bell — merged in here instead of a separate TopBar row */}
+        <TopBarUtilities compact />
+        <button
+          onClick={handleLogout}
+          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-sm flex-shrink-0 transition-colors hover:opacity-80"
+          style={{ color: 'var(--text-secondary)' }}
+          title="Logout"
+        >
+          <LogOut size={16} />
+        </button>
+      </aside>
+    )
+  }
+
+  const onRight = placement === 'right'
+
   return (
     <aside
       style={{
-        width: collapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
+        width: effectiveCollapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
         background: 'var(--bg-panel)',
         borderColor: 'var(--border-subtle)',
-        boxShadow: collapsed ? 'none' : '2px 0 12px rgba(0,0,0,0.18)',
-        transition: asideTransition(animation),
+        boxShadow: effectiveCollapsed ? 'none' : `${onRight ? '-2px' : '2px'} 0 12px rgba(0,0,0,0.18)`,
+        transform: entering ? enterTransform : 'none',
+        opacity: entering ? 0 : 1,
+        transition: entering ? 'none' : `${asideTransition(animation)}, transform 260ms ${EASE_STD}, opacity 220ms ease`,
       }}
-      className="vt-sidebar flex flex-col h-full border-r"
+      className={clsx('vt-sidebar flex flex-col h-full', onRight ? 'border-l' : 'border-r')}
     >
       {/* Logo */}
       <div className="flex items-center gap-2 px-3 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -365,10 +548,10 @@ export default function Sidebar() {
             overflow: 'hidden',
             whiteSpace: 'nowrap',
             display: 'inline-block',
-            maxWidth: collapsed ? 0 : 160,
-            opacity: collapsed ? 0 : 1,
-            transform: `translateX(${collapsed ? -6 : 0}px)`,
-            transition: collapsed
+            maxWidth: effectiveCollapsed ? 0 : 160,
+            opacity: effectiveCollapsed ? 0 : 1,
+            transform: `translateX(${effectiveCollapsed ? -6 : 0}px)`,
+            transition: effectiveCollapsed
               ? `opacity 150ms ease, max-width 250ms ${EASE_STD}, transform 200ms ease`
               : `opacity 220ms ease 60ms, max-width 280ms ${EASE_STD}, transform 250ms ease 60ms`,
           }}
@@ -387,30 +570,22 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-2 overflow-y-auto">
-        {(() => { let staggerIndex = -1; return activeGroups.map((group, gi) => {
-          const visibleItems = group.itemIds
-            .map(id => NAV_ITEMS_BY_ID[id])
-            .filter((item): item is NavItem => {
-              if (!item) return false
-              if (item.requires && available !== null && !available.has(item.requires)) return false
-              const cfg = navMap[item.to.replace(/^\//, '')]
-              if (cfg && !cfg.visible) return false
-              return true
-            })
-          if (visibleItems.length === 0) return null
+        {(() => { let staggerIndex = -1; return visibleGroups.map(({ group, items: visibleItems }, gi) => {
           return (
             <div key={group.id} className={gi > 0 ? 'mt-3' : ''}>
               <div
                 className="px-2 text-xs font-medium uppercase tracking-widest select-none"
-                style={groupHeaderStyle(collapsed, animation)}
+                style={groupHeaderStyle(effectiveCollapsed, animation)}
               >
                 {group.label}
               </div>
-              {gi > 0 && <div className="mx-2" style={dividerStyle(collapsed)} />}
+              {gi > 0 && <div className="mx-2" style={dividerStyle(effectiveCollapsed)} />}
               <div className="space-y-0.5">
-                {visibleItems.map(({ to, icon: Icon, label }) => {
+                {visibleItems.map(({ to, icon: DefaultIcon, label }) => {
                   const key = to.replace(/^\//, '')
-                  const displayLabel = navMap[key]?.label ?? label
+                  const cfg = navMap[key]
+                  const displayLabel = cfg?.label ?? label
+                  const Icon = (cfg?.icon && ICON_REGISTRY[cfg.icon]) || DefaultIcon
                   staggerIndex += 1
                   const itemIndex = staggerIndex
                   return (
@@ -428,10 +603,10 @@ export default function Sidebar() {
                         background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
                         color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
                       })}
-                      title={collapsed ? displayLabel : undefined}
+                      title={effectiveCollapsed ? displayLabel : undefined}
                     >
                       <Icon size={16} style={{ flexShrink: 0 }} />
-                      <span style={labelStyle(collapsed, animation, itemIndex)}>{displayLabel}</span>
+                      <span style={labelStyle(effectiveCollapsed, animation, itemIndex)}>{displayLabel}</span>
                     </NavLink>
                   )
                 })}
@@ -444,11 +619,11 @@ export default function Sidebar() {
             <div className="mt-3">
               <div
                 className="px-2 text-xs font-medium uppercase tracking-widest select-none"
-                style={groupHeaderStyle(collapsed, animation)}
+                style={groupHeaderStyle(effectiveCollapsed, animation)}
               >
                 Plugins
               </div>
-              <div className="mx-2" style={dividerStyle(collapsed)} />
+              <div className="mx-2" style={dividerStyle(effectiveCollapsed)} />
               <div className="space-y-0.5">
                 {activePlugins.map((p, pi) => (
                   <NavLink
@@ -462,12 +637,47 @@ export default function Sidebar() {
                       background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
                       color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
                     })}
-                    title={collapsed ? p.name : undefined}
+                    title={effectiveCollapsed ? p.name : undefined}
                   >
                     <Blocks size={16} style={{ flexShrink: 0 }} />
-                    <span style={labelStyle(collapsed, animation, pi)}>{p.name}</span>
+                    <span style={labelStyle(effectiveCollapsed, animation, pi)}>{p.name}</span>
                   </NavLink>
                 ))}
+              </div>
+            </div>
+          )}
+          {/* Personal custom tabs */}
+          {customTabs.length > 0 && (
+            <div className="mt-3">
+              <div
+                className="px-2 text-xs font-medium uppercase tracking-widest select-none"
+                style={groupHeaderStyle(effectiveCollapsed, animation)}
+              >
+                My Tabs
+              </div>
+              <div className="mx-2" style={dividerStyle(effectiveCollapsed)} />
+              <div className="space-y-0.5">
+                {customTabs.map((t, ti) => {
+                  const Icon = (t.icon && ICON_REGISTRY[t.icon]) || LayoutPanelTop
+                  return (
+                    <NavLink
+                      key={t.id}
+                      to={`/tabs/${t.id}`}
+                      onClick={() => document.body.classList.remove('mobile-nav-open')}
+                      className={({ isActive }) =>
+                        clsx('flex items-center gap-3 px-2 py-2 rounded text-sm transition-colors', isActive ? 'font-medium' : 'hover:opacity-80')
+                      }
+                      style={({ isActive }) => ({
+                        background: isActive ? 'var(--accent-primary-subtle)' : 'transparent',
+                        color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                      })}
+                      title={effectiveCollapsed ? t.title : undefined}
+                    >
+                      <Icon size={16} style={{ flexShrink: 0 }} />
+                      <span style={labelStyle(effectiveCollapsed, animation, ti)}>{t.title}</span>
+                    </NavLink>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -475,7 +685,7 @@ export default function Sidebar() {
 
       {/* Footer */}
       <div className="border-t px-2 py-3 space-y-1" style={{ borderColor: 'var(--border-subtle)' }}>
-        {!collapsed && user && (
+        {!effectiveCollapsed && user && (
           <div className="px-2 py-1 text-xs truncate" style={{ color: 'var(--text-muted)' }}>
             {user.username} · {user.role}
           </div>
@@ -484,18 +694,18 @@ export default function Sidebar() {
           onClick={handleLogout}
           className="flex items-center gap-3 w-full px-2 py-2 rounded text-sm transition-colors hover:opacity-80"
           style={{ color: 'var(--text-secondary)' }}
-          title={collapsed ? 'Logout' : undefined}
+          title={effectiveCollapsed ? 'Logout' : undefined}
         >
           <LogOut size={16} style={{ flexShrink: 0 }} />
-          <span style={labelStyle(collapsed, animation)}>Logout</span>
+          <span style={labelStyle(effectiveCollapsed, animation)}>Logout</span>
         </button>
         <button
           onClick={() => setCollapsed((c) => !c)}
           className="flex items-center gap-3 w-full px-2 py-2 rounded text-sm transition-colors hover:opacity-80"
           style={{ color: 'var(--text-muted)' }}
         >
-          <ChevronLeft size={16} style={chevronStyle(collapsed, animation)} />
-          <span style={labelStyle(collapsed, animation)}>Collapse</span>
+          <ChevronLeft size={16} style={chevronStyle(effectiveCollapsed, animation)} />
+          <span style={labelStyle(effectiveCollapsed, animation)}>Collapse</span>
         </button>
       </div>
     </aside>

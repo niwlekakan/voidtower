@@ -421,6 +421,13 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_custom_tabs_user ON custom_tabs(user_id);
+
+        CREATE TABLE IF NOT EXISTS user_nav_config (
+            user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            items       TEXT NOT NULL,
+            nav_groups  TEXT NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
         "#,
     )
     .execute(pool)

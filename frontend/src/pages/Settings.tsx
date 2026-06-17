@@ -1,19 +1,16 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/auth'
 import { api, ApiClientError } from '@/api/client'
 import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import { notify } from '@/store/notifications'
-import { Trash2, UserPlus, Bell, Send, Key, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight, Cpu, Stethoscope, Palette, AlertTriangle, Upload, Copy, ShieldOff, Eye, EyeOff, Navigation, GripVertical, Pencil, Shield } from 'lucide-react'
+import { Trash2, UserPlus, Bell, Send, Key, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight, Cpu, Stethoscope, Palette, AlertTriangle, Upload, Copy, ShieldOff, Shield } from 'lucide-react'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 import type { OidcConfigSaveRequest } from '@/api/types'
 import { useThemeStore, type UiMode } from '@/store/theme'
 import { setDeviceTierOverride, type DeviceTier } from '@/aios/hooks/useDeviceTier'
 import { Accessibility } from 'lucide-react'
-import { useNavConfigStore, DEFAULT_NAV_ITEMS, DEFAULT_NAV_GROUPS, resolvedNavItems, resolvedNavGroups, type NavItem, type StoredNavGroup } from '@/store/navConfig'
-import { useSidebarPrefsStore, SIDEBAR_ANIMATION_OPTIONS } from '@/store/sidebarPrefs'
-import { ICON_MAP } from '@/aios/AiosDock'
 
 function AppearanceSection() {
   const { uiMode, setUiMode } = useThemeStore()
@@ -596,9 +593,6 @@ export default function SettingsPage() {
 
       {/* General / instance */}
 
-      {/* Navigation editor — admin only */}
-      {isAdmin && <NavigationSection />}
-
       {/* Appearance — UI mode + device override */}
       <AppearanceSection />
 
@@ -637,203 +631,6 @@ export default function SettingsPage() {
 
       {/* User management — admin/owner only */}
       {isAdmin && <UsersSection currentUserId={currentUser?.id ?? ''} />}
-    </div>
-  )
-}
-
-function SidebarAnimationPicker() {
-  const animation = useSidebarPrefsStore((s) => s.animation)
-  const setAnimation = useSidebarPrefsStore((s) => s.setAnimation)
-
-  return (
-    <div className="space-y-1.5">
-      <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>Sidebar collapse animation</div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-        {SIDEBAR_ANIMATION_OPTIONS.map(opt => (
-          <button
-            key={opt.value}
-            onClick={() => setAnimation(opt.value)}
-            className="text-left px-2 py-1.5 rounded text-xs transition-colors"
-            style={{
-              background: animation === opt.value ? 'var(--accent-primary-subtle)' : 'var(--bg-elevated)',
-              border: `1px solid ${animation === opt.value ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
-              color: animation === opt.value ? 'var(--accent-primary)' : 'var(--text-secondary)',
-            }}
-          >
-            <div className="font-medium">{opt.label}</div>
-            <div className="mt-0.5 text-[10px] leading-tight" style={{ color: 'var(--text-muted)' }}>{opt.description}</div>
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function NavigationSection() {
-  const { items, setItems, resetItems, navGroups, setNavGroups, resetNavGroups } = useNavConfigStore()
-  const [list, setList] = useState<NavItem[]>(() => resolvedNavItems(items))
-  const [groups, setGroups] = useState<StoredNavGroup[]>(() => resolvedNavGroups(navGroups))
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editingGroupId, setEditingGroupId] = useState<string | null>(null)
-  const dragItemRef = useRef<{ groupId: string; idx: number } | null>(null)
-  const dragGroupRef = useRef<number | null>(null)
-
-  useEffect(() => { setList(resolvedNavItems(items)) }, [items])
-  useEffect(() => { setGroups(resolvedNavGroups(navGroups)) }, [navGroups])
-
-  const navMap = Object.fromEntries(list.map(it => [it.id, it]))
-
-  const saveGroups = (next: StoredNavGroup[]) => { setGroups(next); setNavGroups(next) }
-
-  const toggleVisible = (id: string) => {
-    const next = list.map(it => it.id === id ? { ...it, visible: !it.visible } : it)
-    setList(next); setItems(next)
-  }
-
-  const updateLabel = (id: string, label: string) => {
-    const next = list.map(it => it.id === id ? { ...it, label } : it)
-    setList(next); setItems(next); setEditingId(null)
-  }
-
-  const updateGroupLabel = (id: string, label: string) => {
-    saveGroups(groups.map(g => g.id === id ? { ...g, label } : g))
-    setEditingGroupId(null)
-  }
-
-  // Drag handlers for items within a group
-  const onItemDragStart = (groupId: string, idx: number) => {
-    dragItemRef.current = { groupId, idx }
-  }
-  const onItemDragOver = (e: React.DragEvent, groupId: string, idx: number) => {
-    e.preventDefault()
-    const src = dragItemRef.current
-    if (!src || src.groupId !== groupId || src.idx === idx) return
-    const next = groups.map(g => {
-      if (g.id !== groupId) return g
-      const ids = [...g.itemIds]
-      const [moved] = ids.splice(src.idx, 1)
-      ids.splice(idx, 0, moved)
-      return { ...g, itemIds: ids }
-    })
-    dragItemRef.current = { groupId, idx }
-    saveGroups(next)
-  }
-
-  // Drag handlers for groups
-  const onGroupDragStart = (idx: number) => { dragGroupRef.current = idx }
-  const onGroupDragOver = (e: React.DragEvent, idx: number) => {
-    e.preventDefault()
-    const src = dragGroupRef.current
-    if (src === null || src === idx) return
-    const next = [...groups]
-    const [moved] = next.splice(src, 1)
-    next.splice(idx, 0, moved)
-    dragGroupRef.current = idx
-    saveGroups(next)
-  }
-
-  return (
-    <div className="card space-y-4">
-      <div className="flex items-center gap-2">
-        <Navigation size={14} style={{ color: 'var(--accent-primary)' }} />
-        <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Navigation</h2>
-      </div>
-      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-        Drag to reorder groups and items. Click a group name to rename it. Toggle visibility or rename individual items.
-      </p>
-
-      <SidebarAnimationPicker />
-
-      {groups.map((group, gi) => {
-        const groupItems = group.itemIds.map(id => navMap[id]).filter((it): it is NavItem => !!it)
-        return (
-          <div key={group.id}
-            draggable
-            onDragStart={() => onGroupDragStart(gi)}
-            onDragOver={e => onGroupDragOver(e, gi)}
-            style={{ cursor: 'grab' }}
-          >
-            <div className="flex items-center gap-1 mb-1.5">
-              <GripVertical size={12} style={{ color: 'var(--text-disabled)', flexShrink: 0 }} />
-              {editingGroupId === group.id ? (
-                <input autoFocus defaultValue={group.label}
-                  onBlur={e => updateGroupLabel(group.id, e.target.value.trim() || group.label)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') updateGroupLabel(group.id, (e.target as HTMLInputElement).value.trim() || group.label)
-                    if (e.key === 'Escape') setEditingGroupId(null)
-                  }}
-                  className="text-xs outline-none px-1 rounded"
-                  style={{ background: 'var(--bg-root)', border: '1px solid var(--accent-primary)', color: 'var(--text-primary)', width: 100, cursor: 'text' }}
-                  onClick={e => e.stopPropagation()}
-                />
-              ) : (
-                <button
-                  className="flex items-center gap-1 text-xs font-medium uppercase tracking-wider"
-                  style={{ background: 'none', border: 'none', cursor: 'text', color: 'var(--text-muted)', padding: 0 }}
-                  onClick={e => { e.stopPropagation(); setEditingGroupId(group.id) }}
-                  title="Click to rename group"
-                >
-                  {group.label}
-                  <Pencil size={10} style={{ opacity: 0.5 }} />
-                </button>
-              )}
-            </div>
-            <div className="space-y-1">
-              {groupItems.map((item, ii) => {
-                const Icon = ICON_MAP[item.id]
-                const defaultLabel = DEFAULT_NAV_ITEMS.find(d => d.id === item.id)?.label ?? item.id
-                return (
-                  <div key={item.id}
-                    draggable
-                    onDragStart={e => { e.stopPropagation(); onItemDragStart(group.id, ii) }}
-                    onDragOver={e => { e.stopPropagation(); onItemDragOver(e, group.id, ii) }}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '5px 8px', borderRadius: 6,
-                      background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-                      opacity: item.visible ? 1 : 0.45,
-                      cursor: 'grab',
-                    }}
-                  >
-                    <GripVertical size={12} style={{ color: 'var(--text-disabled)', flexShrink: 0 }} />
-                    {Icon && <Icon size={13} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {editingId === item.id ? (
-                        <input autoFocus defaultValue={item.label}
-                          onBlur={e => updateLabel(item.id, e.target.value.trim() || defaultLabel)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') updateLabel(item.id, (e.target as HTMLInputElement).value.trim() || defaultLabel)
-                            if (e.key === 'Escape') setEditingId(null)
-                          }}
-                          className="w-full text-xs outline-none px-1 rounded"
-                          style={{ background: 'var(--bg-root)', border: '1px solid var(--accent-primary)', color: 'var(--text-primary)' }}
-                          onClick={e => e.stopPropagation()}
-                        />
-                      ) : (
-                        <span className="text-xs cursor-text" style={{ color: 'var(--text-primary)' }}
-                          onClick={e => { e.stopPropagation(); setEditingId(item.id) }} title="Click to rename">
-                          {item.label}
-                          {item.label !== defaultLabel && <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>({defaultLabel})</span>}
-                        </span>
-                      )}
-                    </div>
-                    <button onClick={e => { e.stopPropagation(); toggleVisible(item.id) }} title={item.visible ? 'Hide' : 'Show'}
-                      style={{ color: item.visible ? 'var(--text-secondary)' : 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
-                      {item.visible ? <Eye size={13} /> : <EyeOff size={13} />}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )
-      })}
-
-      <button onClick={() => { resetItems(); setList(DEFAULT_NAV_ITEMS); resetNavGroups(); setGroups(DEFAULT_NAV_GROUPS) }}
-        className="px-3 py-1.5 rounded text-xs transition-colors hover:opacity-80"
-        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
-        Reset to defaults
-      </button>
     </div>
   )
 }

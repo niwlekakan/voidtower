@@ -85,10 +85,10 @@ These items transform VoidTower from an admin panel into a true local-first AI o
 
 ### Full UI Customization
 
-- [ ] **Instance branding** — Settings → Appearance → Branding: instance name (replaces "VoidTower" wordmark), logo upload (PNG/SVG, becomes favicon and sidebar icon), login page background image, login tagline, custom CSS injection field. All client-side from backend-stored settings.
-- [ ] **Navigation editor** — Settings → Navigation: toggle individual nav items on/off, rename them, pick a custom Lucide icon, reorder via drag-and-drop, create or rename nav groups. Changes are per-user and stored in their profile. Owner can set instance-wide defaults.
-- [ ] **Menu position & layout** — choose navigation placement: left sidebar (Tower Mode default), right sidebar, top horizontal bar, bottom bar, floating pill (Void Mode dock default), or pop-out drawer (hidden, slides in on hover or shortcut). Open/close animations are configurable (slide, fade, spring). Auto-hide-on-scroll toggle.
-- [ ] **Custom tabs** — Settings → My Tabs: add personal nav entries with name, icon, and a target: any VoidTower page, an embed URL (iframe), a local file path opened in the file viewer, or a WebSocket stream. Useful for personal Grafana dashboards, Netdata, Homer, Jupyter notebooks, documentation, internal tools.
+- [x] **Instance branding** — Done: Settings → Appearance → Branding (instance name, logo upload, login background, tagline, custom CSS) plus sidebar/favicon now use the uploaded logo instead of the hardcoded Shield icon.
+- [x] **Navigation editor** — Done: Customization → Navigation tab (toggle visibility, rename, custom Lucide icon per item, drag-reorder items/groups, create/delete groups, drag items between groups). Per-user via `user_nav_config` table, synced through `/api/nav-config`; owner can set the instance-wide default via `/api/nav-config/default`.
+- [x] **Menu position & layout** — Done for left/right/top/bottom placement + auto-hide-on-scroll (Customization → Navigation → Layout). Top/bottom render as a single merged bar (nav group dropdowns + search/GPU/tag/status/bell, no redundant second bar) and slide+fade in when placement changes. Not done: floating pill and pop-out drawer placements.
+- [x] **Custom tabs** — Done for Tower Mode: Customization → My Tabs (personal, per-user — title, icon, iframe or markdown target), surfaced in the sidebar/nav bar and viewable at `/tabs/:id`. Not done: page-link, local-file, and WebSocket target kinds (backend `kind` enum only supports iframe/markdown/builtin).
 
 ### User Management & Multi-tenancy
 

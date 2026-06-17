@@ -44,7 +44,9 @@ import PolicyPage from '@/pages/Policy'
 import ModsPage from '@/pages/Mods'
 import PluginsPage from '@/pages/Plugins'
 import PluginPage from '@/pages/PluginPage'
+import CustomTabView from '@/pages/CustomTabView'
 import NotFoundPage from '@/pages/NotFound'
+import { useNavConfigStore } from '@/store/navConfig'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { status } = useAuthStore()
@@ -95,7 +97,10 @@ export default function App() {
   useEffect(() => {
     setStatus('loading')
     api.auth.me()
-      .then(({ user }) => setUser(user))
+      .then(({ user }) => {
+        setUser(user)
+        void useNavConfigStore.getState().hydrateFromServer()
+      })
       .catch(() => setStatus('unauthenticated'))
   }, [setUser, setStatus])
 
@@ -138,6 +143,7 @@ export default function App() {
             <Route path="mods"           element={<ModsPage />} />
             <Route path="plugins"        element={<PluginsPage />} />
             <Route path="plugins/:id"    element={<PluginPage />} />
+            <Route path="tabs/:id"       element={<CustomTabView />} />
             <Route path="integrations"   element={<IntegrationsPage />} />
             <Route path="files"      element={<FilesPage />} />
             <Route path="proxies"    element={<ProxiesPage />} />

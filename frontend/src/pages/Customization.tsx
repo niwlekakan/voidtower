@@ -1,23 +1,30 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Palette, Brush } from 'lucide-react'
+import { Palette, Brush, Navigation, LayoutPanelTop } from 'lucide-react'
 import ThemesPage from './Themes'
 import BrandingTab from './CustomizationBranding'
+import NavigationTab from './CustomizationNavigation'
+import CustomizationTabs from './CustomizationTabs'
+import { useAuthStore } from '@/store/auth'
 
 export default function CustomizationPage() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const currentUser = useAuthStore((s) => s.user)
+  const isAdmin = currentUser?.role === 'owner' || currentUser?.role === 'admin'
   const [activeTab, setActiveTab] = useState(() => {
-    return (searchParams.get('tab') as 'themes' | 'branding') || 'themes'
+    return (searchParams.get('tab') as 'themes' | 'branding' | 'navigation' | 'tabs') || 'themes'
   })
 
   useEffect(() => {
     setSearchParams({ tab: activeTab })
   }, [activeTab, setSearchParams])
 
-  const tabs = [
+  const tabs: { id: 'themes' | 'branding' | 'navigation' | 'tabs'; label: string; icon: typeof Palette }[] = [
     { id: 'themes', label: 'Themes', icon: Palette },
     { id: 'branding', label: 'Branding', icon: Brush },
-  ] as const
+    { id: 'tabs', label: 'My Tabs', icon: LayoutPanelTop },
+  ]
+  if (isAdmin) tabs.push({ id: 'navigation', label: 'Navigation', icon: Navigation })
 
   return (
     <div className="space-y-0">
@@ -47,6 +54,8 @@ export default function CustomizationPage() {
       <div style={{ padding: '0' }}>
         {activeTab === 'themes' && <ThemesPage />}
         {activeTab === 'branding' && <BrandingTab />}
+        {activeTab === 'tabs' && <CustomizationTabs />}
+        {activeTab === 'navigation' && isAdmin && <NavigationTab />}
       </div>
     </div>
   )

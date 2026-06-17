@@ -92,7 +92,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/updates',      icon: ArrowUpCircle, label: 'Updates'      },
       { to: '/mods',         icon: Puzzle,        label: 'Mods'         },
       { to: '/plugins',      icon: Blocks,        label: 'Plugins'      },
-      { to: '/themes',       icon: Palette,       label: 'Themes'       },
+      { to: '/customization', icon: Palette,       label: 'Customization' },
       { to: '/settings',     icon: Settings,      label: 'Settings'     },
     ],
   },
@@ -282,6 +282,7 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const [available, setAvailable] = useState<Set<string> | null>(null)
   const [instanceName, setInstanceName] = useState('VoidTower')
+  const [instanceLogo, setInstanceLogo] = useState('')
   const [activePlugins, setActivePlugins] = useState<{ id: string; name: string }[]>([])
   const { user, logout } = useAuthStore()
   const navigate = useNavigate()
@@ -316,12 +317,18 @@ export default function Sidebar() {
   }, [])
 
   useEffect(() => {
-    const apply = (name?: string) => { if (name) { setInstanceName(name); document.title = name } }
+    const apply = (name?: string, logo?: string) => {
+      if (name) { setInstanceName(name); document.title = name }
+      if (logo !== undefined) setInstanceLogo(logo)
+    }
     fetch('/api/settings/public')
       .then(r => r.ok ? r.json() : null)
-      .then((d: { instance_name?: string } | null) => apply(d?.instance_name))
+      .then((d: { instance_name?: string; instance_logo?: string } | null) => apply(d?.instance_name, d?.instance_logo))
       .catch(() => {})
-    const handler = (e: Event) => apply((e as CustomEvent<{ instance_name: string }>).detail?.instance_name)
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ instance_name?: string; instance_logo?: string }>).detail
+      apply(detail?.instance_name, detail?.instance_logo)
+    }
     window.addEventListener('vt-settings-changed', handler)
     return () => window.removeEventListener('vt-settings-changed', handler)
   }, [])
@@ -347,7 +354,10 @@ export default function Sidebar() {
     >
       {/* Logo */}
       <div className="flex items-center gap-2 px-3 py-4 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
-        <Shield size={20} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+        {instanceLogo
+          ? <img src={instanceLogo} alt="" style={{ width: 20, height: 20, objectFit: 'contain', flexShrink: 0 }} />
+          : <Shield size={20} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+        }
         <span
           className="font-semibold tracking-wide text-sm"
           style={{

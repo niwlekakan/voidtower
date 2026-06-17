@@ -36,6 +36,7 @@ import LxcPage from '@/pages/LxcPage'
 import ProxmoxPage from '@/pages/ProxmoxPage'
 import TagsPage from '@/pages/Tags'
 import ThemesPage from '@/pages/Themes'
+import CustomizationPage from '@/pages/Customization'
 import ModelsPage from '@/pages/Models'
 import StudioPage from '@/pages/Studio'
 import UpdatesPage from '@/pages/Updates'
@@ -106,6 +107,12 @@ export default function App() {
         if (d) applyBranding(d)
       })
       .catch(() => {})
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ instance_name?: string; instance_logo?: string }>).detail
+      if (detail) applyBranding(detail)
+    }
+    window.addEventListener('vt-settings-changed', handler)
+    return () => window.removeEventListener('vt-settings-changed', handler)
   }, [])
 
   return (
@@ -150,7 +157,7 @@ export default function App() {
             <Route path="lxc"           element={<LxcPage />} />
             <Route path="proxmox"       element={<ProxmoxPage />} />
             <Route path="tags"          element={<TagsPage />} />
-            <Route path="themes"        element={<ThemesPage />} />
+            <Route path="customization" element={<CustomizationPage />} />
             <Route path="settings/*" element={<SettingsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>

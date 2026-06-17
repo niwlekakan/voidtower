@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Palette, Palette2 } from 'lucide-react'
+import { Palette, Brush } from 'lucide-react'
 import ThemesPage from './Themes'
 import BrandingTab from './CustomizationBranding'
 
@@ -16,7 +16,7 @@ export default function CustomizationPage() {
 
   const tabs = [
     { id: 'themes', label: 'Themes', icon: Palette },
-    { id: 'branding', label: 'Branding', icon: Palette2 },
+    { id: 'branding', label: 'Branding', icon: Brush },
   ] as const
 
   return (

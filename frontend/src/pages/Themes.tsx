@@ -4,7 +4,7 @@ import { exportTheme, importTheme, type Theme, GLASS_LEVELS, HOVER_FX_LEVELS } f
 import ThemeEditor from '@/components/ui/ThemeEditor'
 import Button from '@/components/ui/Button'
 import { notify } from '@/store/notifications'
-import { Check, Shuffle, Trash2, Upload, Download, Clipboard, RefreshCw } from 'lucide-react'
+import { Check, Trash2, Upload, Download, Clipboard } from 'lucide-react'
 
 // Small swatch strip showing key colors for a theme
 function ThemeSwatch({ theme }: { theme: Theme }) {
@@ -136,36 +136,14 @@ function InterfaceCard() {
 }
 
 export default function ThemesPage() {
-  const { activeTheme, setTheme, allThemes, addCustomTheme, removeCustomTheme, randomize } = useThemeStore()
+  const { activeTheme, setTheme, allThemes, addCustomTheme, removeCustomTheme } = useThemeStore()
   const [importText, setImportText] = useState('')
-  const [syncing, setSyncing] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const themes = allThemes()
   const vtThemes = themes.filter(t => t.isBuiltin && !t.id.startsWith('od-'))
   const odThemes = themes.filter(t => t.isBuiltin && t.id.startsWith('od-'))
   const customs = themes.filter(t => !t.isBuiltin)
-
-  const syncFromOdysseus = async () => {
-    setSyncing(true)
-    try {
-      const res = await fetch('/api/integrations/odysseus/theme', { credentials: 'include' })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json() as { name: string }
-      const targetId = `od-${data.name}`
-      const match = themes.find(t => t.id === targetId)
-      if (match) {
-        setTheme(match.id)
-        notify.success(`Synced to "${match.name}"`)
-      } else {
-        notify.warning(`Odysseus theme "${data.name}" has no VoidTower equivalent`)
-      }
-    } catch {
-      notify.error('Could not reach Odysseus — check integration settings')
-    } finally {
-      setSyncing(false)
-    }
-  }
 
   const exportToClipboard = () => {
     const json = exportTheme(activeTheme)
@@ -207,7 +185,8 @@ export default function ThemesPage() {
     e.target.value = ''
   }
 
-
+  return (
+    <div className="space-y-6 max-w-5xl py-6">
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
 
         {/* ── Left panel: theme list ─────────────────────────────────── */}

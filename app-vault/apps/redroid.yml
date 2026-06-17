@@ -3,6 +3,7 @@ name: Redroid (Android VM)
 description: Docker-based Android instance — run Android apps in your browser via scrcpy
 category: vm
 version_hint: "12.0.0"
+web_port: 6080
 compose:
   services:
     redroid:

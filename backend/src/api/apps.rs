@@ -29,9 +29,28 @@ pub struct RequiredEnvVar {
     pub key: String,
     pub description: String,
     /// If set, auto-generate a value at deploy time when not supplied by the user.
-    /// Supported: "random_hex_32", "random_hex_64", "uuid"
+    /// Supported: "random_hex_N" (N hex chars), "uuid"
     #[serde(default)]
     pub generate: Option<String>,
+    /// Fallback value used when not supplied by the user and `generate` is unset/empty.
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
+/// Generate a value for a required_env `generate` strategy string.
+/// "uuid" -> a v4 UUID; "random_hex_N" -> N random hex characters (default 32).
+fn generate_required_env_value(strategy: &str) -> String {
+    if strategy == "uuid" {
+        return uuid::Uuid::new_v4().to_string();
+    }
+    let hex_len = strategy
+        .strip_prefix("random_hex_")
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(32);
+    let mut bytes = vec![0u8; hex_len.div_ceil(2)];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    let hex = hex::encode(bytes);
+    hex[..hex_len.min(hex.len())].to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +89,26 @@ pub struct AppDef {
     /// required fields in the pre-deploy modal.
     #[serde(default)]
     pub required_env: Vec<RequiredEnvVar>,
+    /// A one-shot `docker exec` run in the background after a successful deploy,
+    /// retried until it succeeds or `max_wait_secs` elapses. Used for apps whose
+    /// own bootstrap env vars (e.g. Authentik's AUTHENTIK_BOOTSTRAP_PASSWORD) don't
+    /// reliably apply on every image/version, so the admin account is set directly
+    /// instead. `${VAR}` placeholders in `command` are substituted from the same
+    /// resolved required_env/override values written to the deploy's `.env` file.
+    #[serde(default)]
+    pub post_deploy: Option<PostDeployHook>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostDeployHook {
+    /// Container to exec into is `{project_name}-{container_suffix}-1`.
+    pub container_suffix: String,
+    pub command: Vec<String>,
+    #[serde(default = "default_post_deploy_wait")]
+    pub max_wait_secs: u64,
+}
+
+fn default_post_deploy_wait() -> u64 { 120 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeployedApp {
@@ -730,6 +768,45 @@ const SELECT_DEPLOYED: &str =
      COALESCE(primary_port, NULL) AS primary_port, \
      COALESCE(origin, 'voidtower') AS origin FROM deployed_apps";
 
+/// Runs `hook.command` inside the target container, retrying every 3s until it
+/// succeeds or `max_wait_secs` elapses. Spawned in the background so it doesn't
+/// hold up the deploy response — the container needs time to finish its own
+/// startup/migrations before the command can succeed.
+fn spawn_post_deploy_hook(project_name: String, hook: PostDeployHook, dotenv_map: HashMap<String, String>) {
+    let container = format!("{}-{}-1", project_name, hook.container_suffix);
+    let command: Vec<String> = hook.command.iter().map(|part| {
+        let mut s = part.clone();
+        for (k, v) in &dotenv_map {
+            s = s.replace(&format!("${{{k}}}"), v);
+        }
+        s
+    }).collect();
+
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(hook.max_wait_secs);
+        loop {
+            let result = tokio::process::Command::new("docker")
+                .arg("exec")
+                .arg(&container)
+                .args(&command)
+                .process_group(0)
+                .output()
+                .await;
+            match result {
+                Ok(out) if out.status.success() => {
+                    tracing::info!("post_deploy hook succeeded for {container}");
+                    return;
+                }
+                _ if tokio::time::Instant::now() >= deadline => {
+                    tracing::warn!("post_deploy hook for {container} did not succeed within {}s", hook.max_wait_secs);
+                    return;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
+            }
+        }
+    });
+}
+
 #[derive(sqlx::FromRow)]
 struct DeployedAppRow {
     id: String,
@@ -815,47 +892,25 @@ pub async fn deploy(
         }
     }
 
-    // Auto-generate values for required_env entries that have a `generate` strategy
-    // and weren't supplied by the user. Then inject them as env overrides.
-    if !app.required_env.is_empty() {
-        if let Some(services) = compose_val.get_mut("services") {
-            if let Some(obj) = services.as_object_mut() {
-                for svc in obj.values_mut() {
-                    if let Some(env) = svc.get_mut("environment") {
-                        if let Some(arr) = env.as_array_mut() {
-                            for req_var in &app.required_env {
-                                let already_set = req.env_overrides.as_ref()
-                                    .map(|o| o.contains_key(&req_var.key))
-                                    .unwrap_or(false);
-                                if !already_set {
-                                    if let Some(gen) = &req_var.generate {
-                                        let generated = match gen.as_str() {
-                                            "random_hex_64" => {
-                                                let mut bytes = [0u8; 32];
-                                                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
-                                                hex::encode(bytes)
-                                            }
-                                            "uuid" => uuid::Uuid::new_v4().to_string(),
-                                            _ => {
-                                                // default: random_hex_32
-                                                let mut bytes = [0u8; 16];
-                                                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
-                                                hex::encode(bytes)
-                                            }
-                                        };
-                                        arr.retain(|e| {
-                                            !e.as_str()
-                                                .map(|s| s.starts_with(&format!("{}=", req_var.key)) || s == req_var.key.as_str())
-                                                .unwrap_or(false)
-                                        });
-                                        arr.push(Value::String(format!("{}={}", req_var.key, generated)));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    // Resolve values for required_env entries not supplied by the user, via
+    // `generate` strategy or `default` fallback. These (plus all user-supplied
+    // overrides) are written to a .env file below — compose templates reference
+    // them as `${VAR}` interpolation, which docker compose only resolves from a
+    // .env file or process environment, never from another `environment:` entry.
+    let mut resolved_required_env: HashMap<String, String> = HashMap::new();
+    for req_var in &app.required_env {
+        let already_set = req.env_overrides.as_ref()
+            .map(|o| o.contains_key(&req_var.key))
+            .unwrap_or(false);
+        if already_set {
+            continue;
+        }
+        let value = req_var.generate.as_ref()
+            .filter(|g| !g.is_empty())
+            .map(|g| generate_required_env_value(g))
+            .or_else(|| req_var.default.clone());
+        if let Some(value) = value {
+            resolved_required_env.insert(req_var.key.clone(), value);
         }
     }
 
@@ -900,13 +955,30 @@ pub async fn deploy(
     let compose_path = app_dir.join("docker-compose.yml");
     std::fs::write(&compose_path, &compose_str).map_err(|e| AppError::Internal(e.into()))?;
 
+    // Write a .env file next to the compose file so docker compose can resolve
+    // ${VAR} interpolation (project directory defaults to the -f file's dir).
+    let mut dotenv_map = req.env_overrides.clone().unwrap_or_default();
+    dotenv_map.extend(resolved_required_env.clone());
+    if !dotenv_map.is_empty() {
+        let dotenv_content = dotenv_map.iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(app_dir.join(".env"), dotenv_content + "\n")
+            .map_err(|e| AppError::Internal(e.into()))?;
+    }
+
     // Ensure shared Docker network exists before composing
     ensure_vt_proxy_network().await;
 
-    // Run docker compose up
-    containers::deploy_compose(&project_name, &compose_path)
+    // Run docker compose up — cancellable via POST /api/apps/deploy/cancel/{project_name}
+    containers::deploy_compose_cancellable(&project_name, &compose_path, &state.deploy_registry)
         .await
         .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+
+    if let Some(hook) = app.post_deploy.clone() {
+        spawn_post_deploy_hook(project_name.clone(), hook, dotenv_map.clone());
+    }
 
     // Record in DB
     let id = uuid::Uuid::new_v4().to_string();
@@ -950,7 +1022,28 @@ pub async fn deploy(
         "ok": true,
         "project_name": project_name,
         "detected_llm": detected_llm,
+        "generated_env": resolved_required_env,
     })))
+}
+
+/// Gracefully cancel an in-flight deploy started via `deploy()` (SIGTERM, escalating to
+/// SIGKILL after a grace period). Safe to call even if the deploy has already finished —
+/// it's a no-op when the project isn't found in the registry.
+pub async fn cancel_deploy(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(project_name): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_user(&state, &jar).await?;
+    let ip = addr.ip().to_string();
+
+    let cancelled = containers::cancel_deploy(&state.deploy_registry, &project_name).await;
+
+    audit::log(&state.db, Some(&user.id), &user.username, "app.deploy.cancel",
+        Some("app"), Some(&project_name), if cancelled { "success" } else { "not_found" }, Some(&ip), None).await;
+
+    Ok(Json(serde_json::json!({ "ok": true, "cancelled": cancelled })))
 }
 
 #[derive(Deserialize)]

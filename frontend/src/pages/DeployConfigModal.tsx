@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { X, Plus, Loader2, CheckCircle2, AlertCircle, KeyRound } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
 import type { AppDef } from '@/api/types'
@@ -22,12 +22,19 @@ export default function DeployConfigModal({ app, onClose, onDeployed }: Props) {
   const autoRequired   = (app.required_env ?? []).filter(e => !!e.generate)
 
   const [envPairs, setEnvPairs] = useState<[string, string][]>(() =>
-    manualRequired.map(e => [e.key, ''] as [string, string])
+    manualRequired.map(e => [e.key, e.default ?? ''] as [string, string])
   )
   const [phase, setPhase]       = useState<Phase>('config')
   const [logs, setLogs]         = useState<string[]>([])
   const [errorMsg, setErrorMsg] = useState('')
   const [projectName, setProjectName] = useState('')
+  const [generatedEnv, setGeneratedEnv] = useState<Record<string, string>>({})
+  const [cancelling, setCancelling]   = useState(false)
+  const cancellingRef = useRef(false)
+
+  // Matches the backend's default project naming (DeployRequest.project_name is always
+  // omitted here), so we know the name to cancel before the deploy call resolves.
+  const pendingProjectName = `vt-${app.id}`
 
   const addPair = () => setEnvPairs(p => [...p, ['', '']])
 
@@ -44,6 +51,8 @@ export default function DeployConfigModal({ app, onClose, onDeployed }: Props) {
 
   const deploy = async () => {
     setPhase('deploying')
+    setCancelling(false)
+    cancellingRef.current = false
     const envOverrides: Record<string, string> = {}
     for (const [k, v] of envPairs) {
       if (k.trim()) envOverrides[k.trim()] = v
@@ -52,6 +61,7 @@ export default function DeployConfigModal({ app, onClose, onDeployed }: Props) {
     try {
       const result = await api.apps.deploy(app.id, undefined, overrides)
       setProjectName(result.project_name)
+      setGeneratedEnv(result.generated_env ?? {})
       try {
         const logData = await api.apps.logs(result.project_name)
         setLogs(logData.lines)
@@ -60,8 +70,19 @@ export default function DeployConfigModal({ app, onClose, onDeployed }: Props) {
       }
       setPhase('success')
     } catch (e) {
-      setErrorMsg(e instanceof ApiClientError ? e.message : 'Deploy failed')
+      setErrorMsg(cancellingRef.current ? 'Deployment cancelled' : (e instanceof ApiClientError ? e.message : 'Deploy failed'))
       setPhase('error')
+    }
+  }
+
+  const cancelDeploy = async () => {
+    setCancelling(true)
+    cancellingRef.current = true
+    try {
+      await api.apps.cancelDeploy(pendingProjectName)
+    } catch {
+      // The in-flight deploy() call's own catch block will surface whatever error
+      // results from the cancelled docker compose process.
     }
   }
 
@@ -248,6 +269,13 @@ export default function DeployConfigModal({ app, onClose, onDeployed }: Props) {
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
               This may take a minute while the image is pulled and containers start.
             </div>
+            <button
+              onClick={cancelDeploy}
+              disabled={cancelling}
+              style={{ marginTop: 4, padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: cancelling ? 'default' : 'pointer', fontSize: 12, opacity: cancelling ? 0.6 : 1 }}
+            >
+              {cancelling ? 'Cancelling…' : 'Cancel deployment'}
+            </button>
           </div>
         )}
 
@@ -257,6 +285,20 @@ export default function DeployConfigModal({ app, onClose, onDeployed }: Props) {
               <CheckCircle2 size={15} />
               <span>{app.name} deployed as <code>{projectName}</code></span>
             </div>
+            {Object.keys(generatedEnv).length > 0 && (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  <KeyRound size={12} /> Generated secrets — save these now, they won't be shown again
+                </div>
+                <div style={{ background: 'var(--terminal-bg)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '10px 12px', fontFamily: 'monospace', fontSize: 11 }}>
+                  {Object.entries(generatedEnv).map(([k, v]) => (
+                    <div key={k} style={{ color: 'var(--terminal-green)', wordBreak: 'break-all' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>{k}=</span>{v}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div>
               <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Deployment output

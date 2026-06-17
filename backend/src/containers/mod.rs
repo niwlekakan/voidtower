@@ -9,6 +9,42 @@ use bollard::{
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
+
+/// Tracks the OS pid of each in-flight `docker compose` deploy, keyed by project name,
+/// so a deploy can be cancelled gracefully via `cancel_deploy` instead of killing the
+/// whole VoidTower process (which would otherwise take the docker child down with it
+/// and can corrupt the containerd content store mid-pull).
+pub type DeployRegistry = Arc<Mutex<HashMap<String, u32>>>;
+
+/// Gracefully cancel an in-flight deploy: SIGTERM, then SIGKILL after a short grace
+/// period if it hasn't exited. Returns true if a running deploy was found and signalled.
+pub async fn cancel_deploy(registry: &DeployRegistry, project_name: &str) -> bool {
+    let pid = match registry.lock().await.get(project_name).copied() {
+        Some(pid) => pid,
+        None => return false,
+    };
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        use nix::unistd::Pid;
+        let nix_pid = Pid::from_raw(pid as i32);
+        let _ = kill(nix_pid, Signal::SIGTERM);
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if kill(nix_pid, None).is_err() {
+                return true; // process exited
+            }
+        }
+        let _ = kill(nix_pid, Signal::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+    }
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerInfo {
@@ -195,6 +231,7 @@ pub async fn deploy_compose(
         .args(["compose", "-p", project_name, "-f"])
         .arg(compose_path)
         .args(["up", "-d", "--build"])
+        .process_group(0)
         .output()
         .await?;
 
@@ -205,11 +242,43 @@ pub async fn deploy_compose(
     Ok(())
 }
 
+/// Like `deploy_compose`, but registers the spawned process's pid in `registry` for the
+/// duration of the call so it can be cancelled gracefully via `cancel_deploy`. Used by the
+/// interactive deploy flow, which exposes a Cancel button while this is in flight.
+pub async fn deploy_compose_cancellable(
+    project_name: &str,
+    compose_path: &std::path::Path,
+    registry: &DeployRegistry,
+) -> Result<()> {
+    let child = tokio::process::Command::new("docker")
+        .args(["compose", "-p", project_name, "-f"])
+        .arg(compose_path)
+        .args(["up", "-d", "--build"])
+        .process_group(0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    if let Some(pid) = child.id() {
+        registry.lock().await.insert(project_name.to_string(), pid);
+    }
+    let output = child.wait_with_output().await;
+    registry.lock().await.remove(project_name);
+    let output = output?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("docker compose failed ({}): {}", output.status, stderr);
+    }
+    Ok(())
+}
+
 pub async fn pull_compose(project_name: &str, compose_path: &std::path::Path) -> Result<()> {
     let out = tokio::process::Command::new("docker")
         .args(["compose", "-p", project_name, "-f"])
         .arg(compose_path)
         .arg("pull")
+        .process_group(0)
         .output()
         .await?;
     if !out.status.success() {
@@ -223,6 +292,7 @@ pub async fn stop_compose(project_name: &str, compose_path: &std::path::Path) ->
         .args(["compose", "-p", project_name, "-f"])
         .arg(compose_path)
         .arg("down")
+        .process_group(0)
         .output()
         .await?;
     Ok(())
@@ -233,6 +303,7 @@ pub async fn restart_compose(project_name: &str, compose_path: &std::path::Path)
         .args(["compose", "-p", project_name, "-f"])
         .arg(compose_path)
         .arg("restart")
+        .process_group(0)
         .output()
         .await?;
     if !out.status.success() {
@@ -246,6 +317,7 @@ pub async fn remove_compose(project_name: &str, compose_path: &std::path::Path) 
         .args(["compose", "-p", project_name, "-f"])
         .arg(compose_path)
         .args(["down", "--volumes", "--remove-orphans"])
+        .process_group(0)
         .output()
         .await?;
     Ok(())
@@ -257,6 +329,7 @@ pub async fn logs_compose(project_name: &str, compose_path: &std::path::Path, ta
         .arg(compose_path)
         .args(["logs", "--no-color", "--tail"])
         .arg(tail.to_string())
+        .process_group(0)
         .output()
         .await?;
     Ok(String::from_utf8_lossy(&out.stdout).to_string()
@@ -278,6 +351,7 @@ pub async fn status_compose(project_name: &str, compose_path: &std::path::Path) 
         .args(["compose", "-p", project_name, "-f"])
         .arg(compose_path)
         .args(["ps", "--format", "json"])
+        .process_group(0)
         .output()
         .await?;
 

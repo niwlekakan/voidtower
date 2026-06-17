@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import {
   BrainCircuit, Send, ExternalLink, Loader2, Play, Square, RotateCw,
   Trash2, ChevronDown, ChevronUp, Terminal, FileCode, Layers, RefreshCw,
@@ -728,7 +729,7 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
             <table className="w-full text-xs">
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                  {['Container', 'Service', 'State', 'Ports'].map(h => (
+                  {['Container', 'Service', 'State', 'Ports', ''].map(h => (
                     <th key={h} className="px-3 py-1.5 text-left uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>{h}</th>
                   ))}
                 </tr>
@@ -749,6 +750,13 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
                     </td>
                     <td className="px-3 py-2 font-mono" style={{ color: 'var(--accent-secondary)' }}>
                       {c.ports.length ? c.ports.join(', ') : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <Link to={`/containers/${c.name}`}
+                        className="inline-flex items-center gap-1 text-xs hover:opacity-80"
+                        style={{ color: 'var(--accent-primary)' }}>
+                        <Terminal size={11} /> Logs / Terminal
+                      </Link>
                     </td>
                   </tr>
                 ))}

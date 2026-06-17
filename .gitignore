@@ -67,3 +67,10 @@ release/
 *.rpm
 *.tar.gz
 *.tar.xz
+
+# design-sync — staged scripts, build output, and machine-local state (not for VCS)
+frontend/.ds-sync/
+frontend/ds-bundle/
+frontend/.design-sync/.cache/
+frontend/.design-sync/learnings/
+frontend/.design-sync/node_modules

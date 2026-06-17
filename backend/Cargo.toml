@@ -46,6 +46,7 @@ x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 totp-lite = "2"
 data-encoding = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+openidconnect = "3"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["fs", "user", "process", "signal"] }

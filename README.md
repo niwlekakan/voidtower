@@ -250,6 +250,10 @@ Pi-hole/AdGuard setup. For the full picture — vt-proxy/nginx-proxy internals,
 DNS setup (Pi-hole/AdGuard), Traefik/Caddy alternatives, and remote access via
 Tailscale or WireGuard — see [`docs/NETWORKING.md`](docs/NETWORKING.md).
 
+To use Authentik as a central identity provider — SSO + MFA login for VoidTower
+itself, plus an opt-in forward-auth gate for any App Vault app — see
+[`docs/integrations/authentik-sso.md`](docs/integrations/authentik-sso.md).
+
 ---
 
 ## TrueNAS Scale

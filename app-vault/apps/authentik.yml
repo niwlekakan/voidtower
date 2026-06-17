@@ -36,6 +36,8 @@ compose:
         - AUTHENTIK_POSTGRESQL__NAME=authentik
         - AUTHENTIK_POSTGRESQL__PASSWORD=${AUTHENTIK_POSTGRES_PASSWORD}
         - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY}
+        - AUTHENTIK_BOOTSTRAP_EMAIL=${AUTHENTIK_BOOTSTRAP_EMAIL}
+        - AUTHENTIK_BOOTSTRAP_PASSWORD=${AUTHENTIK_BOOTSTRAP_PASSWORD}
         - VIRTUAL_HOST=authentik.local
         - VIRTUAL_PORT=9000
       depends_on: [authentik-db, authentik-redis]
@@ -75,6 +77,33 @@ required_env:
   - key: AUTHENTIK_SECRET_KEY
     description: "Django secret key for Authentik — must be at least 50 characters (auto-generated)"
     generate: random_hex_50
+  - key: AUTHENTIK_BOOTSTRAP_PASSWORD
+    description: "Password for the akadmin admin account (auto-generated)"
+    generate: random_hex_16
+  - key: AUTHENTIK_BOOTSTRAP_EMAIL
+    description: "Email for the akadmin admin account"
+    default: "admin@authentik.local"
+
+# Authentik's AUTHENTIK_BOOTSTRAP_PASSWORD/EMAIL env vars don't reliably apply —
+# a migration seeds a default akadmin user (root@example.com, no usable password)
+# before the bootstrap check runs, so the env vars are often a no-op. Set the
+# admin account directly via Django shell instead, once the container is ready.
+post_deploy:
+  container_suffix: authentik-server
+  max_wait_secs: 180
+  command:
+    - ak
+    - shell
+    - -c
+    - |
+      from authentik.core.models import User
+      u, _ = User.objects.get_or_create(username='akadmin', defaults={'email': '${AUTHENTIK_BOOTSTRAP_EMAIL}', 'is_superuser': True, 'is_active': True, 'is_staff': True})
+      u.email = '${AUTHENTIK_BOOTSTRAP_EMAIL}'
+      u.is_superuser = True
+      u.is_active = True
+      u.set_password('${AUTHENTIK_BOOTSTRAP_PASSWORD}')
+      u.save()
+
 ai_integration:
   level: aware
   description: "Odysseus can read user sessions and authentication events"

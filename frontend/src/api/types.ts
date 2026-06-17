@@ -149,7 +149,7 @@ export interface AppDef {
   web_port?: number
   web_path?: string
   compose?: Record<string, unknown>
-  required_env?: Array<{ key: string; description: string; generate?: string }>
+  required_env?: Array<{ key: string; description: string; generate?: string; default?: string }>
 }
 
 export interface DeployedApp {
@@ -224,7 +224,40 @@ export interface ProxyConfig {
   ssl: boolean
   enabled: boolean
   allow_embed: boolean
+  sso_protect: boolean
   created_at: number
+}
+
+// Authentik / OIDC SSO
+export interface OidcStatus {
+  enabled: boolean
+  button_label: string
+}
+
+export interface OidcConfig {
+  enabled: boolean
+  issuer_url: string | null
+  client_id: string | null
+  has_client_secret: boolean
+  redirect_url: string | null
+  scopes: string
+  role_claim: string
+  role_map: Record<string, string>
+  default_role: string
+  auto_provision: boolean
+}
+
+export interface OidcConfigSaveRequest {
+  enabled: boolean
+  issuer_url: string
+  client_id: string
+  client_secret?: string
+  redirect_url: string
+  scopes: string
+  role_claim: string
+  role_map: Record<string, string>
+  default_role: string
+  auto_provision: boolean
 }
 
 // Files

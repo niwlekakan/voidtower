@@ -10,7 +10,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   loading?: boolean
 }
 
-const base = 'inline-flex items-center justify-center gap-2 font-medium rounded transition-colors focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
+const base = 'vt-btn inline-flex items-center justify-center gap-2 font-medium rounded transition-colors focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
 
 const sizes: Record<Size, string> = {
   sm: 'px-2.5 py-1 text-xs',

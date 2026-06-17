@@ -106,6 +106,7 @@ export type ThemeId =
 
 export type GlassLevel = 'none' | 'blur' | 'acrylic' | 'frosted'
 export type BgPreset  = 'none' | 'void' | 'grid' | 'aurora' | 'pulse' | 'noise' | 'hex' | 'hex-classic' | 'circuit'
+export type HoverFxLevel = 'off' | 'subtle' | 'normal' | 'playful'
 
 export interface Theme {
   id: string
@@ -138,6 +139,13 @@ export const GLASS_LEVELS: { id: GlassLevel; label: string; description: string 
   { id: 'blur',    label: 'Blur',    description: 'Subtle gaussian blur' },
   { id: 'acrylic', label: 'Acrylic', description: 'Windows-style layered blur' },
   { id: 'frosted', label: 'Frosted', description: 'Heavy diffusion, macOS-style' },
+]
+
+export const HOVER_FX_LEVELS: { id: HoverFxLevel; label: string; description: string }[] = [
+  { id: 'off',     label: 'Off',     description: 'No hover motion' },
+  { id: 'subtle',  label: 'Subtle',  description: 'Light brightness/border shifts only' },
+  { id: 'normal',  label: 'Normal',  description: 'Lift, slide & glow per element type' },
+  { id: 'playful', label: 'Playful', description: 'Bouncier, exaggerated motion' },
 ]
 
 export const BUILTIN_THEMES: Theme[] = [

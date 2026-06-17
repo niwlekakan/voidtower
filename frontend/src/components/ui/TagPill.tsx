@@ -10,7 +10,7 @@ interface TagPillProps {
 
 export function TagPill({ tag, onRemove }: TagPillProps) {
   return (
-    <span style={{
+    <span className={onRemove ? 'vt-tag vt-tag--removable' : 'vt-tag'} style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
       padding: '1px 7px', borderRadius: 12, fontSize: 11, fontWeight: 600,
       background: tag.color + '22', color: tag.color,

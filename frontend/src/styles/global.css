@@ -756,6 +756,99 @@ body[data-glass="frosted"] header {
   width: 100% !important;
 }
 
+/* ─── Hover Motion System ───────────────────────────────────────────── */
+/* Driven by data-hoverfx on <body> (off/subtle/normal/playful) — set in
+   ThemeProvider from useThemeStore().hoverFx. Each element family gets its
+   own distinct motion so the page doesn't feel uniform. a11y-reduce-motion
+   (above) already collapses all transition/animation durations to ~0. */
+
+/* Buttons — every <button> is inherently clickable (incl. raw buttons that
+   don't go through the <Button> component, e.g. icon/action buttons) — lift + brighten */
+body[data-hoverfx="subtle"] button,
+body[data-hoverfx="normal"] button,
+body[data-hoverfx="playful"] button {
+  transition: transform var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast);
+}
+body[data-hoverfx="subtle"] button:hover:not(:disabled) { filter: brightness(1.06); }
+body[data-hoverfx="normal"] button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+body[data-hoverfx="playful"] button:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.03);
+  filter: brightness(1.1);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.3);
+}
+body[data-hoverfx="playful"] button:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+
+/* Cards/panels — only the ones marked clickable (none currently are; this is
+   for future card-as-link patterns). Every .card in the app today is a static
+   layout container, so an unscoped .card:hover would lift/glow on mere mouse-over. */
+body[data-hoverfx="subtle"] .card.cursor-pointer,
+body[data-hoverfx="normal"] .card.cursor-pointer,
+body[data-hoverfx="playful"] .card.cursor-pointer {
+  transition: transform var(--t-normal), box-shadow var(--t-normal), border-color var(--t-normal);
+}
+body[data-hoverfx="subtle"] .card.cursor-pointer:hover { border-color: var(--border-default); }
+body[data-hoverfx="normal"] .card.cursor-pointer:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  border-color: var(--border-default);
+}
+body[data-hoverfx="playful"] .card.cursor-pointer:hover {
+  transform: translateY(-3px) scale(1.01);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.35), var(--glow-primary);
+  border-color: var(--accent-primary);
+}
+
+/* Sidebar nav items — slide + growing accent bar */
+body[data-hoverfx="subtle"] aside.vt-sidebar nav a,
+body[data-hoverfx="normal"] aside.vt-sidebar nav a,
+body[data-hoverfx="playful"] aside.vt-sidebar nav a {
+  position: relative;
+  transition: transform var(--t-fast), background var(--t-fast);
+}
+body[data-hoverfx="normal"] aside.vt-sidebar nav a:hover { transform: translateX(3px); }
+body[data-hoverfx="playful"] aside.vt-sidebar nav a:hover { transform: translateX(5px); }
+body[data-hoverfx="normal"] aside.vt-sidebar nav a::before,
+body[data-hoverfx="playful"] aside.vt-sidebar nav a::before {
+  content: '';
+  position: absolute;
+  left: -8px; top: 50%;
+  width: 3px; height: 0;
+  background: var(--accent-primary);
+  border-radius: 2px;
+  transform: translateY(-50%);
+  transition: height var(--t-fast);
+}
+body[data-hoverfx="normal"] aside.vt-sidebar nav a:hover::before,
+body[data-hoverfx="playful"] aside.vt-sidebar nav a:hover::before { height: 60%; }
+
+/* Tag pills (.vt-tag from <TagPill>) — only removable pills are interactive
+   as a whole (the × button); plain display-only tags (most usages) get no
+   hover at all so static labels don't pop/tilt on mere mouse-over. */
+body[data-hoverfx="subtle"] .vt-tag--removable,
+body[data-hoverfx="normal"] .vt-tag--removable,
+body[data-hoverfx="playful"] .vt-tag--removable {
+  transition: transform var(--t-fast), filter var(--t-fast);
+}
+body[data-hoverfx="subtle"] .vt-tag--removable:hover { filter: brightness(1.1); }
+body[data-hoverfx="normal"] .vt-tag--removable:hover { transform: scale(1.08); filter: brightness(1.15); }
+body[data-hoverfx="playful"] .vt-tag--removable:hover { transform: scale(1.12) rotate(-2deg); filter: brightness(1.15); }
+
+/* Table rows — background sweep highlight, only for rows marked clickable
+   (e.g. Containers.tsx row navigation) — most tables in the app are static
+   data display with action buttons in a cell, not row-level navigation. */
+body[data-hoverfx="subtle"] table tbody tr.cursor-pointer,
+body[data-hoverfx="normal"] table tbody tr.cursor-pointer,
+body[data-hoverfx="playful"] table tbody tr.cursor-pointer {
+  transition: background var(--t-fast);
+}
+body[data-hoverfx="subtle"] table tbody tr.cursor-pointer:hover { background: var(--bg-elevated); }
+body[data-hoverfx="normal"] table tbody tr.cursor-pointer:hover { background: var(--bg-elevated); }
+body[data-hoverfx="playful"] table tbody tr.cursor-pointer:hover { background: var(--accent-primary-subtle); }
+
 /* ─── PanelShell: hide full-page headers inside floating panels ──────── */
 .panel-shell-active .page-header,
 .panel-shell-active .page-title-bar,

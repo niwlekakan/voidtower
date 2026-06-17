@@ -13,9 +13,9 @@ compose:
       volumes:
         - outline_data:/var/lib/outline/data
       environment:
-        - SECRET_KEY=changeme-generate-a-long-random-string
-        - UTILS_SECRET=changeme-another-random-string
-        - DATABASE_URL=postgres://outline:outline@postgres/outline
+        - SECRET_KEY=${OUTLINE_SECRET_KEY}
+        - UTILS_SECRET=${OUTLINE_UTILS_SECRET}
+        - DATABASE_URL=postgres://outline:${OUTLINE_DB_PASSWORD}@postgres/outline
         - REDIS_URL=redis://redis:6379
         - URL=http://outline.local
         - PORT=3000
@@ -33,7 +33,7 @@ compose:
         - outline_postgres:/var/lib/postgresql/data
       environment:
         - POSTGRES_USER=outline
-        - POSTGRES_PASSWORD=outline
+        - POSTGRES_PASSWORD=${OUTLINE_DB_PASSWORD}
         - POSTGRES_DB=outline
     redis:
       image: redis:7
@@ -46,6 +46,16 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: OUTLINE_SECRET_KEY
+    description: "Primary secret key for Outline sessions (auto-generated)"
+    generate: random_hex_64
+  - key: OUTLINE_UTILS_SECRET
+    description: "Secondary utility secret for Outline (auto-generated)"
+    generate: random_hex_64
+  - key: OUTLINE_DB_PASSWORD
+    description: "PostgreSQL password for Outline database (auto-generated)"
+    generate: random_hex_32
 links:
   home: https://www.getoutline.com
   docs: https://docs.getoutline.com/s/hosting

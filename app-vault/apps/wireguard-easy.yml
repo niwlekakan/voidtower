@@ -21,10 +21,8 @@ compose:
       volumes:
         - wg_easy_data:/etc/wireguard
       environment:
-        - WG_HOST=your-server-ip
-        # bcrypt hash of "changeme" — replace before going to production.
-        # Generate your own: docker run --rm ghcr.io/wg-easy/wg-easy wgpw YOUR_PASSWORD
-        - PASSWORD_HASH=$$2b$$10$$WV8eOBXELDNwZtGNRZKoEupooqgmOX2QUL4TXhpLsBkiapdP7cm/S
+        - WG_HOST=${WG_HOST}
+        - PASSWORD_HASH=${WG_PASSWORD_HASH}
         # Route VPN client DNS through Pi-hole on the shared vt-proxy network.
         # Switch to adguard if using AdGuard Home instead of Pi-hole.
         - WG_DEFAULT_DNS=pihole

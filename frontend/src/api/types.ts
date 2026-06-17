@@ -421,6 +421,24 @@ export interface OllamaPullStatus {
   error: string | null
 }
 
+export interface OllamaConfig {
+  deployed: boolean
+  keep_alive_secs: number
+}
+
+export interface LlamaConfig {
+  deployed: boolean
+  threads: number
+  ctx_size: number
+  batch_size: number
+  parallel: number
+  n_gpu_layers: number
+  flash_attn: boolean
+  cont_batching: boolean
+  cache_type_k: string
+  cache_type_v: string
+}
+
 export interface Tag {
   id: string
   name: string

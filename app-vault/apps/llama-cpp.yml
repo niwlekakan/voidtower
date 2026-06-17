@@ -24,25 +24,18 @@ compose:
         - /bin/sh
         - -c
         - |
-          echo "[llama.cpp] Scanning for models..."
-          while true; do
-            MODEL=$$(find /models /hf-cache -name "*.gguf" 2>/dev/null | head -1)
-            if [ -n "$$MODEL" ]; then
-              echo "[llama.cpp] Starting with model: $$MODEL"
-              exec /app/llama-server \
-                --model "$$MODEL" \
-                --host 0.0.0.0 \
-                --port 8080 \
-                --n-gpu-layers 999 \
-                --ctx-size 8192 \
-                --batch-size 512 \
-                --threads 4 \
-                --cont-batching \
-                --parallel 4
-            fi
+          if [ -n "$$MODEL_PATH" ]; then
+            MODEL="$$MODEL_PATH"
+          else
+            MODEL="$$(find /models -name '*.gguf' 2>/dev/null | head -1)"
+          fi
+          while [ -z "$$MODEL" ]; do
             echo "[llama.cpp] No .gguf found -- retrying in 15s..."
             sleep 15
+            MODEL="$$(find /models -name '*.gguf' 2>/dev/null | head -1)"
           done
+          echo "[llama.cpp] Loading: $$MODEL"
+          exec /app/llama-server --model "$$MODEL" --host 0.0.0.0 --port 8080 --n-gpu-layers 999 --ctx-size 8192 --batch-size 512 --threads 4 --cont-batching --parallel 1
       extra_hosts:
         - "host.docker.internal:host-gateway"
       deploy:

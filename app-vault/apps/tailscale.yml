@@ -17,7 +17,7 @@ compose:
         - tailscale_data:/var/lib/tailscale
         - /dev/net/tun:/dev/net/tun
       environment:
-        - TS_AUTHKEY=your-tailscale-auth-key
+        - TS_AUTHKEY=${TS_AUTHKEY}
         - TS_EXTRA_ARGS=--advertise-exit-node
         - TS_STATE_DIR=/var/lib/tailscale
   volumes:

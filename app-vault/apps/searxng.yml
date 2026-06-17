@@ -14,7 +14,7 @@ compose:
         - searxng_data:/etc/searxng
       environment:
         - SEARXNG_BASE_URL=http://search.local
-        - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-changeme-use-a-random-string}
+        - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY}
         - VIRTUAL_HOST=search.local
         - VIRTUAL_PORT=8080
       cap_drop:

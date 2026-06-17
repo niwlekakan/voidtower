@@ -17,6 +17,8 @@ compose:
       environment:
         - USER_UID=1000
         - USER_GID=1000
+        - GITEA__security__SECRET_KEY=${GITEA_SECRET_KEY}
+        - GITEA__security__INTERNAL_TOKEN=${GITEA_INTERNAL_TOKEN}
         - VIRTUAL_HOST=gitea.local
         - VIRTUAL_PORT=3000
       networks:
@@ -31,6 +33,13 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: GITEA_SECRET_KEY
+    description: "Gitea session and CSRF secret key (auto-generated)"
+    generate: random_hex_64
+  - key: GITEA_INTERNAL_TOKEN
+    description: "Gitea internal API token (auto-generated)"
+    generate: random_hex_64
 ai_integration:
   level: native
   description: "Odysseus can manage repositories, issues, branches, and webhooks"

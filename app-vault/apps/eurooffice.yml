@@ -1,0 +1,39 @@
+id: eurooffice
+name: Euro-Office
+description: Sovereign open-source document server — collaborative editing of DOCX, XLSX, PPTX
+category: productivity
+version_hint: "latest"
+compose:
+  services:
+    eurooffice:
+      image: ghcr.io/euro-office/documentserver:latest
+      restart: unless-stopped
+      ports:
+        - "8088:80"
+      volumes:
+        - eurooffice_data:/var/lib/euro-office
+        - eurooffice_logs:/var/log/euro-office
+      environment:
+        - JWT_SECRET=${EUROOFFICE_JWT_SECRET}
+        - VIRTUAL_HOST=eurooffice.local
+        - VIRTUAL_PORT=80
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - eurooffice
+  volumes:
+    eurooffice_data:
+    eurooffice_logs:
+
+  networks:
+    vt-proxy:
+      external: true
+
+required_env:
+  - key: EUROOFFICE_JWT_SECRET
+    description: "JWT signing secret for Euro-Office document sessions (auto-generated)"
+    generate: random_hex_32
+links:
+  home: https://github.com/Euro-Office
+  docs: https://github.com/Euro-Office/DocumentServer

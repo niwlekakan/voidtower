@@ -342,16 +342,30 @@ pub async fn get_active(
 #[derive(Deserialize)]
 pub struct LoadReq { pub filename: String }
 
-pub async fn load_model(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(req): Json<LoadReq>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    if req.filename.contains('/') || req.filename.contains("..") {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
+fn llama_entrypoint_with_exec(server_args: &str) -> String {
+    [
+        "if [ -n \"$$MODEL_PATH\" ]; then",
+        "  MODEL=\"$$MODEL_PATH\"",
+        "else",
+        "  MODEL=\"$$(find /models -name '*.gguf' 2>/dev/null | head -1)\"",
+        "fi",
+        "while [ -z \"$$MODEL\" ]; do",
+        "  echo \"[llama.cpp] No .gguf found -- retrying in 15s...\"",
+        "  sleep 15",
+        "  MODEL=\"$$(find /models -name '*.gguf' 2>/dev/null | head -1)\"",
+        "done",
+        "echo \"[llama.cpp] Loading: $$MODEL\"",
+        &format!("exec /app/llama-server --model \"$$MODEL\" {}", server_args),
+    ].join("\n")
+}
 
+fn llama_entrypoint_script() -> String {
+    llama_entrypoint_with_exec(
+        "--host 0.0.0.0 --port 8080 --n-gpu-layers 999 --ctx-size 8192 --batch-size 512 --threads 4 --cont-batching --parallel 1",
+    )
+}
+
+async fn switch_llama_model(state: &AppState, filename: &str) -> Result<()> {
     let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
         "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1"
     ).fetch_optional(&state.db).await.map_err(AppError::Database)?
@@ -360,22 +374,19 @@ pub async fn load_model(
     let compose_path = std::path::PathBuf::from(&compose_path_str);
     let content = std::fs::read_to_string(&compose_path)
         .map_err(|e| AppError::Internal(e.into()))?;
-
     let mut val: serde_json::Value = serde_yaml::from_str(&content)
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    // Update --model flag in command
     if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
         for svc in services.values_mut() {
-            if let Some(cmd) = svc.get("command").and_then(|c| c.as_str()).map(|s| s.to_string()) {
-                let new_cmd = if cmd.contains("--model ") {
-                    let parts: Vec<&str> = cmd.splitn(2, "--model ").collect();
-                    let rest = parts[1].split_once(' ').map(|x| x.1).map(|s| format!(" {s}")).unwrap_or_default();
-                    format!("{}--model /models/{}{}", parts[0], req.filename, rest)
-                } else {
-                    format!("{} --model /models/{}", cmd.trim(), req.filename)
-                };
-                *svc.get_mut("command").unwrap() = serde_json::Value::String(new_cmd);
+            if let Some(env) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
+                env.retain(|e| !matches!(e.as_str(), Some(s) if s.starts_with("MODEL_PATH=")));
+                env.push(serde_json::Value::String(format!("MODEL_PATH=/models/{}", filename)));
+            }
+            if let Some(ep) = svc.get_mut("entrypoint").and_then(|e| e.as_array_mut()) {
+                if ep.len() >= 3 {
+                    ep[2] = serde_json::Value::String(llama_entrypoint_script());
+                }
             }
         }
     }
@@ -386,6 +397,19 @@ pub async fn load_model(
     crate::containers::deploy_compose(&project_name, &compose_path)
         .await.map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
 
+    Ok(())
+}
+
+pub async fn load_model(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<LoadReq>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    if req.filename.contains('/') || req.filename.contains("..") {
+        return Err(AppError::BadRequest("Invalid filename".into()));
+    }
+    switch_llama_model(&state, &req.filename).await?;
     Ok(Json(serde_json::json!({ "ok": true, "model": req.filename })))
 }
 
@@ -677,4 +701,313 @@ pub async fn get_ollama_tags(
         .unwrap_or_default();
 
     Ok(Json(OllamaTagsResponse { available: true, models }))
+}
+
+// ─── Ollama config ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OllamaConfig {
+    pub deployed: bool,
+    pub keep_alive_secs: i32,
+}
+
+pub async fn get_ollama_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<OllamaConfig>> {
+    require_admin(&state, &jar).await?;
+
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT compose_path FROM deployed_apps WHERE app_id = 'ollama' LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    let Some((compose_path_str,)) = row else {
+        return Ok(Json(OllamaConfig { deployed: false, keep_alive_secs: 300 }));
+    };
+
+    let content = std::fs::read_to_string(&compose_path_str)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let val: serde_json::Value = serde_yaml::from_str(&content)
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let keep_alive_secs = val["services"]
+        .as_object()
+        .and_then(|s| s.values().next())
+        .and_then(|svc| svc["environment"].as_array())
+        .and_then(|env| {
+            env.iter().find_map(|e| {
+                e.as_str()
+                    .and_then(|s| s.strip_prefix("OLLAMA_KEEP_ALIVE="))
+                    .and_then(|v| v.parse::<i32>().ok())
+            })
+        })
+        .unwrap_or(300);
+
+    Ok(Json(OllamaConfig { deployed: true, keep_alive_secs }))
+}
+
+pub async fn save_ollama_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(cfg): Json<OllamaConfig>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+
+    let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
+        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'ollama' LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::BadRequest("Ollama is not deployed".into()))?;
+
+    let compose_path = std::path::PathBuf::from(&compose_path_str);
+    let content = std::fs::read_to_string(&compose_path)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut val: serde_json::Value = serde_yaml::from_str(&content)
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
+        for svc in services.values_mut() {
+            if let Some(env) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
+                env.retain(|e| !matches!(e.as_str(), Some(s) if s.starts_with("OLLAMA_KEEP_ALIVE=")));
+                env.push(serde_json::Value::String(format!("OLLAMA_KEEP_ALIVE={}", cfg.keep_alive_secs)));
+            }
+        }
+    }
+
+    let new_content = serde_yaml::to_string(&val).map_err(|e| AppError::Internal(e.into()))?;
+    std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
+
+    crate::containers::deploy_compose(&project_name, &compose_path)
+        .await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ─── llama.cpp config ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LlamaConfig {
+    pub deployed: bool,
+    pub threads: u32,
+    pub ctx_size: u32,
+    pub batch_size: u32,
+    pub parallel: u32,
+    pub n_gpu_layers: u32,
+    pub flash_attn: bool,
+    pub cont_batching: bool,
+    pub cache_type_k: String,
+    pub cache_type_v: String,
+}
+
+impl Default for LlamaConfig {
+    fn default() -> Self {
+        Self {
+            deployed: false,
+            threads: 4,
+            ctx_size: 8192,
+            batch_size: 512,
+            parallel: 1,
+            n_gpu_layers: 999,
+            flash_attn: false,
+            cont_batching: true,
+            cache_type_k: "f16".into(),
+            cache_type_v: "f16".into(),
+        }
+    }
+}
+
+fn parse_llama_exec_args(line: &str) -> LlamaConfig {
+    let mut cfg = LlamaConfig { deployed: true, cont_batching: false, ..Default::default() };
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let mut i = 0usize;
+    while i < parts.len() {
+        let next = |i: usize| parts.get(i + 1).and_then(|s| s.parse().ok());
+        match parts[i] {
+            "--threads"       => { if let Some(v) = next(i) { cfg.threads       = v; } i += 1; }
+            "--ctx-size"      => { if let Some(v) = next(i) { cfg.ctx_size      = v; } i += 1; }
+            "--batch-size"    => { if let Some(v) = next(i) { cfg.batch_size    = v; } i += 1; }
+            "--parallel"      => { if let Some(v) = next(i) { cfg.parallel      = v; } i += 1; }
+            "--n-gpu-layers"  => { if let Some(v) = next(i) { cfg.n_gpu_layers  = v; } i += 1; }
+            "--flash-attn"    => { cfg.flash_attn    = true; }
+            "--cont-batching" => { cfg.cont_batching = true; }
+            "--cache-type-k"  => { if let Some(v) = parts.get(i + 1) { cfg.cache_type_k = v.to_string(); } i += 1; }
+            "--cache-type-v"  => { if let Some(v) = parts.get(i + 1) { cfg.cache_type_v = v.to_string(); } i += 1; }
+            _ => {}
+        }
+        i += 1;
+    }
+    cfg
+}
+
+fn build_llama_exec_line(cfg: &LlamaConfig) -> String {
+    let mut parts = vec![
+        "--host 0.0.0.0".to_string(),
+        "--port 8080".to_string(),
+        format!("--n-gpu-layers {}", cfg.n_gpu_layers),
+        format!("--ctx-size {}", cfg.ctx_size),
+        format!("--batch-size {}", cfg.batch_size),
+        format!("--threads {}", cfg.threads),
+        format!("--parallel {}", cfg.parallel),
+    ];
+    if cfg.cont_batching { parts.push("--cont-batching".to_string()); }
+    if cfg.flash_attn    { parts.push("--flash-attn".to_string()); }
+    if cfg.cache_type_k != "f16" { parts.push(format!("--cache-type-k {}", cfg.cache_type_k)); }
+    if cfg.cache_type_v != "f16" { parts.push(format!("--cache-type-v {}", cfg.cache_type_v)); }
+    parts.join(" ")
+}
+
+pub async fn get_llama_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<LlamaConfig>> {
+    require_admin(&state, &jar).await?;
+
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+
+    let Some((compose_path_str,)) = row else {
+        return Ok(Json(LlamaConfig::default()));
+    };
+
+    let content = std::fs::read_to_string(&compose_path_str)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let val: serde_json::Value = serde_yaml::from_str(&content)
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let exec_line = val["services"]
+        .as_object()
+        .and_then(|s| s.values().next())
+        .and_then(|svc| svc["entrypoint"].as_array())
+        .and_then(|arr| arr.get(2))
+        .and_then(|s| s.as_str())
+        .and_then(|script| {
+            script
+                .lines()
+                .find(|l| l.trim_start().starts_with("exec /app/llama-server"))
+        })
+        .unwrap_or("");
+
+    Ok(Json(parse_llama_exec_args(exec_line)))
+}
+
+pub async fn save_llama_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(cfg): Json<LlamaConfig>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+
+    let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
+        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::BadRequest("llama.cpp is not deployed".into()))?;
+
+    let compose_path = std::path::PathBuf::from(&compose_path_str);
+    let content = std::fs::read_to_string(&compose_path)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut val: serde_json::Value = serde_yaml::from_str(&content)
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let new_script = llama_entrypoint_with_exec(&build_llama_exec_line(&cfg));
+
+    if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
+        for svc in services.values_mut() {
+            if let Some(ep) = svc.get_mut("entrypoint").and_then(|e| e.as_array_mut()) {
+                if ep.len() >= 3 {
+                    ep[2] = serde_json::Value::String(new_script.clone());
+                }
+            }
+        }
+    }
+
+    let new_content = serde_yaml::to_string(&val).map_err(|e| AppError::Internal(e.into()))?;
+    std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
+
+    crate::containers::deploy_compose(&project_name, &compose_path)
+        .await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ─── OpenAI-compatible proxy ──────────────────────────────────────────────────
+
+/// GET /v1/models — lists every .gguf file in the models directory.
+pub async fn openai_list_models(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
+    let dir = models_dir(&state).await;
+    let mut names: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().map(|x| x == "gguf").unwrap_or(false) {
+                p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+            } else { None }
+        })
+        .collect();
+    names.sort();
+    let data: Vec<serde_json::Value> = names.into_iter().map(|id| serde_json::json!({
+        "id": id, "object": "model", "created": 0, "owned_by": "local"
+    })).collect();
+    Ok(Json(serde_json::json!({ "object": "list", "data": data })))
+}
+
+/// POST /v1/chat/completions — auto-switches the loaded model if needed, then streams through to llama.cpp.
+pub async fn openai_chat_completions(
+    State(state): State<AppState>,
+    Json(req_body): Json<serde_json::Value>,
+) -> Result<axum::response::Response> {
+    if let Some(requested) = req_body.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        if get_active_model_from_server().await.as_deref() != Some(requested) {
+            let dir = models_dir(&state).await;
+            let gguf = format!("{}.gguf", requested);
+            if dir.join(&gguf).exists() {
+                switch_llama_model(&state, &gguf).await?;
+                let poll = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(2))
+                    .build().map_err(|e| AppError::Internal(e.into()))?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if poll.get("http://127.0.0.1:8090/v1/models").send().await
+                        .map(|r| r.status().is_success()).unwrap_or(false) { break; }
+                    if std::time::Instant::now() > deadline {
+                        return Err(AppError::BadRequest("Model switch timed out".into()));
+                    }
+                }
+            }
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build().map_err(|e| AppError::Internal(e.into()))?;
+    let upstream = client
+        .post("http://127.0.0.1:8090/v1/chat/completions")
+        .json(&req_body)
+        .send().await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let status = axum::http::StatusCode::from_u16(upstream.status().as_u16())
+        .unwrap_or(axum::http::StatusCode::OK);
+    let content_type = upstream.headers().get("content-type").cloned();
+
+    let resp_body = axum::body::Body::from_stream(upstream.bytes_stream());
+    let mut resp = axum::response::Response::new(resp_body);
+    *resp.status_mut() = status;
+    if let Some(ct) = content_type {
+        resp.headers_mut().insert(axum::http::header::CONTENT_TYPE, ct);
+    }
+    Ok(resp)
 }

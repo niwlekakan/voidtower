@@ -17,7 +17,7 @@ compose:
         - minio_data:/data
       environment:
         - MINIO_ROOT_USER=admin
-        - MINIO_ROOT_PASSWORD=changeme123
+        - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
         - MINIO_BROWSER_REDIRECT_URL=http://minio.local
         - VIRTUAL_HOST=minio.local
         - VIRTUAL_PORT=9001
@@ -34,6 +34,10 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: MINIO_ROOT_PASSWORD
+    description: "MinIO root password — minimum 8 characters (auto-generated)"
+    generate: random_hex_16
 links:
   home: https://min.io
   docs: https://min.io/docs

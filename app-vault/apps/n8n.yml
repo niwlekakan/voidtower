@@ -16,7 +16,7 @@ compose:
       environment:
         - N8N_BASIC_AUTH_ACTIVE=true
         - N8N_BASIC_AUTH_USER=admin
-        - N8N_BASIC_AUTH_PASSWORD=changeme
+        - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
         - OLLAMA_HOST=http://ollama:11434
         - VIRTUAL_HOST=n8n.local
         - VIRTUAL_PORT=5678
@@ -32,6 +32,10 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: N8N_PASSWORD
+    description: "Password for the n8n admin user (auto-generated)"
+    generate: random_hex_16
 ai_integration:
   level: aware
   description: "Odysseus can trigger n8n workflows via webhook"

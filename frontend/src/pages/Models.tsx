@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  CheckCircle, Download, HardDrive, Loader2, Play, Trash2, XCircle, CloudDownload, RefreshCw,
+  CheckCircle, Download, HardDrive, Loader2, Play, Trash2, XCircle,
+  RefreshCw, Settings2, AlertTriangle, Cpu,
 } from 'lucide-react'
 import { api } from '@/api/client'
-import type { DownloadStatus, ModelFile, OllamaModelInfo, OllamaPullStatus } from '@/api/types'
+import type { DownloadStatus, LlamaConfig, ModelFile, OllamaConfig, OllamaPullStatus } from '@/api/types'
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatBytes(bytes: number, decimals = 1): string {
   if (!bytes) return '0 B'
@@ -26,61 +27,37 @@ const inputStyle: React.CSSProperties = {
   outline: 'none',
 }
 
-// ─── Presets ─────────────────────────────────────────────────────────────────
-
-interface Preset {
-  label: string
-  size: string
-  url: string
+const numInputStyle: React.CSSProperties = {
+  ...inputStyle,
+  width: 90,
+  textAlign: 'right' as const,
 }
 
-const PRESETS: Preset[] = [
-  {
-    label: 'Llama 3.2 3B Q4',
-    size: '~2.0 GB',
-    url: 'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
-  },
-  {
-    label: 'Llama 3.1 8B Q4',
-    size: '~4.9 GB',
-    url: 'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
-  },
-  {
-    label: 'Mistral 7B Q4',
-    size: '~4.4 GB',
-    url: 'https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
-  },
-  {
-    label: 'Phi-3.5 Mini Q4',
-    size: '~2.2 GB',
-    url: 'https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf',
-  },
-  {
-    label: 'Qwen2.5 7B Q4',
-    size: '~4.7 GB',
-    url: 'https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf',
-  },
-  {
-    label: 'DeepSeek-R1 7B Q4',
-    size: '~4.9 GB',
-    url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf',
-  },
+// ─── Presets ──────────────────────────────────────────────────────────────────
+
+const GGUF_PRESETS = [
+  { label: 'Llama 3.2 3B Q4', size: '~2.0 GB', url: 'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf' },
+  { label: 'Llama 3.1 8B Q4', size: '~4.9 GB', url: 'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf' },
+  { label: 'Mistral 7B Q4',   size: '~4.4 GB', url: 'https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf' },
+  { label: 'Phi-3.5 Mini Q4', size: '~2.2 GB', url: 'https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf' },
+  { label: 'Qwen2.5 7B Q4',   size: '~4.7 GB', url: 'https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf' },
+  { label: 'DeepSeek-R1 7B Q4', size: '~4.9 GB', url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf' },
 ]
 
-// ─── DownloadRow ─────────────────────────────────────────────────────────────
+const OLLAMA_PRESETS = [
+  { label: 'llama3.2', size: '~2.0 GB' },
+  { label: 'llama3.1', size: '~4.9 GB' },
+  { label: 'mistral',  size: '~4.1 GB' },
+  { label: 'phi4',     size: '~2.5 GB' },
+  { label: 'qwen2.5',  size: '~4.7 GB' },
+  { label: 'gemma3',   size: '~5.2 GB' },
+]
 
-interface ActiveDownload {
-  id: string
-  status: DownloadStatus | null
-}
+// ─── DownloadRow ──────────────────────────────────────────────────────────────
 
-function DownloadRow({
-  dl,
-  onDone,
-}: {
-  dl: ActiveDownload
-  onDone: () => void
-}) {
+interface ActiveDownload { id: string; status: DownloadStatus | null }
+
+function DownloadRow({ dl, onDone }: { dl: ActiveDownload; onDone: () => void }) {
   const [status, setStatus] = useState<DownloadStatus | null>(dl.status)
   const doneNotified = useRef(false)
 
@@ -92,60 +69,45 @@ function DownloadRow({
         setStatus(s)
         if (s.status !== 'downloading') {
           clearInterval(interval)
-          if (!doneNotified.current) {
-            doneNotified.current = true
-            onDone()
-          }
+          if (!doneNotified.current) { doneNotified.current = true; onDone() }
         }
-      } catch {
-        clearInterval(interval)
-      }
+      } catch { clearInterval(interval) }
     }, 1000)
     return () => clearInterval(interval)
   }, [dl.id, onDone])
 
   if (!status) return null
-
   const pct = status.total_bytes
     ? Math.min(100, (status.downloaded_bytes / status.total_bytes) * 100)
     : null
 
   return (
-    <div
-      className="rounded p-3 space-y-1.5"
-      style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}
-    >
+    <div className="rounded p-3 space-y-1.5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-          {status.filename}
-        </span>
+        <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{status.filename}</span>
         <span className="text-xs shrink-0" style={{ color: status.status === 'error' ? 'var(--accent-danger)' : 'var(--text-muted)' }}>
           {status.status === 'done' && <span style={{ color: 'var(--accent-success)' }}>Done</span>}
           {status.status === 'error' && (status.error ?? 'Error')}
-          {status.status === 'downloading' && (
-            pct !== null
-              ? `${formatBytes(status.downloaded_bytes)} / ${formatBytes(status.total_bytes!)} (${pct.toFixed(1)}%)`
-              : `${formatBytes(status.downloaded_bytes)}…`
+          {status.status === 'downloading' && (pct !== null
+            ? `${formatBytes(status.downloaded_bytes)} / ${formatBytes(status.total_bytes!)} (${pct.toFixed(1)}%)`
+            : `${formatBytes(status.downloaded_bytes)}…`
           )}
         </span>
       </div>
       {status.status === 'downloading' && (
         <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--border-subtle)' }}>
-          <div
-            className="h-full rounded-full transition-all"
-            style={{
-              width: pct !== null ? `${pct.toFixed(1)}%` : '100%',
-              background: 'var(--accent-primary)',
-              animation: pct === null ? 'pulse 1.5s ease-in-out infinite' : undefined,
-            }}
-          />
+          <div className="h-full rounded-full transition-all" style={{
+            width: pct !== null ? `${pct.toFixed(1)}%` : '100%',
+            background: 'var(--accent-primary)',
+            animation: pct === null ? 'pulse 1.5s ease-in-out infinite' : undefined,
+          }} />
         </div>
       )}
     </div>
   )
 }
 
-// ─── OllamaPullRow ───────────────────────────────────────────────────────────
+// ─── OllamaPullRow ────────────────────────────────────────────────────────────
 
 interface ActivePull { id: string; status: OllamaPullStatus | null }
 
@@ -169,632 +131,703 @@ function OllamaPullRow({ pull, onDone }: { pull: ActivePull; onDone: () => void 
   }, [pull.id, onDone])
 
   if (!status) return null
-
   const pct = status.total_bytes && status.pulled_bytes != null
     ? Math.min(100, (status.pulled_bytes / status.total_bytes) * 100)
     : null
 
   return (
-    <div
-      className="rounded p-3 space-y-1.5"
-      style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}
-    >
+    <div className="rounded p-3 space-y-1.5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium truncate font-mono" style={{ color: 'var(--text-primary)' }}>
-          {status.model}
-        </span>
+        <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{status.model}</span>
         <span className="text-xs shrink-0" style={{ color: status.status === 'error' ? 'var(--accent-danger)' : 'var(--text-muted)' }}>
-          {status.status === 'done'    && <span style={{ color: 'var(--accent-success)' }}>Done</span>}
-          {status.status === 'error'   && (status.error ?? 'Error')}
+          {status.status === 'done' && <span style={{ color: 'var(--accent-success)' }}>Done</span>}
+          {status.status === 'error' && (status.error ?? 'Error')}
           {status.status === 'pulling' && (
-            pct !== null
-              ? `${formatBytes(status.pulled_bytes!)} / ${formatBytes(status.total_bytes!)} (${pct.toFixed(1)}%)`
-              : (status.current_layer ?? 'Pulling…')
+            pct !== null ? `${pct.toFixed(1)}%` : (status.current_layer ?? 'Pulling…')
           )}
         </span>
       </div>
       {status.status === 'pulling' && (
         <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--border-subtle)' }}>
-          <div
-            className="h-full rounded-full transition-all"
-            style={{
-              width: pct !== null ? `${pct.toFixed(1)}%` : '100%',
-              background: 'var(--accent-warning, #f59e0b)',
-              animation: pct === null ? 'pulse 1.5s ease-in-out infinite' : undefined,
-            }}
-          />
+          <div className="h-full rounded-full transition-all" style={{
+            width: pct !== null ? `${pct.toFixed(1)}%` : '40%',
+            background: 'var(--accent-primary)',
+            animation: pct === null ? 'pulse 1.5s ease-in-out infinite' : undefined,
+          }} />
         </div>
-      )}
-      {status.status === 'pulling' && status.current_layer && pct !== null && (
-        <p className="text-xs" style={{ color: 'var(--text-disabled)' }}>{status.current_layer}</p>
       )}
     </div>
   )
 }
 
-// ─── Ollama model presets ─────────────────────────────────────────────────────
+// ─── Toggle ───────────────────────────────────────────────────────────────────
 
-const OLLAMA_PRESETS = [
-  { label: 'Llama 3.2 3B',   model: 'llama3.2:3b',         size: '~2.0 GB' },
-  { label: 'Llama 3.2 1B',   model: 'llama3.2:1b',         size: '~1.3 GB' },
-  { label: 'Gemma 3 4B',     model: 'gemma3:4b',           size: '~3.3 GB' },
-  { label: 'Qwen2.5 7B',     model: 'qwen2.5:7b',          size: '~4.7 GB' },
-  { label: 'Mistral 7B',     model: 'mistral:7b',          size: '~4.1 GB' },
-  { label: 'Phi-4 Mini',     model: 'phi4-mini',           size: '~2.5 GB' },
-  { label: 'nomic-embed',    model: 'nomic-embed-text',    size: '~274 MB' },
-  { label: 'DeepSeek-R1 7B', model: 'deepseek-r1:7b',     size: '~4.7 GB' },
+function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!value)}
+      style={{
+        width: 40, height: 22, borderRadius: 11,
+        background: value ? 'var(--accent-primary)' : 'var(--border-default)',
+        border: 'none', cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
+        flexShrink: 0,
+      }}
+    >
+      <span style={{
+        position: 'absolute', top: 3, left: value ? 21 : 3,
+        width: 16, height: 16, borderRadius: '50%',
+        background: '#fff', transition: 'left 0.2s',
+      }} />
+    </button>
+  )
+}
+
+// ─── Tab bar ──────────────────────────────────────────────────────────────────
+
+type Tab = 'library' | 'get' | 'llama'
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'library', label: 'Library' },
+  { id: 'get',     label: 'Get Models' },
+  { id: 'llama',   label: 'llama.cpp' },
 ]
 
-// ─── Ollama Models section ────────────────────────────────────────────────────
-
-function OllamaModelsSection() {
-  const [data, setData] = useState<{ available: boolean; models: OllamaModelInfo[] } | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      const resp = await api.models.ollamaTags()
-      setData(resp)
-    } catch {
-      setData({ available: false, models: [] })
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { refresh() }, [refresh])
-
-  return (
-    <div className="card" style={{ padding: 0 }}>
-      <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-        <div className="flex items-center gap-2">
-          <CloudDownload size={15} style={{ color: 'var(--accent-warning, #f59e0b)' }} />
-          <h2 className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>Ollama Models</h2>
-        </div>
-        <button
-          onClick={refresh}
-          disabled={loading}
-          className="flex items-center gap-1.5 text-xs transition-opacity hover:opacity-70 disabled:opacity-40"
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
-          title="Refresh"
-        >
-          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
-      </div>
-
-      {loading ? (
-        <div className="flex items-center justify-center gap-2 py-8" style={{ color: 'var(--text-muted)' }}>
-          <Loader2 size={14} className="animate-spin" />
-          <span className="text-sm">Checking Ollama…</span>
-        </div>
-      ) : !data?.available ? (
-        <div className="flex flex-col items-center justify-center gap-2 py-10" style={{ color: 'var(--text-muted)' }}>
-          <XCircle size={24} style={{ opacity: 0.4 }} />
-          <p className="text-sm">Ollama is not running.</p>
-          <p className="text-xs" style={{ color: 'var(--text-disabled)' }}>
-            Deploy it from the{' '}
-            <a href="/apps" style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>App Vault</a>.
-          </p>
-        </div>
-      ) : data.models.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-2 py-10" style={{ color: 'var(--text-muted)' }}>
-          <HardDrive size={24} style={{ opacity: 0.3 }} />
-          <p className="text-sm">Ollama is running but no models are installed.</p>
-          <p className="text-xs" style={{ color: 'var(--text-disabled)' }}>Use the "Pull via Ollama" section below to add one.</p>
-        </div>
-      ) : (
-        <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-              {['Model', 'Size', 'Modified'].map(h => (
-                <th
-                  key={h}
-                  className="px-5 py-2 text-left text-xs font-medium uppercase tracking-wide"
-                  style={{ color: 'var(--text-muted)' }}
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {data.models.map(m => {
-              const modDate = m.modified_at
-                ? new Date(m.modified_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-                : '—'
-              return (
-                <tr key={m.name} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                  <td className="px-5 py-3 font-mono text-xs" style={{ color: 'var(--text-primary)' }}>{m.name}</td>
-                  <td className="px-5 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{formatBytes(m.size)}</td>
-                  <td className="px-5 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{modDate}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      )}
-    </div>
-  )
-}
-
-// ─── Main page ────────────────────────────────────────────────────────────────
+// ─── Models page ─────────────────────────────────────────────────────────────
 
 export default function ModelsPage() {
+  const [tab, setTab] = useState<Tab>('library')
+
+  // Library
   const [models, setModels] = useState<ModelFile[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadingModel, setLoadingModel] = useState<string | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(true)
+  const [loadingModel, setLoadingModel]   = useState<string | null>(null)
   const [deletingModel, setDeletingModel] = useState<string | null>(null)
-
-  const [url, setUrl] = useState('')
-  const [filename, setFilename] = useState('')
-  const [downloading, setDownloading] = useState(false)
-  const [activeDownloads, setActiveDownloads] = useState<ActiveDownload[]>([])
-
-  const [ollamaModel, setOllamaModel] = useState('')
-  const [ollamaPulling, setOllamaPulling] = useState(false)
-  const [activePulls, setActivePulls] = useState<ActivePull[]>([])
-
-  const [activeCreates, setActiveCreates] = useState<ActivePull[]>([])
   const [creatingModel, setCreatingModel] = useState<string | null>(null)
 
-  const [notification, setNotification] = useState<{ text: string; ok: boolean } | null>(null)
-  const notifTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Get Models
+  const [url, setUrl]             = useState('')
+  const [filename, setFilename]   = useState('')
+  const [downloading, setDownloading] = useState(false)
+  const [activeDownloads, setActiveDownloads] = useState<ActiveDownload[]>([])
+  const [ollamaModel, setOllamaModel] = useState('')
+  const [pulling, setPulling]     = useState(false)
+  const [activePulls, setActivePulls] = useState<ActivePull[]>([])
+  const [activeCreates, setActiveCreates] = useState<ActivePull[]>([])
 
-  const notify = useCallback((text: string, ok = true) => {
-    setNotification({ text, ok })
-    if (notifTimer.current) clearTimeout(notifTimer.current)
-    notifTimer.current = setTimeout(() => setNotification(null), 4000)
-  }, [])
+  // llama.cpp config
+  const [llamaCfg, setLlamaCfg]   = useState<LlamaConfig | null>(null)
+  const [llamaLoading, setLlamaLoading] = useState(false)
+  const [llamaSaving, setLlamaSaving]   = useState(false)
+  const [draft, setDraft]         = useState<LlamaConfig | null>(null)
+
+  // Ollama config
+  const [ollamaCfg, setOllamaCfg]     = useState<OllamaConfig | null>(null)
+  const [ollamaSaving, setOllamaSaving] = useState(false)
+  const [keepAliveDraft, setKeepAliveDraft] = useState<number>(300)
+
+  // Notification
+  const [notice, setNotice]       = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const noticeTimer               = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const notify = (kind: 'ok' | 'err', msg: string) => {
+    setNotice({ kind, msg })
+    if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    noticeTimer.current = setTimeout(() => setNotice(null), 3500)
+  }
+
+  // ── Fetch models ────────────────────────────────────────────────────────────
 
   const fetchModels = useCallback(async () => {
+    setModelsLoading(true)
     try {
       const list = await api.models.list()
       setModels(list)
-    } catch {
-      // silently ignore if auth not ready yet
     } finally {
-      setLoading(false)
+      setModelsLoading(false)
     }
   }, [])
 
-  useEffect(() => {
-    fetchModels()
-  }, [fetchModels])
+  useEffect(() => { fetchModels() }, [fetchModels])
 
-  // Auto-refresh while any download is active
-  useEffect(() => {
-    const hasActive = activeDownloads.some(d => !d.status || d.status.status === 'downloading')
-    if (!hasActive) return
-    const interval = setInterval(fetchModels, 3000)
-    return () => clearInterval(interval)
-  }, [activeDownloads, fetchModels])
+  // ── Fetch llama + ollama config when tab opens ─────────────────────────────
 
-  const handleLoad = async (f: ModelFile) => {
-    if (!window.confirm(`Load "${f.filename}" into llama.cpp? This will restart the container.`)) return
-    setLoadingModel(f.filename)
-    try {
-      await api.models.loadModel(f.filename)
-      notify(`Model "${f.filename}" loaded successfully.`)
-      await fetchModels()
-    } catch (e: any) {
-      notify(e?.message ?? 'Failed to load model', false)
-    } finally {
-      setLoadingModel(null)
+  useEffect(() => {
+    if (tab !== 'llama') return
+    if (llamaCfg === null) {
+      setLlamaLoading(true)
+      api.models.getLlamaConfig()
+        .then(cfg => { setLlamaCfg(cfg); setDraft(cfg) })
+        .catch(() => notify('err', 'Failed to load llama.cpp config'))
+        .finally(() => setLlamaLoading(false))
     }
+    if (ollamaCfg === null) {
+      api.models.getOllamaConfig()
+        .then(cfg => { setOllamaCfg(cfg); setKeepAliveDraft(cfg.keep_alive_secs) })
+        .catch(() => {})
+    }
+  }, [tab, llamaCfg, ollamaCfg])
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
+
+  const handleLoad = async (filename: string) => {
+    setLoadingModel(filename)
+    try {
+      await api.models.loadModel(filename)
+      notify('ok', `llama.cpp restarted in multi-model mode`)
+      setLlamaCfg(null) // refresh config on next llama tab open
+    } catch (e: unknown) {
+      notify('err', e instanceof Error ? e.message : 'Failed')
+    } finally { setLoadingModel(null) }
   }
 
-  const handleDelete = async (f: ModelFile) => {
-    if (!window.confirm(`Delete "${f.filename}"? This cannot be undone.`)) return
-    setDeletingModel(f.filename)
+  const handleDelete = async (filename: string) => {
+    setDeletingModel(filename)
     try {
-      await api.models.deleteModel(f.filename)
-      notify(`Deleted "${f.filename}".`)
-      setModels(prev => prev.filter(m => m.filename !== f.filename))
-    } catch (e: any) {
-      notify(e?.message ?? 'Failed to delete model', false)
-    } finally {
-      setDeletingModel(null)
-    }
+      await api.models.deleteModel(filename)
+      notify('ok', `Deleted ${filename}`)
+      fetchModels()
+    } catch (e: unknown) {
+      notify('err', e instanceof Error ? e.message : 'Failed')
+    } finally { setDeletingModel(null) }
+  }
+
+  const handleOllamaCreate = async (filename: string) => {
+    setCreatingModel(filename)
+    try {
+      const res = await api.models.ollamaCreate(filename)
+      setActiveCreates(prev => [...prev, { id: res.id, status: null }])
+      notify('ok', `Importing ${filename} into Ollama…`)
+      fetchModels()
+    } catch (e: unknown) {
+      notify('err', e instanceof Error ? e.message : 'Failed')
+    } finally { setCreatingModel(null) }
   }
 
   const handleDownload = async () => {
     if (!url.trim()) return
     setDownloading(true)
     try {
-      const { id } = await api.models.startDownload(url.trim(), filename.trim() || undefined)
-      setActiveDownloads(prev => [...prev, { id, status: null }])
-      setUrl('')
-      setFilename('')
-    } catch (e: any) {
-      notify(e?.message ?? 'Failed to start download', false)
-    } finally {
-      setDownloading(false)
-    }
+      const res = await api.models.startDownload(url.trim(), filename.trim() || undefined)
+      setActiveDownloads(prev => [...prev, { id: res.id, status: null }])
+      setUrl(''); setFilename('')
+    } catch (e: unknown) {
+      notify('err', e instanceof Error ? e.message : 'Download failed')
+    } finally { setDownloading(false) }
   }
 
-  const handleDownloadDone = useCallback((id: string, status: DownloadStatus) => {
-    if (status.status === 'done') {
-      notify(`Downloaded "${status.filename}" successfully.`)
-      fetchModels()
-    } else if (status.status === 'error') {
-      notify(`Download failed: ${status.error ?? 'unknown error'}`, false)
-    }
-    setTimeout(() => {
-      setActiveDownloads(prev => prev.filter(d => d.id !== id))
-    }, 4000)
-  }, [notify, fetchModels])
-
-  const handleOllamaPull = async () => {
-    const model = ollamaModel.trim()
-    if (!model) return
-    setOllamaPulling(true)
+  const handlePull = async () => {
+    if (!ollamaModel.trim()) return
+    setPulling(true)
     try {
-      const { id } = await api.models.ollamaPull(model)
-      setActivePulls(prev => [...prev, { id, status: null }])
+      const res = await api.models.ollamaPull(ollamaModel.trim())
+      setActivePulls(prev => [...prev, { id: res.id, status: null }])
       setOllamaModel('')
-    } catch (e: any) {
-      notify(e?.message ?? 'Failed to start pull', false)
-    } finally {
-      setOllamaPulling(false)
-    }
+    } catch (e: unknown) {
+      notify('err', e instanceof Error ? e.message : 'Pull failed')
+    } finally { setPulling(false) }
   }
 
-  const handleOllamaPullDone = useCallback((id: string, status: OllamaPullStatus) => {
-    if (status.status === 'done') {
-      notify(`Pulled "${status.model}" successfully.`)
-      fetchModels()
-    } else if (status.status === 'error') {
-      notify(`Pull failed: ${status.error ?? 'unknown error'}`, false)
-    }
-    setTimeout(() => setActivePulls(prev => prev.filter(p => p.id !== id)), 4000)
-  }, [notify, fetchModels])
-
-  const handleOllamaCreate = async (filename: string) => {
-    setCreatingModel(filename)
+  const handleSaveOllama = async () => {
+    if (!ollamaCfg) return
+    setOllamaSaving(true)
     try {
-      const { id, model_name } = await api.models.ollamaCreate(filename)
-      setActiveCreates(prev => [...prev, { id, status: null }])
-      notify(`Loading "${model_name}" into Ollama…`)
-    } catch (e: any) {
-      notify(e?.message ?? 'Failed to load into Ollama', false)
-    } finally {
-      setCreatingModel(null)
-    }
+      await api.models.saveOllamaConfig({ ...ollamaCfg, keep_alive_secs: keepAliveDraft })
+      setOllamaCfg(prev => prev ? { ...prev, keep_alive_secs: keepAliveDraft } : prev)
+      notify('ok', 'Saved — Ollama is restarting')
+    } catch (e: unknown) {
+      notify('err', e instanceof Error ? e.message : 'Save failed')
+    } finally { setOllamaSaving(false) }
   }
 
-  const handleOllamaCreateDone = useCallback((id: string, status: OllamaPullStatus) => {
-    if (status.status === 'done') {
-      notify(`"${status.model}" is ready in Ollama.`)
-      fetchModels()
-    } else if (status.status === 'error') {
-      notify(`Load failed: ${status.error ?? 'unknown error'}`, false)
-    }
-    setTimeout(() => setActiveCreates(prev => prev.filter(p => p.id !== id)), 4000)
-  }, [notify, fetchModels])
+  const handleSaveLlama = async () => {
+    if (!draft) return
+    setLlamaSaving(true)
+    try {
+      await api.models.saveLlamaConfig(draft)
+      setLlamaCfg(draft)
+      notify('ok', 'Saved — llama.cpp is restarting')
+    } catch (e: unknown) {
+      notify('err', e instanceof Error ? e.message : 'Save failed')
+    } finally { setLlamaSaving(false) }
+  }
+
+  const setDraftField = <K extends keyof LlamaConfig>(key: K, val: LlamaConfig[K]) =>
+    setDraft(d => d ? { ...d, [key]: val } : d)
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
+  const ggufModels  = models.filter(m => m.source === 'voidtower')
+  const ollamaModels = models.filter(m => m.source === 'ollama')
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div style={{ padding: '24px 28px', maxWidth: 900, margin: '0 auto' }}>
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <HardDrive size={22} style={{ color: 'var(--accent-primary)' }} />
-        <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Models</h1>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <HardDrive size={20} style={{ color: 'var(--accent-primary)' }} />
+          <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Models
+          </h1>
+          {!modelsLoading && (
+            <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}>
+              {models.length}
+            </span>
+          )}
+        </div>
+        <button onClick={fetchModels} disabled={modelsLoading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm"
+          style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', cursor: 'pointer' }}>
+          <RefreshCw size={13} className={modelsLoading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex gap-0 mb-6" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{
+              padding: '8px 18px',
+              fontSize: 13,
+              fontWeight: tab === t.id ? 600 : 400,
+              color: tab === t.id ? 'var(--accent-primary)' : 'var(--text-muted)',
+              background: 'none',
+              border: 'none',
+              borderBottom: tab === t.id ? '2px solid var(--accent-primary)' : '2px solid transparent',
+              marginBottom: -1,
+              cursor: 'pointer',
+              transition: 'color 0.15s',
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {/* Notification */}
-      {notification && (
-        <div
-          className="flex items-center gap-2 px-4 py-3 rounded text-sm"
+      {notice && (
+        <div className="flex items-center gap-2 px-3 py-2.5 rounded mb-5 text-sm"
           style={{
-            background: notification.ok ? 'var(--accent-success)22' : 'var(--accent-danger)22',
-            border: `1px solid ${notification.ok ? 'var(--accent-success)' : 'var(--accent-danger)'}44`,
-            color: notification.ok ? 'var(--accent-success)' : 'var(--accent-danger)',
-          }}
-        >
-          {notification.ok
-            ? <CheckCircle size={14} />
-            : <XCircle size={14} />}
-          {notification.text}
+            background: notice.kind === 'ok' ? 'color-mix(in srgb, var(--accent-success) 12%, transparent)' : 'color-mix(in srgb, var(--accent-danger) 12%, transparent)',
+            border: `1px solid ${notice.kind === 'ok' ? 'var(--accent-success)' : 'var(--accent-danger)'}`,
+            color: notice.kind === 'ok' ? 'var(--accent-success)' : 'var(--accent-danger)',
+          }}>
+          {notice.kind === 'ok' ? <CheckCircle size={14} /> : <XCircle size={14} />}
+          {notice.msg}
         </div>
       )}
 
-      {/* Your Models */}
-      <div className="card" style={{ padding: 0 }}>
-        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-          <h2 className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>Your Models</h2>
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            {models.filter(m => m.source === 'voidtower').length} local
-            {models.some(m => m.source === 'ollama') && ` · ${models.filter(m => m.source === 'ollama').length} Ollama`}
-          </span>
-        </div>
+      {/* ── Library tab ── */}
+      {tab === 'library' && (
+        <div className="space-y-3">
+          {modelsLoading ? (
+            <div className="flex items-center gap-2 py-8 justify-center" style={{ color: 'var(--text-muted)' }}>
+              <Loader2 size={16} className="animate-spin" /> Loading…
+            </div>
+          ) : models.length === 0 ? (
+            <div className="text-center py-12" style={{ color: 'var(--text-muted)' }}>
+              <HardDrive size={32} className="mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No models yet. Go to <button onClick={() => setTab('get')} style={{ color: 'var(--accent-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Get Models</button> to download one.</p>
+            </div>
+          ) : (
+            <>
+              {/* GGUF section */}
+              {ggufModels.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>GGUF</p>
+                  <div className="rounded overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
+                    {ggufModels.map((m, i) => (
+                      <div key={m.filename}
+                        className="flex items-center gap-3 px-4 py-3"
+                        style={{
+                          borderTop: i > 0 ? '1px solid var(--border-subtle)' : undefined,
+                          background: 'var(--bg-surface)',
+                        }}>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{m.filename}</p>
+                          <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{formatBytes(m.size_bytes)}</p>
+                        </div>
+                        {m.active && (
+                          <span className="text-xs px-2 py-0.5 rounded-full font-medium shrink-0"
+                            style={{ background: 'color-mix(in srgb, var(--accent-success) 15%, transparent)', color: 'var(--accent-success)', border: '1px solid var(--accent-success)' }}>
+                            Active
+                          </span>
+                        )}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            onClick={() => handleLoad(m.filename)}
+                            disabled={loadingModel === m.filename}
+                            title="Load into llama.cpp"
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded text-xs"
+                            style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', cursor: 'pointer' }}>
+                            {loadingModel === m.filename ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
+                            llama.cpp
+                          </button>
+                          <button
+                            onClick={() => handleOllamaCreate(m.filename)}
+                            disabled={creatingModel === m.filename}
+                            title="Import into Ollama"
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded text-xs"
+                            style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)', cursor: 'pointer' }}>
+                            {creatingModel === m.filename ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                            Ollama
+                          </button>
+                          <button
+                            onClick={() => handleDelete(m.filename)}
+                            disabled={deletingModel === m.filename}
+                            title="Delete"
+                            className="flex items-center justify-center p-1.5 rounded"
+                            style={{ background: 'none', color: 'var(--text-muted)', border: '1px solid transparent', cursor: 'pointer' }}>
+                            {deletingModel === m.filename ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 py-10" style={{ color: 'var(--text-muted)' }}>
-            <Loader2 size={16} className="animate-spin" />
-            <span className="text-sm">Loading…</span>
-          </div>
-        ) : models.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 py-12" style={{ color: 'var(--text-muted)' }}>
-            <HardDrive size={28} style={{ opacity: 0.3 }} />
-            <p className="text-sm">No models yet. Download one below.</p>
-          </div>
-        ) : (
-          <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                {['Filename', 'Size', 'Source', 'Status', 'Actions'].map(h => (
-                  <th
-                    key={h}
-                    className="px-5 py-2 text-left text-xs font-medium uppercase tracking-wide"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {models.map(m => (
-                <tr
-                  key={`${m.source}:${m.filename}`}
-                  style={{ borderBottom: '1px solid var(--border-subtle)' }}
-                >
-                  <td className="px-5 py-3 font-mono text-xs" style={{ color: 'var(--text-primary)' }}>
-                    {m.filename}
-                  </td>
-                  <td className="px-5 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    {m.size_bytes ? formatBytes(m.size_bytes) : '—'}
-                  </td>
-                  <td className="px-5 py-3">
-                    {m.source === 'ollama' ? (
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-                        style={{ background: 'var(--accent-warning, #f59e0b)22', color: 'var(--accent-warning, #f59e0b)', border: '1px solid var(--accent-warning, #f59e0b)44' }}
-                      >
-                        Ollama
-                      </span>
-                    ) : (
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-                        style={{ background: 'var(--accent-primary)22', color: 'var(--accent-primary)', border: '1px solid var(--accent-primary)44' }}
-                      >
-                        VoidTower
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-5 py-3">
-                    {m.active ? (
-                      <span
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium"
-                        style={{ background: 'var(--accent-success)22', color: 'var(--accent-success)' }}
-                      >
-                        <CheckCircle size={11} /> Active
-                      </span>
-                    ) : (
-                      <span className="text-xs" style={{ color: 'var(--text-disabled)' }}>—</span>
-                    )}
-                  </td>
-                  <td className="px-5 py-3">
-                    {m.source === 'voidtower' ? (
-                      <div className="flex items-center gap-2">
+              {/* Ollama section */}
+              {ollamaModels.length > 0 && (
+                <div className="mt-5">
+                  <p className="text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Ollama</p>
+                  <div className="rounded overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
+                    {ollamaModels.map((m, i) => (
+                      <div key={m.filename}
+                        className="flex items-center gap-3 px-4 py-3"
+                        style={{
+                          borderTop: i > 0 ? '1px solid var(--border-subtle)' : undefined,
+                          background: 'var(--bg-surface)',
+                        }}>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{m.filename}</p>
+                          <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{formatBytes(m.size_bytes)}</p>
+                        </div>
                         <button
-                          disabled={loadingModel === m.filename}
-                          onClick={() => handleLoad(m)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
-                          style={{ background: 'var(--accent-primary)22', color: 'var(--accent-primary)', border: '1px solid var(--accent-primary)44' }}
-                          title="Load into llama.cpp"
-                        >
-                          {loadingModel === m.filename ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
-                          llama.cpp
-                        </button>
-                        <button
-                          disabled={creatingModel === m.filename}
-                          onClick={() => handleOllamaCreate(m.filename)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
-                          style={{ background: 'var(--accent-warning, #f59e0b)22', color: 'var(--accent-warning, #f59e0b)', border: '1px solid var(--accent-warning, #f59e0b)44' }}
-                          title="Import into Ollama"
-                        >
-                          {creatingModel === m.filename ? <Loader2 size={11} className="animate-spin" /> : <CloudDownload size={11} />}
-                          Ollama
-                        </button>
-                        <button
+                          onClick={() => handleDelete(m.filename)}
                           disabled={deletingModel === m.filename}
-                          onClick={() => handleDelete(m)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
-                          style={{ background: 'var(--accent-danger)22', color: 'var(--accent-danger)', border: '1px solid var(--accent-danger)44' }}
-                          title="Delete model file"
-                        >
-                          {deletingModel === m.filename ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
-                          Delete
+                          title="Delete"
+                          className="flex items-center justify-center p-1.5 rounded"
+                          style={{ background: 'none', color: 'var(--text-muted)', border: '1px solid transparent', cursor: 'pointer' }}>
+                          {deletingModel === m.filename ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
                         </button>
                       </div>
-                    ) : (
-                      <span className="text-xs" style={{ color: 'var(--text-disabled)' }}>Managed by Ollama</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-      {/* Ollama Models */}
-      <OllamaModelsSection />
-
-      {/* Active Ollama imports */}
-      {activeCreates.length > 0 && (
-        <div className="card space-y-2">
-          <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Importing into Ollama</p>
-          {activeCreates.map(pull => (
-            <OllamaPullRow
-              key={pull.id}
-              pull={pull}
-              onDone={() => {
-                api.models.ollamaCreateStatus(pull.id).then(s => handleOllamaCreateDone(pull.id, s)).catch(() => {})
-              }}
-            />
-          ))}
+              {/* Active Ollama creates from library */}
+              {activeCreates.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {activeCreates.map(c => (
+                    <OllamaPullRow key={c.id} pull={c} onDone={fetchModels} />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 
-      {/* Pull via Ollama */}
-      <div className="card space-y-5">
-        <div className="flex items-center gap-2">
-          <CloudDownload size={16} style={{ color: 'var(--accent-warning, #f59e0b)' }} />
-          <h2 className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>Pull via Ollama</h2>
-        </div>
+      {/* ── Get Models tab ── */}
+      {tab === 'get' && (
+        <div className="space-y-8">
+          {/* GGUF Download */}
+          <section>
+            <div className="flex items-center gap-2 mb-4">
+              <Download size={15} style={{ color: 'var(--accent-primary)' }} />
+              <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Download GGUF</h2>
+            </div>
 
-        {/* Ollama presets */}
-        <div>
-          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>Popular models — click to fill</p>
-          <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
-            {OLLAMA_PRESETS.map(p => (
-              <button
-                key={p.model}
-                onClick={() => setOllamaModel(p.model)}
-                className="text-left rounded p-3 transition-all hover:opacity-80"
-                style={{
-                  background: ollamaModel === p.model ? 'var(--accent-warning, #f59e0b)22' : 'var(--bg-elevated)',
-                  border: `1px solid ${ollamaModel === p.model ? 'var(--accent-warning, #f59e0b)' : 'var(--border-default)'}`,
-                }}
-              >
-                <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{p.label}</div>
-                <div className="text-xs mt-0.5 font-mono" style={{ color: 'var(--text-muted)' }}>{p.model}</div>
-                <div className="text-xs mt-0.5" style={{ color: 'var(--text-disabled)' }}>{p.size}</div>
-              </button>
-            ))}
-          </div>
-        </div>
+            {/* Presets */}
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              {GGUF_PRESETS.map(p => (
+                <button key={p.label} onClick={() => setUrl(p.url)}
+                  className="text-left px-3 py-2.5 rounded text-xs"
+                  style={{
+                    background: url === p.url ? 'color-mix(in srgb, var(--accent-primary) 12%, transparent)' : 'var(--bg-elevated)',
+                    border: `1px solid ${url === p.url ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+                    color: 'var(--text-primary)', cursor: 'pointer',
+                  }}>
+                  <div className="font-medium">{p.label}</div>
+                  <div style={{ color: 'var(--text-muted)' }}>{p.size}</div>
+                </button>
+              ))}
+            </div>
 
-        {/* Model name input */}
-        <div className="flex gap-2">
-          <input
-            style={{ ...inputStyle, flex: 1 }}
-            placeholder="llama3.2, gemma3:4b, …"
-            value={ollamaModel}
-            onChange={e => setOllamaModel(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleOllamaPull()}
-          />
-          <button
-            onClick={handleOllamaPull}
-            disabled={ollamaPulling || !ollamaModel.trim()}
-            className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
-            style={{ background: 'var(--accent-warning, #f59e0b)', color: 'white', whiteSpace: 'nowrap' }}
-          >
-            {ollamaPulling ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />}
-            Pull
-          </button>
-        </div>
+            <div className="space-y-2">
+              <input value={url} onChange={e => setUrl(e.target.value)}
+                placeholder="https://huggingface.co/…/model.gguf"
+                style={inputStyle} />
+              <div className="flex gap-2">
+                <input value={filename} onChange={e => setFilename(e.target.value)}
+                  placeholder="Filename (optional — inferred from URL)"
+                  style={{ ...inputStyle, flex: 1 }} />
+                <button onClick={handleDownload} disabled={downloading || !url.trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded text-sm font-medium shrink-0"
+                  style={{
+                    background: 'var(--accent-primary)', color: '#fff', border: 'none',
+                    cursor: downloading || !url.trim() ? 'not-allowed' : 'pointer',
+                    opacity: downloading || !url.trim() ? 0.6 : 1,
+                  }}>
+                  {downloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                  Download
+                </button>
+              </div>
+            </div>
 
-        {/* Active pulls */}
-        {activePulls.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Active Pulls</p>
-            {activePulls.map(pull => (
-              <OllamaPullRow
-                key={pull.id}
-                pull={pull}
-                onDone={() => {
-                  api.models.ollamaPullStatus(pull.id).then(s => handleOllamaPullDone(pull.id, s)).catch(() => {})
-                }}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Download Model (GGUF) */}
-      <div className="card space-y-5">
-        <div className="flex items-center gap-2">
-          <Download size={16} style={{ color: 'var(--accent-primary)' }} />
-          <h2 className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>Download GGUF Model</h2>
-        </div>
-
-        {/* Popular presets */}
-        <div>
-          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>Popular presets — click to fill URL</p>
-          <div className="grid grid-cols-2 gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
-            {PRESETS.map(p => (
-              <button
-                key={p.url}
-                onClick={() => {
-                  setUrl(p.url)
-                  const name = p.url.split('/').pop()?.split('?')[0] ?? ''
-                  setFilename(name)
-                }}
-                className="text-left rounded p-3 transition-all hover:opacity-80"
-                style={{
-                  background: url === p.url ? 'var(--accent-primary)22' : 'var(--bg-elevated)',
-                  border: `1px solid ${url === p.url ? 'var(--accent-primary)' : 'var(--border-default)'}`,
-                }}
-              >
-                <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{p.label}</div>
-                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{p.size}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* URL + filename inputs */}
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-              Direct URL to <code>.gguf</code> file
-            </label>
-            <input
-              style={inputStyle}
-              placeholder="https://huggingface.co/{user}/{repo}/resolve/main/model.gguf"
-              value={url}
-              onChange={e => setUrl(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleDownload()}
-            />
-            {url && url.includes('huggingface.co') && !url.includes('/resolve/') && (
-              <p className="text-xs mt-1" style={{ color: 'var(--accent-warning)' }}>
-                This looks like a model page. Go to the <strong>Files</strong> tab on that page, click a <code>.gguf</code> file, and copy the download link.
-              </p>
+            {activeDownloads.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {activeDownloads.map(dl => (
+                  <DownloadRow key={dl.id} dl={dl} onDone={fetchModels} />
+                ))}
+              </div>
             )}
-          </div>
-          <div>
-            <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-              Filename <span style={{ color: 'var(--text-disabled)' }}>(optional — auto-detected from URL)</span>
-            </label>
-            <input
-              style={inputStyle}
-              placeholder="my-model.gguf"
-              value={filename}
-              onChange={e => setFilename(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleDownload()}
-            />
-          </div>
-          <button
-            onClick={handleDownload}
-            disabled={downloading || !url.trim()}
-            className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
-            style={{ background: 'var(--accent-primary)', color: 'white' }}
-          >
-            {downloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-            Download
-          </button>
-        </div>
+          </section>
 
-        {/* Active downloads */}
-        {activeDownloads.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Active Downloads</p>
-            {activeDownloads.map(dl => (
-              <DownloadRow
-                key={dl.id}
-                dl={dl}
-                onDone={() => {
-                  api.models.downloadStatus(dl.id).then(s => handleDownloadDone(dl.id, s)).catch(() => {})
-                }}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+          {/* Divider */}
+          <div style={{ borderTop: '1px solid var(--border-subtle)' }} />
+
+          {/* Ollama Pull */}
+          <section>
+            <div className="flex items-center gap-2 mb-4">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ color: 'var(--accent-primary)' }}>
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/>
+                <circle cx="12" cy="12" r="4" fill="currentColor"/>
+              </svg>
+              <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Pull via Ollama</h2>
+            </div>
+
+            {/* Ollama presets */}
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              {OLLAMA_PRESETS.map(p => (
+                <button key={p.label} onClick={() => setOllamaModel(p.label)}
+                  className="text-left px-3 py-2.5 rounded text-xs"
+                  style={{
+                    background: ollamaModel === p.label ? 'color-mix(in srgb, var(--accent-primary) 12%, transparent)' : 'var(--bg-elevated)',
+                    border: `1px solid ${ollamaModel === p.label ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+                    color: 'var(--text-primary)', cursor: 'pointer',
+                  }}>
+                  <div className="font-medium">{p.label}</div>
+                  <div style={{ color: 'var(--text-muted)' }}>{p.size}</div>
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-2">
+              <input value={ollamaModel} onChange={e => setOllamaModel(e.target.value)}
+                placeholder="model:tag (e.g. llama3.2:3b)"
+                style={{ ...inputStyle, flex: 1 }}
+                onKeyDown={e => { if (e.key === 'Enter') handlePull() }} />
+              <button onClick={handlePull} disabled={pulling || !ollamaModel.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 rounded text-sm font-medium shrink-0"
+                style={{
+                  background: 'var(--accent-primary)', color: '#fff', border: 'none',
+                  cursor: pulling || !ollamaModel.trim() ? 'not-allowed' : 'pointer',
+                  opacity: pulling || !ollamaModel.trim() ? 0.6 : 1,
+                }}>
+                {pulling ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                Pull
+              </button>
+            </div>
+
+            {activePulls.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {activePulls.map(p => (
+                  <OllamaPullRow key={p.id} pull={p} onDone={fetchModels} />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* ── llama.cpp tab ── */}
+      {tab === 'llama' && (
+        <div>
+          {llamaLoading ? (
+            <div className="flex items-center gap-2 py-12 justify-center" style={{ color: 'var(--text-muted)' }}>
+              <Loader2 size={16} className="animate-spin" /> Loading…
+            </div>
+          ) : !llamaCfg?.deployed ? (
+            <div className="text-center py-14" style={{ color: 'var(--text-muted)' }}>
+              <Cpu size={36} className="mx-auto mb-3 opacity-30" />
+              <p className="text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>llama.cpp is not deployed</p>
+              <p className="text-xs">Deploy it from the <span style={{ color: 'var(--accent-primary)' }}>App Vault</span> to configure it here.</p>
+            </div>
+          ) : draft ? (
+            <div className="space-y-6">
+              {/* Performance card */}
+              <div className="rounded-lg p-5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+                <div className="flex items-center gap-2 mb-4">
+                  <Settings2 size={14} style={{ color: 'var(--accent-primary)' }} />
+                  <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Performance</span>
+                </div>
+                <div className="grid grid-cols-4 gap-4">
+                  {([
+                    { key: 'threads',    label: 'Threads',      hint: 'rec: 10' },
+                    { key: 'ctx_size',   label: 'Context Size', hint: 'rec: 4096' },
+                    { key: 'batch_size', label: 'Batch Size',   hint: 'rec: 512' },
+                    { key: 'parallel',   label: 'Parallel Slots', hint: 'rec: 1' },
+                  ] as const).map(({ key, label, hint }) => (
+                    <div key={key}>
+                      <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>{label}</label>
+                      <input
+                        type="number"
+                        value={draft[key]}
+                        onChange={e => setDraftField(key, parseInt(e.target.value) || 0)}
+                        style={numInputStyle}
+                        min={1}
+                      />
+                      <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{hint}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* GPU & toggles card */}
+              <div className="rounded-lg p-5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+                <div className="flex items-center gap-2 mb-4">
+                  <Cpu size={14} style={{ color: 'var(--accent-primary)' }} />
+                  <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>GPU & Options</span>
+                </div>
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>GPU Layers</label>
+                    <input
+                      type="number"
+                      value={draft.n_gpu_layers}
+                      onChange={e => setDraftField('n_gpu_layers', parseInt(e.target.value) || 0)}
+                      style={numInputStyle}
+                      min={0} max={999}
+                    />
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>999 = all layers</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-2" style={{ color: 'var(--text-muted)' }}>Flash Attention</label>
+                    <div className="flex items-center gap-2">
+                      <Toggle value={draft.flash_attn} onChange={v => setDraftField('flash_attn', v)} />
+                      <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{draft.flash_attn ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>rec: enabled</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-2" style={{ color: 'var(--text-muted)' }}>Continuous Batching</label>
+                    <div className="flex items-center gap-2">
+                      <Toggle value={draft.cont_batching} onChange={v => setDraftField('cont_batching', v)} />
+                      <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{draft.cont_batching ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>rec: enabled</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* KV Cache card */}
+              <div className="rounded-lg p-5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+                <div className="flex items-center gap-2 mb-4">
+                  <HardDrive size={14} style={{ color: 'var(--accent-primary)' }} />
+                  <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>KV Cache</span>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  {([
+                    { key: 'cache_type_k', label: 'Type K' },
+                    { key: 'cache_type_v', label: 'Type V' },
+                  ] as const).map(({ key, label }) => (
+                    <div key={key}>
+                      <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>{label}</label>
+                      <select
+                        value={draft[key]}
+                        onChange={e => setDraftField(key, e.target.value)}
+                        style={{ ...inputStyle, width: 'auto', minWidth: 120 }}>
+                        <option value="f16">f16 (default)</option>
+                        <option value="q8_0">q8_0 (smaller)</option>
+                        <option value="q4_0">q4_0 (smallest)</option>
+                      </select>
+                      <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>rec: q8_0</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Warning + Save llama.cpp */}
+              <div className="flex items-center gap-3 pt-1">
+                <div className="flex items-center gap-2 text-xs flex-1" style={{ color: 'var(--text-muted)' }}>
+                  <AlertTriangle size={13} style={{ color: 'var(--accent-warning)' }} />
+                  Saving will restart the llama.cpp container.
+                </div>
+                <button
+                  onClick={handleSaveLlama}
+                  disabled={llamaSaving}
+                  className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium"
+                  style={{
+                    background: 'var(--accent-warning, #f59e0b)',
+                    color: '#000',
+                    border: 'none',
+                    cursor: llamaSaving ? 'not-allowed' : 'pointer',
+                    opacity: llamaSaving ? 0.7 : 1,
+                  }}>
+                  {llamaSaving ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                  Save & Restart
+                </button>
+              </div>
+
+              {/* Ollama card */}
+              {ollamaCfg && (
+                <div className="rounded-lg p-5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+                  <div className="flex items-center gap-2 mb-4">
+                    <Settings2 size={14} style={{ color: 'var(--accent-primary)' }} />
+                    <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Ollama</span>
+                    {!ollamaCfg.deployed && (
+                      <span className="text-xs ml-1" style={{ color: 'var(--text-muted)' }}>(not deployed via App Vault — read-only)</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-3 gap-4 items-end">
+                    <div>
+                      <label className="block text-xs mb-1" style={{ color: 'var(--text-muted)' }}>Keep-Alive (seconds)</label>
+                      <input
+                        type="number"
+                        value={keepAliveDraft}
+                        onChange={e => setKeepAliveDraft(parseInt(e.target.value) || 0)}
+                        disabled={!ollamaCfg.deployed}
+                        style={{ ...numInputStyle, opacity: ollamaCfg.deployed ? 1 : 0.5 }}
+                        min={-1}
+                      />
+                      <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>0 = unload immediately, -1 = never</p>
+                    </div>
+                    <div className="col-span-2 flex items-end justify-end gap-3 pb-0.5">
+                      {ollamaCfg.deployed && (
+                        <>
+                          <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                            <AlertTriangle size={13} style={{ color: 'var(--accent-warning)' }} />
+                            Saving will restart the Ollama container.
+                          </div>
+                          <button
+                            onClick={handleSaveOllama}
+                            disabled={ollamaSaving}
+                            className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium"
+                            style={{
+                              background: 'var(--accent-warning, #f59e0b)',
+                              color: '#000',
+                              border: 'none',
+                              cursor: ollamaSaving ? 'not-allowed' : 'pointer',
+                              opacity: ollamaSaving ? 0.7 : 1,
+                            }}>
+                            {ollamaSaving ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                            Save & Restart
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   )
 }

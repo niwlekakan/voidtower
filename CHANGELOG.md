@@ -12,8 +12,24 @@ Versioning is [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **App Vault — pre-deploy configuration modal** — clicking Deploy on a catalog app now opens a modal showing the full compose YAML, env var overrides, and any required secrets before deployment starts. After deploy, the modal streams the `docker compose up` log output so you can see exactly what happened.
-- **App Vault — `required_env` catalog field** — app definitions can declare required environment variables with an optional `generate` strategy (`random_hex_32`, `random_hex_64`). Auto-generated secrets are injected at deploy time with no user input; manually required fields are shown as validated inputs in the pre-deploy modal.
-- **OpenCloud — auto-generated secrets** — `OC_JWT_SECRET` and `OC_MACHINE_AUTH_API_KEY` are now auto-generated on deploy so OpenCloud starts up correctly out of the box.
+- **App Vault — `required_env` catalog field** — app definitions can declare required environment variables with an optional `generate` strategy (`random_hex_16`, `random_hex_24`, `random_hex_32`, `random_hex_50`, `random_hex_64`, `uuid`). Auto-generated secrets are injected at deploy time with no user input; manually required fields are shown as validated inputs in the pre-deploy modal.
+- **App Vault — Euro-Office** — new catalog entry for [Euro-Office DocumentServer](https://github.com/Euro-Office) (`ghcr.io/euro-office/documentserver:latest`). Collaborative DOCX/XLSX/PPTX editing server; `EUROOFFICE_JWT_SECRET` auto-generated on deploy.
+- **App Vault — security audit (all catalog apps)** — full pass over every app definition to replace hardcoded secrets and default passwords with `${VAR}` references backed by `required_env` entries. Apps updated:
+  - **Authentik** — `AUTHENTIK_SECRET_KEY` (random_hex_50) and `AUTHENTIK_POSTGRES_PASSWORD` (random_hex_32) replace four `changeme` literals
+  - **Immich** — `IMMICH_DB_PASSWORD` (random_hex_32) replaces hardcoded `immich` DB password
+  - **Outline** — `OUTLINE_SECRET_KEY` (random_hex_64), `OUTLINE_UTILS_SECRET` (random_hex_64), `OUTLINE_DB_PASSWORD` (random_hex_32)
+  - **n8n** — `N8N_PASSWORD` (random_hex_16) replaces `changeme` basic-auth password
+  - **MinIO** — `MINIO_ROOT_PASSWORD` (random_hex_16) replaces `changeme123`
+  - **Paperless-ngx** — `PAPERLESS_SECRET_KEY` (random_hex_50) replaces placeholder string
+  - **Open WebUI** — `WEBUI_SECRET_KEY` (random_hex_32); removed insecure `:-changeme` default fallback
+  - **Nextcloud** — added `NEXTCLOUD_ADMIN_USER=admin`, `NEXTCLOUD_ADMIN_PASSWORD` (random_hex_24), expanded trusted domains
+  - **Matrix Synapse** — `MATRIX_SERVER_NAME` (user-provided, default `matrix.home`) replaces hardcoded server name
+  - **Gitea** — `GITEA_SECRET_KEY` and `GITEA_INTERNAL_TOKEN` (both random_hex_64) added to security config
+  - **Vikunja** — `VIKUNJA_JWT_SECRET` (random_hex_32) replaces `changeme-random-secret`
+  - **code-server**, **Grafana**, **Vaultwarden**, **Pihole**, **WireGuard Easy**, **Gluetun**, **SearXNG**, **Tailscale** — secrets parameterised and `required_env` added
+- **App Vault — Jitsi Meet rewrite** — added missing `prosody` XMPP service (jicofo and jvb silently failed auth without it). `JITSI_JICOFO_PASSWORD`, `JITSI_JICOFO_COMPONENT_SECRET`, and `JITSI_JVB_PASSWORD` auto-generated and wired consistently across all four services.
+- **OpenCloud — working AIO config** — switched to `opencloud init` entrypoint pattern: on first start, `init` generates `/etc/opencloud/opencloud.yaml` with all internally-consistent service passwords before `server` starts. Eliminates the LDAP Result Code 49 "Invalid Credentials" error that occurred when `IDP_LDAP_BIND_PASSWORD` and `IDM_IDPSVC_PASSWORD` were set independently.
+- **OpenCloud — nginx-proxy support via `PROXY_TLS=false`** — OpenCloud's internal proxy now serves plain HTTP on port 9200 (`PROXY_TLS=false`), allowing nginx-proxy to connect without upstream TLS. `OC_URL` remains `https://opencloud.local` so the IDP continues to issue HTTPS-issuer tokens. Previously nginx-proxy rejected the upstream self-signed cert (`tls: bad certificate`), making OpenCloud inaccessible through the proxy.
 
 ### Fixed
 

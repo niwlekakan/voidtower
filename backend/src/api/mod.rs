@@ -196,12 +196,17 @@ pub fn router(state: AppState) -> Router {
         .route("/api/models/download/:id", get(models::download_status))
         .route("/api/models/active",          get(models::get_active))
         .route("/api/models/load",            post(models::load_model))
+        .route("/api/models/llama-config",    get(models::get_llama_config).post(models::save_llama_config))
+        .route("/api/models/ollama-config",   get(models::get_ollama_config).post(models::save_ollama_config))
         .route("/api/models/ollama",            get(models::get_ollama_tags))
         .route("/api/models/ollama/pull",       post(models::start_ollama_pull))
         .route("/api/models/ollama/pull/:id",   get(models::get_ollama_pull_status))
         .route("/api/models/ollama/create",     post(models::start_ollama_create))
         .route("/api/models/ollama/create/:id", get(models::get_ollama_create_status))
         .route("/api/models/:filename",       delete(models::delete_model))
+        // OpenAI-compatible proxy — no auth, Odysseus-facing
+        .route("/v1/models",             get(models::openai_list_models))
+        .route("/v1/chat/completions",   post(models::openai_chat_completions))
         // Proxy manager
         .route("/api/proxy", get(proxy::list).post(proxy::create))
         .route("/api/proxy/nginx-setup", get(proxy::nginx_setup_status))

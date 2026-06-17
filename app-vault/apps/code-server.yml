@@ -17,8 +17,8 @@ compose:
         - PUID=1000
         - PGID=1000
         - TZ=UTC
-        - PASSWORD=changeme
-        - SUDO_PASSWORD=changeme
+        - PASSWORD=${CODE_SERVER_PASSWORD}
+        - SUDO_PASSWORD=${CODE_SERVER_SUDO_PASSWORD}
         - VIRTUAL_HOST=code.local
         - VIRTUAL_PORT=8443
       networks:

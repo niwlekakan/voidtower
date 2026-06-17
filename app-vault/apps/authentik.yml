@@ -13,7 +13,7 @@ compose:
       volumes:
         - authentik_db:/var/lib/postgresql/data
       environment:
-        - POSTGRES_PASSWORD=changeme
+        - POSTGRES_PASSWORD=${AUTHENTIK_POSTGRES_PASSWORD}
         - POSTGRES_USER=authentik
         - POSTGRES_DB=authentik
     authentik-redis:
@@ -34,8 +34,8 @@ compose:
         - AUTHENTIK_POSTGRESQL__HOST=authentik-db
         - AUTHENTIK_POSTGRESQL__USER=authentik
         - AUTHENTIK_POSTGRESQL__NAME=authentik
-        - AUTHENTIK_POSTGRESQL__PASSWORD=changeme
-        - AUTHENTIK_SECRET_KEY=changeme-to-random-string
+        - AUTHENTIK_POSTGRESQL__PASSWORD=${AUTHENTIK_POSTGRES_PASSWORD}
+        - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY}
         - VIRTUAL_HOST=authentik.local
         - VIRTUAL_PORT=9000
       depends_on: [authentik-db, authentik-redis]
@@ -56,8 +56,8 @@ compose:
         - AUTHENTIK_POSTGRESQL__HOST=authentik-db
         - AUTHENTIK_POSTGRESQL__USER=authentik
         - AUTHENTIK_POSTGRESQL__NAME=authentik
-        - AUTHENTIK_POSTGRESQL__PASSWORD=changeme
-        - AUTHENTIK_SECRET_KEY=changeme-to-random-string
+        - AUTHENTIK_POSTGRESQL__PASSWORD=${AUTHENTIK_POSTGRES_PASSWORD}
+        - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY}
       depends_on: [authentik-db, authentik-redis]
   volumes:
     authentik_db:
@@ -68,6 +68,13 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: AUTHENTIK_POSTGRES_PASSWORD
+    description: "PostgreSQL password for Authentik database (auto-generated)"
+    generate: random_hex_32
+  - key: AUTHENTIK_SECRET_KEY
+    description: "Django secret key for Authentik — must be at least 50 characters (auto-generated)"
+    generate: random_hex_50
 ai_integration:
   level: aware
   description: "Odysseus can read user sessions and authentication events"

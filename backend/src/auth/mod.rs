@@ -378,6 +378,68 @@ pub async fn validate_api_token(
     Ok(row.user_id)
 }
 
+pub async fn find_user_by_oidc_subject(pool: &SqlitePool, subject: &str) -> Result<Option<User>> {
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, username, password_hash, role, force_password_change,
+                totp_enabled, totp_secret, created_at, updated_at
+         FROM users WHERE oidc_subject = ?",
+    )
+    .bind(subject)
+    .fetch_optional(pool)
+    .await?;
+    Ok(user)
+}
+
+/// Creates a user provisioned from an OIDC login. The stored password hash is not
+/// a valid Argon2 hash, so `verify_password` always rejects it — local password
+/// login stays impossible for this account unless an admin later sets a real one.
+pub async fn create_oidc_user(
+    pool: &SqlitePool,
+    username: &str,
+    subject: &str,
+    role: &str,
+) -> Result<User> {
+    let id = Uuid::new_v4().to_string();
+    let hash = format!("oidc-disabled:{}", Uuid::new_v4());
+    let now = unix_now();
+
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, role, force_password_change, created_at, updated_at, auth_source, oidc_subject)
+         VALUES (?, ?, ?, ?, 0, ?, ?, 'oidc', ?)",
+    )
+    .bind(&id)
+    .bind(username)
+    .bind(&hash)
+    .bind(role)
+    .bind(now)
+    .bind(now)
+    .bind(subject)
+    .execute(pool)
+    .await?;
+
+    Ok(User {
+        id,
+        username: username.to_string(),
+        password_hash: hash,
+        role: role.to_string(),
+        force_password_change: false,
+        totp_enabled: false,
+        totp_secret: None,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+pub async fn update_user_role(pool: &SqlitePool, user_id: &str, role: &str) -> Result<()> {
+    sqlx::query("UPDATE users SET role = ?, updated_at = ? WHERE id = ?")
+        .bind(role)
+        .bind(unix_now())
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn has_any_user(pool: &SqlitePool) -> Result<bool> {
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
         .fetch_one(pool)

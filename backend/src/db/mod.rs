@@ -128,6 +128,27 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
         installed_at INTEGER NOT NULL
     )"#).execute(&pool).await;
 
+    // Authentik / OIDC SSO
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN oidc_subject TEXT").execute(&pool).await;
+    let _ = sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject ON users(oidc_subject) WHERE oidc_subject IS NOT NULL").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN sso_protect INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+
+    let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS oidc_config (
+        id               TEXT PRIMARY KEY DEFAULT 'default',
+        enabled          INTEGER NOT NULL DEFAULT 0,
+        issuer_url       TEXT,
+        client_id        TEXT,
+        client_secret_id TEXT,
+        redirect_url     TEXT,
+        scopes           TEXT NOT NULL DEFAULT 'openid profile email groups',
+        role_claim       TEXT NOT NULL DEFAULT 'groups',
+        role_map         TEXT NOT NULL DEFAULT '{}',
+        default_role     TEXT NOT NULL DEFAULT 'viewer',
+        auto_provision   INTEGER NOT NULL DEFAULT 1,
+        updated_at       INTEGER NOT NULL DEFAULT 0
+    )"#).execute(&pool).await;
+
     Ok(pool)
 }
 

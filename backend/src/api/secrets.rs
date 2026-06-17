@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{audit, auth, error::{AppError, Result}, AppState};
 
-fn encrypt(key: &[u8; 32], plaintext: &str) -> anyhow::Result<String> {
+pub(crate) fn encrypt(key: &[u8; 32], plaintext: &str) -> anyhow::Result<String> {
     let cipher = Aes256Gcm::new(key.into());
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
@@ -18,7 +18,7 @@ fn encrypt(key: &[u8; 32], plaintext: &str) -> anyhow::Result<String> {
     Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &blob))
 }
 
-fn decrypt(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
+pub(crate) fn decrypt(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
     let blob = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
         .map_err(|_| anyhow::anyhow!("base64 decode failed"))?;
     anyhow::ensure!(blob.len() > 12, "ciphertext too short");

@@ -31,6 +31,11 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: VAULTWARDEN_ADMIN_TOKEN
+    description: "Token to access the /admin page (auto-generated)"
+    generate: random_hex_32
+
 links:
   home: https://github.com/dani-garcia/vaultwarden
   docs: https://github.com/dani-garcia/vaultwarden/wiki

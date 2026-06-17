@@ -418,6 +418,8 @@ export default function ProxiesPage() {
   const [upstream, setUpstream] = useState('http://localhost:')
   const [ssl, setSsl] = useState(false)
   const [allowEmbed, setAllowEmbed] = useState(true)
+  const [ssoProtect, setSsoProtect] = useState(false)
+  const [oidcEnabled, setOidcEnabled] = useState(false)
   const [creating, setCreating] = useState(false)
   const [toggling, setToggling] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
@@ -426,6 +428,7 @@ export default function ProxiesPage() {
   const [editUpstream, setEditUpstream] = useState('')
   const [editSsl, setEditSsl] = useState(false)
   const [editAllowEmbed, setEditAllowEmbed] = useState(true)
+  const [editSsoProtect, setEditSsoProtect] = useState(false)
   const [saving, setSaving] = useState(false)
   const [pendingPlan, setPendingPlan] = useState<ChangePlan | null>(null)
   const [pendingAction, setPendingAction] = useState<(() => Promise<void>) | null>(null)
@@ -446,16 +449,20 @@ export default function ProxiesPage() {
 
   useEffect(() => { refresh() }, [refresh])
 
+  useEffect(() => {
+    api.auth.oidcStatus().then((s) => setOidcEnabled(s.enabled)).catch(() => {})
+  }, [])
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     setCreating(true)
     try {
-      const res = await api.proxy.plan(domain.trim(), upstream.trim(), ssl, allowEmbed)
+      const res = await api.proxy.plan(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect)
       setPendingPlan(res.plan)
       setPendingAction(() => async () => {
-        const r = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed)
+        const r = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect)
         notify.success(`Proxy created — ${r.nginx}`)
-        setDomain(''); setUpstream('http://localhost:'); setSsl(false); setAllowEmbed(true)
+        setDomain(''); setUpstream('http://localhost:'); setSsl(false); setAllowEmbed(true); setSsoProtect(false)
         setShowForm(false)
         refresh()
       })
@@ -483,6 +490,7 @@ export default function ProxiesPage() {
     setEditUpstream(p.upstream)
     setEditSsl(p.ssl)
     setEditAllowEmbed(p.allow_embed)
+    setEditSsoProtect(p.sso_protect)
   }
 
   const handleUpdate = async (e: React.FormEvent) => {
@@ -491,10 +499,10 @@ export default function ProxiesPage() {
     setSaving(true)
     const id = editingId
     try {
-      const res = await api.proxy.planUpdate(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed)
+      const res = await api.proxy.planUpdate(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect)
       setPendingPlan(res.plan)
       setPendingAction(() => async () => {
-        const r = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed)
+        const r = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect)
         notify.success(`Updated — ${r.nginx}`)
         setEditingId(null)
         refresh()
@@ -702,6 +710,13 @@ backend servers
                   Allow iframe embedding — strips <code className="font-mono">X-Frame-Options</code> and adds <code className="font-mono">frame-ancestors *</code>
                 </span>
               </label>
+              <label className="flex items-center gap-2.5 cursor-pointer" title={oidcEnabled ? undefined : 'Configure Authentik SSO under Settings first'}>
+                <input type="checkbox" checked={ssoProtect} disabled={!oidcEnabled}
+                       onChange={(e) => setSsoProtect(e.target.checked)} className="w-3.5 h-3.5 rounded" />
+                <span className="text-xs" style={{ color: oidcEnabled ? 'var(--text-secondary)' : 'var(--text-disabled)' }}>
+                  Protect with Authentik — visitors must authenticate before reaching this app
+                </span>
+              </label>
               <div className="flex gap-2">
                 <Button size="sm" variant="primary" type="submit" loading={creating}>Create &amp; reload nginx</Button>
                 <Button size="sm" variant="ghost" type="button" onClick={() => setShowForm(false)}>Cancel</Button>
@@ -725,7 +740,7 @@ backend servers
               <table className="w-full text-xs">
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                    {['Domain', 'Upstream', 'SSL', 'Embed', 'Added', 'Status', ''].map((h) => (
+                    {['Domain', 'Upstream', 'SSL', 'Embed', 'Authentik', 'Added', 'Status', ''].map((h) => (
                       <th key={h} className="px-4 py-2.5 text-left uppercase tracking-wider"
                           style={{ color: 'var(--text-muted)' }}>{h}</th>
                     ))}
@@ -754,6 +769,11 @@ backend servers
                           style={{ color: p.allow_embed ? 'var(--accent-secondary)' : 'var(--text-disabled)' }}
                           title={p.allow_embed ? 'iframe embedding allowed' : 'iframe embedding blocked'}>
                         {p.allow_embed ? 'allowed' : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-xs"
+                          style={{ color: p.sso_protect ? 'var(--accent-secondary)' : 'var(--text-disabled)' }}
+                          title={p.sso_protect ? 'Protected by Authentik forward-auth' : 'Not protected'}>
+                        {p.sso_protect ? 'protected' : '—'}
                       </td>
                       <td className="px-4 py-3" style={{ color: 'var(--text-muted)' }}>{fmt(p.created_at)}</td>
                       <td className="px-4 py-3">
@@ -804,7 +824,7 @@ backend servers
                     </tr>
                     {editingId === p.id && (
                       <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                        <td colSpan={7} className="px-4 py-3">
+                        <td colSpan={8} className="px-4 py-3">
                           <form onSubmit={handleUpdate} className="space-y-3">
                             <div className="grid grid-cols-2 gap-3">
                               <div>
@@ -838,6 +858,11 @@ backend servers
                               <label className="flex items-center gap-2 cursor-pointer">
                                 <input type="checkbox" checked={editAllowEmbed} onChange={(e) => setEditAllowEmbed(e.target.checked)} className="w-3.5 h-3.5 rounded" />
                                 <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Allow iframe embedding</span>
+                              </label>
+                              <label className="flex items-center gap-2 cursor-pointer" title={oidcEnabled ? undefined : 'Configure Authentik SSO under Settings first'}>
+                                <input type="checkbox" checked={editSsoProtect} disabled={!oidcEnabled}
+                                       onChange={(e) => setEditSsoProtect(e.target.checked)} className="w-3.5 h-3.5 rounded" />
+                                <span className="text-xs" style={{ color: oidcEnabled ? 'var(--text-secondary)' : 'var(--text-disabled)' }}>Protect with Authentik</span>
                               </label>
                             </div>
                             <div className="flex gap-2">

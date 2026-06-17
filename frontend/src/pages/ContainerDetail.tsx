@@ -243,7 +243,7 @@ export default function ContainerDetailPage() {
 
   const refresh = useCallback(() => {
     api.containers.list().then((r) => {
-      const c = r.containers.find((c) => c.id === id || c.short_id === id)
+      const c = r.containers.find((c) => c.id === id || c.short_id === id || c.name === id)
       setContainer(c ?? null)
     }).catch(() => {})
   }, [id])

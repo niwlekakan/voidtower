@@ -52,6 +52,18 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ token, username, password }),
       }),
+    oidcStatus: () => request<import('./types').OidcStatus>('/api/auth/oidc/status'),
+  },
+
+  oidc: {
+    get: () => request<import('./types').OidcConfig>('/api/oidc/config'),
+    save: (cfg: import('./types').OidcConfigSaveRequest) =>
+      request<{ ok: boolean }>('/api/oidc/config', { method: 'PUT', body: JSON.stringify(cfg) }),
+    plan: (cfg: import('./types').OidcConfigSaveRequest) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>('/api/oidc/config', {
+        method: 'PUT',
+        body: JSON.stringify({ ...cfg, dry_run: true }),
+      }),
   },
 
   totp: {
@@ -122,10 +134,12 @@ export const api = {
     catalog:  () => request<{ apps: import('./types').AppDef[] }>('/api/apps/catalog'),
     deployed: () => request<import('./types').DeployedResponse>('/api/apps/deployed'),
     deploy: (appId: string, projectName?: string, envOverrides?: Record<string, string>) =>
-      request<{ ok: boolean; project_name: string }>('/api/apps/deploy', {
+      request<{ ok: boolean; project_name: string; generated_env?: Record<string, string> }>('/api/apps/deploy', {
         method: 'POST',
         body: JSON.stringify({ app_id: appId, project_name: projectName, env_overrides: envOverrides }),
       }),
+    cancelDeploy: (p: string) =>
+      request<{ ok: boolean; cancelled: boolean }>(`/api/apps/deploy/cancel/${p}`, { method: 'POST' }),
     start:   (p: string) => request<{ ok: boolean }>(`/api/apps/${p}/start`,   { method: 'POST' }),
     stop:    (p: string) => request<{ ok: boolean }>(`/api/apps/${p}/stop`,    { method: 'POST' }),
     restart:  (p: string) => request<{ ok: boolean }>(`/api/apps/${p}/restart`,  { method: 'POST' }),
@@ -170,29 +184,29 @@ export const api = {
   proxy: {
     list: () =>
       request<{ proxies: import('./types').ProxyConfig[]; nginx_available: boolean; nginx_backend: 'docker' | 'system' | 'none'; sites_dir: string }>('/api/proxy'),
-    create: (domain: string, upstream: string, ssl: boolean, allow_embed = false) =>
+    create: (domain: string, upstream: string, ssl: boolean, allow_embed = false, sso_protect = false) =>
       request<{ ok: boolean; id: string; nginx: string }>('/api/proxy', {
         method: 'POST',
-        body: JSON.stringify({ domain, upstream, ssl, allow_embed }),
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect }),
       }),
     delete: (id: string) =>
       request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, { method: 'DELETE' }),
-    update: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean) =>
+    update: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false) =>
       request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, {
         method: 'PUT',
-        body: JSON.stringify({ domain, upstream, ssl, allow_embed }),
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect }),
       }),
     toggle: (id: string) =>
       request<{ ok: boolean; enabled: boolean; nginx: string }>(`/api/proxy/${id}/toggle`, { method: 'POST' }),
-    plan: (domain: string, upstream: string, ssl: boolean, allow_embed: boolean) =>
+    plan: (domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>('/api/proxy', {
         method: 'POST',
-        body: JSON.stringify({ domain, upstream, ssl, allow_embed, dry_run: true }),
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, dry_run: true }),
       }),
-    planUpdate: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean) =>
+    planUpdate: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(`/api/proxy/${id}`, {
         method: 'PUT',
-        body: JSON.stringify({ domain, upstream, ssl, allow_embed, dry_run: true }),
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, dry_run: true }),
       }),
   },
 

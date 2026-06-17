@@ -139,6 +139,37 @@ fn embed_headers() -> &'static str {
     "        proxy_hide_header X-Frame-Options;\n        add_header X-Frame-Options \"ALLOWALL\" always;\n        add_header Content-Security-Policy \"frame-ancestors *\" always;"
 }
 
+/// Authentik's embedded outpost, reached over the `vt-proxy` Docker network by the
+/// alias set in app-vault/apps/authentik.yml. Not a localhost/127.0.0.1 upstream,
+/// so it does not go through `rewrite_upstream_for_docker`.
+const AUTHENTIK_OUTPOST_UPSTREAM: &str = "http://authentik:9000";
+
+/// Lines spliced inside `location /` to gate it behind Authentik's forward-auth check.
+fn sso_auth_lines() -> &'static str {
+    "\n        auth_request /outpost.goauthentik.io/auth/nginx;\n        auth_request_set $auth_cookie $upstream_http_set_cookie;\n        error_page 401 = @goauthentik_proxy_signin;"
+}
+
+/// Sibling `location` blocks (outpost proxy + sign-in redirect) required by `sso_auth_lines`.
+fn sso_locations() -> String {
+    format!(
+        r#"
+    location /outpost.goauthentik.io {{
+        proxy_pass {AUTHENTIK_OUTPOST_UPSTREAM}/outpost.goauthentik.io;
+        proxy_set_header Host $host;
+        proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        add_header Set-Cookie $auth_cookie;
+    }}
+
+    location @goauthentik_proxy_signin {{
+        internal;
+        add_header Set-Cookie $auth_cookie;
+        return 302 /outpost.goauthentik.io/start?rd=$request_uri;
+    }}
+"#
+    )
+}
+
 // Port-based nginx config for app embeds — no server_name, listen on a unique
 // port so any LAN client can reach it via http://<server-ip>:<embed_port>/
 // without requiring any DNS or /etc/hosts configuration.
@@ -175,13 +206,15 @@ server {{
     Ok(())
 }
 
-fn write_nginx_conf(domain: &str, upstream: &str, ssl: bool, allow_embed: bool) -> Result<()> {
+fn write_nginx_conf(domain: &str, upstream: &str, ssl: bool, allow_embed: bool, sso_protect: bool) -> Result<()> {
     let path = conf_path(domain);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let upstream = rewrite_upstream_for_docker(upstream);
     let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
+    let sso = if sso_protect { sso_auth_lines() } else { "" };
+    let sso_locs = if sso_protect { sso_locations() } else { String::new() };
     let content = if ssl {
         format!(
             r#"# Managed by VoidTower — do not edit manually
@@ -199,7 +232,7 @@ server {{
     ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
-
+{sso_locs}
     location / {{
         proxy_pass {upstream};
         proxy_http_version 1.1;
@@ -209,7 +242,7 @@ server {{
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;{embed}
+        proxy_read_timeout 300s;{embed}{sso}
     }}
 }}
 "#
@@ -220,7 +253,7 @@ server {{
 server {{
     listen 80;
     server_name {domain};
-
+{sso_locs}
     location / {{
         proxy_pass {upstream};
         proxy_http_version 1.1;
@@ -230,7 +263,7 @@ server {{
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;{embed}
+        proxy_read_timeout 300s;{embed}{sso}
     }}
 }}
 "#
@@ -247,8 +280,10 @@ fn remove_nginx_conf(domain: &str) {
     let _ = std::fs::remove_file(conf_path(domain));
 }
 
-fn nginx_conf_content(domain: &str, upstream: &str, ssl: bool, allow_embed: bool) -> String {
+fn nginx_conf_content(domain: &str, upstream: &str, ssl: bool, allow_embed: bool, sso_protect: bool) -> String {
     let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
+    let sso = if sso_protect { sso_auth_lines() } else { "" };
+    let sso_locs = if sso_protect { sso_locations() } else { String::new() };
     if ssl {
         format!(
             r#"# Managed by VoidTower — do not edit manually
@@ -266,7 +301,7 @@ server {{
     ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
-
+{sso_locs}
     location / {{
         proxy_pass {upstream};
         proxy_http_version 1.1;
@@ -276,7 +311,7 @@ server {{
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;{embed}
+        proxy_read_timeout 300s;{embed}{sso}
     }}
 }}
 "#
@@ -287,7 +322,7 @@ server {{
 server {{
     listen 80;
     server_name {domain};
-
+{sso_locs}
     location / {{
         proxy_pass {upstream};
         proxy_http_version 1.1;
@@ -297,7 +332,7 @@ server {{
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;{embed}
+        proxy_read_timeout 300s;{embed}{sso}
     }}
 }}
 "#
@@ -336,6 +371,7 @@ pub struct ProxyConfig {
     pub ssl: bool,
     pub enabled: bool,
     pub allow_embed: bool,
+    pub sso_protect: bool,
     pub created_at: i64,
 }
 
@@ -348,7 +384,20 @@ pub struct CreateRequest {
     #[serde(default)]
     pub allow_embed: bool,
     #[serde(default)]
+    pub sso_protect: bool,
+    #[serde(default)]
     pub dry_run: bool,
+}
+
+/// True when Authentik SSO is configured and enabled — required before any proxy
+/// can be flagged `sso_protect`, so the UI can't produce a gate pointing at nothing.
+async fn oidc_is_enabled(db: &sqlx::SqlitePool) -> bool {
+    sqlx::query_scalar::<_, bool>("SELECT enabled FROM oidc_config WHERE id = 'default'")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -476,7 +525,7 @@ pub async fn list(
     require_admin(&state, &jar).await?;
 
     let proxies = sqlx::query_as::<_, ProxyConfig>(
-        "SELECT id, domain, upstream, ssl, enabled, allow_embed, created_at FROM proxy_configs ORDER BY created_at",
+        "SELECT id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at FROM proxy_configs ORDER BY created_at",
     )
     .fetch_all(&state.db)
     .await
@@ -502,20 +551,27 @@ pub async fn create(
     validate_domain(&req.domain)?;
     validate_upstream(&req.upstream)?;
 
+    if req.sso_protect && !oidc_is_enabled(&state.db).await {
+        return Err(AppError::BadRequest(
+            "Authentik SSO is not configured — set it up under Settings before protecting a proxy with it".into(),
+        ));
+    }
+
     if req.dry_run {
         let conf_file = conf_path(&req.domain);
         let exists = conf_file.exists();
-        let content = nginx_conf_content(&req.domain, &req.upstream, req.ssl, req.allow_embed);
+        let content = nginx_conf_content(&req.domain, &req.upstream, req.ssl, req.allow_embed, req.sso_protect);
         return Ok(Json(serde_json::json!({
             "dry_run": true,
             "plan": {
                 "title": "Create Nginx Proxy",
-                "risk": "low",
+                "risk": if req.sso_protect { "medium" } else { "low" },
                 "changes": [
                     { "label": "Domain", "value": req.domain },
                     { "label": "Upstream", "value": req.upstream },
                     { "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } },
                     { "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } },
+                    { "label": "Authentik protection", "value": if req.sso_protect { "enabled — visitors must authenticate via Authentik first" } else { "disabled" } },
                     { "label": "Config file", "value": conf_file.display().to_string() },
                     { "label": "Config file action", "value": if exists { "overwrite existing" } else { "create new" } },
                     { "label": "Rollback", "value": "Delete conf file and reload nginx" },
@@ -529,13 +585,14 @@ pub async fn create(
     let now = unix_now();
 
     sqlx::query(
-        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, created_at) VALUES (?,?,?,?,1,?,?)",
+        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at) VALUES (?,?,?,?,1,?,?,?)",
     )
     .bind(&id)
     .bind(&req.domain)
     .bind(&req.upstream)
     .bind(req.ssl)
     .bind(req.allow_embed)
+    .bind(req.sso_protect)
     .bind(now)
     .execute(&state.db)
     .await
@@ -547,7 +604,7 @@ pub async fn create(
         }
     })?;
 
-    write_nginx_conf(&req.domain, &req.upstream, req.ssl, req.allow_embed)?;
+    write_nginx_conf(&req.domain, &req.upstream, req.ssl, req.allow_embed, req.sso_protect)?;
 
     let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
 
@@ -576,7 +633,7 @@ pub async fn create_proxy_record(
     let now = unix_now();
 
     sqlx::query(
-        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, created_at) VALUES (?,?,?,?,1,?,?)",
+        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at) VALUES (?,?,?,?,1,?,0,?)",
     )
     .bind(&id)
     .bind(domain)
@@ -594,7 +651,7 @@ pub async fn create_proxy_record(
         }
     })?;
 
-    write_nginx_conf(domain, upstream, ssl, allow_embed)?;
+    write_nginx_conf(domain, upstream, ssl, allow_embed, false)?;
     let _ = reload_nginx();
     Ok(id)
 }
@@ -654,20 +711,27 @@ pub async fn update_proxy(
 
     let (old_domain, enabled) = row.ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
 
+    if req.sso_protect && !oidc_is_enabled(&state.db).await {
+        return Err(AppError::BadRequest(
+            "Authentik SSO is not configured — set it up under Settings before protecting a proxy with it".into(),
+        ));
+    }
+
     if req.dry_run {
         let conf_file = conf_path(&req.domain);
-        let content = nginx_conf_content(&req.domain, &req.upstream, req.ssl, req.allow_embed);
+        let content = nginx_conf_content(&req.domain, &req.upstream, req.ssl, req.allow_embed, req.sso_protect);
         let domain_changed = old_domain != req.domain;
         return Ok(Json(serde_json::json!({
             "dry_run": true,
             "plan": {
                 "title": "Update Nginx Proxy",
-                "risk": "low",
+                "risk": if req.sso_protect && enabled { "medium" } else { "low" },
                 "changes": [
                     { "label": "Domain", "value": format!("{} → {}", old_domain, req.domain) },
                     { "label": "Upstream", "value": req.upstream },
                     { "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } },
                     { "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } },
+                    { "label": "Authentik protection", "value": if req.sso_protect { "enabled — visitors must authenticate via Authentik first" } else { "disabled" } },
                     { "label": "Config file", "value": conf_file.display().to_string() },
                     { "label": "Config file action", "value": if domain_changed { "rename old conf + write new" } else { "overwrite in place" } },
                     { "label": "Nginx reload", "value": if enabled { "yes" } else { "no (proxy is disabled)" } },
@@ -679,12 +743,13 @@ pub async fn update_proxy(
     }
 
     sqlx::query(
-        "UPDATE proxy_configs SET domain = ?, upstream = ?, ssl = ?, allow_embed = ? WHERE id = ?",
+        "UPDATE proxy_configs SET domain = ?, upstream = ?, ssl = ?, allow_embed = ?, sso_protect = ? WHERE id = ?",
     )
     .bind(&req.domain)
     .bind(&req.upstream)
     .bind(req.ssl)
     .bind(req.allow_embed)
+    .bind(req.sso_protect)
     .bind(&proxy_id)
     .execute(&state.db)
     .await
@@ -703,7 +768,7 @@ pub async fn update_proxy(
 
     // Only write/reload nginx if the proxy is currently enabled
     let reload_msg = if enabled {
-        write_nginx_conf(&req.domain, &req.upstream, req.ssl, req.allow_embed)?;
+        write_nginx_conf(&req.domain, &req.upstream, req.ssl, req.allow_embed, req.sso_protect)?;
         reload_nginx().unwrap_or_else(|e| format!("warning: {e}"))
     } else {
         "proxy is disabled — nginx not updated".into()
@@ -767,7 +832,7 @@ pub async fn ai_auto_proxy(
     let now = unix_now();
 
     sqlx::query(
-        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, created_at) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at) VALUES (?,?,?,?,?,?,0,?)",
     )
     .bind(&id)
     .bind(&domain)
@@ -780,7 +845,7 @@ pub async fn ai_auto_proxy(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    write_nginx_conf(&domain, &req.upstream, false, true)?;
+    write_nginx_conf(&domain, &req.upstream, false, true, false)?;
     let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
 
     audit::log(
@@ -944,15 +1009,15 @@ pub async fn toggle(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    let row: Option<(String, bool, String, bool, String, bool)> = sqlx::query_as(
-        "SELECT id, enabled, domain, ssl, upstream, allow_embed FROM proxy_configs WHERE id = ?",
+    let row: Option<(String, bool, String, bool, String, bool, bool)> = sqlx::query_as(
+        "SELECT id, enabled, domain, ssl, upstream, allow_embed, sso_protect FROM proxy_configs WHERE id = ?",
     )
     .bind(&proxy_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let (_, enabled, domain, ssl, upstream, allow_embed) =
+    let (_, enabled, domain, ssl, upstream, allow_embed, sso_protect) =
         row.ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
 
     let new_enabled = !enabled;
@@ -965,7 +1030,7 @@ pub async fn toggle(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if new_enabled {
-        write_nginx_conf(&domain, &upstream, ssl, allow_embed)?;
+        write_nginx_conf(&domain, &upstream, ssl, allow_embed, sso_protect)?;
     } else {
         remove_nginx_conf(&domain);
     }

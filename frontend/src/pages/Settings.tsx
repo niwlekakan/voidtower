@@ -5,7 +5,9 @@ import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import { notify } from '@/store/notifications'
-import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight, Cpu, Stethoscope, Palette, AlertTriangle, Upload, Copy, ShieldOff, Eye, EyeOff, Navigation, GripVertical, Pencil } from 'lucide-react'
+import { Trash2, UserPlus, Bell, Send, Key, Globe, RefreshCw, Download, GitBranch, Monitor, Plus, Webhook, ToggleLeft, ToggleRight, Cpu, Stethoscope, Palette, AlertTriangle, Upload, Copy, ShieldOff, Eye, EyeOff, Navigation, GripVertical, Pencil, Shield } from 'lucide-react'
+import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
+import type { OidcConfigSaveRequest } from '@/api/types'
 import { useThemeStore, type UiMode } from '@/store/theme'
 import { setDeviceTierOverride, type DeviceTier } from '@/aios/hooks/useDeviceTier'
 import { Accessibility } from 'lucide-react'
@@ -615,6 +617,9 @@ export default function SettingsPage() {
 
       {/* Advanced webhook configs — admin/owner only */}
       {isAdmin && <WebhooksSection />}
+
+      {/* Authentik SSO — admin/owner only */}
+      {isAdmin && <AuthentikSsoSection />}
 
       {/* System — update + restart */}
       {isAdmin && <SystemSection />}
@@ -2018,6 +2023,229 @@ function WebhooksSection() {
             </div>
           </form>
         </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Authentik / OIDC SSO section ─────────────────────────────────────────────
+
+function AuthentikSsoSection() {
+  const [loading, setLoading] = useState(true)
+  const [enabled, setEnabled] = useState(false)
+  const [issuerUrl, setIssuerUrl] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [hasClientSecret, setHasClientSecret] = useState(false)
+  const [redirectUrl, setRedirectUrl] = useState('')
+  const [scopes, setScopes] = useState('openid profile email groups')
+  const [roleClaim, setRoleClaim] = useState('groups')
+  const [roleRows, setRoleRows] = useState<Array<{ group: string; role: string }>>([])
+  const [defaultRole, setDefaultRole] = useState('viewer')
+  const [autoProvision, setAutoProvision] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [pendingPlan, setPendingPlan] = useState<ChangePlan | null>(null)
+  const [executing, setExecuting] = useState(false)
+
+  useEffect(() => {
+    api.oidc.get()
+      .then((cfg) => {
+        setEnabled(cfg.enabled)
+        setIssuerUrl(cfg.issuer_url ?? '')
+        setClientId(cfg.client_id ?? '')
+        setHasClientSecret(cfg.has_client_secret)
+        setRedirectUrl(cfg.redirect_url ?? `${window.location.origin}/api/auth/oidc/callback`)
+        setScopes(cfg.scopes)
+        setRoleClaim(cfg.role_claim)
+        setRoleRows(Object.entries(cfg.role_map).map(([group, role]) => ({ group, role })))
+        setDefaultRole(cfg.default_role)
+        setAutoProvision(cfg.auto_provision)
+      })
+      .catch(() => notify.error('Failed to load Authentik SSO settings'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const buildPayload = (): OidcConfigSaveRequest => {
+    const role_map: Record<string, string> = {}
+    for (const row of roleRows) {
+      if (row.group.trim()) role_map[row.group.trim()] = row.role
+    }
+    const payload: OidcConfigSaveRequest = {
+      enabled,
+      issuer_url: issuerUrl.trim(),
+      client_id: clientId.trim(),
+      redirect_url: redirectUrl.trim(),
+      scopes: scopes.trim() || 'openid profile email groups',
+      role_claim: roleClaim.trim() || 'groups',
+      role_map,
+      default_role: defaultRole,
+      auto_provision: autoProvision,
+    }
+    if (clientSecret.trim()) payload.client_secret = clientSecret.trim()
+    return payload
+  }
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      const res = await api.oidc.plan(buildPayload())
+      setPendingPlan(res.plan)
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to plan SSO config save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const addRoleRow = () => setRoleRows([...roleRows, { group: '', role: 'viewer' }])
+  const updateRoleRow = (i: number, field: 'group' | 'role', value: string) => {
+    setRoleRows(roleRows.map((r, idx) => idx === i ? { ...r, [field]: value } : r))
+  }
+  const removeRoleRow = (i: number) => setRoleRows(roleRows.filter((_, idx) => idx !== i))
+
+  const inputStyle = { background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }
+
+  if (loading) {
+    return (
+      <div className="card space-y-3">
+        <div className="flex items-center gap-2">
+          <Shield size={14} style={{ color: 'var(--accent-primary)' }} />
+          <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Authentik SSO</h2>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading…</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card space-y-4">
+      <div className="flex items-center gap-2">
+        <Shield size={14} style={{ color: 'var(--accent-primary)' }} />
+        <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Authentik SSO</h2>
+      </div>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Adds a "Login with Authentik" option to the login page (local username/password stays available as a fallback)
+        and lets proxies in the Proxies tab opt into being gated behind Authentik's login + MFA.
+      </p>
+
+      <form onSubmit={handleSave} className="space-y-3">
+        <label className="flex items-center gap-2.5 cursor-pointer">
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="w-3.5 h-3.5 rounded" />
+          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Enabled</span>
+        </label>
+
+        <div>
+          <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Issuer URL</label>
+          <input value={issuerUrl} onChange={(e) => setIssuerUrl(e.target.value)} placeholder="https://authentik.local/application/o/voidtower/"
+            className="w-full px-3 py-2 rounded text-sm outline-none font-mono" style={inputStyle} required={enabled} />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Client ID</label>
+            <input value={clientId} onChange={(e) => setClientId(e.target.value)}
+              className="w-full px-3 py-2 rounded text-sm outline-none font-mono" style={inputStyle} required={enabled} />
+          </div>
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Client secret</label>
+            <input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)}
+              placeholder={hasClientSecret ? 'Unchanged — leave blank to keep' : 'Required on first save'}
+              className="w-full px-3 py-2 rounded text-sm outline-none font-mono" style={inputStyle} required={enabled && !hasClientSecret} />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Redirect URL</label>
+          <input value={redirectUrl} onChange={(e) => setRedirectUrl(e.target.value)}
+            className="w-full px-3 py-2 rounded text-sm outline-none font-mono" style={inputStyle} required={enabled} />
+          <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+            Must match the redirect URI registered on the Authentik OAuth2/OIDC provider exactly.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Scopes</label>
+            <input value={scopes} onChange={(e) => setScopes(e.target.value)}
+              className="w-full px-3 py-2 rounded text-sm outline-none font-mono" style={inputStyle} />
+          </div>
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Role claim</label>
+            <input value={roleClaim} onChange={(e) => setRoleClaim(e.target.value)}
+              className="w-full px-3 py-2 rounded text-sm outline-none font-mono" style={inputStyle} />
+            <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Userinfo claim holding group names (default "groups").</p>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>Role mapping (Authentik group → VoidTower role)</label>
+          <div className="space-y-2">
+            {roleRows.map((row, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <input value={row.group} onChange={(e) => updateRoleRow(i, 'group', e.target.value)}
+                  placeholder="authentik-group-name"
+                  className="flex-1 px-2.5 py-1.5 rounded text-xs outline-none font-mono" style={inputStyle} />
+                <select value={row.role} onChange={(e) => updateRoleRow(i, 'role', e.target.value)}
+                  className="px-2 py-1.5 rounded text-xs outline-none" style={inputStyle}>
+                  <option value="owner">owner</option>
+                  <option value="admin">admin</option>
+                  <option value="operator">operator</option>
+                  <option value="viewer">viewer</option>
+                </select>
+                <button type="button" onClick={() => removeRoleRow(i)} style={{ color: 'var(--accent-danger)' }}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={addRoleRow}
+            className="mt-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs transition-colors hover:opacity-80"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+            <Plus size={12} /> Add mapping
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 items-end">
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Default role</label>
+            <select value={defaultRole} onChange={(e) => setDefaultRole(e.target.value)}
+              className="w-full px-3 py-2 rounded text-sm outline-none" style={inputStyle}>
+              <option value="viewer">viewer</option>
+              <option value="operator">operator</option>
+              <option value="admin">admin</option>
+            </select>
+            <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Used when no group mapping matches.</p>
+          </div>
+          <label className="flex items-center gap-2.5 cursor-pointer pb-2">
+            <input type="checkbox" checked={autoProvision} onChange={(e) => setAutoProvision(e.target.checked)} className="w-3.5 h-3.5 rounded" />
+            <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Auto-create users on first Authentik login</span>
+          </label>
+        </div>
+
+        <Button size="sm" variant="primary" type="submit" loading={saving}>Save</Button>
+      </form>
+
+      {pendingPlan && (
+        <ChangePlanModal
+          plan={pendingPlan}
+          confirming={executing}
+          onConfirm={async () => {
+            setExecuting(true)
+            try {
+              await api.oidc.save(buildPayload())
+              setHasClientSecret(hasClientSecret || !!clientSecret.trim())
+              setClientSecret('')
+              notify.success('Authentik SSO settings saved')
+            } catch (err) {
+              notify.error(err instanceof ApiClientError ? err.message : 'Failed to save SSO settings')
+            } finally {
+              setExecuting(false)
+              setPendingPlan(null)
+            }
+          }}
+          onCancel={() => setPendingPlan(null)}
+        />
       )}
     </div>
   )

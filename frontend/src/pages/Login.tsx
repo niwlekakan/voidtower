@@ -20,6 +20,8 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [pub, setPub] = useState<PublicSettings | null>(null)
+  const [oidcEnabled, setOidcEnabled] = useState(false)
+  const [oidcLabel, setOidcLabel] = useState('Login with Authentik')
   const setUser = useAuthStore((s) => s.setUser)
   const navigate = useNavigate()
   const totpRef = useRef<HTMLInputElement>(null)
@@ -32,6 +34,12 @@ export default function LoginPage() {
     fetch('/api/settings/public')
       .then(r => r.ok ? r.json() : null)
       .then((d: PublicSettings | null) => { if (d) setPub(d) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    api.auth.oidcStatus()
+      .then((s) => { setOidcEnabled(s.enabled); setOidcLabel(s.button_label) })
       .catch(() => {})
   }, [])
 
@@ -159,6 +167,22 @@ export default function LoginPage() {
             {step === 'totp' ? 'Verify' : 'Sign in'}
           </Button>
         </form>
+
+        {step === 'credentials' && oidcEnabled && (
+          <div className="mt-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="flex-1 h-px" style={{ background: 'var(--border-default)' }} />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>or</span>
+              <div className="flex-1 h-px" style={{ background: 'var(--border-default)' }} />
+            </div>
+            <a href="/api/auth/oidc/login">
+              <Button variant="secondary" className="w-full justify-center">
+                <Shield size={14} />
+                {oidcLabel}
+              </Button>
+            </a>
+          </div>
+        )}
 
         {step === 'credentials' && (
           <p className="mt-4 text-xs text-center">

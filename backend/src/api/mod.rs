@@ -100,6 +100,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/logout",    post(auth::logout))
         .route("/api/auth/me",        get(auth::me))
         .route("/api/auth/bootstrap", post(auth::bootstrap))
+        // Authentik / OIDC SSO
+        .route("/api/auth/oidc/login",    get(auth::oidc_login))
+        .route("/api/auth/oidc/callback", get(auth::oidc_callback))
+        .route("/api/auth/oidc/status",   get(auth::oidc_status))
+        .route("/api/oidc/config",        get(auth::get_oidc_config).put(auth::save_oidc_config))
         // TOTP
         .route("/api/auth/totp/setup",   post(totp::setup))
         .route("/api/auth/totp/enable",  post(totp::enable))
@@ -129,6 +134,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps/detect-env", get(apps::detect_env))
         .route("/api/apps/deployed",   get(apps::deployed))
         .route("/api/apps/deploy", post(apps::deploy))
+        .route("/api/apps/deploy/cancel/:project_name", post(apps::cancel_deploy))
         .route("/api/apps/deploy-custom", post(apps::deploy_custom))
         .route("/api/apps/open-ui", post(apps::open_ui))
         .route("/api/apps/:project_name", delete(apps::remove_app))

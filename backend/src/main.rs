@@ -12,6 +12,7 @@ mod db;
 mod error;
 mod monitoring;
 mod networking;
+mod oidc;
 mod security;
 mod services;
 mod storage;
@@ -44,6 +45,7 @@ pub struct AppState {
     // token_hash -> (session_id, expires_at_unix) — avoids a DB write on every Bearer request
     pub token_sessions: Arc<RwLock<HashMap<String, (String, i64)>>>,
     pub login_limiter: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, LoginAttempts>>>,
+    pub deploy_registry: containers::DeployRegistry,
 }
 
 #[derive(Parser, Debug)]
@@ -218,6 +220,7 @@ async fn main() -> Result<()> {
         secrets_key,
         token_sessions: Arc::new(RwLock::new(HashMap::new())),
         login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        deploy_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
 
     // Spawn agent status heartbeat loop (marks stale agents offline)

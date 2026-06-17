@@ -4,23 +4,37 @@ description: Modern open-source cloud storage and collaboration platform — sel
 category: storage
 version_hint: "latest"
 compose:
+  networks:
+    default:
+      enable_ipv6: false
+    vt-proxy:
+      external: true
   services:
     opencloud:
       image: opencloudeu/opencloud:latest
       restart: unless-stopped
       ports:
         - "9200:9200"
+      entrypoint:
+        - /bin/sh
+        - -c
+        - |
+          if [ ! -f /etc/opencloud/opencloud.yaml ]; then
+            /usr/bin/opencloud init --insecure true --admin-password "$$OC_ADMIN_PASSWORD"
+          fi
+          exec /usr/bin/opencloud server
       volumes:
         - opencloud_data:/var/lib/opencloud
         - opencloud_config:/etc/opencloud
       environment:
         - OC_INSECURE=true
-        - OC_URL=http://opencloud.local
+        - OC_URL=https://opencloud.local
         - PROXY_HTTP_ADDR=0.0.0.0:9200
+        - PROXY_TLS=false
+        - OC_LOG_LEVEL=warn
+        - OC_ADMIN_PASSWORD=${OC_ADMIN_PASSWORD}
         - VIRTUAL_HOST=opencloud.local
         - VIRTUAL_PORT=9200
-        - OC_JWT_SECRET=
-        - OC_MACHINE_AUTH_API_KEY=
       networks:
         default: {}
         vt-proxy:
@@ -28,19 +42,15 @@ compose:
             - opencloud
   volumes:
     opencloud_data:
+      name: opencloud_data
     opencloud_config:
-  networks:
-    vt-proxy:
-      external: true
+
 ai_integration:
   level: aware
   description: "Odysseus can read file metadata and manage cloud storage via OpenCloud API"
 required_env:
-  - key: OC_JWT_SECRET
-    description: "JWT signing secret for OpenCloud tokens (auto-generated)"
-    generate: random_hex_32
-  - key: OC_MACHINE_AUTH_API_KEY
-    description: "Internal machine auth key (auto-generated)"
+  - key: OC_ADMIN_PASSWORD
+    description: "Initial password for the OpenCloud admin account (auto-generated)"
     generate: random_hex_32
 links:
   home: https://opencloud.eu

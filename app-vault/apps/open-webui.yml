@@ -17,7 +17,7 @@ compose:
         - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
         - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-}
         - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-        - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-changeme}
+        - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
         - VIRTUAL_HOST=chat.local
         - VIRTUAL_PORT=8080
       extra_hosts:
@@ -34,6 +34,10 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: WEBUI_SECRET_KEY
+    description: "Session signing secret for Open WebUI (auto-generated)"
+    generate: random_hex_32
 ai_integration:
   level: native
   description: "Odysseus can read chat history and route queries through Open WebUI"

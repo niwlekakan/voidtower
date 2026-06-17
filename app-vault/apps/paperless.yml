@@ -17,7 +17,7 @@ compose:
         - paperless_consume:/usr/src/paperless/consume
       environment:
         - PAPERLESS_REDIS=redis://paperless-redis:6379
-        - PAPERLESS_SECRET_KEY=change-me-to-a-random-string
+        - PAPERLESS_SECRET_KEY=${PAPERLESS_SECRET_KEY}
         - PAPERLESS_TIME_ZONE=UTC
         - VIRTUAL_HOST=paperless.local
         - VIRTUAL_PORT=8000
@@ -39,6 +39,10 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: PAPERLESS_SECRET_KEY
+    description: "Django secret key for Paperless-ngx (auto-generated)"
+    generate: random_hex_50
 links:
   home: https://docs.paperless-ngx.com
   docs: https://docs.paperless-ngx.com/setup

@@ -382,6 +382,12 @@ export const api = {
       request<{ id: string; model_name: string }>('/api/models/ollama/create', { method: 'POST', body: JSON.stringify({ filename }) }),
     ollamaCreateStatus: (id: string) => request<import('./types').OllamaPullStatus>(`/api/models/ollama/create/${id}`),
     ollamaTags:         () => request<import('./types').OllamaTagsResponse>('/api/models/ollama'),
+    getLlamaConfig:     () => request<import('./types').LlamaConfig>('/api/models/llama-config'),
+    saveLlamaConfig:    (cfg: import('./types').LlamaConfig) =>
+      request<{ ok: boolean }>('/api/models/llama-config', { method: 'POST', body: JSON.stringify(cfg) }),
+    getOllamaConfig:    () => request<import('./types').OllamaConfig>('/api/models/ollama-config'),
+    saveOllamaConfig:   (cfg: import('./types').OllamaConfig) =>
+      request<{ ok: boolean }>('/api/models/ollama-config', { method: 'POST', body: JSON.stringify(cfg) }),
   },
 
   vms: {

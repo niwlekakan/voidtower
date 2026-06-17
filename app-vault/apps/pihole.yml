@@ -33,7 +33,7 @@ compose:
       environment:
         - TZ=UTC
         # v6 password env var (replaces WEBPASSWORD from v5)
-        - FTLCONF_webserver_api_password=changeme
+        - FTLCONF_webserver_api_password=${PIHOLE_API_PASSWORD}
         # v6 DNS upstream format (replaces PIHOLE_DNS_1 / PIHOLE_DNS_2 from v5)
         - FTLCONF_dns_upstreams=1.1.1.1;8.8.8.8
         # nginx-proxy auto-discovery

@@ -15,7 +15,7 @@ compose:
       environment:
         - DB_HOSTNAME=immich-db
         - DB_USERNAME=immich
-        - DB_PASSWORD=immich
+        - DB_PASSWORD=${IMMICH_DB_PASSWORD}
         - DB_DATABASE_NAME=immich
         - REDIS_HOSTNAME=immich-redis
         - VIRTUAL_HOST=immich.local
@@ -30,7 +30,7 @@ compose:
       restart: unless-stopped
       environment:
         - POSTGRES_USER=immich
-        - POSTGRES_PASSWORD=immich
+        - POSTGRES_PASSWORD=${IMMICH_DB_PASSWORD}
         - POSTGRES_DB=immich
       volumes:
         - immich_db:/var/lib/postgresql/data
@@ -45,6 +45,10 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: IMMICH_DB_PASSWORD
+    description: "PostgreSQL password for Immich database (auto-generated)"
+    generate: random_hex_32
 ai_integration:
   level: aware
   description: "Odysseus can read photo library stats and recent uploads"

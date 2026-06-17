@@ -16,6 +16,7 @@ compose:
         - WEBSOCKET_ENABLED=true
         - SIGNUPS_ALLOWED=false
         - DOMAIN=http://vault.local
+        - ADMIN_TOKEN=${VAULTWARDEN_ADMIN_TOKEN}
         - VIRTUAL_HOST=vault.local
         - VIRTUAL_PORT=80
       networks:

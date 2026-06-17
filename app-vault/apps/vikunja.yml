@@ -14,7 +14,7 @@ compose:
         - vikunja_data:/app/vikunja/files
       environment:
         - VIKUNJA_DATABASE_TYPE=sqlite
-        - VIKUNJA_SERVICE_JWTSECRET=changeme-random-secret
+        - VIKUNJA_SERVICE_JWTSECRET=${VIKUNJA_JWT_SECRET}
         - VIKUNJA_SERVICE_FRONTENDURL=http://tasks.local
         - VIRTUAL_HOST=tasks.local
         - VIRTUAL_PORT=3456
@@ -30,6 +30,10 @@ compose:
     vt-proxy:
       external: true
 
+required_env:
+  - key: VIKUNJA_JWT_SECRET
+    description: "JWT signing secret for Vikunja sessions (auto-generated)"
+    generate: random_hex_32
 links:
   home: https://vikunja.io
   docs: https://vikunja.io/docs

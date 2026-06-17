@@ -19,8 +19,8 @@ compose:
       environment:
         - VPN_SERVICE_PROVIDER=mullvad      # change to your provider
         - VPN_TYPE=wireguard                 # or openvpn
-        - WIREGUARD_PRIVATE_KEY=changeme     # your WireGuard private key
-        - WIREGUARD_ADDRESSES=changeme       # e.g. 10.68.x.x/32
+        - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+        - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
         - SERVER_COUNTRIES=Netherlands       # or SERVER_CITIES, SERVER_HOSTNAMES
       volumes:
         - gluetun_data:/gluetun

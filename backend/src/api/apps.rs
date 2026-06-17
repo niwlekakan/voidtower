@@ -29,7 +29,7 @@ pub struct RequiredEnvVar {
     pub key: String,
     pub description: String,
     /// If set, auto-generate a value at deploy time when not supplied by the user.
-    /// Supported: "random_hex_32", "random_hex_64"
+    /// Supported: "random_hex_32", "random_hex_64", "uuid"
     #[serde(default)]
     pub generate: Option<String>,
 }
@@ -469,6 +469,64 @@ fn rewrite_host_bind_mounts(compose: &mut Value, config: &crate::config::Config)
     }
 }
 
+/// Detect the CUDA major version supported by the host driver.
+/// Parses "CUDA Version: X.Y" from `nvidia-smi -q` output.
+async fn detect_cuda_major_version() -> Option<u32> {
+    let out = tokio::process::Command::new("nvidia-smi")
+        .arg("-q")
+        .output()
+        .await.ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.trim_start().starts_with("CUDA Version"))
+        .and_then(|l| l.split(':').nth(1))
+        .and_then(|v| v.trim().split('.').next())
+        .and_then(|s| s.parse::<u32>().ok())
+}
+
+/// For services using `runtime: nvidia`, apply GPU compatibility fixes:
+/// - `ipc: host`              — required for CUDA IPC on open-kernel-module hosts
+/// - `NVIDIA_DISABLE_REQUIRE` — suppresses CUDA version checks when the host
+///   driver is ahead of the container's bundled CUDA toolkit (e.g. host CUDA 13
+///   running a container built against CUDA 12)
+fn apply_nvidia_compat(compose: &mut Value, host_cuda_major: Option<u32>) {
+    let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) else {
+        return;
+    };
+    for svc in services.values_mut() {
+        if !matches!(svc.get("runtime").and_then(|v| v.as_str()), Some("nvidia")) {
+            continue;
+        }
+        let obj = svc.as_object_mut().expect("service is object");
+        obj.entry("ipc".to_string()).or_insert(Value::String("host".into()));
+        obj.entry("privileged".to_string()).or_insert(Value::Bool(true));
+        if matches!(host_cuda_major, Some(v) if v > 12) {
+            if let Some(env) = obj.get_mut("environment").and_then(|e| e.as_array_mut()) {
+                if !env.iter().any(|e| matches!(e.as_str(), Some(s) if s.starts_with("NVIDIA_DISABLE_REQUIRE="))) {
+                    env.push(Value::String("NVIDIA_DISABLE_REQUIRE=1".into()));
+                }
+            }
+        }
+    }
+}
+
+/// When no GPU is available, switch the llama.cpp image from the CUDA variant
+/// to the CPU-only variant so deployment doesn't fail pulling an unusable image.
+fn adjust_cuda_image_for_no_gpu(compose: &mut Value) {
+    let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) else {
+        return;
+    };
+    for svc in services.values_mut() {
+        let Some(img_val) = svc.get_mut("image") else { continue };
+        if let Some(new_img) = img_val.as_str()
+            .filter(|s| s.contains("llama.cpp:server-cuda"))
+            .map(|s| s.replace("server-cuda", "server"))
+        {
+            *img_val = Value::String(new_img);
+        }
+    }
+}
+
 /// Remove GPU requirements from all services when NVIDIA hardware is not detected.
 /// Strips both `runtime: nvidia` (requires NVIDIA Container Toolkit) and
 /// `deploy.resources.reservations.devices` so deployment doesn't fail with
@@ -777,6 +835,7 @@ pub async fn deploy(
                                                 rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
                                                 hex::encode(bytes)
                                             }
+                                            "uuid" => uuid::Uuid::new_v4().to_string(),
                                             _ => {
                                                 // default: random_hex_32
                                                 let mut bytes = [0u8; 16];
@@ -809,10 +868,14 @@ pub async fn deploy(
         }
     }
 
-    // Strip NVIDIA GPU requirements if no GPU is detected so deployment works
-    // on machines that don't have NVIDIA Container Toolkit configured.
-    if !detect_gpu().await {
+    // Strip GPU requirements on non-NVIDIA hosts; on NVIDIA hosts apply CUDA
+    // compatibility fixes (ipc: host, NVIDIA_DISABLE_REQUIRE) for the driver.
+    let has_gpu = detect_gpu().await;
+    if !has_gpu {
         strip_gpu_requirements(&mut compose_val);
+        adjust_cuda_image_for_no_gpu(&mut compose_val);
+    } else {
+        apply_nvidia_compat(&mut compose_val, detect_cuda_major_version().await);
     }
 
     // Create any host-side bind-mount directories referenced in volumes.
@@ -1085,8 +1148,12 @@ pub async fn redeploy_app(
                 }
             }
         }
-        if !detect_gpu().await {
+        let has_gpu = detect_gpu().await;
+        if !has_gpu {
             strip_gpu_requirements(&mut compose_val);
+            adjust_cuda_image_for_no_gpu(&mut compose_val);
+        } else {
+            apply_nvidia_compat(&mut compose_val, detect_cuda_major_version().await);
         }
         ensure_volume_dirs(&compose_val);
         auto_inject_llm(&mut compose_val, &HashMap::new()).await;

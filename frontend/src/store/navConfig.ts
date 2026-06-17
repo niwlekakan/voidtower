@@ -44,7 +44,7 @@ export const DEFAULT_NAV_ITEMS: NavItem[] = [
   { id: 'mods',         label: 'Mods',         visible: true },
   { id: 'capabilities', label: 'Capabilities', visible: true },
   { id: 'diagnostics',  label: 'Diagnostics',  visible: true },
-  { id: 'themes',       label: 'Themes',       visible: true },
+  { id: 'customization', label: 'Customization', visible: true },
   { id: 'timeline',     label: 'Timeline',     visible: true },
 ]
 
@@ -56,7 +56,7 @@ export const DEFAULT_NAV_GROUPS: StoredNavGroup[] = [
   { id: 'data',      label: 'Data',      itemIds: ['storage', 'backups', 'files'] },
   { id: 'security',  label: 'Security',  itemIds: ['security', 'secrets', 'audit'] },
   { id: 'ops',       label: 'Ops',       itemIds: ['automation', 'terminal', 'tags'] },
-  { id: 'system',    label: 'System',    itemIds: ['integrations', 'updates', 'mods', 'themes', 'settings'] },
+  { id: 'system',    label: 'System',    itemIds: ['integrations', 'updates', 'mods', 'customization', 'settings'] },
 ]
 
 interface NavConfigState {

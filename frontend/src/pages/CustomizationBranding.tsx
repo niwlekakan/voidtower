@@ -68,7 +68,7 @@ export default function BrandingTab() {
       setTimeout(() => setSaved(false), 2000)
 
       const finalName = name.trim() || 'VoidTower'
-      window.dispatchEvent(new CustomEvent('vt-settings-changed', { detail: { instance_name: finalName } }))
+      window.dispatchEvent(new CustomEvent('vt-settings-changed', { detail: { instance_name: finalName, instance_logo: logo } }))
 
       // Inject custom CSS
       let styleEl = document.getElementById('vt-custom-css') as HTMLStyleElement | null

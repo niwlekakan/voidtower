@@ -33,6 +33,8 @@ Versioning is [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **App Vault — YoukiDex port conflict with Gluetun**: YoukiDex (scrcpy-web) was mapped to host port `8888`, colliding with Gluetun's HTTP proxy port (`8888:8888`). YoukiDex moved to `8890:6080`.
+
 - **App Vault — Proxmox deploy modal invisible**: The modal box used `var(--bg-surface)` which is not defined in any theme, rendering it fully transparent. Changed to `var(--bg-card)`.
 - **App Vault — Deployed tab is now the default**: Deployed apps tab is shown first; Catalog is second.
 - **App Vault — GGUF download silently accepted HTML**: Pasting a HuggingFace model page URL instead of a direct `.gguf` file URL returned an instant "Done" while saving an HTML file to disk. The download handler now rejects HTML `Content-Type` responses with a descriptive error, and validates GGUF magic bytes (`GGUF` header) after the download completes — non-GGUF files are deleted and the error surfaced. The URL input shows an inline warning when a model page URL is detected.

@@ -76,6 +76,7 @@ pub mod plugins;
 pub mod lxc;
 pub mod agents;
 pub mod tabs;
+pub mod nav_config;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -259,6 +260,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tabs/export", get(tabs::export))
         .route("/api/tabs/import", post(tabs::import))
         .route("/api/tabs/:id", put(tabs::update).delete(tabs::delete))
+        // Nav config (per-user + owner-set instance default)
+        .route("/api/nav-config", get(nav_config::get_nav_config).post(nav_config::save_nav_config).delete(nav_config::delete_nav_config))
+        .route("/api/nav-config/default", get(nav_config::get_nav_default).post(nav_config::set_nav_default).delete(nav_config::delete_nav_default))
         // Firewall
         .route("/api/firewall", get(firewall::get_status))
         .route("/api/firewall/rules", post(firewall::add_rule))

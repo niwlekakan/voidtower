@@ -8,6 +8,7 @@ import { api } from '@/api/client'
 import type { Tag } from '@/api/types'
 import UiModeToggle from '@/components/ui/UiModeToggle'
 import Button from '@/components/ui/Button'
+import { useSidebarPrefsStore } from '@/store/sidebarPrefs'
 
 // ─── GPU / llama widget ───────────────────────────────────────────────────────
 
@@ -131,7 +132,12 @@ function GpuWidget() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function TopBar() {
+/**
+ * Search trigger + GPU/UI-mode/tag/status/bell cluster — extracted so the merged
+ * top/bottom nav bar (rendered by Sidebar.tsx when placement is horizontal) can
+ * embed the same utilities instead of stacking a second, redundant bar.
+ */
+export function TopBarUtilities({ compact = false }: { compact?: boolean }) {
   const connected = useMetricsStore((s) => s.connected)
   const toggle = useCmdPaletteStore((s) => s.toggle)
   const { globalTag, setGlobalTag } = useFiltersStore()
@@ -146,33 +152,10 @@ export default function TopBar() {
 
   return (
     <>
-    {!connected && (
-      <div className="flex items-center justify-center gap-2 px-4 py-1 text-xs" style={{ background: 'var(--accent-danger)', color: '#fff' }}>
-        <span>⚠ Backend disconnected — metrics unavailable. Unsafe actions disabled.</span>
-      </div>
-    )}
-    <header
-      className="flex items-center gap-3 px-4 border-b"
-      style={{
-        height: 'var(--topbar-height)',
-        background: 'var(--bg-panel)',
-        borderColor: 'var(--border-subtle)',
-      }}
-    >
-      {/* Mobile hamburger */}
-      <button
-        className="md:hidden p-1.5 rounded"
-        style={{ color: 'var(--text-muted)' }}
-        onClick={() => document.body.classList.toggle('mobile-nav-open')}
-        aria-label="Toggle navigation"
-      >
-        <Menu size={18} />
-      </button>
-
       {/* Search / command trigger */}
       <button
         onClick={toggle}
-        className="flex items-center gap-2 px-3 py-1.5 rounded text-sm flex-1 max-w-xs text-left transition-colors"
+        className={compact ? 'flex items-center gap-2 px-3 py-1.5 rounded text-sm w-48 flex-shrink-0 text-left transition-colors' : 'flex items-center gap-2 px-3 py-1.5 rounded text-sm flex-1 max-w-xs text-left transition-colors'}
         style={{
           background: 'var(--bg-elevated)',
           border: '1px solid var(--border-subtle)',
@@ -180,10 +163,10 @@ export default function TopBar() {
         }}
       >
         <Search size={14} />
-        <span>Search or press Ctrl+K</span>
+        <span>{compact ? 'Search' : 'Search or press Ctrl+K'}</span>
       </button>
 
-      <div className="flex items-center gap-3 ml-auto">
+      <div className={compact ? 'flex items-center gap-3 flex-shrink-0' : 'flex items-center gap-3 ml-auto'}>
         <GpuWidget />
         <UiModeToggle />
 
@@ -255,7 +238,46 @@ export default function TopBar() {
           <Bell size={16} />
         </button>
       </div>
-    </header>
+    </>
+  )
+}
+
+export default function TopBar() {
+  const connected = useMetricsStore((s) => s.connected)
+  const placement = useSidebarPrefsStore((s) => s.placement)
+  const horizontal = placement === 'top' || placement === 'bottom'
+
+  return (
+    <>
+      {!connected && (
+        <div className="flex items-center justify-center gap-2 px-4 py-1 text-xs" style={{ background: 'var(--accent-danger)', color: '#fff' }}>
+          <span>⚠ Backend disconnected — metrics unavailable. Unsafe actions disabled.</span>
+        </div>
+      )}
+      {/* Header is skipped when placement is horizontal — Sidebar.tsx renders these
+          same utilities merged into its single top/bottom bar instead. */}
+      {!horizontal && (
+        <header
+          className="flex items-center gap-3 px-4 border-b"
+          style={{
+            height: 'var(--topbar-height)',
+            background: 'var(--bg-panel)',
+            borderColor: 'var(--border-subtle)',
+          }}
+        >
+          {/* Mobile hamburger */}
+          <button
+            className="md:hidden p-1.5 rounded"
+            style={{ color: 'var(--text-muted)' }}
+            onClick={() => document.body.classList.toggle('mobile-nav-open')}
+            aria-label="Toggle navigation"
+          >
+            <Menu size={18} />
+          </button>
+
+          <TopBarUtilities />
+        </header>
+      )}
     </>
   )
 }

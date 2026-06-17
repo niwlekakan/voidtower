@@ -2,10 +2,15 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 export type SidebarAnimationStyle = 'slide' | 'fade' | 'squeeze' | 'stagger' | 'flip' | 'bounce'
+export type SidebarPlacement = 'left' | 'right' | 'top' | 'bottom'
 
 interface SidebarPrefsState {
   animation: SidebarAnimationStyle
   setAnimation: (style: SidebarAnimationStyle) => void
+  placement: SidebarPlacement
+  setPlacement: (placement: SidebarPlacement) => void
+  autoHide: boolean
+  setAutoHide: (autoHide: boolean) => void
 }
 
 export const useSidebarPrefsStore = create<SidebarPrefsState>()(
@@ -13,10 +18,21 @@ export const useSidebarPrefsStore = create<SidebarPrefsState>()(
     (set) => ({
       animation: 'slide',
       setAnimation: (animation) => set({ animation }),
+      placement: 'left',
+      setPlacement: (placement) => set({ placement }),
+      autoHide: false,
+      setAutoHide: (autoHide) => set({ autoHide }),
     }),
     { name: 'vt-sidebar-prefs' },
   ),
 )
+
+export const SIDEBAR_PLACEMENT_OPTIONS: { value: SidebarPlacement; label: string; description: string }[] = [
+  { value: 'left',   label: 'Left sidebar',   description: 'Default — docked to the left edge.' },
+  { value: 'right',  label: 'Right sidebar',  description: 'Docked to the right edge.' },
+  { value: 'top',    label: 'Top bar',        description: 'Horizontal bar across the top.' },
+  { value: 'bottom', label: 'Bottom bar',     description: 'Horizontal bar across the bottom.' },
+]
 
 export const SIDEBAR_ANIMATION_OPTIONS: { value: SidebarAnimationStyle; label: string; description: string }[] = [
   { value: 'slide',   label: 'Slide & Fade',     description: 'Labels slide in from the left as the sidebar expands.' },

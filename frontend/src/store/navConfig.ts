@@ -5,6 +5,8 @@ export interface NavItem {
   id: string
   label: string
   visible: boolean
+  /** Lucide icon name from ICON_REGISTRY — overrides the item's default icon when set */
+  icon?: string
 }
 
 export interface StoredNavGroup {
@@ -59,6 +61,19 @@ export const DEFAULT_NAV_GROUPS: StoredNavGroup[] = [
   { id: 'system',    label: 'System',    itemIds: ['integrations', 'updates', 'mods', 'customization', 'settings'] },
 ]
 
+async function pushToServer(items: NavItem[], navGroups: StoredNavGroup[]) {
+  try {
+    await fetch('/api/nav-config', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, nav_groups: navGroups }),
+    })
+  } catch {
+    // best-effort sync — localStorage remains the source of truth on this device if it fails
+  }
+}
+
 interface NavConfigState {
   items: NavItem[]
   setItems: (items: NavItem[]) => void
@@ -66,19 +81,53 @@ interface NavConfigState {
   navGroups: StoredNavGroup[]
   setNavGroups: (groups: StoredNavGroup[]) => void
   resetNavGroups: () => void
+  hydrated: boolean
+  hydrateFromServer: () => Promise<void>
 }
 
 export const useNavConfigStore = create<NavConfigState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       items: [],
-      setItems: (items) => set({ items }),
-      resetItems: () => set({ items: [] }),
+      setItems: (items) => { set({ items }); void pushToServer(items, get().navGroups) },
+      resetItems: () => { set({ items: [] }); void pushToServer([], get().navGroups) },
       navGroups: [],
-      setNavGroups: (navGroups) => set({ navGroups }),
-      resetNavGroups: () => set({ navGroups: [] }),
+      setNavGroups: (navGroups) => { set({ navGroups }); void pushToServer(get().items, navGroups) },
+      resetNavGroups: () => { set({ navGroups: [] }); void pushToServer(get().items, []) },
+      hydrated: false,
+      hydrateFromServer: async () => {
+        if (get().hydrated) return
+        set({ hydrated: true })
+        try {
+          const res = await fetch('/api/nav-config', { credentials: 'include' })
+          if (!res.ok) return
+          const data: { items: NavItem[] | null; nav_groups: StoredNavGroup[] | null; source: string } = await res.json()
+          if (data.source === 'user' && Array.isArray(data.items)) {
+            set({ items: data.items, navGroups: Array.isArray(data.nav_groups) ? data.nav_groups : [] })
+            return
+          }
+          // No per-user config saved yet. Migrate any existing local customization up,
+          // otherwise fall back to the owner-set instance default (if any).
+          const local = get()
+          if (local.items.length > 0 || local.navGroups.length > 0) {
+            void pushToServer(local.items, local.navGroups)
+            return
+          }
+          const defRes = await fetch('/api/nav-config/default', { credentials: 'include' })
+          if (!defRes.ok) return
+          const def: { items?: NavItem[]; nav_groups?: StoredNavGroup[] } | null = await defRes.json()
+          if (def && Array.isArray(def.items)) {
+            set({ items: def.items, navGroups: Array.isArray(def.nav_groups) ? def.nav_groups : [] })
+          }
+        } catch {
+          // offline / backend unreachable — keep whatever localStorage already has
+        }
+      },
     }),
-    { name: 'vt-nav-config' },
+    {
+      name: 'vt-nav-config',
+      partialize: (state) => ({ items: state.items, navGroups: state.navGroups }),
+    },
   ),
 )
 

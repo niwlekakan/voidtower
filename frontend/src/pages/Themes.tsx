@@ -207,20 +207,6 @@ export default function ThemesPage() {
     e.target.value = ''
   }
 
-  return (
-    <div className="space-y-6 max-w-5xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Themes</h1>
-        <div className="flex gap-2">
-          <Button size="sm" variant="ghost" onClick={syncFromOdysseus} disabled={syncing}>
-            <RefreshCw size={13} className={`mr-1.5${syncing ? ' animate-spin' : ''}`} />
-            {syncing ? 'Syncing…' : 'Sync from Odysseus'}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={randomize}>
-            <Shuffle size={13} className="mr-1.5" /> Randomize
-          </Button>
-        </div>
-      </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
 

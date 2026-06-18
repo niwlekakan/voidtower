@@ -150,7 +150,15 @@ fn sso_auth_lines() -> &'static str {
 }
 
 /// Sibling `location` blocks (outpost proxy + sign-in redirect) required by `sso_auth_lines`.
-fn sso_locations() -> String {
+///
+/// When `allow_embed` is set, the outpost location also gets the X-Frame-Options
+/// strip/CSP relax — otherwise an embedded app gated behind Authentik renders fine
+/// in an iframe once authenticated, but the login/MFA challenge page itself (served
+/// from this location on first visit) is framed with whatever headers Authentik's
+/// outpost sets, which commonly include `X-Frame-Options: DENY` and silently fails
+/// to render.
+fn sso_locations(allow_embed: bool) -> String {
+    let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
     format!(
         r#"
     location /outpost.goauthentik.io {{
@@ -158,7 +166,7 @@ fn sso_locations() -> String {
         proxy_set_header Host $host;
         proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        add_header Set-Cookie $auth_cookie;
+        add_header Set-Cookie $auth_cookie;{embed}
     }}
 
     location @goauthentik_proxy_signin {{
@@ -214,7 +222,7 @@ fn write_nginx_conf(domain: &str, upstream: &str, ssl: bool, allow_embed: bool, 
     let upstream = rewrite_upstream_for_docker(upstream);
     let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
     let sso = if sso_protect { sso_auth_lines() } else { "" };
-    let sso_locs = if sso_protect { sso_locations() } else { String::new() };
+    let sso_locs = if sso_protect { sso_locations(allow_embed) } else { String::new() };
     let content = if ssl {
         format!(
             r#"# Managed by VoidTower — do not edit manually
@@ -283,7 +291,7 @@ fn remove_nginx_conf(domain: &str) {
 fn nginx_conf_content(domain: &str, upstream: &str, ssl: bool, allow_embed: bool, sso_protect: bool) -> String {
     let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
     let sso = if sso_protect { sso_auth_lines() } else { "" };
-    let sso_locs = if sso_protect { sso_locations() } else { String::new() };
+    let sso_locs = if sso_protect { sso_locations(allow_embed) } else { String::new() };
     if ssl {
         format!(
             r#"# Managed by VoidTower — do not edit manually

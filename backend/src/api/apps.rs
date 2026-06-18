@@ -1501,9 +1501,14 @@ pub async fn open_ui(
     let domain = format!("{}.embed", req.project_name);
     let upstream = format!("http://localhost:{}", req.primary_port);
 
-    // Look up existing embed record to get any already-allocated port.
-    let existing: Option<(bool, Option<i64>)> = sqlx::query_as(
-        "SELECT allow_embed, embed_port FROM proxy_configs WHERE domain = ?",
+    // Look up any existing embed record. The upstream + nginx conf are always
+    // refreshed below to match the current `upstream` even when a port was
+    // already allocated — otherwise an app whose catalog `web_port` changed
+    // (or that was first opened before `web_port`/`web_path` were added) keeps
+    // routing to the stale port forever, since the conf was only ever written
+    // once at first-open time.
+    let existing: Option<(bool, Option<i64>, String)> = sqlx::query_as(
+        "SELECT allow_embed, embed_port, upstream FROM proxy_configs WHERE domain = ?",
     )
     .bind(&domain)
     .fetch_optional(&state.db)
@@ -1513,72 +1518,79 @@ pub async fn open_ui(
     let embed_url: Option<String>;
     let proxy_created: bool;
 
-    if let Some((_, Some(port))) = existing {
-        // Already set up — return the existing LAN URL.
-        embed_url = Some(format!("http://{}:{}", host, port));
-        proxy_created = false;
-    } else {
-        let nginx_ok = tokio::task::spawn_blocking(|| {
-            crate::api::proxy::nginx_active_pub()
-        }).await.unwrap_or(false);
+    let nginx_ok = tokio::task::spawn_blocking(|| {
+        crate::api::proxy::nginx_active_pub()
+    }).await.unwrap_or(false);
 
-        if nginx_ok {
-            // Allocate next free embed port in 8800–8899 range.
-            let next_port: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(MAX(embed_port), 8799) + 1 FROM proxy_configs WHERE embed_port IS NOT NULL",
-            )
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or(8800);
-            let embed_port = (next_port as u16).clamp(8800, 8899);
-
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-
-            let inserted = if existing.is_none() {
-                sqlx::query(
-                    "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, embed_port, created_at) VALUES (?,?,?,0,1,1,?,?)",
+    if nginx_ok {
+        let embed_port = match &existing {
+            Some((_, Some(port), _)) => *port as u16,
+            _ => {
+                // Allocate next free embed port in 8800–8899 range.
+                let next_port: i64 = sqlx::query_scalar(
+                    "SELECT COALESCE(MAX(embed_port), 8799) + 1 FROM proxy_configs WHERE embed_port IS NOT NULL",
                 )
-                .bind(uuid::Uuid::new_v4().to_string())
-                .bind(&domain)
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(8800);
+                (next_port as u16).clamp(8800, 8899)
+            }
+        };
+
+        proxy_created = existing.is_none();
+        let upstream_changed = existing.as_ref().map(|(_, _, u)| u != &upstream).unwrap_or(true);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let saved = if proxy_created {
+            sqlx::query(
+                "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, embed_port, created_at) VALUES (?,?,?,0,1,1,?,?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&domain)
+            .bind(&upstream)
+            .bind(embed_port as i64)
+            .bind(now)
+            .execute(&state.db)
+            .await
+            .map(|_| true)
+            .unwrap_or(false)
+        } else if upstream_changed {
+            sqlx::query("UPDATE proxy_configs SET upstream = ?, embed_port = ? WHERE domain = ?")
                 .bind(&upstream)
                 .bind(embed_port as i64)
-                .bind(now)
+                .bind(&domain)
                 .execute(&state.db)
                 .await
                 .map(|_| true)
                 .unwrap_or(false)
-            } else {
-                // Record exists but has no port yet — patch it.
-                sqlx::query("UPDATE proxy_configs SET embed_port = ? WHERE domain = ?")
-                    .bind(embed_port as i64)
-                    .bind(&domain)
-                    .execute(&state.db)
-                    .await
-                    .map(|_| true)
-                    .unwrap_or(false)
-            };
+        } else {
+            true
+        };
 
-            if inserted {
-                let _ = crate::api::proxy::write_nginx_port_conf(&req.project_name, &upstream, embed_port);
-                let _ = crate::api::proxy::reload_nginx_pub();
+        if saved {
+            // Always rewrite the conf — self-heals if the upstream port drifted
+            // since it was last written, without requiring the user to delete
+            // and recreate the proxy entry.
+            let _ = crate::api::proxy::write_nginx_port_conf(&req.project_name, &upstream, embed_port);
+            let _ = crate::api::proxy::reload_nginx_pub();
+            if proxy_created {
                 // Open the port in the local firewall non-blocking.
                 let port_str = embed_port.to_string();
                 tokio::task::spawn_blocking(move || {
                     open_firewall_port(&port_str);
                 });
-                embed_url = Some(format!("http://{}:{}", host, embed_port));
-                proxy_created = true;
-            } else {
-                embed_url = None;
-                proxy_created = false;
             }
+            embed_url = Some(format!("http://{}:{}", host, embed_port));
         } else {
             embed_url = None;
-            proxy_created = false;
         }
+    } else {
+        embed_url = None;
+        proxy_created = false;
     }
 
     Ok(Json(serde_json::json!({

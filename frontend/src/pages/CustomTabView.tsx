@@ -2,7 +2,51 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { LayoutPanelTop } from 'lucide-react'
 import { api } from '@/api/client'
-import type { CustomTab } from '@/api/types'
+import { useAppEmbedUrl } from '@/hooks/useAppEmbedUrl'
+import type { AppDef, CustomTab, DeployedApp } from '@/api/types'
+
+function AppVaultTabFrame({ projectName, appId, title }: { projectName: string; appId: string; title: string }) {
+  const [app, setApp] = useState<DeployedApp | null>(null)
+  const [def, setDef] = useState<AppDef | null>(null)
+  const [resolved, setResolved] = useState(false)
+
+  useEffect(() => {
+    setResolved(false)
+    Promise.all([api.apps.deployed(), api.apps.catalog()]).then(([deployed, cat]) => {
+      setApp(deployed.apps.find(a => a.project_name === projectName) ?? null)
+      setDef(cat.apps.find(d => d.id === appId) ?? null)
+      setResolved(true)
+    }).catch(() => setResolved(true))
+  }, [projectName, appId])
+
+  const { iframeSrc, loading } = useAppEmbedUrl(
+    app ? projectName : null,
+    def,
+    app?.primary_port ?? null,
+  )
+
+  if (!resolved || (app && loading)) return null
+
+  if (!app || app.status !== 'running' || !iframeSrc) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-2">
+        <LayoutPanelTop size={32} style={{ color: 'var(--text-muted)' }} />
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          {!app ? 'This app is no longer deployed.' : 'The app is not currently running.'}
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <iframe
+      src={iframeSrc}
+      title={title}
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+      style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+    />
+  )
+}
 
 export default function CustomTabView() {
   const { id } = useParams<{ id: string }>()
@@ -24,6 +68,28 @@ export default function CustomTabView() {
         <LayoutPanelTop size={32} style={{ color: 'var(--text-muted)' }} />
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Tab not found.</p>
       </div>
+    )
+  }
+
+  if (tab.kind === 'iframe' && tab.config.source === 'app-vault' && typeof tab.config.project_name === 'string') {
+    return (
+      <AppVaultTabFrame
+        projectName={tab.config.project_name}
+        appId={typeof tab.config.app_id === 'string' ? tab.config.app_id : ''}
+        title={tab.title}
+      />
+    )
+  }
+
+  if (tab.kind === 'iframe' && tab.config.source === 'proxy' && typeof tab.config.domain === 'string') {
+    const scheme = tab.config.ssl === false ? 'http' : 'https'
+    return (
+      <iframe
+        src={`${scheme}://${tab.config.domain}`}
+        title={tab.title}
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+        style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+      />
     )
   }
 

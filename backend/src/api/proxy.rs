@@ -135,6 +135,138 @@ fn conf_path(domain: &str) -> std::path::PathBuf {
 
 }
 
+fn parsed_custom_headers(cfg: &ProxyConfig) -> Vec<CustomHeader> {
+    cfg.custom_headers
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
+}
+
+fn custom_header_lines(cfg: &ProxyConfig) -> String {
+    parsed_custom_headers(cfg)
+        .iter()
+        .map(|h| format!("        add_header {} \"{}\" always;\n", h.name.trim(), h.value.replace('"', "\\\"")))
+        .collect()
+}
+
+/// nginx `limit_req_zone` zone names must be a bare identifier — sanitize the
+/// domain down to one and keep it short.
+fn zone_name(domain: &str) -> String {
+    let mut s: String = domain
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    s.truncate(28);
+    format!("rl_{s}")
+}
+
+/// `limit_req_zone` must live in `http` context — conf.d files are included
+/// there, so it goes at the top of the per-domain conf file, outside `server {}`.
+fn rate_limit_zone_decl(cfg: &ProxyConfig) -> String {
+    match cfg.rate_limit_rpm {
+        Some(rpm) if rpm > 0 => format!(
+            "limit_req_zone $binary_remote_addr zone={}:10m rate={rpm}r/m;\n\n",
+            zone_name(&cfg.domain)
+        ),
+        _ => String::new(),
+    }
+}
+
+fn rate_limit_use_line(cfg: &ProxyConfig) -> String {
+    match cfg.rate_limit_rpm {
+        Some(rpm) if rpm > 0 => format!("        limit_req zone={} burst=20 nodelay;\n", zone_name(&cfg.domain)),
+        _ => String::new(),
+    }
+}
+
+/// Sibling htpasswd file path — lives in the already bind-mounted conf.d dir so
+/// no extra Docker volume is needed; nginx's `auth_basic_user_file` can point at
+/// any readable path, not just `*.conf`.
+fn htpasswd_path(domain: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(effective_conf_dir()).join(format!("voidtower-{domain}.htpasswd"))
+}
+
+/// nginx's `ngx_http_auth_basic_module` special-cases the `{SHA}` prefix as
+/// raw-SHA1-then-base64 — the one portable htpasswd format that needs no extra
+/// nginx module and doesn't depend on the image's libc `crypt()` support.
+fn htpasswd_hash(password: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let digest = Sha1::digest(password.as_bytes());
+    format!("{{SHA}}{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, digest))
+}
+
+fn write_htpasswd_file(domain: &str, user: &str, pass_hash: &str) -> Result<()> {
+    let path = htpasswd_path(domain);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::write(&path, format!("{user}:{pass_hash}\n"))
+        .map_err(|e| AppError::BadRequest(format!("Cannot write htpasswd file: {e}")))?;
+    Ok(())
+}
+
+fn remove_htpasswd_file(domain: &str) {
+    let _ = std::fs::remove_file(htpasswd_path(domain));
+}
+
+fn auth_basic_lines(cfg: &ProxyConfig) -> String {
+    if cfg.basic_auth_user.is_some() {
+        format!(
+            "        auth_basic \"Restricted\";\n        auth_basic_user_file {};\n",
+            htpasswd_path(&cfg.domain).display()
+        )
+    } else {
+        String::new()
+    }
+}
+
+fn gzip_server_lines(cfg: &ProxyConfig) -> &'static str {
+    if cfg.cache_static {
+        "    gzip on;\n    gzip_types text/css application/javascript application/json image/svg+xml;\n"
+    } else {
+        ""
+    }
+}
+
+fn static_cache_location(upstream: &str, cfg: &ProxyConfig) -> String {
+    if !cfg.cache_static {
+        return String::new();
+    }
+    format!(
+        r#"
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|woff2?|svg)$ {{
+        proxy_pass {upstream};
+        proxy_set_header Host $host;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }}
+"#
+    )
+}
+
+/// Body of `location / { ... }` — shared between the SSL and non-SSL templates.
+fn proxy_location_inner(upstream: &str, cfg: &ProxyConfig, embed: &str, sso: &str) -> String {
+    let timeout_lines = if cfg.websocket_extended {
+        "        proxy_buffering off;\n        proxy_read_timeout 3600s;\n        proxy_send_timeout 3600s;\n"
+    } else {
+        "        proxy_read_timeout 300s;\n"
+    };
+    let limit_line = rate_limit_use_line(cfg);
+    let auth = auth_basic_lines(cfg);
+    let headers = custom_header_lines(cfg);
+    format!(
+        r#"        proxy_pass {upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+{timeout_lines}{limit_line}{auth}{headers}{embed}{sso}"#
+    )
+}
+
 fn embed_headers() -> &'static str {
     "        proxy_hide_header X-Frame-Options;\n        add_header X-Frame-Options \"ALLOWALL\" always;\n        add_header Content-Security-Policy \"frame-ancestors *\" always;"
 }
@@ -214,88 +346,46 @@ server {{
     Ok(())
 }
 
-fn write_nginx_conf(domain: &str, upstream: &str, ssl: bool, allow_embed: bool, sso_protect: bool) -> Result<()> {
-    let path = conf_path(domain);
+/// Writes the per-domain conf (and sibling htpasswd file, if basic auth is set)
+/// derived entirely from `cfg`. `nginx_conf_content` builds the actual text —
+/// kept as a single source of truth so the dry-run preview can never drift
+/// from what's actually written to disk.
+fn write_nginx_conf(cfg: &ProxyConfig) -> Result<()> {
+    let path = conf_path(&cfg.domain);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let upstream = rewrite_upstream_for_docker(upstream);
-    let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
-    let sso = if sso_protect { sso_auth_lines() } else { "" };
-    let sso_locs = if sso_protect { sso_locations(allow_embed) } else { String::new() };
-    let content = if ssl {
-        format!(
-            r#"# Managed by VoidTower — do not edit manually
-server {{
-    listen 80;
-    server_name {domain};
-    return 301 https://$server_name$request_uri;
-}}
-
-server {{
-    listen 443 ssl http2;
-    server_name {domain};
-
-    ssl_certificate     /etc/letsencrypt/live/{domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-{sso_locs}
-    location / {{
-        proxy_pass {upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;{embed}{sso}
-    }}
-}}
-"#
-        )
+    if let (Some(user), Some(hash)) = (&cfg.basic_auth_user, &cfg.basic_auth_pass_hash) {
+        write_htpasswd_file(&cfg.domain, user, hash)?;
     } else {
-        format!(
-            r#"# Managed by VoidTower — do not edit manually
-server {{
-    listen 80;
-    server_name {domain};
-{sso_locs}
-    location / {{
-        proxy_pass {upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;{embed}{sso}
-    }}
-}}
-"#
-        )
-    };
-
+        remove_htpasswd_file(&cfg.domain);
+    }
+    let content = nginx_conf_content(cfg);
     std::fs::write(&path, content)
         .map_err(|e| AppError::BadRequest(format!("Cannot write nginx config: {e}")))?;
-
     Ok(())
 }
 
 fn remove_nginx_conf(domain: &str) {
     let _ = std::fs::remove_file(conf_path(domain));
+    remove_htpasswd_file(domain);
 }
 
-fn nginx_conf_content(domain: &str, upstream: &str, ssl: bool, allow_embed: bool, sso_protect: bool) -> String {
-    let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
-    let sso = if sso_protect { sso_auth_lines() } else { "" };
-    let sso_locs = if sso_protect { sso_locations(allow_embed) } else { String::new() };
-    if ssl {
+fn nginx_conf_content(cfg: &ProxyConfig) -> String {
+    let domain = &cfg.domain;
+    let upstream = rewrite_upstream_for_docker(&cfg.upstream);
+    let embed = if cfg.allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
+    let sso = if cfg.sso_protect { sso_auth_lines() } else { "" };
+    let sso_locs = if cfg.sso_protect { sso_locations(cfg.allow_embed) } else { String::new() };
+    let zone_decl = rate_limit_zone_decl(cfg);
+    let gzip_lines = gzip_server_lines(cfg);
+    let static_loc = static_cache_location(&upstream, cfg);
+    let loc_inner = proxy_location_inner(&upstream, cfg, &embed, sso);
+
+    if cfg.ssl {
         format!(
             r#"# Managed by VoidTower — do not edit manually
-server {{
+{zone_decl}server {{
     listen 80;
     server_name {domain};
     return 301 https://$server_name$request_uri;
@@ -309,40 +399,24 @@ server {{
     ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
-{sso_locs}
+{gzip_lines}{sso_locs}
     location / {{
-        proxy_pass {upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;{embed}{sso}
+{loc_inner}
     }}
-}}
+{static_loc}}}
 "#
         )
     } else {
         format!(
             r#"# Managed by VoidTower — do not edit manually
-server {{
+{zone_decl}server {{
     listen 80;
     server_name {domain};
-{sso_locs}
+{gzip_lines}{sso_locs}
     location / {{
-        proxy_pass {upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;{embed}{sso}
+{loc_inner}
     }}
-}}
+{static_loc}}}
 "#
         )
     }
@@ -371,7 +445,13 @@ fn reload_nginx() -> std::result::Result<String, String> {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, sqlx::FromRow)]
 pub struct ProxyConfig {
     pub id: String,
     pub domain: String,
@@ -381,6 +461,16 @@ pub struct ProxyConfig {
     pub allow_embed: bool,
     pub sso_protect: bool,
     pub created_at: i64,
+    pub custom_headers: Option<String>,
+    pub rate_limit_rpm: Option<i64>,
+    pub basic_auth_user: Option<String>,
+    #[serde(skip_serializing)]
+    pub basic_auth_pass_hash: Option<String>,
+    pub websocket_extended: bool,
+    pub cache_static: bool,
+    pub health_status: Option<String>,
+    pub health_checked_at: Option<i64>,
+    pub health_latency_ms: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -395,6 +485,112 @@ pub struct CreateRequest {
     pub sso_protect: bool,
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default)]
+    pub custom_headers: Vec<CustomHeader>,
+    #[serde(default)]
+    pub rate_limit_rpm: Option<i64>,
+    #[serde(default)]
+    pub basic_auth_user: Option<String>,
+    #[serde(default)]
+    pub basic_auth_password: Option<String>,
+    #[serde(default)]
+    pub websocket_extended: bool,
+    #[serde(default)]
+    pub cache_static: bool,
+}
+
+/// Resolves the (user, pass_hash) pair to persist for basic auth from a request:
+/// empty/absent username clears it; a username with no new password keeps the
+/// existing hash (editing other fields shouldn't force a password re-entry);
+/// a username with no existing match and no new password is rejected.
+fn resolve_basic_auth(
+    user_in: &Option<String>,
+    password_in: &Option<String>,
+    existing: Option<&ProxyConfig>,
+) -> Result<(Option<String>, Option<String>)> {
+    let user = user_in.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let Some(user) = user else {
+        return Ok((None, None));
+    };
+    let password = password_in.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(pw) = password {
+        return Ok((Some(user.to_string()), Some(htpasswd_hash(pw))));
+    }
+    if let Some(existing) = existing {
+        if existing.basic_auth_user.as_deref() == Some(user) {
+            if let Some(hash) = &existing.basic_auth_pass_hash {
+                return Ok((Some(user.to_string()), Some(hash.clone())));
+            }
+        }
+    }
+    Err(AppError::BadRequest("Basic auth password is required".into()))
+}
+
+/// Extra dry-run plan rows for the fields added on top of the original
+/// domain/upstream/ssl/embed/sso set — only listed when actually set, so a
+/// plain proxy's preview stays as short as it always was.
+fn extra_change_rows(cfg: &ProxyConfig) -> Vec<serde_json::Value> {
+    let mut rows = Vec::new();
+    if !parsed_custom_headers(cfg).is_empty() {
+        let names: Vec<String> = parsed_custom_headers(cfg).into_iter().map(|h| h.name).collect();
+        rows.push(serde_json::json!({ "label": "Custom headers", "value": names.join(", ") }));
+    }
+    if let Some(rpm) = cfg.rate_limit_rpm {
+        rows.push(serde_json::json!({ "label": "Rate limit", "value": format!("{rpm} req/min per IP") }));
+    }
+    if let Some(user) = &cfg.basic_auth_user {
+        rows.push(serde_json::json!({ "label": "Basic auth", "value": format!("enabled (user: {user})") }));
+    }
+    if cfg.websocket_extended {
+        rows.push(serde_json::json!({ "label": "WebSocket passthrough", "value": "extended (buffering off, 3600s timeout)" }));
+    }
+    if cfg.cache_static {
+        rows.push(serde_json::json!({ "label": "Static cache + gzip", "value": "enabled (7d expires on static assets)" }));
+    }
+    rows
+}
+
+/// Builds the `ProxyConfig` that will be persisted and used to render the nginx
+/// conf, resolving basic auth against any pre-existing row (for updates).
+fn build_proxy_config(
+    id: String,
+    domain: String,
+    req: &CreateRequest,
+    created_at: i64,
+    existing: Option<&ProxyConfig>,
+) -> Result<ProxyConfig> {
+    let (basic_auth_user, basic_auth_pass_hash) =
+        resolve_basic_auth(&req.basic_auth_user, &req.basic_auth_password, existing)?;
+    let headers: Vec<CustomHeader> = req
+        .custom_headers
+        .iter()
+        .filter(|h| !h.name.trim().is_empty())
+        .cloned()
+        .collect();
+    let custom_headers = if headers.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&headers).map_err(|e| AppError::Internal(e.into()))?)
+    };
+    Ok(ProxyConfig {
+        id,
+        domain,
+        upstream: req.upstream.clone(),
+        ssl: req.ssl,
+        enabled: existing.map(|e| e.enabled).unwrap_or(true),
+        allow_embed: req.allow_embed,
+        sso_protect: req.sso_protect,
+        created_at,
+        custom_headers,
+        rate_limit_rpm: req.rate_limit_rpm.filter(|&r| r > 0),
+        basic_auth_user,
+        basic_auth_pass_hash,
+        websocket_extended: req.websocket_extended,
+        cache_static: req.cache_static,
+        health_status: existing.and_then(|e| e.health_status.clone()),
+        health_checked_at: existing.and_then(|e| e.health_checked_at),
+        health_latency_ms: existing.and_then(|e| e.health_latency_ms),
+    })
 }
 
 /// True when Authentik SSO is configured and enabled — required before any proxy
@@ -533,7 +729,7 @@ pub async fn list(
     require_admin(&state, &jar).await?;
 
     let proxies = sqlx::query_as::<_, ProxyConfig>(
-        "SELECT id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at FROM proxy_configs ORDER BY created_at",
+        "SELECT * FROM proxy_configs ORDER BY created_at",
     )
     .fetch_all(&state.db)
     .await
@@ -565,35 +761,38 @@ pub async fn create(
         ));
     }
 
+    let id = Uuid::new_v4().to_string();
+    let now = unix_now();
+    let cfg = build_proxy_config(id.clone(), req.domain.clone(), &req, now, None)?;
+
     if req.dry_run {
         let conf_file = conf_path(&req.domain);
         let exists = conf_file.exists();
-        let content = nginx_conf_content(&req.domain, &req.upstream, req.ssl, req.allow_embed, req.sso_protect);
+        let content = nginx_conf_content(&cfg);
+        let mut changes = vec![
+            serde_json::json!({ "label": "Domain", "value": req.domain }),
+            serde_json::json!({ "label": "Upstream", "value": req.upstream }),
+            serde_json::json!({ "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } }),
+            serde_json::json!({ "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } }),
+            serde_json::json!({ "label": "Authentik protection", "value": if req.sso_protect { "enabled — visitors must authenticate via Authentik first" } else { "disabled" } }),
+        ];
+        changes.extend(extra_change_rows(&cfg));
+        changes.push(serde_json::json!({ "label": "Config file", "value": conf_file.display().to_string() }));
+        changes.push(serde_json::json!({ "label": "Config file action", "value": if exists { "overwrite existing" } else { "create new" } }));
+        changes.push(serde_json::json!({ "label": "Rollback", "value": "Delete conf file and reload nginx" }));
         return Ok(Json(serde_json::json!({
             "dry_run": true,
             "plan": {
                 "title": "Create Nginx Proxy",
                 "risk": if req.sso_protect { "medium" } else { "low" },
-                "changes": [
-                    { "label": "Domain", "value": req.domain },
-                    { "label": "Upstream", "value": req.upstream },
-                    { "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } },
-                    { "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } },
-                    { "label": "Authentik protection", "value": if req.sso_protect { "enabled — visitors must authenticate via Authentik first" } else { "disabled" } },
-                    { "label": "Config file", "value": conf_file.display().to_string() },
-                    { "label": "Config file action", "value": if exists { "overwrite existing" } else { "create new" } },
-                    { "label": "Rollback", "value": "Delete conf file and reload nginx" },
-                ],
+                "changes": changes,
                 "preview": content,
             }
         })));
     }
 
-    let id = Uuid::new_v4().to_string();
-    let now = unix_now();
-
     sqlx::query(
-        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at) VALUES (?,?,?,?,1,?,?,?)",
+        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at, custom_headers, rate_limit_rpm, basic_auth_user, basic_auth_pass_hash, websocket_extended, cache_static) VALUES (?,?,?,?,1,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&id)
     .bind(&req.domain)
@@ -602,6 +801,12 @@ pub async fn create(
     .bind(req.allow_embed)
     .bind(req.sso_protect)
     .bind(now)
+    .bind(&cfg.custom_headers)
+    .bind(cfg.rate_limit_rpm)
+    .bind(&cfg.basic_auth_user)
+    .bind(&cfg.basic_auth_pass_hash)
+    .bind(cfg.websocket_extended)
+    .bind(cfg.cache_static)
     .execute(&state.db)
     .await
     .map_err(|e| {
@@ -612,7 +817,7 @@ pub async fn create(
         }
     })?;
 
-    write_nginx_conf(&req.domain, &req.upstream, req.ssl, req.allow_embed, req.sso_protect)?;
+    write_nginx_conf(&cfg)?;
 
     let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
 
@@ -659,7 +864,16 @@ pub async fn create_proxy_record(
         }
     })?;
 
-    write_nginx_conf(domain, upstream, ssl, allow_embed, false)?;
+    write_nginx_conf(&ProxyConfig {
+        id: id.clone(),
+        domain: domain.to_string(),
+        upstream: upstream.to_string(),
+        ssl,
+        enabled: true,
+        allow_embed,
+        created_at: now,
+        ..Default::default()
+    })?;
     let _ = reload_nginx();
     Ok(id)
 }
@@ -709,15 +923,17 @@ pub async fn update_proxy(
     validate_domain(&req.domain)?;
     validate_upstream(&req.upstream)?;
 
-    // Fetch current row to get the old domain and enabled state
-    let row: Option<(String, bool)> =
-        sqlx::query_as("SELECT domain, enabled FROM proxy_configs WHERE id = ?")
-            .bind(&proxy_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+    // Fetch the full current row — needed both for old domain/enabled state and
+    // to preserve basic auth's existing hash / health_* fields across the edit.
+    let existing = sqlx::query_as::<_, ProxyConfig>("SELECT * FROM proxy_configs WHERE id = ?")
+        .bind(&proxy_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
 
-    let (old_domain, enabled) = row.ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
+    let old_domain = existing.domain.clone();
+    let enabled = existing.enabled;
 
     if req.sso_protect && !oidc_is_enabled(&state.db).await {
         return Err(AppError::BadRequest(
@@ -725,39 +941,49 @@ pub async fn update_proxy(
         ));
     }
 
+    let cfg = build_proxy_config(proxy_id.clone(), req.domain.clone(), &req, existing.created_at, Some(&existing))?;
+
     if req.dry_run {
         let conf_file = conf_path(&req.domain);
-        let content = nginx_conf_content(&req.domain, &req.upstream, req.ssl, req.allow_embed, req.sso_protect);
+        let content = nginx_conf_content(&cfg);
         let domain_changed = old_domain != req.domain;
+        let mut changes = vec![
+            serde_json::json!({ "label": "Domain", "value": format!("{} → {}", old_domain, req.domain) }),
+            serde_json::json!({ "label": "Upstream", "value": req.upstream }),
+            serde_json::json!({ "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } }),
+            serde_json::json!({ "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } }),
+            serde_json::json!({ "label": "Authentik protection", "value": if req.sso_protect { "enabled — visitors must authenticate via Authentik first" } else { "disabled" } }),
+        ];
+        changes.extend(extra_change_rows(&cfg));
+        changes.push(serde_json::json!({ "label": "Config file", "value": conf_file.display().to_string() }));
+        changes.push(serde_json::json!({ "label": "Config file action", "value": if domain_changed { "rename old conf + write new" } else { "overwrite in place" } }));
+        changes.push(serde_json::json!({ "label": "Nginx reload", "value": if enabled { "yes" } else { "no (proxy is disabled)" } }));
+        changes.push(serde_json::json!({ "label": "Rollback", "value": "Revert domain/upstream fields and re-save" }));
         return Ok(Json(serde_json::json!({
             "dry_run": true,
             "plan": {
                 "title": "Update Nginx Proxy",
                 "risk": if req.sso_protect && enabled { "medium" } else { "low" },
-                "changes": [
-                    { "label": "Domain", "value": format!("{} → {}", old_domain, req.domain) },
-                    { "label": "Upstream", "value": req.upstream },
-                    { "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } },
-                    { "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } },
-                    { "label": "Authentik protection", "value": if req.sso_protect { "enabled — visitors must authenticate via Authentik first" } else { "disabled" } },
-                    { "label": "Config file", "value": conf_file.display().to_string() },
-                    { "label": "Config file action", "value": if domain_changed { "rename old conf + write new" } else { "overwrite in place" } },
-                    { "label": "Nginx reload", "value": if enabled { "yes" } else { "no (proxy is disabled)" } },
-                    { "label": "Rollback", "value": "Revert domain/upstream fields and re-save" },
-                ],
+                "changes": changes,
                 "preview": if enabled { Some(content) } else { None::<String> },
             }
         })));
     }
 
     sqlx::query(
-        "UPDATE proxy_configs SET domain = ?, upstream = ?, ssl = ?, allow_embed = ?, sso_protect = ? WHERE id = ?",
+        "UPDATE proxy_configs SET domain = ?, upstream = ?, ssl = ?, allow_embed = ?, sso_protect = ?, custom_headers = ?, rate_limit_rpm = ?, basic_auth_user = ?, basic_auth_pass_hash = ?, websocket_extended = ?, cache_static = ? WHERE id = ?",
     )
     .bind(&req.domain)
     .bind(&req.upstream)
     .bind(req.ssl)
     .bind(req.allow_embed)
     .bind(req.sso_protect)
+    .bind(&cfg.custom_headers)
+    .bind(cfg.rate_limit_rpm)
+    .bind(&cfg.basic_auth_user)
+    .bind(&cfg.basic_auth_pass_hash)
+    .bind(cfg.websocket_extended)
+    .bind(cfg.cache_static)
     .bind(&proxy_id)
     .execute(&state.db)
     .await
@@ -776,7 +1002,7 @@ pub async fn update_proxy(
 
     // Only write/reload nginx if the proxy is currently enabled
     let reload_msg = if enabled {
-        write_nginx_conf(&req.domain, &req.upstream, req.ssl, req.allow_embed, req.sso_protect)?;
+        write_nginx_conf(&cfg)?;
         reload_nginx().unwrap_or_else(|e| format!("warning: {e}"))
     } else {
         "proxy is disabled — nginx not updated".into()
@@ -853,7 +1079,16 @@ pub async fn ai_auto_proxy(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    write_nginx_conf(&domain, &req.upstream, false, true, false)?;
+    write_nginx_conf(&ProxyConfig {
+        id: id.clone(),
+        domain: domain.clone(),
+        upstream: req.upstream.clone(),
+        ssl: false,
+        enabled: true,
+        allow_embed: true,
+        created_at: now,
+        ..Default::default()
+    })?;
     let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
 
     audit::log(
@@ -1017,18 +1252,14 @@ pub async fn toggle(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    let row: Option<(String, bool, String, bool, String, bool, bool)> = sqlx::query_as(
-        "SELECT id, enabled, domain, ssl, upstream, allow_embed, sso_protect FROM proxy_configs WHERE id = ?",
-    )
-    .bind(&proxy_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let cfg = sqlx::query_as::<_, ProxyConfig>("SELECT * FROM proxy_configs WHERE id = ?")
+        .bind(&proxy_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
 
-    let (_, enabled, domain, ssl, upstream, allow_embed, sso_protect) =
-        row.ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
-
-    let new_enabled = !enabled;
+    let new_enabled = !cfg.enabled;
 
     sqlx::query("UPDATE proxy_configs SET enabled = ? WHERE id = ?")
         .bind(new_enabled)
@@ -1038,12 +1269,64 @@ pub async fn toggle(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if new_enabled {
-        write_nginx_conf(&domain, &upstream, ssl, allow_embed, sso_protect)?;
+        write_nginx_conf(&cfg)?;
     } else {
-        remove_nginx_conf(&domain);
+        remove_nginx_conf(&cfg.domain);
     }
 
     let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
 
     Ok(Json(serde_json::json!({ "ok": true, "enabled": new_enabled, "nginx": reload_msg })))
+}
+
+// ── Health check ──────────────────────────────────────────────────────────────
+
+/// On-demand upstream reachability check for a single proxy entry. Reaches the
+/// upstream the same way nginx itself would (`rewrite_upstream_for_docker`),
+/// not the public domain — this tests "is the backend alive", not "is the
+/// whole proxy chain working", which the existing nginx `test`/reload actions
+/// already cover.
+pub async fn proxy_health(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(proxy_id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+
+    let cfg = sqlx::query_as::<_, ProxyConfig>("SELECT * FROM proxy_configs WHERE id = ?")
+        .bind(&proxy_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
+
+    let target = rewrite_upstream_for_docker(&cfg.upstream);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let started = std::time::Instant::now();
+    let reachable = client.get(&target).send().await.is_ok();
+    let latency_ms = started.elapsed().as_millis() as i64;
+
+    let status = if reachable { "up" } else { "down" };
+    let checked_at = unix_now();
+
+    sqlx::query(
+        "UPDATE proxy_configs SET health_status = ?, health_checked_at = ?, health_latency_ms = ? WHERE id = ?",
+    )
+    .bind(status)
+    .bind(checked_at)
+    .bind(latency_ms)
+    .bind(&proxy_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    Ok(Json(serde_json::json!({
+        "status": status,
+        "latency_ms": latency_ms,
+        "checked_at": checked_at,
+    })))
 }

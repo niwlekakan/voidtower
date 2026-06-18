@@ -217,6 +217,11 @@ export interface AlertsResponse {
 }
 
 // Proxy
+export interface ProxyCustomHeader {
+  name: string
+  value: string
+}
+
 export interface ProxyConfig {
   id: string
   domain: string
@@ -226,6 +231,23 @@ export interface ProxyConfig {
   allow_embed: boolean
   sso_protect: boolean
   created_at: number
+  custom_headers: string | null
+  rate_limit_rpm: number | null
+  basic_auth_user: string | null
+  websocket_extended: boolean
+  cache_static: boolean
+  health_status: 'up' | 'down' | null
+  health_checked_at: number | null
+  health_latency_ms: number | null
+}
+
+export interface ProxyOptions {
+  customHeaders?: ProxyCustomHeader[]
+  rateLimitRpm?: number | null
+  basicAuthUser?: string | null
+  basicAuthPassword?: string | null
+  websocketExtended?: boolean
+  cacheStatic?: boolean
 }
 
 // Authentik / OIDC SSO

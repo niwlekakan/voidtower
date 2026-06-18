@@ -1,15 +1,146 @@
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Globe, Trash2, Power, Plus, Lock, LockOpen, ExternalLink, CheckCircle, XCircle, ChevronDown, ChevronRight, AlertTriangle, Copy, Terminal, Pencil, X } from 'lucide-react'
+import { Globe, Trash2, Power, Plus, Lock, LockOpen, ExternalLink, CheckCircle, XCircle, ChevronDown, ChevronRight, AlertTriangle, Copy, Terminal, Pencil, X, Activity, Zap } from 'lucide-react'
 import MiniTerminal from '@/components/ui/MiniTerminal'
 import { api, ApiClientError } from '@/api/client'
 import { notify } from '@/store/notifications'
-import type { ProxyConfig } from '@/api/types'
+import type { ProxyConfig, ProxyCustomHeader, ProxyOptions } from '@/api/types'
 import Button from '@/components/ui/Button'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 
 function fmt(ts: number) {
   return new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function relTime(ts: number) {
+  const diffSec = Math.max(0, Math.floor(Date.now() / 1000 - ts))
+  if (diffSec < 60) return `${diffSec}s ago`
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`
+  return `${Math.floor(diffSec / 86400)}d ago`
+}
+
+type ProxyPreset = 'strip-embed' | 'basic-auth' | 'rate-limit' | 'force-https' | 'websocket' | 'cache'
+
+interface ProxyAdvancedState {
+  headers: ProxyCustomHeader[]
+  rateLimitRpm: string
+  basicAuthUser: string
+  basicAuthPassword: string
+  websocketExtended: boolean
+  cacheStatic: boolean
+}
+
+function advancedStateToOptions(s: ProxyAdvancedState): ProxyOptions {
+  return {
+    customHeaders: s.headers,
+    rateLimitRpm: s.rateLimitRpm.trim() ? Number(s.rateLimitRpm) : null,
+    basicAuthUser: s.basicAuthUser.trim() || null,
+    basicAuthPassword: s.basicAuthPassword.trim() || null,
+    websocketExtended: s.websocketExtended,
+    cacheStatic: s.cacheStatic,
+  }
+}
+
+const emptyAdvanced: ProxyAdvancedState = {
+  headers: [], rateLimitRpm: '', basicAuthUser: '', basicAuthPassword: '',
+  websocketExtended: false, cacheStatic: false,
+}
+
+interface ProxyAdvancedFieldsProps {
+  state: ProxyAdvancedState
+  onChange: (next: ProxyAdvancedState) => void
+  basicAuthExisting: boolean
+  onPreset: (preset: ProxyPreset) => void
+}
+
+function ProxyAdvancedFields({ state, onChange, basicAuthExisting, onPreset }: ProxyAdvancedFieldsProps) {
+  const set = <K extends keyof ProxyAdvancedState>(key: K, value: ProxyAdvancedState[K]) =>
+    onChange({ ...state, [key]: value })
+
+  const presets: { key: ProxyPreset; label: string }[] = [
+    { key: 'strip-embed', label: 'Strip iframe blockers' },
+    { key: 'basic-auth', label: 'Add basic auth' },
+    { key: 'rate-limit', label: 'Rate limit 10 req/min' },
+    { key: 'force-https', label: 'Force HTTPS redirect' },
+    { key: 'websocket', label: 'WebSocket passthrough' },
+    { key: 'cache', label: 'Gzip + cache static assets' },
+  ]
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Presets</label>
+        <div className="flex flex-wrap gap-1.5">
+          {presets.map(p => (
+            <button key={p.key} type="button" onClick={() => onPreset(p.key)}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs hover:opacity-80 transition-opacity"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--accent-secondary)' }}>
+              <Zap size={10} />{p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Custom response headers</label>
+        <div className="space-y-1.5">
+          {state.headers.map((h, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input value={h.name} onChange={e => set('headers', state.headers.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
+                placeholder="X-Header-Name" className="flex-1 px-2 py-1 rounded text-xs font-mono outline-none"
+                style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+              <input value={h.value} onChange={e => set('headers', state.headers.map((x, j) => j === i ? { ...x, value: e.target.value } : x))}
+                placeholder="value" className="flex-1 px-2 py-1 rounded text-xs font-mono outline-none"
+                style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+              <button type="button" onClick={() => set('headers', state.headers.filter((_, j) => j !== i))}
+                className="p-1 rounded hover:opacity-80" style={{ color: 'var(--accent-danger)' }}>
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+          <button type="button" onClick={() => set('headers', [...state.headers, { name: '', value: '' }])}
+            className="flex items-center gap-1 text-xs hover:opacity-80" style={{ color: 'var(--accent-secondary)' }}>
+            <Plus size={11} /> Add header
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>Rate limit (req/min per IP)</label>
+          <input type="number" min={0} value={state.rateLimitRpm} onChange={e => set('rateLimitRpm', e.target.value)}
+            placeholder="unlimited" className="w-full px-2 py-1.5 rounded text-xs outline-none"
+            style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+        </div>
+        <div className="flex flex-col gap-1.5 justify-end pb-1.5">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={state.websocketExtended} onChange={e => set('websocketExtended', e.target.checked)} className="w-3.5 h-3.5 rounded" />
+            <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Extended WebSocket timeout (3600s, buffering off)</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={state.cacheStatic} onChange={e => set('cacheStatic', e.target.checked)} className="w-3.5 h-3.5 rounded" />
+            <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Gzip + cache static assets (7d)</span>
+          </label>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+          Basic auth {basicAuthExisting && <span style={{ color: 'var(--accent-success)' }}>(configured)</span>}
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <input value={state.basicAuthUser} onChange={e => set('basicAuthUser', e.target.value)}
+            placeholder="username (blank = disabled)" className="w-full px-2 py-1.5 rounded text-xs outline-none"
+            style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+          <input type="password" value={state.basicAuthPassword} onChange={e => set('basicAuthPassword', e.target.value)}
+            placeholder={basicAuthExisting ? 'leave blank to keep current password' : 'password'}
+            className="w-full px-2 py-1.5 rounded text-xs outline-none"
+            style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ─── Proxy backend info cards ─────────────────────────────────────────────────
@@ -419,9 +550,11 @@ export default function ProxiesPage() {
   const [ssl, setSsl] = useState(false)
   const [allowEmbed, setAllowEmbed] = useState(true)
   const [ssoProtect, setSsoProtect] = useState(false)
+  const [advanced, setAdvanced] = useState<ProxyAdvancedState>(emptyAdvanced)
   const [oidcEnabled, setOidcEnabled] = useState(false)
   const [creating, setCreating] = useState(false)
   const [toggling, setToggling] = useState<string | null>(null)
+  const [testingHealth, setTestingHealth] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDomain, setEditDomain] = useState('')
@@ -429,10 +562,50 @@ export default function ProxiesPage() {
   const [editSsl, setEditSsl] = useState(false)
   const [editAllowEmbed, setEditAllowEmbed] = useState(true)
   const [editSsoProtect, setEditSsoProtect] = useState(false)
+  const [editAdvanced, setEditAdvanced] = useState<ProxyAdvancedState>(emptyAdvanced)
+  const [editBasicAuthExisting, setEditBasicAuthExisting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [pendingPlan, setPendingPlan] = useState<ChangePlan | null>(null)
   const [pendingAction, setPendingAction] = useState<(() => Promise<void>) | null>(null)
   const [executing, setExecuting] = useState(false)
+
+  const applyPreset = (preset: ProxyPreset, target: 'create' | 'edit') => {
+    const setAdv = target === 'create' ? setAdvanced : setEditAdvanced
+    switch (preset) {
+      case 'strip-embed':
+        (target === 'create' ? setAllowEmbed : setEditAllowEmbed)(true)
+        break
+      case 'rate-limit':
+        setAdv(s => ({ ...s, rateLimitRpm: '10' }))
+        break
+      case 'force-https':
+        (target === 'create' ? setSsl : setEditSsl)(true)
+        break
+      case 'websocket':
+        setAdv(s => ({ ...s, websocketExtended: true }))
+        break
+      case 'cache':
+        setAdv(s => ({ ...s, cacheStatic: true }))
+        break
+      case 'basic-auth':
+        // Fields are always visible — this preset just nudges the user there.
+        break
+    }
+  }
+
+  const handleTestHealth = async (id: string) => {
+    setTestingHealth(id)
+    try {
+      const r = await api.proxy.health(id)
+      setProxies(prev => prev.map(p => p.id === id
+        ? { ...p, health_status: r.status, health_checked_at: r.checked_at, health_latency_ms: r.latency_ms }
+        : p))
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Health check failed')
+    } finally {
+      setTestingHealth(null)
+    }
+  }
 
   const refresh = useCallback(() => {
     setLoading(true)
@@ -457,12 +630,14 @@ export default function ProxiesPage() {
     e.preventDefault()
     setCreating(true)
     try {
-      const res = await api.proxy.plan(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect)
+      const opts = advancedStateToOptions(advanced)
+      const res = await api.proxy.plan(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect, opts)
       setPendingPlan(res.plan)
       setPendingAction(() => async () => {
-        const r = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect)
+        const r = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect, opts)
         notify.success(`Proxy created — ${r.nginx}`)
         setDomain(''); setUpstream('http://localhost:'); setSsl(false); setAllowEmbed(true); setSsoProtect(false)
+        setAdvanced(emptyAdvanced)
         setShowForm(false)
         refresh()
       })
@@ -491,6 +666,15 @@ export default function ProxiesPage() {
     setEditSsl(p.ssl)
     setEditAllowEmbed(p.allow_embed)
     setEditSsoProtect(p.sso_protect)
+    setEditAdvanced({
+      headers: p.custom_headers ? JSON.parse(p.custom_headers) : [],
+      rateLimitRpm: p.rate_limit_rpm ? String(p.rate_limit_rpm) : '',
+      basicAuthUser: p.basic_auth_user ?? '',
+      basicAuthPassword: '',
+      websocketExtended: p.websocket_extended,
+      cacheStatic: p.cache_static,
+    })
+    setEditBasicAuthExisting(!!p.basic_auth_user)
   }
 
   const handleUpdate = async (e: React.FormEvent) => {
@@ -499,10 +683,11 @@ export default function ProxiesPage() {
     setSaving(true)
     const id = editingId
     try {
-      const res = await api.proxy.planUpdate(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect)
+      const opts = advancedStateToOptions(editAdvanced)
+      const res = await api.proxy.planUpdate(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect, opts)
       setPendingPlan(res.plan)
       setPendingAction(() => async () => {
-        const r = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect)
+        const r = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect, opts)
         notify.success(`Updated — ${r.nginx}`)
         setEditingId(null)
         refresh()
@@ -717,6 +902,10 @@ backend servers
                   Protect with Authentik — visitors must authenticate before reaching this app
                 </span>
               </label>
+
+              <ProxyAdvancedFields state={advanced} onChange={setAdvanced} basicAuthExisting={false}
+                onPreset={(preset) => applyPreset(preset, 'create')} />
+
               <div className="flex gap-2">
                 <Button size="sm" variant="primary" type="submit" loading={creating}>Create &amp; reload nginx</Button>
                 <Button size="sm" variant="ghost" type="button" onClick={() => setShowForm(false)}>Cancel</Button>
@@ -740,7 +929,7 @@ backend servers
               <table className="w-full text-xs">
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                    {['Domain', 'Upstream', 'SSL', 'Embed', 'Authentik', 'Added', 'Status', ''].map((h) => (
+                    {['Domain', 'Upstream', 'SSL', 'Embed', 'Authentik', 'Health', 'Added', 'Status', ''].map((h) => (
                       <th key={h} className="px-4 py-2.5 text-left uppercase tracking-wider"
                           style={{ color: 'var(--text-muted)' }}>{h}</th>
                     ))}
@@ -774,6 +963,27 @@ backend servers
                           style={{ color: p.sso_protect ? 'var(--accent-secondary)' : 'var(--text-disabled)' }}
                           title={p.sso_protect ? 'Protected by Authentik forward-auth' : 'Not protected'}>
                         {p.sso_protect ? 'protected' : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1.5">
+                          {p.health_status && (
+                            <span title={`${p.health_status} · ${p.health_latency_ms}ms · ${p.health_checked_at ? relTime(p.health_checked_at) : ''}`}
+                              style={{
+                                width: 7, height: 7, borderRadius: '50%', flexShrink: 0, display: 'inline-block',
+                                background: p.health_status === 'up' ? 'var(--accent-success)' : 'var(--accent-danger)',
+                                boxShadow: p.health_status === 'up' ? '0 0 5px var(--accent-success)' : undefined,
+                              }} />
+                          )}
+                          {p.health_checked_at && (
+                            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                              {p.health_latency_ms}ms · {relTime(p.health_checked_at)}
+                            </span>
+                          )}
+                          <button onClick={() => handleTestHealth(p.id)} disabled={testingHealth === p.id} title="Test upstream reachability"
+                            className="p-1 rounded hover:opacity-80 disabled:opacity-40 transition-colors" style={{ color: 'var(--accent-secondary)' }}>
+                            <Activity size={12} />
+                          </button>
+                        </div>
                       </td>
                       <td className="px-4 py-3" style={{ color: 'var(--text-muted)' }}>{fmt(p.created_at)}</td>
                       <td className="px-4 py-3">
@@ -824,7 +1034,7 @@ backend servers
                     </tr>
                     {editingId === p.id && (
                       <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                        <td colSpan={8} className="px-4 py-3">
+                        <td colSpan={9} className="px-4 py-3">
                           <form onSubmit={handleUpdate} className="space-y-3">
                             <div className="grid grid-cols-2 gap-3">
                               <div>
@@ -865,6 +1075,10 @@ backend servers
                                 <span className="text-xs" style={{ color: oidcEnabled ? 'var(--text-secondary)' : 'var(--text-disabled)' }}>Protect with Authentik</span>
                               </label>
                             </div>
+
+                            <ProxyAdvancedFields state={editAdvanced} onChange={setEditAdvanced} basicAuthExisting={editBasicAuthExisting}
+                              onPreset={(preset) => applyPreset(preset, 'edit')} />
+
                             <div className="flex gap-2">
                               <Button size="sm" variant="primary" type="submit" loading={saving}>Save &amp; reload nginx</Button>
                               <Button size="sm" variant="ghost" type="button" onClick={() => setEditingId(null)}>Cancel</Button>

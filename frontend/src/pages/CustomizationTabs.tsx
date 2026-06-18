@@ -1,18 +1,29 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { LayoutPanelTop, Plus, Trash2, ChevronUp, ChevronDown, Pencil } from 'lucide-react'
 import { useCustomTabs } from '@/hooks/useCustomTabs'
-import type { CustomTab, CustomTabKind } from '@/api/types'
+import { api } from '@/api/client'
+import type { AppDef, CustomTab, CustomTabKind, DeployedApp, ProxyConfig } from '@/api/types'
 import { ICON_REGISTRY, ICON_NAMES } from '@/components/ui/iconRegistry'
 
-const emptyForm = { title: '', icon: '', kind: 'iframe' as CustomTabKind, url: '', content: '' }
+type IframeSource = 'url' | 'app-vault' | 'proxy'
+
+const emptyForm = {
+  title: '', icon: '', kind: 'iframe' as CustomTabKind, url: '', content: '',
+  iframeSource: 'url' as IframeSource, appProjectName: '', appId: '', proxyDomain: '',
+}
 
 function formFromTab(tab: CustomTab) {
+  const source = tab.config.source
   return {
     title: tab.title,
     icon: tab.icon ?? '',
     kind: tab.kind,
     url: typeof tab.config.url === 'string' ? tab.config.url : '',
     content: typeof tab.config.content === 'string' ? tab.config.content : '',
+    iframeSource: (source === 'app-vault' || source === 'proxy' ? source : 'url') as IframeSource,
+    appProjectName: source === 'app-vault' && typeof tab.config.project_name === 'string' ? tab.config.project_name : '',
+    appId: source === 'app-vault' && typeof tab.config.app_id === 'string' ? tab.config.app_id : '',
+    proxyDomain: source === 'proxy' && typeof tab.config.domain === 'string' ? tab.config.domain : '',
   }
 }
 
@@ -22,13 +33,38 @@ export default function CustomizationTabs() {
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState(emptyForm)
   const [iconPickerOpen, setIconPickerOpen] = useState(false)
+  const [deployedApps, setDeployedApps] = useState<DeployedApp[]>([])
+  const [catalog, setCatalog] = useState<AppDef[]>([])
+  const [proxies, setProxies] = useState<ProxyConfig[]>([])
+
+  useEffect(() => {
+    api.apps.deployed().then(r => setDeployedApps(r.apps)).catch(() => {})
+    api.apps.catalog().then(r => setCatalog(r.apps)).catch(() => {})
+    api.proxy.list().then(r => setProxies(r.proxies)).catch(() => {})
+  }, [])
+
+  // Apps with an embeddable web UI — same gate AppVault.tsx uses for its own "Open" button.
+  const embeddableApps = deployedApps.filter(a =>
+    a.status === 'running' && a.primary_port !== null &&
+    !catalog.find(d => d.id === a.app_id)?.no_web_ui,
+  )
+  const embeddableProxies = proxies.filter(p => p.enabled && p.allow_embed)
+  const selectedProxy = proxies.find(p => p.domain === form.proxyDomain)
 
   const startCreate = () => { setForm(emptyForm); setCreating(true); setEditingId(null) }
   const startEdit = (tab: CustomTab) => { setForm(formFromTab(tab)); setEditingId(tab.id); setCreating(false) }
   const cancel = () => { setCreating(false); setEditingId(null); setIconPickerOpen(false) }
 
   const buildConfig = () => {
-    if (form.kind === 'iframe') return { url: form.url, sandbox: 'allow-scripts allow-same-origin allow-forms' }
+    if (form.kind === 'iframe') {
+      if (form.iframeSource === 'app-vault' && form.appProjectName) {
+        return { source: 'app-vault', project_name: form.appProjectName, app_id: form.appId }
+      }
+      if (form.iframeSource === 'proxy' && form.proxyDomain) {
+        return { source: 'proxy', domain: form.proxyDomain, ssl: selectedProxy?.ssl ?? true }
+      }
+      return { url: form.url, sandbox: 'allow-scripts allow-same-origin allow-forms' }
+    }
     if (form.kind === 'markdown') return { content: form.content }
     return {}
   }
@@ -79,7 +115,10 @@ export default function CustomizationTabs() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="text-xs truncate" style={{ color: 'var(--text-primary)' }}>{tab.title}</div>
                   <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
-                    {tab.kind}{typeof tab.config.url === 'string' ? ` · ${tab.config.url}` : ''}
+                    {tab.kind}
+                    {tab.config.source === 'app-vault' ? ` · App Vault: ${tab.config.project_name}` : ''}
+                    {tab.config.source === 'proxy' ? ` · Proxy: ${tab.config.domain}` : ''}
+                    {tab.config.source !== 'app-vault' && tab.config.source !== 'proxy' && typeof tab.config.url === 'string' ? ` · ${tab.config.url}` : ''}
                   </div>
                 </div>
                 <button onClick={() => move(tab.id, -1)} disabled={i === 0} title="Move up"
@@ -157,11 +196,77 @@ export default function CustomizationTabs() {
           )}
 
           {form.kind === 'iframe' && (
-            <div>
-              <div className="text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>URL</div>
-              <input value={form.url} onChange={e => setForm(p => ({ ...p, url: e.target.value }))} placeholder="https://example.com"
-                className="w-full px-2 py-1.5 rounded text-xs outline-none"
-                style={{ background: 'var(--bg-root)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+            <div className="space-y-2">
+              <div>
+                <div className="text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Source</div>
+                <select value={form.iframeSource}
+                  onChange={e => setForm(p => ({ ...p, iframeSource: e.target.value as IframeSource }))}
+                  className="w-full px-2 py-1.5 rounded text-xs outline-none"
+                  style={{ background: 'var(--bg-root)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}>
+                  <option value="url">Custom URL</option>
+                  <option value="app-vault">Deployed App Vault app (LAN embed port)</option>
+                  <option value="proxy">Existing Proxy (domain, HTTPS-friendly)</option>
+                </select>
+              </div>
+
+              {form.iframeSource === 'app-vault' && (
+                <div>
+                  <div className="text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>App</div>
+                  <select value={form.appProjectName}
+                    onChange={e => {
+                      const app = embeddableApps.find(a => a.project_name === e.target.value)
+                      setForm(p => ({ ...p, appProjectName: e.target.value, appId: app?.app_id ?? '' }))
+                    }}
+                    className="w-full px-2 py-1.5 rounded text-xs outline-none"
+                    style={{ background: 'var(--bg-root)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}>
+                    <option value="">Select a deployed app…</option>
+                    {embeddableApps.map(a => (
+                      <option key={a.project_name} value={a.project_name}>{a.app_name}</option>
+                    ))}
+                  </select>
+                  {embeddableApps.length === 0 && (
+                    <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                      No running App Vault apps with a web UI yet.
+                    </p>
+                  )}
+                  <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                    Uses the same embed proxy as App Vault's "Open" button — resolves the catalog's web port/path and strips iframe-blocking headers automatically. Routes over a LAN port (8800–8899); behind an external domain this may need that range forwarded, or hit mixed-content blocking over HTTPS.
+                  </p>
+                </div>
+              )}
+
+              {form.iframeSource === 'proxy' && (
+                <div>
+                  <div className="text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Proxy</div>
+                  <select value={form.proxyDomain}
+                    onChange={e => setForm(p => ({ ...p, proxyDomain: e.target.value }))}
+                    className="w-full px-2 py-1.5 rounded text-xs outline-none"
+                    style={{ background: 'var(--bg-root)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}>
+                    <option value="">Select a proxy entry…</option>
+                    {embeddableProxies.map(p => (
+                      <option key={p.id} value={p.domain}>{p.domain}{p.sso_protect ? ' (Authentik-protected)' : ''}</option>
+                    ))}
+                  </select>
+                  {proxies.length > 0 && embeddableProxies.length === 0 && (
+                    <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                      No proxy entries have "Allow embed" enabled yet — turn it on for a domain in Proxies first.
+                    </p>
+                  )}
+                  <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                    Uses the domain's own HTTPS cert and nginx rule directly — no LAN port range, no mixed-content issues behind an external domain.
+                    {selectedProxy?.sso_protect && ' This domain is gated behind Authentik — the login/MFA challenge is also embeddable now that "Allow embed" strips its frame headers too, but you\'ll still see the challenge inside this tab on an expired session.'}
+                  </p>
+                </div>
+              )}
+
+              {form.iframeSource === 'url' && (
+                <div>
+                  <div className="text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>URL</div>
+                  <input value={form.url} onChange={e => setForm(p => ({ ...p, url: e.target.value }))} placeholder="https://example.com"
+                    className="w-full px-2 py-1.5 rounded text-xs outline-none"
+                    style={{ background: 'var(--bg-root)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+                </div>
+              )}
             </div>
           )}
 

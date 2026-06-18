@@ -1,17 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect } from 'react'
 import { ExternalLink, X } from 'lucide-react'
-import { api } from '@/api/client'
 import { useEmbedStore } from '@/store/embedStore'
+import { useAppEmbedUrl } from '@/hooks/useAppEmbedUrl'
 
 export default function AppEmbedOverlay() {
   const app   = useEmbedStore(s => s.app)
   const def   = useEmbedStore(s => s.def)
   const close = useEmbedStore(s => s.close)
-
-  const [iframeSrc, setIframeSrc] = useState<string | null>(null)
-  const [embedUrl,  setEmbedUrl]  = useState<string | null>(null)
-  const [loading,   setLoading]   = useState(false)
-  const [showBadge, setShowBadge] = useState(false)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
@@ -19,44 +14,11 @@ export default function AppEmbedOverlay() {
     return () => window.removeEventListener('keydown', onKey)
   }, [close])
 
-  const resolveRef = useRef(0)
-  useEffect(() => {
-    if (!app || app.primary_port === null) {
-      setIframeSrc(null)
-      setLoading(false)
-      setShowBadge(false)
-      return
-    }
-
-    const seq = ++resolveRef.current
-    setIframeSrc(null)
-    setEmbedUrl(null)
-    setLoading(true)
-    setShowBadge(false)
-
-    const path    = def?.links?.web_ui ?? def?.web_path ?? '/'
-    const uiPort  = def?.web_port ?? app.primary_port
-    const fullPath = path.startsWith('/') ? path : '/' + path
-
-    // Fallback: VoidTower backend proxy (GET-only, strips X-Frame-Options)
-    const cleanPath = fullPath.slice(1)
-    const backendProxy = `/api/apps/embed/${app.project_name}/${cleanPath}`
-
-    // Prefer the nginx port proxy (transparent, handles auth flows and POST)
-    // Falls back to the backend proxy when nginx isn't configured.
-    api.apps.openUi(app.project_name, uiPort ?? 0).then(r => {
-      if (seq !== resolveRef.current) return
-      const lanUrl = r.embed_url ? r.embed_url + fullPath : null
-      setEmbedUrl(lanUrl)
-      if (r.proxy_created) setShowBadge(true)
-      setIframeSrc(lanUrl ?? backendProxy)
-      setLoading(false)
-    }).catch(() => {
-      if (seq !== resolveRef.current) return
-      setIframeSrc(backendProxy)
-      setLoading(false)
-    })
-  }, [app, def])
+  const { iframeSrc, embedUrl, loading, proxyCreated: showBadge } = useAppEmbedUrl(
+    app?.project_name ?? null,
+    def,
+    app?.primary_port ?? null,
+  )
 
   if (!app) return null
 

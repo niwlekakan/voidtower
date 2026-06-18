@@ -79,7 +79,7 @@ These items transform VoidTower from an admin panel into a true local-first AI o
 
 ### Bug Fixes (blocking polish)
 
-- [ ] **Fix "Open WebUI in VoidTower" button** — App Vault deploy creates a proxy entry but routing is wrong for apps with `web_path` (e.g. Pi-hole `/admin`) or non-standard `web_port`. Fix: auto-creation must pull `web_port`/`web_path` from YAML catalog and strip iframe-blocking headers on the generated proxy rule.
+- [x] **Fix "Open WebUI in VoidTower" button** — Done: the frontend already resolved `web_port`/`web_path` from the catalog and `write_nginx_port_conf` already stripped `X-Frame-Options`/CSP. The actual bug was that `open_ui` only wrote the nginx conf on first creation — once a `proxy_configs` row existed for a project, its embed port/upstream were never refreshed, so apps whose catalog `web_port` changed after first open (or that were opened before `web_port`/`web_path` existed) kept routing to the stale port forever. `open_ui` now always re-checks and rewrites the upstream/conf to match the current resolved port.
 - [x] **Fix theme randomizer** — Done (`1d638a3`): `--text-disabled` + all 5 `*-subtle` rgba tokens now generated and cleared on reset.
 - [x] **Fix proxy edit/delete** — Done: inline edit form (dry-run plan + save) and delete with confirmation are both present.
 

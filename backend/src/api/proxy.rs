@@ -567,6 +567,17 @@ fn build_proxy_config(
         .filter(|h| !h.name.trim().is_empty())
         .cloned()
         .collect();
+    for h in &headers {
+        if !h.name.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(AppError::BadRequest(format!(
+                "Invalid header name '{}': only letters, digits and hyphens allowed",
+                h.name
+            )));
+        }
+        if h.value.contains('\n') || h.value.contains('\r') {
+            return Err(AppError::BadRequest("Header values cannot contain newlines".into()));
+        }
+    }
     let custom_headers = if headers.is_empty() {
         None
     } else {

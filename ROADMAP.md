@@ -112,10 +112,10 @@ These items transform VoidTower from an admin panel into a true local-first AI o
 
 ### Proxy Management — Full Nginx Capabilities
 
-- [ ] **Proxy edit form** — full edit UI for existing rules: upstream URL, domain, SSL, custom request/response headers, frame policy, rate limit, auth headers, cache settings.
-- [ ] **Proxy presets** — one-click configuration presets: "Strip iframe blockers" (remove X-Frame-Options, loosen CSP), "Add basic auth", "Rate limit 10 req/min", "Force HTTPS redirect", "WebSocket passthrough", "Gzip + cache static assets".
-- [ ] **AI proxy recommendations** — when a proxy is created for an App Vault app, VoidTower checks the YAML catalog for known embed requirements and auto-suggests the right preset (Grafana needs CSP relaxed, Portainer needs WebSocket passthrough, etc.).
-- [ ] **Proxy health dashboard** — list all rules with upstream reachability (green/amber/red), last check timestamp, and response time. Manual "test" button per entry.
+- [x] **Proxy edit form** — Done: custom response headers, rate limit (req/min), basic auth (htpasswd, SHA1), extended WebSocket timeout/buffering, and gzip+static-cache are all editable alongside the existing domain/SSL/embed/Authentik fields.
+- [x] **Proxy presets** — Done: one-click buttons seed the form fields ("Strip iframe blockers", "Add basic auth", "Rate limit 10 req/min", "Force HTTPS redirect", "WebSocket passthrough", "Gzip + cache static assets") — still goes through the existing dry-run preview before saving.
+- [ ] **AI proxy recommendations** — when a proxy is created for an App Vault app, VoidTower checks the YAML catalog for known embed requirements and auto-suggests the right preset (Grafana needs CSP relaxed, Portainer needs WebSocket passthrough, etc.). Not started — would need new catalog YAML fields, no existing hooks.
+- [x] **Proxy health dashboard** — Done: on-demand reachability check (reqwest GET through the same Docker-host rewrite nginx uses) with a colored status dot, latency, last-checked time, and a manual "Test" button per row. No background polling loop — check is manual-only by design.
 - [ ] **Let's Encrypt integration** — SSL certificate request and auto-renewal via Certbot/acme.sh as a toggle in the proxy edit form; renewal status shown in the proxy list.
 - [ ] **Wildcard subdomain routing** — configure `*.home.domain.tld` to auto-route to apps by name from a single wildcard proxy rule.
 

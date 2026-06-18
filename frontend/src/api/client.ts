@@ -38,6 +38,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+function proxyOptsBody(opts: import('./types').ProxyOptions) {
+  return {
+    custom_headers: opts.customHeaders ?? [],
+    rate_limit_rpm: opts.rateLimitRpm ?? null,
+    basic_auth_user: opts.basicAuthUser ?? null,
+    basic_auth_password: opts.basicAuthPassword ?? null,
+    websocket_extended: opts.websocketExtended ?? false,
+    cache_static: opts.cacheStatic ?? false,
+  }
+}
+
 export const api = {
   auth: {
     login: (username: string, password: string, totp_code?: string) =>
@@ -184,29 +195,31 @@ export const api = {
   proxy: {
     list: () =>
       request<{ proxies: import('./types').ProxyConfig[]; nginx_available: boolean; nginx_backend: 'docker' | 'system' | 'none'; sites_dir: string }>('/api/proxy'),
-    create: (domain: string, upstream: string, ssl: boolean, allow_embed = false, sso_protect = false) =>
+    create: (domain: string, upstream: string, ssl: boolean, allow_embed = false, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
       request<{ ok: boolean; id: string; nginx: string }>('/api/proxy', {
         method: 'POST',
-        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect }),
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, ...proxyOptsBody(opts) }),
       }),
     delete: (id: string) =>
       request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, { method: 'DELETE' }),
-    update: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false) =>
+    update: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
       request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, {
         method: 'PUT',
-        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect }),
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, ...proxyOptsBody(opts) }),
       }),
     toggle: (id: string) =>
       request<{ ok: boolean; enabled: boolean; nginx: string }>(`/api/proxy/${id}/toggle`, { method: 'POST' }),
-    plan: (domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false) =>
+    health: (id: string) =>
+      request<{ status: 'up' | 'down'; latency_ms: number; checked_at: number }>(`/api/proxy/${id}/health`),
+    plan: (domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>('/api/proxy', {
         method: 'POST',
-        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, dry_run: true }),
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, dry_run: true, ...proxyOptsBody(opts) }),
       }),
-    planUpdate: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false) =>
+    planUpdate: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(`/api/proxy/${id}`, {
         method: 'PUT',
-        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, dry_run: true }),
+        body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, dry_run: true, ...proxyOptsBody(opts) }),
       }),
   },
 

@@ -149,6 +149,17 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
         updated_at       INTEGER NOT NULL DEFAULT 0
     )"#).execute(&pool).await;
 
+    // Proxy: full edit form, presets, health dashboard
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN custom_headers TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN rate_limit_rpm INTEGER").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN basic_auth_user TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN basic_auth_pass_hash TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN websocket_extended INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN cache_static INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_status TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_checked_at INTEGER").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_latency_ms INTEGER").execute(&pool).await;
+
     Ok(pool)
 }
 

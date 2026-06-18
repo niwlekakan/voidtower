@@ -223,6 +223,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxy/ai-auto", post(proxy::ai_auto_proxy))
         .route("/api/proxy/:id", delete(proxy::delete_proxy).put(proxy::update_proxy))
         .route("/api/proxy/:id/toggle", post(proxy::toggle))
+        .route("/api/proxy/:id/health", get(proxy::proxy_health))
         // Security
         .route("/api/security/sessions", get(security::list_sessions))
         .route("/api/security/sessions/revoke-others", post(security::revoke_all_other))

@@ -20,11 +20,12 @@ mod terminal;
 mod vms;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use monitoring::{MetricsBroadcaster, MetricsCollector, MetricsSnapshot};
 use sqlx::SqlitePool;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct LoginAttempts {
@@ -94,6 +95,96 @@ struct Cli {
     /// Import config from file and exit
     #[arg(long, value_name = "INPUT_PATH")]
     import_config: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Manage user accounts
+    User {
+        #[command(subcommand)]
+        action: UserCommand,
+    },
+    /// Manage backup jobs
+    Backup {
+        #[command(subcommand)]
+        action: BackupCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum UserCommand {
+    /// List all users
+    List,
+    /// Create a new user
+    Create {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        password: String,
+        /// owner | admin | operator | viewer
+        #[arg(long, default_value = "operator")]
+        role: String,
+    },
+    /// Reset a user's password (forces password change on next login)
+    ResetPassword {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        password: String,
+    },
+    /// Change a user's role
+    SetRole {
+        #[arg(long)]
+        username: String,
+        /// owner | admin | operator | viewer
+        #[arg(long)]
+        role: String,
+    },
+    /// Delete a user
+    Delete {
+        #[arg(long)]
+        username: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum BackupCommand {
+    /// List configured backup jobs
+    List,
+    /// Create a new backup job
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        repo: String,
+        #[arg(long)]
+        retention_days: Option<i64>,
+    },
+    /// Run a backup job now
+    Run {
+        #[arg(long)]
+        name: String,
+    },
+    /// Verify repo integrity (restic check)
+    Check {
+        #[arg(long)]
+        name: String,
+    },
+    /// Dry-run restore test
+    RestoreTest {
+        #[arg(long)]
+        name: String,
+    },
+    /// Delete a backup job's config (does not delete data on disk)
+    Delete {
+        #[arg(long)]
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -125,6 +216,14 @@ async fn main() -> Result<()> {
         } else if let Some(input_path) = cli.import_config {
             api::disaster::cli_import(&pool, &input_path).await?;
         }
+        return Ok(());
+    }
+
+    // Management subcommands (user / backup) — require DB but skip web server
+    if let Some(command) = cli.command {
+        std::fs::create_dir_all(&cfg.data_dir)?;
+        let pool = db::init_pool(&cfg.db_path()).await?;
+        run_command(&pool, command).await?;
         return Ok(());
     }
 
@@ -506,4 +605,233 @@ fn run_doctor(cfg: &config::Config, as_json: bool) {
     if fail > 0 {
         std::process::exit(1);
     }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn is_valid_role(role: &str) -> bool {
+    matches!(role, "owner" | "admin" | "operator" | "viewer")
+}
+
+async fn run_command(pool: &SqlitePool, command: Command) -> Result<()> {
+    match command {
+        Command::User { action } => run_user_command(pool, action).await,
+        Command::Backup { action } => run_backup_command(pool, action).await,
+    }
+}
+
+async fn run_user_command(pool: &SqlitePool, action: UserCommand) -> Result<()> {
+    match action {
+        UserCommand::List => {
+            let users = sqlx::query_as::<_, auth::User>(
+                "SELECT id, username, password_hash, role, force_password_change, \
+                 totp_enabled, totp_secret, created_at, updated_at FROM users ORDER BY created_at",
+            )
+            .fetch_all(pool)
+            .await?;
+
+            if users.is_empty() {
+                println!("No users found.");
+            } else {
+                println!("{:<36}  {:<20}  {:<9}  {:<5}  {:<14}", "ID", "USERNAME", "ROLE", "2FA", "MUST CHANGE PW");
+                for u in users {
+                    println!(
+                        "{:<36}  {:<20}  {:<9}  {:<5}  {:<14}",
+                        u.id,
+                        u.username,
+                        u.role,
+                        if u.totp_enabled { "yes" } else { "no" },
+                        if u.force_password_change { "yes" } else { "no" },
+                    );
+                }
+            }
+        }
+        UserCommand::Create { username, password, role } => {
+            if !is_valid_role(&role) {
+                anyhow::bail!("Invalid role '{role}' — must be one of: owner, admin, operator, viewer");
+            }
+            if username.len() < 3 || password.len() < 8 {
+                anyhow::bail!("Username must be ≥3 chars, password ≥8 chars");
+            }
+            let user = auth::create_user(pool, &username, &password, &role, true).await?;
+            println!("Created user '{}' ({}) with role '{}'", user.username, user.id, user.role);
+        }
+        UserCommand::ResetPassword { username, password } => {
+            if password.len() < 8 {
+                anyhow::bail!("Password must be ≥8 characters");
+            }
+            let user = auth::find_user_by_username(pool, &username)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("User '{username}' not found"))?;
+            let hash = auth::hash_password(&password)?;
+            sqlx::query(
+                "UPDATE users SET password_hash = ?, force_password_change = 1, updated_at = ? WHERE id = ?",
+            )
+            .bind(&hash)
+            .bind(unix_now())
+            .bind(&user.id)
+            .execute(pool)
+            .await?;
+            println!("Password reset for '{username}' — they will be required to change it on next login.");
+        }
+        UserCommand::SetRole { username, role } => {
+            if !is_valid_role(&role) {
+                anyhow::bail!("Invalid role '{role}' — must be one of: owner, admin, operator, viewer");
+            }
+            let user = auth::find_user_by_username(pool, &username)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("User '{username}' not found"))?;
+            auth::update_user_role(pool, &user.id, &role).await?;
+            println!("Set role of '{username}' to '{role}'");
+        }
+        UserCommand::Delete { username } => {
+            let user = auth::find_user_by_username(pool, &username)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("User '{username}' not found"))?;
+            sqlx::query("DELETE FROM users WHERE id = ?")
+                .bind(&user.id)
+                .execute(pool)
+                .await?;
+            println!("Deleted user '{username}'");
+        }
+    }
+    Ok(())
+}
+
+const BACKUP_SELECT_COLS: &str = "id, name, source_path, repo_path, schedule, retention_days, enabled, \
+     last_run_at, last_status, created_at, last_check_at, last_check_status, \
+     last_restore_test_at, last_restore_test_status, restore_test_schedule";
+
+async fn find_backup_by_name(pool: &SqlitePool, name: &str) -> Result<backups::BackupConfig> {
+    sqlx::query_as::<_, backups::BackupConfig>(
+        &format!("SELECT {BACKUP_SELECT_COLS} FROM backup_configs WHERE name = ?"),
+    )
+    .bind(name)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("Backup job '{name}' not found"))
+}
+
+async fn run_backup_command(pool: &SqlitePool, action: BackupCommand) -> Result<()> {
+    match action {
+        BackupCommand::List => {
+            let configs = sqlx::query_as::<_, backups::BackupConfig>(
+                &format!("SELECT {BACKUP_SELECT_COLS} FROM backup_configs ORDER BY created_at DESC"),
+            )
+            .fetch_all(pool)
+            .await?;
+
+            if configs.is_empty() {
+                println!("No backup jobs configured.");
+            } else {
+                println!("{:<20}  {:<10}  {:<8}  {:<10}  {:<10}", "NAME", "ENABLED", "STATUS", "LAST RUN", "CONFIDENCE");
+                for c in &configs {
+                    let last_run = c.last_run_at.map(|t| t.to_string()).unwrap_or_else(|| "never".into());
+                    println!(
+                        "{:<20}  {:<10}  {:<8}  {:<10}  {:<10}",
+                        c.name,
+                        if c.enabled { "yes" } else { "no" },
+                        c.last_status.clone().unwrap_or_else(|| "-".into()),
+                        last_run,
+                        backups::confidence(c),
+                    );
+                }
+            }
+            if !backups::is_restic_available() {
+                println!("\nWarning: restic is not installed — run/check/restore-test will fail.");
+            }
+        }
+        BackupCommand::Create { name, source, repo, retention_days } => {
+            let id = Uuid::new_v4().to_string();
+            let retention = retention_days.unwrap_or(30);
+            sqlx::query(
+                "INSERT INTO backup_configs (id, name, source_path, repo_path, retention_days, enabled, created_at) \
+                 VALUES (?, ?, ?, ?, ?, 1, ?)",
+            )
+            .bind(&id)
+            .bind(&name)
+            .bind(&source)
+            .bind(&repo)
+            .bind(retention)
+            .bind(unix_now())
+            .execute(pool)
+            .await?;
+            println!("Created backup job '{name}' ({id})");
+        }
+        BackupCommand::Run { name } => {
+            if !backups::is_restic_available() {
+                anyhow::bail!("restic is not installed");
+            }
+            let cfg = find_backup_by_name(pool, &name).await?;
+            let password = std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into());
+            backups::init_repo(&cfg.repo_path, &password).await?;
+            let run = backups::run_backup(&cfg, &password).await?;
+            sqlx::query("UPDATE backup_configs SET last_run_at = ?, last_status = ? WHERE id = ?")
+                .bind(run.finished_at.unwrap_or_else(unix_now))
+                .bind(&run.status)
+                .bind(&cfg.id)
+                .execute(pool)
+                .await?;
+            println!("Backup '{name}': {}", run.status);
+            if let Some(snap) = run.snapshot_id {
+                println!("Snapshot: {snap}");
+            }
+        }
+        BackupCommand::Check { name } => {
+            if !backups::is_restic_available() {
+                anyhow::bail!("restic is not installed");
+            }
+            let cfg = find_backup_by_name(pool, &name).await?;
+            let password = std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into());
+            let (status, message) = match backups::run_check(&cfg.repo_path, &password).await {
+                Ok(s) => (s, None),
+                Err(e) => ("failed".to_string(), Some(e.to_string())),
+            };
+            sqlx::query("UPDATE backup_configs SET last_check_at = ?, last_check_status = ? WHERE id = ?")
+                .bind(unix_now())
+                .bind(&status)
+                .bind(&cfg.id)
+                .execute(pool)
+                .await?;
+            println!("Check '{name}': {status}");
+            if let Some(m) = message {
+                println!("{m}");
+            }
+        }
+        BackupCommand::RestoreTest { name } => {
+            if !backups::is_restic_available() {
+                anyhow::bail!("restic is not installed");
+            }
+            let cfg = find_backup_by_name(pool, &name).await?;
+            let password = std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into());
+            let (status, message) = match backups::run_restore_test(&cfg.repo_path, &password).await {
+                Ok(s) => (s, None),
+                Err(e) => ("failed".to_string(), Some(e.to_string())),
+            };
+            sqlx::query("UPDATE backup_configs SET last_restore_test_at = ?, last_restore_test_status = ? WHERE id = ?")
+                .bind(unix_now())
+                .bind(&status)
+                .bind(&cfg.id)
+                .execute(pool)
+                .await?;
+            println!("Restore test '{name}': {status}");
+            if let Some(m) = message {
+                println!("{m}");
+            }
+        }
+        BackupCommand::Delete { name } => {
+            let cfg = find_backup_by_name(pool, &name).await?;
+            sqlx::query("DELETE FROM backup_configs WHERE id = ?")
+                .bind(&cfg.id)
+                .execute(pool)
+                .await?;
+            println!("Deleted backup job '{name}' (config only — data on disk is untouched)");
+        }
+    }
+    Ok(())
 }

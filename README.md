@@ -646,6 +646,31 @@ TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up 
 
 ---
 
+## Admin CLI
+
+The `voidtower` binary has built-in subcommands for user and backup management — they read/write the database directly and exit, without starting the web server. Run them the same way you'd run `voidtower --show-token` for your deployment (see prefixes below).
+
+```bash
+# Users
+voidtower user list
+voidtower user create --username <name> --password <pw> --role owner|admin|operator|viewer
+voidtower user reset-password --username <name> --password <newpw>   # use if locked out — forces a password change on next login
+voidtower user set-role --username <name> --role <role>
+voidtower user delete --username <name>
+
+# Backups
+voidtower backup list
+voidtower backup create --name <name> --source <path> --repo <resticRepo> [--retention-days N]
+voidtower backup run --name <name>            # requires restic on PATH
+voidtower backup check --name <name>          # restic check
+voidtower backup restore-test --name <name>   # dry-run restore
+voidtower backup delete --name <name>         # removes the config only, not data on disk
+```
+
+Prefix with `docker exec voidtower` (Docker/TrueNAS) or `sudo` (bare metal/LXC), e.g. `docker exec voidtower voidtower user list`. `RESTIC_PASSWORD` applies the same as scheduled backup jobs (defaults to `changeme` if unset).
+
+---
+
 ## Service management
 
 ### Docker
@@ -764,7 +789,16 @@ If the bootstrap wizard was never completed, the token is still unconsumed:
 docker exec voidtower voidtower --show-token
 ```
 
-If setup was already completed and you have lost the admin password, wipe the database and start fresh:
+If setup was already completed and you have lost the admin password, reset it in place — this keeps the account, its role, and all other data intact:
+
+```bash
+docker exec voidtower voidtower user list
+docker exec voidtower voidtower user reset-password --username <name> --password <newpassword>
+```
+
+The user is required to change the password again on next login. If you don't know the username, `user list` shows it.
+
+As a last resort (e.g. the `users` table itself is corrupted), wipe the database and start fresh instead:
 
 ```bash
 # Stop all services
@@ -792,7 +826,14 @@ sudo cat /etc/voidtower/bootstrap-token
 sudo voidtower --show-token
 ```
 
-If setup is complete and you are locked out:
+If setup is complete and you are locked out, reset the password in place first:
+
+```bash
+sudo voidtower user list
+sudo voidtower user reset-password --username <name> --password <newpassword>
+```
+
+Only if that's not enough (e.g. you need to wipe everything and start over):
 
 ```bash
 # Interactive — prompts for each item; answer yes to database and bootstrap token, no to everything else
@@ -818,11 +859,15 @@ export POOL=tank
 # Read the token if setup was never completed
 cat /mnt/$POOL/voidtower/config/bootstrap-token
 
-# If locked out — wipe the database to trigger a fresh setup wizard
+# If locked out — reset the password in place (keeps the account and all data)
+docker exec voidtower voidtower user list
+docker exec voidtower voidtower user reset-password --username <name> --password <newpassword>
+
+# Last resort — wipe the database to trigger a fresh setup wizard
 rm -f /mnt/$POOL/voidtower/data/voidtower.db
 ```
 
-Restart from **Apps → voidtower → Restart**, then find the new token in **Apps → voidtower → Logs (voidtower container)**.
+Restart from **Apps → voidtower → Restart**, then find the new token in **Apps → voidtower → Logs (voidtower container)** (only needed if you wiped the database).
 
 #### TrueNAS Option B
 
@@ -832,7 +877,11 @@ export POOL=tank
 # Read the token if setup was never completed
 cat /mnt/$POOL/voidtower/config/bootstrap-token
 
-# If locked out — wipe the database
+# If locked out — reset the password in place (keeps the account and all data)
+docker exec voidtower voidtower user list
+docker exec voidtower voidtower user reset-password --username <name> --password <newpassword>
+
+# Last resort — wipe the database
 docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
 rm -f /mnt/$POOL/voidtower/data/voidtower.db
 TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d

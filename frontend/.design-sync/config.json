@@ -10,12 +10,32 @@
     "StatusBadge": "../src/components/ui/StatusBadge.tsx",
     "AiBadge": "../src/components/ui/AiBadge.tsx",
     "MetricCard": "../src/components/ui/MetricCard.tsx",
-    "MetricChart": "../src/components/ui/MetricChart.tsx"
+    "MetricChart": "../src/components/ui/MetricChart.tsx",
+    "ChangePlanModal": "../src/components/ui/ChangePlanModal.tsx",
+    "ConfirmDialog": "../src/components/ui/ConfirmDialog.tsx",
+    "LogViewer": "../src/components/ui/LogViewer.tsx",
+    "AnimatedBackground": "../src/components/ui/AnimatedBackground.tsx",
+    "AppEmbedOverlay": "../src/components/ui/AppEmbedOverlay.tsx",
+    "CommandPalette": "../src/components/ui/CommandPalette.tsx",
+    "ForcePasswordChange": "../src/components/ui/ForcePasswordChange.tsx",
+    "MiniTerminal": "../src/components/ui/MiniTerminal.tsx",
+    "NotificationToasts": "../src/components/ui/NotificationToasts.tsx",
+    "SendToOdysseus": "../src/components/ui/SendToOdysseus.tsx",
+    "ThemeEditor": "../src/components/ui/ThemeEditor.tsx"
   },
   "cssEntry": "../.ds-sync/vt-styles.css",
   "runtimeFontPrefixes": ["JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono"],
   "overrides": {
-    "MetricCard": { "cardMode": "column" }
+    "MetricCard": { "cardMode": "column" },
+    "ThemeEditor": { "cardMode": "column" },
+    "ChangePlanModal": { "cardMode": "single", "viewport": "560x680" },
+    "ConfirmDialog": { "cardMode": "single", "viewport": "460x340" },
+    "ForcePasswordChange": { "cardMode": "single", "viewport": "420x640" },
+    "CommandPalette": { "cardMode": "single", "viewport": "560x440" },
+    "AppEmbedOverlay": { "cardMode": "single", "viewport": "560x360" },
+    "AnimatedBackground": { "cardMode": "single", "viewport": "640x360" },
+    "NotificationToasts": { "cardMode": "single", "viewport": "360x220" },
+    "LogViewer": { "cardMode": "column" }
   },
   "readmeHeader": ".design-sync/conventions.md"
 }

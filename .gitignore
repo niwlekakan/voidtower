@@ -69,7 +69,13 @@ release/
 *.tar.xz
 
 # design-sync — staged scripts, build output, and machine-local state (not for VCS)
-frontend/.ds-sync/
+# (/* not a trailing-/ dir-ignore: a dir-ignore blocks git from ever looking
+# inside it, so the entry.ts negation below wouldn't take effect)
+frontend/.ds-sync/*
+# ...except entry.ts: the hand-authored synthetic barrel (which components are
+# exported to the converter), not a disposable staged script — would be
+# silently lost on a fresh clone otherwise.
+!frontend/.ds-sync/entry.ts
 frontend/ds-bundle/
 frontend/.design-sync/.cache/
 frontend/.design-sync/learnings/

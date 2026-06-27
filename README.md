@@ -46,7 +46,7 @@ Then open `https://localhost` and complete the [first-run setup](#first-run-setu
 | Command | What starts |
 |---|---|
 | `docker compose up -d` | VoidTower only |
-| `docker compose --profile aio up -d` | + Odysseus, chromadb, SearXNG, ntfy |
+| `docker compose --profile aio up -d` | + Odysseus, ChromaDB, SearXNG, ntfy |
 | `docker compose --profile aio --profile ai up -d` | + Ollama local AI |
 
 Homelab apps (Jellyfin, Nextcloud, etc.) are never started by Compose — deploy them from **VoidTower → App Vault**.
@@ -74,43 +74,7 @@ sudo bash install.sh \
   --yes
 ```
 
-### Installer flags
-
-| Flag | Description |
-|---|---|
-| `--all-in-one` | Shorthand for `--with-odysseus --with-voidwatch --with-ai` |
-| `--with-odysseus` | Install Odysseus AI workspace |
-| `--with-voidwatch` | Wire Voidwatch integration (implies `--with-odysseus`) |
-| `--with-ai` | Set up Ollama local AI runtime |
-| `--ai-model MODEL` | Model to configure (e.g. `qwen2.5-coder:7b-instruct`) |
-| `--pull-model` | Pull the model during install |
-| `--odysseus-port PORT` | Odysseus port (default: 7000) |
-| `--port PORT` | VoidTower port (default: 8743) |
-| `--yes` | Non-interactive |
-| `--dry-run` | Preview what would happen |
-| `--offline` | Skip network calls |
-| `--no-mcp` | Skip MCP tool registration |
-| `--no-webhooks` | Skip webhook configuration |
-| `--no-toolpacks` | Skip toolpack installation |
-| `--musl` | Build a fully-static musl binary — use on TrueNAS Scale, Alpine, or any platform with an old glibc |
-
-### Maintenance flags
-
-| Flag | Description |
-|---|---|
-| `--uninstall` | Remove VoidTower — interactively choose what to keep (data, config, system user) |
-| `--reset` | Wipe state (database, config, secrets, bootstrap token) and restart — binary and service unit kept |
-| `--repair` | Re-download binary, reinstall service unit, fix ownership/permissions, restart |
-| `--update` | Pull latest (or `--version`) binary, refresh app catalog, restart — data and config untouched |
-
-### Model auto-selection
-
-| RAM | Recommended model |
-|---|---|
-| ≥ 32 GB | `qwen2.5-coder:14b-instruct` |
-| ≥ 16 GB | `qwen2.5-coder:7b-instruct` |
-| ≥ 8 GB | `qwen2.5-coder:3b-instruct` |
-| < 8 GB | No auto-pull — configure manually or use a remote endpoint |
+For the full installer flag reference, maintenance flags (`--update`, `--reset`, `--repair`, `--uninstall`), model auto-selection, and post-install service management, see [docs/install/all-in-one.md](docs/install/all-in-one.md).
 
 ---
 
@@ -230,6 +194,8 @@ diagnostics:read  proxy:read  tags:read
 
 Add for action permissions: `services:restart  containers:restart  apps:restart  automation:run`
 
+For the full scope reference, token creation, secret restrictions, and security notes see [docs/api-tokens.md](docs/api-tokens.md). For the standalone MCP server (use with Claude Desktop or any MCP host), see [docs/integrations/mcp-server.md](docs/integrations/mcp-server.md).
+
 ---
 
 ## Toolpacks
@@ -238,363 +204,45 @@ Voidwatch ships 20 pre-built toolpacks for common homelab apps. These define the
 
 `authentik` · `docker` · `freshrss` · `gitea` · `grafana` · `homeassistant` · `immich` · `jellyfin` · `minio` · `n8n` · `nextcloud` · `nginx` · `ollama` · `open-webui` · `paperless` · `pihole` · `portainer` · `syncthing` · `uptime-kuma` · `vaultwarden`
 
-Toolpacks live in `voidwatch/toolpacks/` inside the Odysseus install. Add your own by dropping a YAML file there — see any existing toolpack as a template.
+Toolpacks live in `voidwatch/toolpacks/` inside the Odysseus install. Add your own by dropping a YAML file there — see any existing toolpack as a template. For adding custom apps to the App Vault catalog, see [docs/app-vault-catalog.md](docs/app-vault-catalog.md).
 
 ---
 
 ## Networking & reverse proxy
 
-Apps deployed from App Vault are reachable directly via their host port, and
-optionally via `http://<app>.local:8080` through the bundled nginx-proxy +
-Pi-hole/AdGuard setup. For the full picture — vt-proxy/nginx-proxy internals,
-DNS setup (Pi-hole/AdGuard), Traefik/Caddy alternatives, and remote access via
-Tailscale or WireGuard — see [`docs/NETWORKING.md`](docs/NETWORKING.md).
+Apps deployed from App Vault are reachable directly via their host port, and optionally via `http://<app>.local:8080` through the bundled nginx-proxy + Pi-hole/AdGuard setup. For the full picture — vt-proxy/nginx-proxy internals, DNS setup (Pi-hole/AdGuard), Traefik/Caddy alternatives, and remote access via Tailscale or WireGuard — see [docs/NETWORKING.md](docs/NETWORKING.md).
 
-To use Authentik as a central identity provider — SSO + MFA login for VoidTower
-itself, plus an opt-in forward-auth gate for any App Vault app — see
-[`docs/integrations/authentik-sso.md`](docs/integrations/authentik-sso.md).
+To use Authentik as a central identity provider — SSO + MFA login for VoidTower itself, plus an opt-in forward-auth gate for any App Vault app — see [docs/integrations/authentik-sso.md](docs/integrations/authentik-sso.md).
 
 ---
 
 ## TrueNAS Scale
 
-Two deployment paths depending on how much access you want. Both store all data on your TrueNAS datasets so nothing is lost across app updates.
+Two deployment paths depending on how much access you want. See [docs/platforms/truenas.md](docs/platforms/truenas.md) for the full guide including Option A (Custom App UI), Option B (SSH Docker Compose), Ollama setup, Odysseus password reset, service management, updates, and uninstall.
 
-> **Docker control disclaimer:** The TrueNAS Custom App UI (Option A) runs containers through its own Kubernetes layer (k3s) and does **not** expose `/var/run/docker.sock` to containers. This means VoidTower's built-in container management panel (start/stop/restart containers, view logs, exec shell) and the in-UI self-update feature will be unavailable — those features require direct Docker socket access. Everything else works normally: the dashboard, services, backups, proxies, secrets, Voidwatch AI integration, and all other pages. If you need container management, use Option B.
-
----
-
-### Option A — Custom App UI
-
-No SSH required. Uses TrueNAS's built-in app deployment. VoidTower, Odysseus, SearXNG, ChromaDB, and ntfy all start with one click.
-
-**1. Create a dataset**
-
-Go to **Storage → Add Dataset**, create a dataset named `voidtower` on your pool (e.g. `tank/voidtower`). This is where all persistent data will live.
-
-**2. Open Custom App**
-
-Go to **Apps → Discover Apps → Custom App**.
-
-**3. Paste the YAML**
-
-Copy the contents of [`deploy/truenas/custom-app.yml`](deploy/truenas/custom-app.yml) into the YAML editor.
-
-**4. Set environment variables**
-
-In the **Environment Variables** section, add:
-
-| Variable | Value |
-|---|---|
-| `ODYSSEUS_ADMIN_PASSWORD` | your chosen password |
-| `TRUENAS_POOL` | your ZFS pool name (e.g. `tank`) — run `zpool list` in the TrueNAS shell to find yours |
-| `VOIDWATCH_TOKEN` | leave blank — fill in after first login |
-| `VOIDWATCH_WEBHOOK_SECRET` | generate: run `openssl rand -hex 32` in a shell |
-| `SEARXNG_SECRET` | generate: run `openssl rand -hex 32` in a shell |
-
-**5. Deploy**
-
-Click **Install**. TrueNAS will pull the images and start all services.
-
-**6. First login**
-
-Open `https://<truenas-ip>:8443` in your browser and accept the self-signed certificate warning. You will be redirected to the bootstrap page — find your one-time token in the app logs:
-
-```
-Apps → voidtower → Logs → (select voidtower container)
-```
-
-Complete the setup wizard to create your admin account.
-
-**7. Wire Voidwatch**
-
-Once logged in:
-
-1. Go to **Settings → Integrations → API Tokens → New Token**
-2. Create a token with Voidwatch scopes (see [token scopes](#voidwatch-token-scopes))
-3. Go back to **Apps → voidtower → Edit** and set `VOIDWATCH_TOKEN` to the token value
-4. Click **Save** — TrueNAS will restart the Odysseus container automatically
-5. Open `http://<truenas-ip>:7000` → log in to Odysseus → **Settings → Integrations → Voidwatch** → the status should show green
-
-> **Port note:** VoidTower uses `8443` (HTTPS) and `8080` (HTTP) instead of `443`/`80` to avoid conflicting with the TrueNAS web UI. Odysseus is on port `7000`.
-
----
-
-### Option B — SSH Docker Compose
-
-Full feature access including container management and self-update. Runs Docker directly on the TrueNAS host, bypassing the k3s layer entirely.
-
-**1. SSH into TrueNAS**
-
-```bash
-ssh admin@<truenas-ip>
-```
-
-**2. Set your pool name**
-
-```bash
-export POOL=tank   # replace with your ZFS pool name — run: zpool list
-```
-
-All commands below use `$POOL`. Set it once and copy-paste freely.
-
-**3. Clone and configure**
-
-```bash
-mkdir -p /mnt/$POOL/voidtower-app
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/custom-app.yml \
-  -o /mnt/$POOL/voidtower-app/custom-app.yml
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/.env.example \
-  -o /mnt/$POOL/voidtower-app/.env
-nano /mnt/$POOL/voidtower-app/.env  # set ODYSSEUS_ADMIN_PASSWORD and TRUENAS_POOL=$POOL
-```
-
-**4. Start the stack**
-
-```bash
-TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
-```
-
-**5. First login and Voidwatch setup**
-
-Same as Option A steps 6–7, replacing `Apps → voidtower → Logs` with:
-
-```bash
-docker logs voidtower
-```
-
-### Option B — Manual reinstall
-
-Use this when you need a clean slate: new image, fresh data, fresh config.
-
-```bash
-export POOL=tank   # replace with your pool name
-```
-
-**1. Stop and remove all containers**
-
-```bash
-docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
-```
-
-Or by name if the compose file is gone:
-
-```bash
-docker rm -f voidtower chromadb searxng ntfy odysseus
-```
-
-**2. Remove the old image**
-
-```bash
-docker rmi ghcr.io/niwlekakan/voidtower:aio-latest
-```
-
-**3. Wipe persistent data**
-
-```bash
-rm -rf /mnt/$POOL/voidtower/data \
-       /mnt/$POOL/voidtower/config
-```
-
-> Skip this step if you want to keep your existing users, proxies, and settings.
-
-**4. Pull the latest image**
-
-```bash
-docker pull ghcr.io/niwlekakan/voidtower:aio-latest
-```
-
-**5. Fetch the latest compose file**
-
-```bash
-mkdir -p /mnt/$POOL/voidtower-app
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/custom-app.yml \
-  -o /mnt/$POOL/voidtower-app/custom-app.yml
-```
-
-**6. Start**
-
-```bash
-TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
-```
-
-**7. Get the bootstrap token**
-
-```bash
-cat /mnt/$POOL/voidtower/config/bootstrap-token
-```
-
-Then open `https://<truenas-ip>:8443` and enter the token to complete setup.
-
----
-
-### Resetting the Odysseus password (Option B)
-
-If the login credentials for Odysseus are unknown or not working:
-
-```bash
-export POOL=tank   # replace with your pool name
-
-# 1. Set the new password in .env
-nano /mnt/$POOL/voidtower-app/.env
-#    → update ODYSSEUS_ADMIN_PASSWORD=yournewpassword
-#    → update ODYSSEUS_ADMIN_USER=admin  (if you want to change the username too)
-
-# 2. Delete the stored credentials so Odysseus recreates them on next start
-rm -f /mnt/$POOL/voidtower/odysseus/data/auth.json
-
-# 3. Restart Odysseus
-docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml restart odysseus
-
-# 4. Confirm it came up cleanly
-docker logs odysseus --tail 30
-```
-
-Then open `http://<truenas-ip>:7000` and log in with the new credentials.
-
-> If you get a permission error on `rm`, the file is owned by the container user. Use:
-> ```bash
-> docker exec odysseus rm -f /app/data/auth.json
-> docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml restart odysseus
-> ```
-
----
-
-### Ollama on TrueNAS
-
-Ollama is commented out in the YAML by default (it's a large download and GPU passthrough requires extra config). To enable it:
-
-**Option A:** Edit the app YAML in TrueNAS and uncomment the `ollama` service block, then save and restart.
-
-**Option B:** Uncomment the `ollama` block in `deploy/truenas/custom-app.yml` and run `docker compose ... up -d` again.
-
-For NVIDIA GPU passthrough on TrueNAS Scale, uncomment the `deploy.resources` block under `ollama` and ensure `nvidia-container-toolkit` is installed on the host. See the [GPU / Ollama](#gpu--ollama) section for full details.
+> **Docker control disclaimer:** The TrueNAS Custom App UI (Option A) runs containers through its own Kubernetes layer (k3s) and does **not** expose `/var/run/docker.sock`. Container management, exec shell, and the in-UI self-update will be unavailable. If you need these, use Option B.
 
 ---
 
 ## Proxmox LXC
 
-Running VoidTower in a Proxmox LXC container is the recommended approach for Proxmox users — it gives you a clean isolated environment with direct Docker access and full container management.
+Running VoidTower in a Proxmox LXC container is the recommended approach for Proxmox users — it gives you a clean isolated environment with direct Docker access and full container management. See [docs/platforms/proxmox-lxc.md](docs/platforms/proxmox-lxc.md) for the full setup guide.
 
-### 1. Create the LXC
+## Proxmox integration (UI)
 
-In the Proxmox web UI:
-
-- **Template:** Ubuntu 22.04 or 24.04
-- **RAM:** 2 GB minimum (4 GB recommended if running Odysseus + Ollama)
-- **Disk:** 20 GB minimum on local-lvm or your preferred storage
-- **CPU:** 2 cores minimum
-- **Network:** DHCP or a static IP on your LAN bridge
-
-> **Unprivileged containers:** Docker requires kernel features that are blocked in unprivileged LXC by default. Either:
-> - Use a **privileged** container (simpler, fine for a homelab), or
-> - Use unprivileged with these options set in the LXC config (`/etc/pve/lxc/<id>.conf`):
->   ```
->   features: nesting=1,keyctl=1
->   ```
->   then add to the config:
->   ```
->   lxc.apparmor.profile: unconfined
->   lxc.cap.drop:
->   ```
-
-### 2. Start and SSH in
-
-```bash
-ssh root@<lxc-ip>
-```
-
-### 3. Run the installer
-
-Identical to any Ubuntu/Debian system — the installer handles Docker, systemd, and all dependencies automatically:
-
-```bash
-# VoidTower only
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
-  | sudo bash
-
-# Full AIO stack with Odysseus and AI
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
-  | sudo bash -s -- --all-in-one --pull-model
-```
-
-The installer will detect Ubuntu, install Docker Engine via the official apt repository, enable the `docker` service, and start VoidTower.
-
-### 4. Access
-
-Open `http://<lxc-ip>:8743` and complete the bootstrap. Credentials are saved to `/root/voidtower-bootstrap-token`.
-
-If you ran `--all-in-one`, Odysseus is at `http://<lxc-ip>:7000` — credentials in `/root/odysseus-bootstrap-token`.
-
-### Resetting the Odysseus password (LXC / bare metal)
-
-```bash
-# Find the Odysseus install dir (default: /opt/odysseus)
-sudo rm -f /var/lib/odysseus/auth.json
-
-# Set new credentials in the .env
-sudo nano /opt/odysseus/.env
-#  → update ODYSSEUS_ADMIN_PASSWORD=yournewpassword
-
-# Re-run setup to apply the new credentials
-sudo -u odysseus bash -c "
-  cd /opt/odysseus
-  ODYSSEUS_ADMIN_USER=admin \
-  ODYSSEUS_ADMIN_PASSWORD=yournewpassword \
-  venv/bin/python setup.py
-"
-
-sudo systemctl restart odysseus
-```
-
-Then log in at `http://<host>:7000` with the new password.
+VoidTower connects to any Proxmox VE host via its API — browse VMs and LXC containers across all nodes, start/stop/reboot, take and roll back snapshots, view the PBS backup tab, open a noVNC console, and deploy App Vault apps directly to a Proxmox LXC. See [docs/integrations/proxmox.md](docs/integrations/proxmox.md) for setup, token requirements, and the full feature list.
 
 ---
 
 ## GPU / Ollama
 
-### Docker — NVIDIA
-
-Uncomment the `deploy` block in `docker-compose.yml` under the `ollama` service:
-
-```yaml
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [gpu]
-```
-
-Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the host.
-
-### Docker — AMD (ROCm / Vulkan)
-
-Uncomment the `devices` and `environment` block under `ollama`:
-
-```yaml
-devices:
-  - /dev/dri:/dev/dri
-environment:
-  - OLLAMA_VULKAN=1
-```
-
-### Pulling a model
+See [docs/gpu.md](docs/gpu.md) for NVIDIA, AMD (ROCm/Vulkan), remote Ollama, and TrueNAS-specific GPU setup. Quick reference:
 
 ```bash
-# Docker
+# Pull a model (Docker)
 docker exec ollama ollama pull qwen2.5-coder:7b-instruct
 
-# Bare metal
-ollama pull qwen2.5-coder:7b-instruct
-```
-
-### Using a remote Ollama instance
-
-Set in `.env` (Docker) or Odysseus `.env` (bare metal):
-
-```
+# Use a remote Ollama instance — set in .env
 OLLAMA_BASE_URL=http://192.168.1.5:11434
 ```
 
@@ -604,15 +252,13 @@ OLLAMA_BASE_URL=http://192.168.1.5:11434
 
 ### Docker
 
-The VoidTower image is published to `ghcr.io/niwlekakan/voidtower` on every push to this branch and on release tags. Updates are applied without touching the host.
+The VoidTower image is published to `ghcr.io/niwlekakan/voidtower` on every push to this branch and on release tags.
 
 1. Open **VoidTower → System → Updates → VoidTower Application**
 2. Click **Check for update** — pulls the latest image manifest
-3. If a newer image is available, click **Apply update** — VoidTower pulls the image and recreates its own container; the UI reconnects automatically when it comes back up
+3. If a newer image is available, click **Apply update** — VoidTower pulls the image and recreates its own container; the UI reconnects automatically
 
-Requires `/var/run/docker.sock` to be mounted (enabled by default in `docker-compose.yml`).
-
-To pin a release, set `VOIDTOWER_IMAGE=ghcr.io/niwlekakan/voidtower:aio-v1.2.3` in `.env` before restarting.
+Requires `/var/run/docker.sock` to be mounted (enabled by default). To pin a release, set `VOIDTOWER_IMAGE=ghcr.io/niwlekakan/voidtower:aio-v1.2.3` in `.env` before restarting.
 
 Companion containers (Odysseus, SearXNG, etc.) are updated from the same page under **Docker Images**.
 
@@ -623,38 +269,28 @@ Companion containers (Odysseus, SearXNG, etc.) are updated from the same page un
 **From the command line:**
 
 ```bash
-# Latest release
-sudo bash scripts/install.sh --update
-
-# Specific version
+sudo bash scripts/install.sh --update            # latest release
 sudo bash scripts/install.sh --update --version v1.2.3
 ```
 
-Data, config, and system users are untouched.
+### TrueNAS
 
-### TrueNAS Option A
-
-TrueNAS shows an update banner when a newer image is available — click **Update** in **Apps → voidtower**. If no banner appears, edit the app YAML to reference the latest tag and save.
-
-### TrueNAS Option B
-
-```bash
-export POOL=tank   # replace with your pool name
-docker pull ghcr.io/niwlekakan/voidtower:aio-latest
-TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
-```
+- **Option A:** TrueNAS shows an update banner when a newer image is available — click **Update** in **Apps → voidtower**.
+- **Option B:** `docker pull ghcr.io/niwlekakan/voidtower:aio-latest && docker compose ... up -d`
 
 ---
 
 ## Admin CLI
 
-The `voidtower` binary has built-in subcommands for user and backup management — they read/write the database directly and exit, without starting the web server. Run them the same way you'd run `voidtower --show-token` for your deployment (see prefixes below).
+The `voidtower` binary has built-in subcommands for user and backup management — they read/write the database directly and exit, without starting the web server.
 
 ```bash
+# Prefix: Docker → docker exec voidtower voidtower …  |  bare metal → sudo voidtower …
+
 # Users
 voidtower user list
 voidtower user create --username <name> --password <pw> --role owner|admin|operator|viewer
-voidtower user reset-password --username <name> --password <newpw>   # use if locked out — forces a password change on next login
+voidtower user reset-password --username <name> --password <newpw>   # use if locked out — forces password change on next login
 voidtower user set-role --username <name> --role <role>
 voidtower user delete --username <name>
 
@@ -664,10 +300,10 @@ voidtower backup create --name <name> --source <path> --repo <resticRepo> [--ret
 voidtower backup run --name <name>            # requires restic on PATH
 voidtower backup check --name <name>          # restic check
 voidtower backup restore-test --name <name>   # dry-run restore
-voidtower backup delete --name <name>         # removes the config only, not data on disk
+voidtower backup delete --name <name>         # removes config only, not data on disk
 ```
 
-Prefix with `docker exec voidtower` (Docker/TrueNAS) or `sudo` (bare metal/LXC), e.g. `docker exec voidtower voidtower user list`. `RESTIC_PASSWORD` applies the same as scheduled backup jobs (defaults to `changeme` if unset).
+`RESTIC_PASSWORD` env var applies the same as scheduled backup jobs (defaults to `changeme` if unset).
 
 ---
 
@@ -676,33 +312,19 @@ Prefix with `docker exec voidtower` (Docker/TrueNAS) or `sudo` (bare metal/LXC),
 ### Docker
 
 ```bash
-# Status
 docker compose ps
-
-# Logs
 docker compose logs -f voidtower
 docker compose logs -f odysseus
-docker compose logs -f ollama
-
-# Restart a service
 docker compose restart odysseus
-
-# Stop everything
 docker compose --profile aio --profile ai down
-
-# Start again
 docker compose --profile aio up -d
 ```
 
-### Bare metal / LXC (systemd)
+### Bare metal / LXC
 
 ```bash
 systemctl status voidtower odysseus ollama
-
 journalctl -u voidtower -f
-journalctl -u odysseus -f
-journalctl -u ollama -f
-
 systemctl restart voidtower
 systemctl restart odysseus
 ```
@@ -711,25 +333,6 @@ systemctl restart odysseus
 
 Use the TrueNAS UI: **Apps → voidtower → Start / Stop / Restart**. For logs, click the log icon next to each container under **Apps → voidtower → Logs**.
 
-### TrueNAS Option B
-
-```bash
-export POOL=tank
-
-# Status
-TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml ps
-
-# Logs
-docker logs -f voidtower
-docker logs -f odysseus
-
-# Restart a service
-docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml restart odysseus
-
-# Stop all
-docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
-```
-
 ---
 
 ## Uninstall
@@ -737,7 +340,7 @@ docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
 ### Docker
 
 ```bash
-# Stop and remove containers (preserves volumes — data and config kept)
+# Stop and remove containers — data and config volumes preserved
 docker compose --profile aio --profile ai down
 
 # Also remove all data and config
@@ -756,338 +359,29 @@ sudo bash scripts/install.sh --uninstall --yes
 
 The interactive flow prompts separately for: database (`/var/lib/voidtower`), config and secrets (`/etc/voidtower`), Odysseus data and config, and system users `voidtower` / `odysseus`.
 
-### TrueNAS Option A
+### TrueNAS
 
-1. Go to **Apps → voidtower → Delete** — TrueNAS removes the containers; your dataset at `/mnt/$POOL/voidtower` is preserved
-2. To also wipe persistent data, SSH into TrueNAS:
-   ```bash
-   rm -rf /mnt/tank/voidtower   # replace tank with your pool name
-   ```
-
-### TrueNAS Option B
-
-```bash
-export POOL=tank
-
-docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down -v
-rm -rf /mnt/$POOL/voidtower /mnt/$POOL/voidtower-app
-```
+See [docs/platforms/truenas.md](docs/platforms/truenas.md#uninstall).
 
 ---
 
-## Recovery & Maintenance
+## Recovery & maintenance
 
-### Recovering admin access
+For recovering admin access, resetting passwords, full resets, reinstalls, and repairs across all deployment types, see [docs/recovery.md](docs/recovery.md).
 
-Use this when you cannot log in to VoidTower — forgotten password, missing bootstrap token, or the setup wizard was never completed.
-
-#### Docker
-
-If the bootstrap wizard was never completed, the token is still unconsumed:
+**Quick reference — locked out of VoidTower:**
 
 ```bash
-docker exec voidtower voidtower --show-token
-```
-
-If setup was already completed and you have lost the admin password, reset it in place — this keeps the account, its role, and all other data intact:
-
-```bash
-docker exec voidtower voidtower user list
+# Docker
 docker exec voidtower voidtower user reset-password --username <name> --password <newpassword>
-```
 
-The user is required to change the password again on next login. If you don't know the username, `user list` shows it.
-
-As a last resort (e.g. the `users` table itself is corrupted), wipe the database and start fresh instead:
-
-```bash
-# Stop all services
-docker compose --profile aio --profile ai down
-
-# Delete only the database (other data in the volume is preserved)
-docker run --rm -v voidtower-data:/data alpine rm -f /data/voidtower.db
-
-# Start again
-docker compose --profile aio up -d
-
-# Retrieve the new bootstrap token
-docker exec voidtower voidtower --show-token
-```
-
-Open the UI and complete the setup wizard with a new admin account. Files, proxies, and other non-auth data remain intact in the volume.
-
-#### Bare metal / LXC
-
-If the token file still exists (setup was never completed):
-
-```bash
-sudo cat /etc/voidtower/bootstrap-token
-# or:
-sudo voidtower --show-token
-```
-
-If setup is complete and you are locked out, reset the password in place first:
-
-```bash
-sudo voidtower user list
+# Bare metal / LXC
 sudo voidtower user reset-password --username <name> --password <newpassword>
+
+# Don't know the username?
+docker exec voidtower voidtower user list   # Docker
+sudo voidtower user list                    # bare metal
 ```
-
-Only if that's not enough (e.g. you need to wipe everything and start over):
-
-```bash
-# Interactive — prompts for each item; answer yes to database and bootstrap token, no to everything else
-sudo bash scripts/install.sh --reset
-
-# Non-interactive full state wipe
-sudo bash scripts/install.sh --reset --yes
-```
-
-After restart, a new bootstrap token is written to `/etc/voidtower/bootstrap-token` and printed in the journal:
-
-```bash
-sudo voidtower --show-token
-```
-
-#### TrueNAS Option A
-
-SSH into TrueNAS:
-
-```bash
-export POOL=tank
-
-# Read the token if setup was never completed
-cat /mnt/$POOL/voidtower/config/bootstrap-token
-
-# If locked out — reset the password in place (keeps the account and all data)
-docker exec voidtower voidtower user list
-docker exec voidtower voidtower user reset-password --username <name> --password <newpassword>
-
-# Last resort — wipe the database to trigger a fresh setup wizard
-rm -f /mnt/$POOL/voidtower/data/voidtower.db
-```
-
-Restart from **Apps → voidtower → Restart**, then find the new token in **Apps → voidtower → Logs (voidtower container)** (only needed if you wiped the database).
-
-#### TrueNAS Option B
-
-```bash
-export POOL=tank
-
-# Read the token if setup was never completed
-cat /mnt/$POOL/voidtower/config/bootstrap-token
-
-# If locked out — reset the password in place (keeps the account and all data)
-docker exec voidtower voidtower user list
-docker exec voidtower voidtower user reset-password --username <name> --password <newpassword>
-
-# Last resort — wipe the database
-docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
-rm -f /mnt/$POOL/voidtower/data/voidtower.db
-TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
-docker logs voidtower 2>&1 | grep -i token
-```
-
----
-
-### Odysseus password reset
-
-Use this when you have lost access to the Odysseus AI workspace.
-
-#### Docker
-
-First, check whether the original configured password is still in the container environment:
-
-```bash
-docker exec odysseus env | grep ODYSSEUS_ADMIN_PASSWORD
-```
-
-If that returns a value and the password was never changed inside the Odysseus UI, use it — no restart needed.
-
-If the password was changed in-app or the env var isn't set, reset it:
-
-```bash
-# 1. Update the password in .env
-nano .env
-#    ODYSSEUS_ADMIN_PASSWORD=yournewpassword
-
-# 2. Delete the stored credentials so Odysseus recreates them on next start
-docker compose exec odysseus rm -f /app/data/auth.json
-
-# 3. Restart Odysseus
-docker compose restart odysseus
-
-# 4. Confirm startup
-docker compose logs odysseus --tail 20
-```
-
-Then log in at `http://localhost:7000` with the new password.
-
-#### Bare metal / LXC
-
-```bash
-# 1. Delete stored credentials
-sudo rm -f /var/lib/odysseus/auth.json
-
-# 2. Set the new password
-sudo nano /opt/odysseus/.env
-#    ODYSSEUS_ADMIN_PASSWORD=yournewpassword
-
-# 3. Re-apply credentials
-sudo -u odysseus bash -c "
-  cd /opt/odysseus
-  ODYSSEUS_ADMIN_USER=admin \
-  ODYSSEUS_ADMIN_PASSWORD=yournewpassword \
-  venv/bin/python setup.py
-"
-
-# 4. Restart
-sudo systemctl restart odysseus
-```
-
-#### TrueNAS Option A
-
-SSH into TrueNAS:
-
-```bash
-export POOL=tank
-
-# 1. Delete stored credentials
-rm -f /mnt/$POOL/voidtower/odysseus/data/auth.json
-# If permission error: docker exec odysseus rm -f /app/data/auth.json
-```
-
-Then go to **Apps → voidtower → Edit**, update `ODYSSEUS_ADMIN_PASSWORD`, and click **Save** — TrueNAS restarts Odysseus automatically. Log in at `http://<truenas-ip>:7000`.
-
-#### TrueNAS Option B
-
-```bash
-export POOL=tank
-
-# 1. Set the new password in .env
-nano /mnt/$POOL/voidtower-app/.env
-#    ODYSSEUS_ADMIN_PASSWORD=yournewpassword
-
-# 2. Delete stored credentials
-rm -f /mnt/$POOL/voidtower/odysseus/data/auth.json
-# If permission error: docker exec odysseus rm -f /app/data/auth.json
-
-# 3. Restart Odysseus
-docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml restart odysseus
-docker logs odysseus --tail 20
-```
-
----
-
-### Full reset (wipe data, keep binary)
-
-Clears all users, proxies, secrets, and settings. The binary, service unit, and system users are preserved.
-
-#### Docker
-
-```bash
-docker compose --profile aio --profile ai down -v
-docker compose --profile aio up -d
-```
-
-The `-v` flag removes all named volumes. Containers are recreated with fresh empty volumes.
-
-#### Bare metal / LXC
-
-```bash
-# Interactive
-sudo bash scripts/install.sh --reset
-
-# Non-interactive
-sudo bash scripts/install.sh --reset --yes
-```
-
-After restart, the new bootstrap token is available via `sudo voidtower --show-token`.
-
-#### TrueNAS Option A
-
-SSH into TrueNAS:
-
-```bash
-export POOL=tank
-rm -rf /mnt/$POOL/voidtower/data /mnt/$POOL/voidtower/config
-```
-
-Restart from **Apps → voidtower → Restart**. VoidTower regenerates its config and bootstrap token on the next start — find the token in the app logs.
-
-#### TrueNAS Option B
-
-```bash
-export POOL=tank
-docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml down
-rm -rf /mnt/$POOL/voidtower/data /mnt/$POOL/voidtower/config
-TRUENAS_POOL=$POOL docker compose -f /mnt/$POOL/voidtower-app/custom-app.yml up -d
-docker logs voidtower 2>&1 | grep -i token
-```
-
----
-
-### Full reinstall (clean slate)
-
-Removes everything — binary, data, config, and service — then starts over from scratch.
-
-#### Docker
-
-```bash
-docker compose --profile aio --profile ai down -v
-docker rmi ghcr.io/niwlekakan/voidtower:aio-latest
-docker compose --profile aio up -d
-```
-
-#### Bare metal / LXC
-
-```bash
-sudo bash scripts/install.sh --uninstall --yes
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
-  | sudo bash -s -- --all-in-one
-```
-
-#### TrueNAS Option A
-
-1. Go to **Apps → voidtower → Delete**
-2. SSH into TrueNAS and remove the dataset:
-   ```bash
-   rm -rf /mnt/tank/voidtower   # replace tank with your pool name
-   ```
-3. Redeploy from **Apps → Discover Apps → Custom App** using the YAML from [`deploy/truenas/custom-app.yml`](deploy/truenas/custom-app.yml).
-
-#### TrueNAS Option B
-
-See [Option B — Manual reinstall](#option-b--manual-reinstall) above.
-
----
-
-### Repair (service won't start, wrong permissions)
-
-Re-downloads the binary and reinstalls the service unit without touching any data or config.
-
-#### Docker
-
-```bash
-# Re-pull the image and force-recreate the container
-docker compose --profile aio pull voidtower
-docker compose --profile aio up -d --force-recreate voidtower
-```
-
-If Odysseus won't start:
-
-```bash
-docker compose logs odysseus --tail 50
-docker compose restart odysseus
-```
-
-#### Bare metal / LXC
-
-```bash
-sudo bash scripts/install.sh --repair
-```
-
-This re-downloads the binary, reinstalls the systemd service unit, fixes file ownership and permissions under `/opt/voidtower`, `/var/lib/voidtower`, and `/etc/voidtower`, then restarts the service. No data or config is changed.
 
 ---
 
@@ -1098,17 +392,17 @@ This re-downloads the binary, reinstalls the systemd service unit, fixes file ow
 | **Dashboard** | Customizable widgets — clock, weather, CPU/RAM/disk charts, container summary, alert count. Nine toggleable widgets with drag-to-reorder sections, config persisted per-browser. |
 | **Services** | Manage systemd units — start, stop, restart, enable/disable, view logs. Resource tag filtering. |
 | **Containers** | Docker container list, start/stop/restart, log viewer, per-container exec shell, compose file editor with staged diff before apply. Resource tag filtering. |
-| **App Vault** | 50+ one-click app deployments (Gitea, Nextcloud, Jellyfin, Grafana, Pi-hole, n8n, Ollama, Open WebUI, Home Assistant, Odysseus, and more). Pre-deploy modal shows compose config, env var overrides, and auto-generated secrets before launch; post-deploy log confirms startup. Expandable management panel per deployed app with Containers / Compose / Logs tabs. Deploy to Proxmox LXC directly from the catalog. |
+| **App Vault** | 50+ one-click app deployments (Gitea, Nextcloud, Jellyfin, Grafana, Pi-hole, n8n, Ollama, Open WebUI, Home Assistant, Odysseus, and more). Pre-deploy modal shows compose config, env var overrides, and auto-generated secrets before launch. Deploy to Proxmox LXC directly from the catalog. |
 | **AI Discover** | Ask the configured LLM to recommend self-hosted apps; results include Docker image names and direct deploy buttons for catalog matches. |
-| **Models** | Download GGUF models from URL with popular presets (Content-Type and GGUF magic-byte validated — invalid URLs caught before saving), pull models via Ollama by name, import downloaded GGUFs into Ollama. Live progress bars for all operations. Load a model into llama.cpp in one click. |
+| **Models** | Download GGUF models from URL with popular presets (Content-Type and GGUF magic-byte validated), pull models via Ollama by name, import downloaded GGUFs into Ollama. Live progress bars. |
 | **AI workspace** | Iframe-embed any OpenAI-compatible workspace (Odysseus, Open WebUI, etc.). Floating GPU controls panel shows VRAM bar, GPU utilisation %, llama.cpp process list, and one-click unload. |
 | **VMs** | KVM/QEMU local VM management via libvirt (`virsh`). Proxmox integration — connect to any Proxmox host via API token, list QEMU VMs and LXC containers, start/stop/reboot with CPU/RAM/uptime stats. |
-| **Files** | Full filesystem browser — Monaco editor (25+ language detection), inline image viewer (PNG/JPG/GIF/WebP/SVG), PDF viewer, new file creation, per-file download, breadcrumb navigation, roots sidebar. |
-| **Terminal** | Full PTY browser terminal with shell auto-detection from `/etc/passwd`. SSH session manager — save hosts, connect with one click from a second tab. |
-| **Reverse Proxies** | nginx-backed proxy rule manager — domain + upstream + SSL + optional iframe-embed headers, configs written to the Docker nginx-proxy container's conf.d and reloaded automatically. Deploy nginx-proxy from App Vault. |
+| **Files** | Full filesystem browser — Monaco editor (25+ language detection), inline image viewer, PDF viewer, new file creation, per-file download, breadcrumb navigation, roots sidebar. |
+| **Terminal** | Full PTY browser terminal with shell auto-detection from `/etc/passwd`. SSH session manager — save hosts, connect with one click. |
+| **Reverse Proxies** | nginx-backed proxy rule manager — domain + upstream + SSL + optional iframe-embed headers, configs written to the Docker nginx-proxy container's conf.d and reloaded automatically. |
 | **Firewall** | UFW rule management — add/delete rules (port, protocol, direction, source CIDR), enable/disable toggle, colour-coded allow/deny columns. |
 | **WireGuard** | Peer management — generate Curve25519 keypairs natively, allocate IPs from existing interface subnet, add/remove peers live, client config shown once with copy button. |
-| **Storage** | Block device tree, mount manager, fstab editor, format disks, SMART health, software RAID (mdadm) status and creation. Configurable storage paths for containers/VMs/backups. |
+| **Storage** | Block device tree, mount manager, fstab editor, format disks, SMART health, software RAID (mdadm) status and creation. Configurable storage paths. |
 | **Network** | Real-time interface stats, LAN neighbour table (ARP cache), bandwidth charts. |
 | **Backups** | Restic-powered jobs — init, run now, list snapshots, integrity check, dry-run restore test, confidence scoring. |
 | **Alerts** | Metric threshold alerts + TCP/HTTP status checks, ack/resolve flow, public `/status` page (no auth). |
@@ -1118,265 +412,45 @@ This re-downloads the binary, reinstalls the systemd service unit, fixes file ow
 | **Timeline** | Global audit timeline — category chips, free-text search, outcome filter, paginated infinite scroll. |
 | **Capabilities** | Detect installed tools (Docker, libvirt, WireGuard, restic, nginx, GPU, …) with version strings and install hints. |
 | **Diagnostics** | 12 system health checks — config/data dirs, DB, frontend assets, disk space, Docker daemon, nginx config, port bind. |
-| **Security** | Session list for all users, revoke individual sessions or all-others, full audit log. |
+| **Security** | Session list for all users, revoke individual sessions or all-others, full audit log. TOTP 2FA per-user (see [docs/totp.md](docs/totp.md)). |
 | **Themes** | 7 built-in themes + custom token editor with live color pickers, 14-param animation editor, randomise button. |
 | **Animated backgrounds** | 7 canvas-based presets (Void, Grid, Aurora, Pulse, Noise, Hex, Circuit) + 4 glass levels. |
-| **System** | In-app updater — Docker mode: checks GHCR for a newer image, applies with container recreation; bare-metal mode: checks upstream branch commits, pulls latest, rebuilds, and restarts. OS package updates (apt/pacman/dnf) with dry-run. Rollback points for bare-metal installs. |
+| **System** | In-app updater (Docker: GHCR image; bare-metal: upstream branch pull + rebuild). OS package updates (apt/pacman/dnf) with dry-run. Rollback points for bare-metal installs. |
 | **Mobile** | Responsive layout — hamburger sidebar on small screens, touch-friendly targets. |
 
 ---
 
 ## API reference
 
+See [docs/api.md](docs/api.md) for the full endpoint list.
+
 All endpoints require a valid `vt_session` cookie except `/api/auth/*`, `/api/status`, and `/api/system/version`.
 
-### Auth
-```
-POST /api/auth/bootstrap   { token, username, password }
-POST /api/auth/login       { username, password }
-POST /api/auth/logout
-GET  /api/auth/me
-```
+---
 
-### Metrics
-```
-GET /api/metrics/current
-GET /api/metrics/ws        WebSocket (1 s interval)
-```
+## Docs
 
-### Services
-```
-GET  /api/services
-POST /api/services/:name/action   { action: start|stop|restart|enable|disable }
-GET  /api/services/:name/logs
-```
+### Install & platforms
+- [Installation guide & flags](docs/install/all-in-one.md)
+- [TrueNAS Scale](docs/platforms/truenas.md)
+- [Proxmox LXC](docs/platforms/proxmox-lxc.md)
+- [GPU & Ollama](docs/gpu.md)
 
-### Containers
-```
-GET  /api/containers
-GET  /api/containers/images
-POST /api/containers/:id/action   { action: start|stop|restart|remove }
-GET  /api/containers/:id/logs
-GET  /api/containers/:id/exec     WebSocket PTY
-GET  /api/containers/:id/compose
-POST /api/containers/:id/compose/propose   { content }
-POST /api/containers/:id/compose/apply     { content }
-```
-
-### App Vault
-```
-GET  /api/apps/catalog
-GET  /api/apps/deployed
-POST /api/apps/deploy              { app_id, project_name?, env_overrides? }
-POST /api/apps/:name/start|stop|restart|redeploy
-GET  /api/apps/:name/compose
-POST /api/apps/:name/compose       { content }
-GET  /api/apps/:name/logs
-GET  /api/apps/:name/status
-DELETE /api/apps/:name
-```
-
-### Models
-```
-GET  /api/models
-POST /api/models/download          { url, filename? }
-GET  /api/models/download/:id
-GET  /api/models/active
-POST /api/models/load              { filename }
-DELETE /api/models/:filename
-POST /api/models/ollama/pull       { model }
-GET  /api/models/ollama/pull/:id
-POST /api/models/ollama/create     { filename }
-GET  /api/models/ollama/create/:id
-```
-
-### AI / GPU
-```
-GET  /api/ai/llama
-POST /api/ai/llama/unload
-```
-
-### VMs
-```
-GET  /api/vms/local
-POST /api/vms/local/action         { name, action }
-GET  /api/vms/proxmox/config
-POST /api/vms/proxmox/config
-GET  /api/vms/proxmox/vms
-POST /api/vms/proxmox/action       { vmid, kind, node, action }
-POST /api/vms/proxmox/test
-```
-
-### Files
-```
-GET  /api/files/roots
-GET  /api/files/list?path=
-GET  /api/files/read?path=
-GET  /api/files/raw?path=
-POST /api/files/write              { path, content }
-POST /api/files/mkdir              { path }
-DELETE /api/files/delete?path=
-POST /api/files/rename             { from, to }
-```
-
-### Proxy
-```
-GET  /api/proxy
-POST /api/proxy                    { domain, upstream, ssl, allow_embed? }
-DELETE /api/proxy/:id
-POST /api/proxy/:id/toggle
-```
-
-### Firewall
-```
-GET  /api/firewall
-POST /api/firewall/rules           { action, direction, port, protocol, from? }
-POST /api/firewall/rules/delete    { rule_number }
-POST /api/firewall/action          { action: enable|disable|reload|reset }
-```
-
-### WireGuard
-```
-GET  /api/wireguard
-POST /api/wireguard/peers          { name, interface, server_endpoint? }
-DELETE /api/wireguard/peers/:id
-```
-
-### Storage
-```
-GET  /api/storage/devices
-GET  /api/storage/mounts
-POST /api/storage/mount
-POST /api/storage/umount
-GET  /api/storage/fstab
-POST /api/storage/fstab
-DELETE /api/storage/fstab/:idx
-GET  /api/storage/smart/:dev
-GET  /api/storage/raid
-POST /api/storage/raid/create
-POST /api/storage/raid/stop
-POST /api/storage/format
-GET  /api/storage/paths
-POST /api/storage/paths
-```
-
-### Network
-```
-GET /api/network
-GET /api/network/neighbors
-```
-
-### Backups
-```
-GET  /api/backups
-POST /api/backups                  { name, source_path, repo_path, password }
-POST /api/backups/:id/run
-POST /api/backups/:id/check
-POST /api/backups/:id/restore-test
-DELETE /api/backups/:id
-```
-
-### Alerts & status checks
-```
-GET  /api/alerts?state=&severity=
-POST /api/alerts/:id/acknowledge
-POST /api/alerts/:id/resolve
-DELETE /api/alerts/:id
-GET  /api/status-checks
-POST /api/status-checks            { name, type, target, interval_secs? }
-DELETE /api/status-checks/:id
-GET  /status                       Public HTML page
-```
-
-### Automation
-```
-GET  /api/automation
-POST /api/automation               { name, command, schedule, enabled? }
-PATCH /api/automation/:id
-DELETE /api/automation/:id
-POST /api/automation/:id/run
-GET  /api/automation/:id/runs
-```
-
-### Secrets
-```
-GET  /api/secrets
-POST /api/secrets                  { name, description, value }
-PATCH /api/secrets/:id
-DELETE /api/secrets/:id
-GET  /api/secrets/:id/reveal
-```
-
-### Tags
-```
-GET  /api/tags
-POST /api/tags                     { name, color }
-PATCH /api/tags/:id
-DELETE /api/tags/:id
-GET  /api/tags/map?type=
-POST /api/tags/assign              { tag_id, resource_type, resource_id }
-POST /api/tags/unassign            { tag_id, resource_type, resource_id }
-```
-
-### Timeline
-```
-GET /api/timeline?limit=&offset=&category=&outcome=&search=
-```
-
-### Users
-```
-GET  /api/users
-POST /api/users                    { username, password, role }
-DELETE /api/users/:id
-POST /api/users/me/password        { password }
-```
-
-### Security
-```
-GET  /api/security/sessions
-POST /api/security/sessions/revoke-others
-DELETE /api/security/sessions/:id
-```
-
-### System
-```
-GET  /api/system/version
-GET  /api/system/update-check
-POST /api/system/restart
-POST /api/system/update
-```
+### Features
+- [App Vault catalog — adding custom apps](docs/app-vault-catalog.md)
+- [API tokens & scopes](docs/api-tokens.md)
+- [Two-factor authentication (TOTP)](docs/totp.md)
 
 ### Integrations
-```
-GET  /api/integrations/scopes
-GET  /api/integrations/tokens
-POST /api/integrations/tokens                    { name, scopes[], expires_days? }
-DELETE /api/integrations/tokens/:id
-GET  /api/integrations/odysseus/config
-POST /api/integrations/odysseus/config           { enabled?, mcp_enabled?, allowed_url?, webhook_secret?, emergency_disable? }
-GET  /api/integrations/odysseus/manifest
-GET  /api/integrations/events                    SSE stream
-POST /api/integrations/webhooks                  { automation_id, dry_run? }
-GET  /api/integrations/actions
-```
+- [Odysseus / Voidwatch](docs/integrations/odysseus.md)
+- [Proxmox VE](docs/integrations/proxmox.md)
+- [MCP server](docs/integrations/mcp-server.md)
+- [Authentik SSO](docs/integrations/authentik-sso.md)
+- [Networking & reverse proxy](docs/NETWORKING.md)
 
-### Voidwatch (Odysseus-side)
-```
-GET  /api/voidwatch/config
-POST /api/voidwatch/config         { enabled, base_url, api_token, webhook_secret, auto_action_policy }
-POST /api/voidwatch/emergency-disable
-POST /api/voidwatch/test
-GET  /api/voidwatch/manifest
-GET  /api/voidwatch/toolpacks
-GET  /api/voidwatch/actions
-POST /api/voidwatch/webhook
-```
-
-### Capabilities & diagnostics
-```
-GET /api/capabilities
-GET /api/diagnostics
-```
+### Operations
+- [Recovery & maintenance](docs/recovery.md)
+- [API reference](docs/api.md)
 
 ---
 

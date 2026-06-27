@@ -1,40 +1,30 @@
-# All-in-One Install — VoidTower + Odysseus + Voidwatch + AI
+# Installation Guide
 
-## Quickstart
+## Quick start
+
+### Docker (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/elwla/voidtower/main/scripts/install.sh \
+git clone -b voidtower-aio https://github.com/niwlekakan/voidtower
+cd voidtower
+cp .env.example .env          # set ODYSSEUS_ADMIN_PASSWORD at minimum
+docker compose --profile aio up -d
+```
+
+### Bare metal / VM — VoidTower only
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+  | sudo bash
+```
+
+### Bare metal / VM — Full AIO stack
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
   | sudo bash -s -- --all-in-one --pull-model
-```
 
-This installs:
-- **VoidTower** — infrastructure control plane (port 8743)
-- **Odysseus** — AI workspace (port 7000)
-- **Voidwatch** — AI ops integration between the two
-- **Ollama** — local AI runtime (port 11434)
-- A recommended model based on your RAM
-
----
-
-## Common Commands
-
-### VoidTower only
-```bash
-sudo bash install.sh
-```
-
-### VoidTower + Odysseus
-```bash
-sudo bash install.sh --with-odysseus
-```
-
-### Full stack with local AI
-```bash
-sudo bash install.sh --all-in-one --ai-provider ollama --pull-model
-```
-
-### Full stack, specific model, non-interactive
-```bash
+# Non-interactive with specific model
 sudo bash install.sh \
   --all-in-one \
   --ai-model qwen2.5-coder:7b-instruct \
@@ -42,132 +32,95 @@ sudo bash install.sh \
   --yes
 ```
 
-### Dry run (preview without changes)
-```bash
-sudo bash install.sh --all-in-one --dry-run
-```
-
-### Offline (no downloads, local package manager only)
-```bash
-sudo bash install.sh --offline
-```
-
 ---
 
-## Installer Flags
+## Installer flags
+
+### Stack composition
 
 | Flag | Description |
-|------|-------------|
+|---|---|
 | `--all-in-one` | Shorthand for `--with-odysseus --with-voidwatch --with-ai` |
 | `--with-odysseus` | Install Odysseus AI workspace |
-| `--with-voidwatch` | Install Voidwatch integration (implies `--with-odysseus`) |
-| `--with-ai` | Set up local AI runtime |
-| `--ai-provider` | `ollama` (default) \| `openai-compatible` \| `none` |
-| `--ai-model` | Ollama model name (e.g. `qwen2.5-coder:7b-instruct`) |
+| `--with-voidwatch` | Wire Voidwatch integration (implies `--with-odysseus`) |
+| `--with-ai` | Set up Ollama local AI runtime |
+| `--ai-model MODEL` | Model to configure (e.g. `qwen2.5-coder:7b-instruct`) |
 | `--pull-model` | Pull the model during install |
-| `--skip-model-pull` | Never pull a model |
-| `--odysseus-port` | Odysseus port (default: 7000) |
-| `--port` | VoidTower port (default: 8743) |
-| `--yes` | Non-interactive, assume yes |
-| `--dry-run` | Print what would happen, make no changes |
-| `--offline` | No network except local package manager |
+
+### Ports & behaviour
+
+| Flag | Description |
+|---|---|
+| `--odysseus-port PORT` | Odysseus port (default: 7000) |
+| `--port PORT` | VoidTower port (default: 8743) |
+| `--yes` | Non-interactive |
+| `--dry-run` | Preview what would happen |
+| `--offline` | Skip network calls |
+| `--musl` | Build a fully-static musl binary — use on TrueNAS Scale, Alpine, or any platform with an old glibc |
+
+### Skip flags
+
+| Flag | Description |
+|---|---|
 | `--no-mcp` | Skip MCP tool registration |
 | `--no-webhooks` | Skip webhook configuration |
 | `--no-toolpacks` | Skip toolpack installation |
 
+### Maintenance flags
+
+| Flag | Description |
+|---|---|
+| `--uninstall` | Remove VoidTower — interactively choose what to keep (data, config, system user) |
+| `--reset` | Wipe state (database, config, secrets, bootstrap token) and restart — binary and service unit kept |
+| `--repair` | Re-download binary, reinstall service unit, fix ownership/permissions, restart |
+| `--update` | Pull latest (or `--version`) binary, refresh app catalog, restart — data and config untouched |
+
 ---
 
-## Model Selection
+## Model auto-selection
 
-The installer automatically recommends a model based on available RAM:
+The installer recommends a model based on available RAM when `--pull-model` is set:
 
-| RAM | Recommended Model |
-|-----|------------------|
+| RAM | Recommended model |
+|---|---|
 | ≥ 32 GB | `qwen2.5-coder:14b-instruct` |
 | ≥ 16 GB | `qwen2.5-coder:7b-instruct` |
 | ≥ 8 GB | `qwen2.5-coder:3b-instruct` |
-| < 8 GB | No auto-pull — configure manually |
-
-Override with `--ai-model <name>`. Large models are never pulled without `--pull-model` or interactive confirmation.
+| < 8 GB | No auto-pull — configure manually or use a remote endpoint |
 
 ---
 
-## After Installation
+## After installation
 
-1. Open VoidTower: `http://localhost:8743/bootstrap`
-2. Complete the bootstrap setup (create admin account)
-3. Open Odysseus: `http://localhost:7000`
-4. Go to **Settings → Integrations → Voidwatch** to confirm the connection
+1. Open VoidTower at `http://localhost:8743/bootstrap` (bare metal) or `https://localhost` (Docker)
+2. Complete the setup wizard — creates your admin account and consumes the bootstrap token
+3. Open Odysseus at `http://localhost:7000` and log in
+4. Go to **Settings → Integrations → Voidwatch** to confirm the connection shows green
 
-Credentials are saved to:
-- `/root/voidlink-bootstrap-token`
+Bootstrap credentials are saved to:
+- `/root/voidtower-bootstrap-token`
 - `/root/odysseus-bootstrap-token`
 - `/root/voidwatch-recovery-info`
 
 ---
 
-## Service Management
+## Service management (bare metal)
 
 ```bash
-# Status
 systemctl status voidtower odysseus ollama
 
-# Logs
 journalctl -u voidtower -f
 journalctl -u odysseus -f
 journalctl -u ollama -f
 
-# Restart
 systemctl restart voidtower
 systemctl restart odysseus
 ```
 
 ---
 
-## Readiness Check
+## Platform-specific guides
 
-```bash
-bash scripts/doctor.sh --with-odysseus
-```
-
----
-
-## Uninstall
-
-```bash
-# Remove VoidTower only (preserve data)
-sudo bash scripts/uninstall.sh
-
-# Remove VoidTower + Odysseus
-sudo bash scripts/uninstall.sh --remove-odysseus
-
-# Remove everything including data
-sudo bash scripts/uninstall.sh --all --purge
-```
-
----
-
-## Emergency Disable (Voidwatch)
-
-```bash
-# Immediately stop all Voidwatch automation
-curl -X POST http://localhost:7000/api/voidwatch/emergency-disable
-
-# From VoidTower UI: Settings → Integrations → Odysseus → Emergency Disable
-```
-
----
-
-## Example Agent Prompts (after install)
-
-Once Odysseus is running and Voidwatch is connected, try:
-
-```
-Check my servers and tell me what is unhealthy.
-Restart failed non-critical containers only.
-Inspect nginx routes and tell me what is publicly exposed.
-Run backups on all configured backup jobs.
-Investigate why Jellyfin is unhealthy.
-Summarize all active alerts.
-Dry-run an image update for FreshRSS and ask before applying.
-```
+- [TrueNAS Scale](../platforms/truenas.md)
+- [Proxmox LXC](../platforms/proxmox-lxc.md)
+- [GPU & Ollama](../gpu.md)

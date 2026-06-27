@@ -130,6 +130,22 @@ fn task_response(body: serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "ok": true, "task": upid })
 }
 
+/// Shape expected by the frontend's `ChangePlanModal` (see `components/ui/ChangePlanModal.tsx`).
+fn change_plan(title: &str, risk: &str, changes: Vec<(&str, String)>) -> serde_json::Value {
+    let changes: Vec<serde_json::Value> = changes
+        .into_iter()
+        .map(|(label, value)| serde_json::json!({ "label": label, "value": value }))
+        .collect();
+    serde_json::json!({
+        "dry_run": true,
+        "plan": { "title": title, "risk": risk, "changes": changes, "preview": null }
+    })
+}
+
+fn vm_target(kind: VmKind, vmid: u64, node: &str) -> String {
+    format!("{} {} ({})", kind.as_str().to_uppercase(), vmid, node)
+}
+
 // ── host CRUD routes ──────────────────────────────────────────────────────────
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -343,16 +359,32 @@ pub async fn list_nodes(
     let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
         .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
 
-    // Step 2: fetch full status per node (includes cpu/mem/disk metrics)
+    // Step 2: fetch full status per node (includes cpu/mem/disk metrics + kversion)
     let mut result = Vec::new();
     for name in &names {
-        if let Ok(status) = pve_get(&client, &format!("{}/nodes/{}/status", base, name), &auth).await {
-            let mut entry = status.clone();
-            entry["node"]   = serde_json::json!(name);
-            entry["status"] = serde_json::json!("online");
-            result.push(entry);
-        } else if let Some(basic) = node_list.as_array().and_then(|a| a.iter().find(|n| n["node"].as_str() == Some(name.as_str()))) {
-            result.push(basic.clone());
+        match pve_get(&client, &format!("{}/nodes/{}/status", base, name), &auth).await {
+            Ok(status) => {
+                let mut entry = status.clone();
+                entry["node"]   = serde_json::json!(name);
+                entry["status"] = serde_json::json!("online");
+
+                // Subscription is a separate per-node endpoint, not part of /status
+                if let Ok(sub) = pve_get(&client, &format!("{}/nodes/{}/subscription", base, name), &auth).await {
+                    entry["subscription_status"] = sub["status"].clone();
+                }
+
+                result.push(entry);
+            }
+            // Surface the real Proxmox error instead of silently falling back to the
+            // metrics-less basic listing — the frontend used to guess "needs Sys.Audit"
+            // regardless of the actual cause, which is wrong as often as it's right.
+            Err(e) => {
+                if let Some(basic) = node_list.as_array().and_then(|a| a.iter().find(|n| n["node"].as_str() == Some(name.as_str()))) {
+                    let mut entry = basic.clone();
+                    entry["status_error"] = serde_json::json!(e.to_string());
+                    result.push(entry);
+                }
+            }
         }
     }
     Ok(Json(serde_json::json!(result)))
@@ -525,20 +557,35 @@ pub async fn vm_start(
     State(state): State<AppState>,
     jar: CookieJar,
     Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
 ) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
+    let user = require_admin(&state, &jar).await?;
+    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
     let auth_header = format!("PVEAPIToken={}", host.token);
 
     let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
+
+    if dry_run {
+        return Ok(Json(change_plan(
+            "Start VM/LXC", "low",
+            vec![("Target", vm_target(kind, vmid, &host.node))],
+        )));
+    }
+
     let url = format!("{}/nodes/{}/{}/{}/status/start", base, host.node, kind.path_segment(), vmid);
 
     let res = client.post(&url).header("Authorization", &auth_header)
         .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if res.status().is_success() {
+        audit::log(
+            &state.db, Some(&user.id), &user.username,
+            "proxmox.vm.start", Some("vm"), Some(&vmid.to_string()),
+            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
+        ).await;
         let body: serde_json::Value = res.json().await.unwrap_or_default();
         Ok(Json(task_response(body)))
     } else {
@@ -563,13 +610,14 @@ pub async fn vm_stop(
     let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
 
     if dry_run {
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "action": "stop",
-            "vmid": vmid,
-            "type": kind.as_str(),
-            "node": host.node,
-        })));
+        return Ok(Json(change_plan(
+            "Stop VM/LXC", "medium",
+            vec![
+                ("Target", vm_target(kind, vmid, &host.node)),
+                ("Action", "Graceful shutdown (ACPI)".to_string()),
+                ("Reversible", "Yes — start it again afterward".to_string()),
+            ],
+        )));
     }
 
     audit::log(
@@ -606,20 +654,160 @@ pub async fn vm_reboot(
     State(state): State<AppState>,
     jar: CookieJar,
     Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
 ) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
+    let user = require_admin(&state, &jar).await?;
+    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
     let auth_header = format!("PVEAPIToken={}", host.token);
 
     let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
+
+    if dry_run {
+        return Ok(Json(change_plan(
+            "Reboot VM/LXC", "medium",
+            vec![
+                ("Target", vm_target(kind, vmid, &host.node)),
+                ("Action", "Graceful reboot (ACPI)".to_string()),
+            ],
+        )));
+    }
+
     let url = format!("{}/nodes/{}/{}/{}/status/reboot", base, host.node, kind.path_segment(), vmid);
 
     let res = client.post(&url).header("Authorization", &auth_header)
         .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if res.status().is_success() {
+        audit::log(
+            &state.db, Some(&user.id), &user.username,
+            "proxmox.vm.reboot", Some("vm"), Some(&vmid.to_string()),
+            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
+        ).await;
+        let body: serde_json::Value = res.json().await.unwrap_or_default();
+        Ok(Json(task_response(body)))
+    } else {
+        let msg = res.text().await.unwrap_or_default();
+        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
+    }
+}
+
+// Hard reset — QEMU only, no LXC equivalent (a container has no virtual power button to cycle).
+pub async fn vm_reset(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth_header = format!("PVEAPIToken={}", host.token);
+
+    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
+    if kind == VmKind::Lxc {
+        return Err(AppError::BadRequest("Reset is not supported for LXC containers".into()));
+    }
+
+    if dry_run {
+        return Ok(Json(change_plan(
+            "Reset VM", "high",
+            vec![
+                ("Target", vm_target(kind, vmid, &host.node)),
+                ("Action", "Hard reset — equivalent to pressing the physical reset button".to_string()),
+                ("Reversible", "No — unsaved guest OS state is lost".to_string()),
+            ],
+        )));
+    }
+
+    let url = format!("{}/nodes/{}/{}/{}/status/reset", base, host.node, kind.path_segment(), vmid);
+    let res = client.post(&url).header("Authorization", &auth_header)
+        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    if res.status().is_success() {
+        audit::log(
+            &state.db, Some(&user.id), &user.username,
+            "proxmox.vm.reset", Some("vm"), Some(&vmid.to_string()),
+            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
+        ).await;
+        let body: serde_json::Value = res.json().await.unwrap_or_default();
+        Ok(Json(task_response(body)))
+    } else {
+        let msg = res.text().await.unwrap_or_default();
+        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
+    }
+}
+
+pub async fn vm_suspend(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth_header = format!("PVEAPIToken={}", host.token);
+
+    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
+
+    if dry_run {
+        return Ok(Json(change_plan(
+            "Suspend VM/LXC", "medium",
+            vec![
+                ("Target", vm_target(kind, vmid, &host.node)),
+                ("Action", "Suspend to RAM — execution paused, memory state kept".to_string()),
+            ],
+        )));
+    }
+
+    let url = format!("{}/nodes/{}/{}/{}/status/suspend", base, host.node, kind.path_segment(), vmid);
+    let res = client.post(&url).header("Authorization", &auth_header)
+        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    if res.status().is_success() {
+        audit::log(
+            &state.db, Some(&user.id), &user.username,
+            "proxmox.vm.suspend", Some("vm"), Some(&vmid.to_string()),
+            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
+        ).await;
+        let body: serde_json::Value = res.json().await.unwrap_or_default();
+        Ok(Json(task_response(body)))
+    } else {
+        let msg = res.text().await.unwrap_or_default();
+        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
+    }
+}
+
+pub async fn vm_resume(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, vmid)): Path<(String, u64)>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth_header = format!("PVEAPIToken={}", host.token);
+
+    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
+
+    let url = format!("{}/nodes/{}/{}/{}/status/resume", base, host.node, kind.path_segment(), vmid);
+    let res = client.post(&url).header("Authorization", &auth_header)
+        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    if res.status().is_success() {
+        audit::log(
+            &state.db, Some(&user.id), &user.username,
+            "proxmox.vm.resume", Some("vm"), Some(&vmid.to_string()),
+            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
+        ).await;
         let body: serde_json::Value = res.json().await.unwrap_or_default();
         Ok(Json(task_response(body)))
     } else {
@@ -651,14 +839,14 @@ pub async fn vm_snapshot(
     let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
 
     if req.dry_run {
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "action": "snapshot",
-            "vmid": vmid,
-            "type": kind.as_str(),
-            "node": host.node,
-            "snap_name": req.name,
-        })));
+        return Ok(Json(change_plan(
+            "Create Snapshot", "low",
+            vec![
+                ("Target", vm_target(kind, vmid, &host.node)),
+                ("Name", req.name.clone()),
+                ("Description", req.description.clone().unwrap_or_else(|| "—".to_string())),
+            ],
+        )));
     }
 
     audit::log(
@@ -704,14 +892,15 @@ pub async fn vm_rollback(
     let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
 
     if dry_run {
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "action": "rollback",
-            "vmid": vmid,
-            "type": kind.as_str(),
-            "node": host.node,
-            "snap_name": snapname,
-        })));
+        return Ok(Json(change_plan(
+            "Rollback to Snapshot", "high",
+            vec![
+                ("Target", vm_target(kind, vmid, &host.node)),
+                ("Snapshot", snapname.clone()),
+                ("Effect", "Reverts disk and config to the snapshot state".to_string()),
+                ("Reversible", "No — changes made since the snapshot are lost".to_string()),
+            ],
+        )));
     }
 
     audit::log(
@@ -753,14 +942,14 @@ pub async fn vm_delete_snapshot(
     let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
 
     if dry_run {
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "action": "delete_snapshot",
-            "vmid": vmid,
-            "type": kind.as_str(),
-            "node": host.node,
-            "snap_name": snapname,
-        })));
+        return Ok(Json(change_plan(
+            "Delete Snapshot", "medium",
+            vec![
+                ("Target", vm_target(kind, vmid, &host.node)),
+                ("Snapshot", snapname.clone()),
+                ("Reversible", "No — this snapshot cannot be recovered".to_string()),
+            ],
+        )));
     }
 
     audit::log(
@@ -973,4 +1162,349 @@ pub async fn list_snapshots(
     let url = format!("{}/nodes/{}/{}/{}/snapshot", proxmox_base(&host.url), host.node, kind, vmid);
     let data = pve_get(&client, &url, &auth).await?;
     Ok(Json(data))
+}
+
+// ── storage content browser ───────────────────────────────────────────────────
+
+/// Proxmox volids look like `local:iso/foo.iso` or `local-lvm:vm-101-disk-0` — `:` and `/`
+/// must be percent-encoded when the volid is embedded in a URL path segment.
+fn encode_volid(volid: &str) -> String {
+    volid.replace('%', "%25").replace(':', "%3A").replace('/', "%2F")
+}
+
+pub async fn list_storage_content(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, node, storage)): Path<(String, String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+    let url = format!("{}/nodes/{}/storage/{}/content", base, node, storage);
+    let data = pve_get(&client, &url, &auth).await?;
+    Ok(Json(data))
+}
+
+pub async fn upload_storage_content(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, node, storage)): Path<(String, String, String)>,
+    request: axum::extract::Request,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+
+    // Stream the browser's multipart body verbatim to Proxmox without buffering into RAM.
+    // The frontend sends fields in Proxmox's required order: `content` (type) then `filename` (file data).
+    let ct = request
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("multipart/form-data")
+        .to_string();
+
+    let stream = request.into_body().into_data_stream();
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(900))
+        .build()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+    let url = format!("{}/nodes/{}/storage/{}/upload", base, node, storage);
+
+    let res = client
+        .post(&url)
+        .header("Authorization", &auth)
+        .header(reqwest::header::CONTENT_TYPE, &ct)
+        .body(reqwest::Body::wrap_stream(stream))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    if !res.status().is_success() {
+        let msg = res.text().await.unwrap_or_default();
+        return Err(AppError::Internal(anyhow::anyhow!("Proxmox upload error: {}", msg)));
+    }
+    let body: serde_json::Value = res.json().await.unwrap_or_default();
+
+    audit::log(
+        &state.db, Some(&user.id), &user.username,
+        "proxmox.storage.upload", Some("proxmox_storage"), Some(&storage),
+        "success", None,
+        Some(&format!("host={} node={} storage={}", host_id, node, storage)),
+    ).await;
+
+    Ok(Json(task_response(body)))
+}
+
+#[derive(Deserialize)]
+pub struct VolidQuery {
+    pub volid: String,
+}
+
+pub async fn delete_storage_content(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, node, storage)): Path<(String, String, String)>,
+    Query(q): Query<VolidQuery>,
+    body: Option<Json<DryRunBody>>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
+    let host = get_host_and_token(&state, &host_id).await?;
+
+    if dry_run {
+        return Ok(Json(change_plan(
+            "Delete Storage Content", "high",
+            vec![
+                ("Target", q.volid.clone()),
+                ("Storage", format!("{} ({})", storage, node)),
+                ("Reversible", "No — the file is permanently removed from storage".to_string()),
+            ],
+        )));
+    }
+
+    audit::log(
+        &state.db, Some(&user.id), &user.username,
+        "proxmox.storage.delete_content", Some("proxmox_storage"), Some(&storage),
+        "success", None, Some(&format!("host={} node={} storage={} volid={}", host_id, node, storage, q.volid)),
+    ).await;
+
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+    let url = format!("{}/nodes/{}/storage/{}/content/{}", base, node, storage, encode_volid(&q.volid));
+
+    let res = client.delete(&url).header("Authorization", &auth)
+        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    if res.status().is_success() {
+        let body: serde_json::Value = res.json().await.unwrap_or_default();
+        Ok(Json(task_response(body)))
+    } else {
+        let msg = res.text().await.unwrap_or_default();
+        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
+    }
+}
+
+// ── physical disk management ──────────────────────────────────────────────────
+
+pub async fn list_node_disks(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, node)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+    let url = format!("{}/nodes/{}/disks/list", base, node);
+    let data = pve_get(&client, &url, &auth).await?;
+    Ok(Json(data))
+}
+
+#[derive(Deserialize)]
+pub struct DiskQuery {
+    pub disk: String,
+}
+
+pub async fn disk_smart(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, node)): Path<(String, String)>,
+    Query(q): Query<DiskQuery>,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+    let base_url = format!("{}/nodes/{}/disks/smart", base, node);
+    let url = reqwest::Url::parse_with_params(&base_url, &[("disk", q.disk.as_str())])
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let data = pve_get(&client, url.as_str(), &auth).await?;
+    Ok(Json(data))
+}
+
+#[derive(Deserialize)]
+pub struct WipeDiskBody {
+    pub disk: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub async fn wipe_disk(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, node)): Path<(String, String)>,
+    Json(req): Json<WipeDiskBody>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+
+    if req.dry_run {
+        return Ok(Json(change_plan(
+            "Wipe Disk", "high",
+            vec![
+                ("Disk", req.disk.clone()),
+                ("Node", node.clone()),
+                ("Effect", "Erases the partition table and all data on this disk".to_string()),
+                ("Reversible", "No — data cannot be recovered".to_string()),
+            ],
+        )));
+    }
+
+    audit::log(
+        &state.db, Some(&user.id), &user.username,
+        "proxmox.disk.wipe", Some("proxmox_disk"), Some(&req.disk),
+        "success", None, Some(&format!("host={} node={}", host_id, node)),
+    ).await;
+
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+    let url = format!("{}/nodes/{}/disks/wipedisk", base, node);
+    let data = pve_post(&client, &url, &auth, &serde_json::json!({ "disk": req.disk })).await?;
+    let upid = data.as_str().unwrap_or("").to_string();
+    Ok(Json(serde_json::json!({ "ok": true, "task": upid })))
+}
+
+#[derive(Deserialize)]
+pub struct InitDiskBody {
+    pub disk: String,
+    pub fstype: String,
+    pub name: String,
+    #[serde(default)]
+    pub raidlevel: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub async fn init_disk_storage(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, node)): Path<(String, String)>,
+    Json(req): Json<InitDiskBody>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+
+    if req.dry_run {
+        return Ok(Json(change_plan(
+            "Initialize Disk as Storage", "high",
+            vec![
+                ("Disk", req.disk.clone()),
+                ("Filesystem", req.fstype.clone()),
+                ("Storage name", req.name.clone()),
+                ("Effect", "Formats the disk and registers it as a new Proxmox storage pool".to_string()),
+                ("Reversible", "No — existing data on the disk is destroyed".to_string()),
+            ],
+        )));
+    }
+
+    audit::log(
+        &state.db, Some(&user.id), &user.username,
+        "proxmox.disk.init", Some("proxmox_disk"), Some(&req.disk),
+        "success", None, Some(&format!("host={} node={} fstype={} name={}", host_id, node, req.fstype, req.name)),
+    ).await;
+
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+
+    let (endpoint, body) = match req.fstype.as_str() {
+        "directory" => ("directory", serde_json::json!({
+            "device": req.disk, "name": req.name, "filesystem": "ext4", "add_storage": 1,
+        })),
+        "lvm" => ("lvm", serde_json::json!({
+            "device": req.disk, "name": req.name, "add_storage": 1,
+        })),
+        "lvmthin" => ("lvmthin", serde_json::json!({
+            "device": req.disk, "name": req.name, "add_storage": 1,
+        })),
+        "zfs" => ("zfs", serde_json::json!({
+            "devices": req.disk, "name": req.name,
+            "raidlevel": req.raidlevel.clone().unwrap_or_else(|| "single".to_string()),
+            "add_storage": 1,
+        })),
+        other => return Err(AppError::BadRequest(format!("Unknown filesystem type: {}", other))),
+    };
+
+    let url = format!("{}/nodes/{}/disks/{}", base, node, endpoint);
+    let data = pve_post(&client, &url, &auth, &body).await?;
+    let upid = data.as_str().unwrap_or("").to_string();
+    Ok(Json(serde_json::json!({ "ok": true, "task": upid })))
+}
+
+// ── disk passthrough to VM ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct DiskPassthroughBody {
+    pub disk_path: String,
+    #[serde(default = "default_passthrough_bus")]
+    pub bus: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+fn default_passthrough_bus() -> String {
+    "scsi1".to_string()
+}
+
+pub async fn vm_disk_passthrough(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    Json(req): Json<DiskPassthroughBody>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+    let host = get_host_and_token(&state, &host_id).await?;
+    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let base = proxmox_base(&host.url);
+    let auth_header = format!("PVEAPIToken={}", host.token);
+
+    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
+    if kind == VmKind::Lxc {
+        return Err(AppError::BadRequest("Disk passthrough is only supported for QEMU VMs".into()));
+    }
+
+    if req.dry_run {
+        return Ok(Json(change_plan(
+            "Attach Disk Passthrough", "high",
+            vec![
+                ("Target", vm_target(kind, vmid, &host.node)),
+                ("Host disk", req.disk_path.clone()),
+                ("Bus/slot", req.bus.clone()),
+                ("Effect", "Maps the raw host block device directly into the VM — bypasses Proxmox's virtual disk image".to_string()),
+                ("Caution", "The disk becomes unavailable to the host while attached; detach before reusing it elsewhere".to_string()),
+            ],
+        )));
+    }
+
+    audit::log(
+        &state.db, Some(&user.id), &user.username,
+        "proxmox.vm.disk_passthrough", Some("vm"), Some(&vmid.to_string()),
+        "success", None,
+        Some(&format!("host={} node={} disk={} bus={}", host_id, host.node, req.disk_path, req.bus)),
+    ).await;
+
+    let url = format!("{}/nodes/{}/qemu/{}/config", base, host.node, vmid);
+    let mut params = std::collections::HashMap::new();
+    params.insert(req.bus.clone(), req.disk_path.clone());
+
+    let res = client.post(&url).header("Authorization", &auth_header)
+        .form(&params)
+        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    if res.status().is_success() {
+        Ok(Json(serde_json::json!({ "ok": true })))
+    } else {
+        let msg = res.text().await.unwrap_or_default();
+        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
+    }
 }

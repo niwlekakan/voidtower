@@ -726,6 +726,9 @@ export interface PveNode {
   disk: number
   maxdisk: number
   uptime: number
+  kversion?: string
+  subscription_status?: string
+  status_error?: string
 }
 
 export interface PveStorage {
@@ -735,6 +738,34 @@ export interface PveStorage {
   total: number
   used: number
   active: boolean
+  node?: string
+  content?: string
+}
+
+export interface PveStorageContent {
+  volid: string
+  content: string
+  format?: string
+  size: number
+  used?: number
+  ctime?: number
+  vmid?: number
+  notes?: string
+  parent?: string
+}
+
+export interface PveDisk {
+  devpath: string
+  model?: string
+  serial?: string
+  size: number
+  type?: string
+  vendor?: string
+  used?: string
+  wearout?: number
+  health?: string
+  rpm?: number
+  gpt?: number
 }
 
 export interface PveTask {

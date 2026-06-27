@@ -2,11 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Server, Plus, Trash2, Play, Square, RotateCcw, Camera, ChevronDown, ChevronRight,
   RefreshCw, AlertCircle, Database, Cpu, MemoryStick, HardDrive, Monitor, X,
+  Zap, Pause, PlayCircle, Upload,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
 import { notify } from '@/store/notifications'
-import type { ProxmoxHost, PveVm, PveNode, PveStorage, PveTask, PveSnapshot, AddHostRequest, Tag, TagMap } from '@/api/types'
+import type { ProxmoxHost, PveVm, PveNode, PveStorage, PveStorageContent, PveDisk, PveTask, PveSnapshot, AddHostRequest, Tag, TagMap } from '@/api/types'
 import Button from '@/components/ui/Button'
+import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -83,7 +85,7 @@ function UsageBar({ used, total, label }: { used: number; total: number; label: 
 
 // ── sub-tabs ──────────────────────────────────────────────────────────────────
 
-type HostTab = 'vms' | 'storage' | 'tasks' | 'backups'
+type HostTab = 'vms' | 'storage' | 'disks' | 'tasks' | 'backups'
 
 // ── Add Host Modal ────────────────────────────────────────────────────────────
 
@@ -152,18 +154,36 @@ function CreateSnapshotModal({ hostId, vm, onClose, onDone }: { hostId: string; 
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [saving, setSaving] = useState(false)
+  const [plan, setPlan] = useState<ChangePlan | null>(null)
+  const [confirming, setConfirming] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
     setSaving(true)
     try {
+      const res = await api.proxmox.createSnapshotPlan(hostId, vm.vmid, name.trim(), desc.trim())
+      setPlan(res.plan)
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan')
+    } finally { setSaving(false) }
+  }
+
+  const confirmCreate = async () => {
+    setConfirming(true)
+    try {
       await api.proxmox.createSnapshot(hostId, vm.vmid, name.trim(), desc.trim())
       notify.success(`Snapshot "${name}" created`)
       onDone(); onClose()
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Failed to create snapshot')
-    } finally { setSaving(false) }
+    } finally { setConfirming(false) }
+  }
+
+  if (plan) {
+    return (
+      <ChangePlanModal plan={plan} confirming={confirming} onConfirm={confirmCreate} onCancel={() => setPlan(null)} />
+    )
   }
 
   return (
@@ -185,7 +205,7 @@ function CreateSnapshotModal({ hostId, vm, onClose, onDone }: { hostId: string; 
               style={{ width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13, background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }} />
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-            <Button type="submit" size="sm" variant="primary" loading={saving}>Create</Button>
+            <Button type="submit" size="sm" variant="primary" loading={saving}>Review &amp; Create</Button>
             <Button type="button" size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
           </div>
         </form>
@@ -205,12 +225,24 @@ function NodeCards({ nodes }: { nodes: PveNode[] }) {
         const hasStats = (n.maxmem ?? 0) > 0
         return (
           <div key={n.node} style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
               <Server size={14} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
               <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', flex: 1 }}>{n.node}</span>
               <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 4, background: n.status === 'online' ? 'var(--accent-success-subtle)' : 'var(--bg-base)', color: n.status === 'online' ? 'var(--accent-success)' : 'var(--text-muted)' }}>
                 {n.status ?? 'unknown'}
               </span>
+              {n.subscription_status && (
+                <span
+                  title={`Subscription: ${n.subscription_status}`}
+                  style={{
+                    fontSize: 11, padding: '1px 7px', borderRadius: 4,
+                    background: n.subscription_status === 'Active' ? 'var(--accent-success-subtle)' : 'var(--accent-warning-subtle)',
+                    color: n.subscription_status === 'Active' ? 'var(--accent-success)' : 'var(--accent-warning)',
+                  }}
+                >
+                  {n.subscription_status === 'Active' ? 'subscribed' : 'no subscription'}
+                </span>
+              )}
             </div>
             {hasStats ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -219,9 +251,18 @@ function NodeCards({ nodes }: { nodes: PveNode[] }) {
                 <UsageBar used={n.disk ?? 0} total={n.maxdisk ?? 0} label="Root disk" />
               </div>
             ) : (
-              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Metrics unavailable — token may need Sys.Audit permission</p>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)' }} title={n.status_error}>
+                Metrics unavailable{n.status_error ? ` — ${n.status_error}` : ''}
+              </p>
             )}
-            {(n.uptime ?? 0) > 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>up {fmtUptime(n.uptime)}</div>}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, gap: 8 }}>
+              {(n.uptime ?? 0) > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>up {fmtUptime(n.uptime)}</span>}
+              {n.kversion && (
+                <span title={n.kversion} style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>
+                  {n.kversion}
+                </span>
+              )}
+            </div>
           </div>
         )
       })}
@@ -266,6 +307,8 @@ function SnapshotRow({ hostId, vm, onRefresh }: { hostId: string; vm: PveVm; onR
   const [loading, setLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+  const [snapPlan, setSnapPlan] = useState<{ action: 'rollback' | 'delete'; snapname: string; plan: ChangePlan } | null>(null)
+  const [confirming, setConfirming] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -282,31 +325,46 @@ function SnapshotRow({ hostId, vm, onRefresh }: { hostId: string; vm: PveVm; onR
   }
 
   const rollback = async (snapname: string) => {
-    if (!confirm(`Roll back ${vm.name ?? vm.vmid} to "${snapname}"? The VM will be reset to this state.`)) return
     setBusy(snapname)
     try {
-      await api.proxmox.rollbackSnapshot(hostId, vm.vmid, snapname)
-      notify.success(`Rollback to "${snapname}" queued`)
-      onRefresh()
-    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Rollback failed') }
+      const res = await api.proxmox.rollbackSnapshotPlan(hostId, vm.vmid, snapname)
+      setSnapPlan({ action: 'rollback', snapname, plan: res.plan })
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
     finally { setBusy(null) }
   }
 
   const del = async (snapname: string) => {
-    if (!confirm(`Delete snapshot "${snapname}"?`)) return
     setBusy(snapname)
     try {
-      await api.proxmox.deleteSnapshot(hostId, vm.vmid, snapname)
-      notify.success(`Snapshot "${snapname}" deleted`)
-      await load()
-    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Delete failed') }
+      const res = await api.proxmox.deleteSnapshotPlan(hostId, vm.vmid, snapname)
+      setSnapPlan({ action: 'delete', snapname, plan: res.plan })
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
     finally { setBusy(null) }
+  }
+
+  const confirmSnapPlan = async () => {
+    if (!snapPlan) return
+    setConfirming(true)
+    try {
+      if (snapPlan.action === 'rollback') {
+        await api.proxmox.rollbackSnapshot(hostId, vm.vmid, snapPlan.snapname)
+        notify.success(`Rollback to "${snapPlan.snapname}" queued`)
+        onRefresh()
+      } else {
+        await api.proxmox.deleteSnapshot(hostId, vm.vmid, snapPlan.snapname)
+        notify.success(`Snapshot "${snapPlan.snapname}" deleted`)
+        await load()
+      }
+      setSnapPlan(null)
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : `${snapPlan.action === 'rollback' ? 'Rollback' : 'Delete'} failed`)
+    } finally { setConfirming(false) }
   }
 
   return (
     <>
       <tr>
-        <td colSpan={9} style={{ padding: 0, borderBottom: '1px solid var(--border-subtle)' }}>
+        <td colSpan={10} style={{ padding: 0, borderBottom: '1px solid var(--border-subtle)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: 'var(--bg-base)', cursor: 'pointer' }} onClick={toggle}>
             {open ? <ChevronDown size={12} style={{ color: 'var(--text-muted)' }} /> : <ChevronRight size={12} style={{ color: 'var(--text-muted)' }} />}
             <Camera size={11} style={{ color: 'var(--text-muted)' }} />
@@ -358,6 +416,9 @@ function SnapshotRow({ hostId, vm, onRefresh }: { hostId: string; vm: PveVm; onR
         </td>
       </tr>
       {showCreate && <CreateSnapshotModal hostId={hostId} vm={vm} onClose={() => setShowCreate(false)} onDone={load} />}
+      {snapPlan && (
+        <ChangePlanModal plan={snapPlan.plan} confirming={confirming} onConfirm={confirmSnapPlan} onCancel={() => setSnapPlan(null)} />
+      )}
     </>
   )
 }
@@ -370,7 +431,7 @@ interface ConsoleModalProps {
   onClose: () => void
 }
 
-function ConsoleModal({ hostId, vm, onClose }: ConsoleModalProps) {
+export function ConsoleModal({ hostId, vm, onClose }: ConsoleModalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const rfbRef       = useRef<{ disconnect: () => void } | null>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
@@ -472,6 +533,13 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
   const [busy, setBusy]           = useState<string | null>(null)
   const [consoleVm, setConsoleVm]   = useState<PveVm | null>(null)
   const [tagPopover, setTagPopover] = useState<number | null>(null) // vmid
+  const [actionPlan, setActionPlan] = useState<{ vm: PveVm; action: 'stop' | 'reset' | 'suspend'; plan: ChangePlan } | null>(null)
+  const [planConfirming, setPlanConfirming] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkPlan, setBulkPlan] = useState<{ vms: PveVm[]; plan: ChangePlan } | null>(null)
+  const [bulkConfirming, setBulkConfirming] = useState(false)
+  const [bulkTagPopover, setBulkTagPopover] = useState(false)
 
   const toggleTag = async (vmid: number, tag: Tag, assigned: boolean) => {
     const rid = String(vmid)
@@ -499,7 +567,17 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
     return sortAsc ? cmp : -cmp
   })
 
-  const handleAction = async (vm: PveVm, action: 'start' | 'stop' | 'reboot') => {
+  const handleAction = async (vm: PveVm, action: 'start' | 'stop' | 'reboot' | 'reset' | 'suspend' | 'resume') => {
+    if (action === 'stop' || action === 'reset' || action === 'suspend') {
+      const key = `${vm.vmid}-${action}`
+      setBusy(key)
+      try {
+        const res = await api.proxmox.vmActionPlan(hostId, vm.vmid, action)
+        setActionPlan({ vm, action, plan: res.plan })
+      } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
+      finally { setBusy(null) }
+      return
+    }
     const key = `${vm.vmid}-${action}`
     setBusy(key)
     try {
@@ -508,6 +586,82 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
       onRefresh()
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : `Failed to ${action}`) }
     finally { setBusy(null) }
+  }
+
+  const confirmActionPlan = async () => {
+    if (!actionPlan) return
+    setPlanConfirming(true)
+    try {
+      await api.proxmox.vmAction(hostId, actionPlan.vm.vmid, actionPlan.action)
+      notify.success(`${actionPlan.action} sent to ${actionPlan.vm.name ?? actionPlan.vm.vmid}`)
+      setActionPlan(null)
+      onRefresh()
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : `Failed to ${actionPlan.action}`) }
+    finally { setPlanConfirming(false) }
+  }
+
+  // ── bulk select ───────────────────────────────────────────────────────────
+  const toggleSelect = (vmid: number) => {
+    setSelected(s => {
+      const next = new Set(s)
+      if (next.has(vmid)) next.delete(vmid); else next.add(vmid)
+      return next
+    })
+  }
+
+  const selectedVms = sorted.filter(v => selected.has(v.vmid))
+  const allSelected = sorted.length > 0 && sorted.every(v => selected.has(v.vmid))
+  const toggleSelectAll = () => setSelected(allSelected ? new Set() : new Set(sorted.map(v => v.vmid)))
+
+  const bulkStart = async () => {
+    const targets = selectedVms.filter(v => v.status !== 'running')
+    if (targets.length === 0) { notify.error('No stopped VMs selected'); return }
+    setBulkBusy(true)
+    try {
+      await Promise.all(targets.map(v => api.proxmox.vmAction(hostId, v.vmid, 'start')))
+      notify.success(`Start sent to ${targets.length} VM(s)`)
+      setSelected(new Set())
+      onRefresh()
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Bulk start failed') }
+    finally { setBulkBusy(false) }
+  }
+
+  const bulkStopPlan = () => {
+    const targets = selectedVms.filter(v => v.status === 'running')
+    if (targets.length === 0) { notify.error('No running VMs selected'); return }
+    setBulkPlan({
+      vms: targets,
+      plan: {
+        title: 'Stop VMs/LXCs',
+        risk: 'medium',
+        changes: targets.map(v => ({ label: `${(v.type ?? 'qemu').toUpperCase()} ${v.vmid}`, value: v.name ?? 'unnamed' })),
+        preview: null,
+      },
+    })
+  }
+
+  const confirmBulkStop = async () => {
+    if (!bulkPlan) return
+    setBulkConfirming(true)
+    try {
+      await Promise.all(bulkPlan.vms.map(v => api.proxmox.vmAction(hostId, v.vmid, 'stop')))
+      notify.success(`Stop sent to ${bulkPlan.vms.length} VM(s)`)
+      setBulkPlan(null)
+      setSelected(new Set())
+      onRefresh()
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Bulk stop failed') }
+    finally { setBulkConfirming(false) }
+  }
+
+  const bulkTag = async (tag: Tag) => {
+    setBulkBusy(true)
+    try {
+      await Promise.all(selectedVms.map(v => api.tags.assign(tag.id, 'proxmox_vm', String(v.vmid))))
+      notify.success(`Tagged ${selectedVms.length} VM(s) "${tag.name}"`)
+      setBulkTagPopover(false)
+      onTagsChange()
+    } catch { notify.error('Bulk tag failed') }
+    finally { setBulkBusy(false) }
   }
 
   const thStyle: React.CSSProperties = { padding: '8px 12px', textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }
@@ -540,10 +694,48 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
           style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, outline: 'none', width: 180 }} />
       </div>
 
+      {/* Bulk action bar */}
+      {selected.size > 0 && (
+        <div style={{ display: 'flex', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', alignItems: 'center', background: 'var(--accent-primary-subtle)' }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{selected.size} selected</span>
+          <button onClick={bulkStart} disabled={bulkBusy} title="Start selected"
+            style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--accent-success)', cursor: bulkBusy ? 'not-allowed' : 'pointer', fontSize: 12, opacity: bulkBusy ? 0.5 : 1 }}>
+            Start
+          </button>
+          <button onClick={bulkStopPlan} disabled={bulkBusy} title="Stop selected"
+            style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--accent-danger)', cursor: bulkBusy ? 'not-allowed' : 'pointer', fontSize: 12, opacity: bulkBusy ? 0.5 : 1 }}>
+            Stop
+          </button>
+          <div style={{ position: 'relative' }}>
+            <button onClick={() => setBulkTagPopover(o => !o)} disabled={bulkBusy || allTags.length === 0} title="Tag selected"
+              style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', cursor: bulkBusy ? 'not-allowed' : 'pointer', fontSize: 12, opacity: bulkBusy || allTags.length === 0 ? 0.5 : 1 }}>
+              Tag…
+            </button>
+            {bulkTagPopover && (
+              <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 20, background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 7, padding: 8, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 130, boxShadow: '0 4px 16px rgba(0,0,0,0.3)' }}>
+                {allTags.map(t => (
+                  <button key={t.id} onClick={() => bulkTag(t)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '3px 6px', borderRadius: 5, border: 'none', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', textAlign: 'left' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={() => setSelected(new Set())} style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}>
+            Clear
+          </button>
+        </div>
+      )}
+
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              <th style={{ ...thStyle, cursor: 'default', width: 28 }}>
+                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
+              </th>
               <SortTh k="name"   label="Name" />
               <SortTh k="vmid"   label="ID" />
               <th style={thStyle}>Type</th>
@@ -565,6 +757,9 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
               return (
                 <>
                   <tr key={`vm-${vm.node}-${vm.vmid}`} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '10px 12px' }}>
+                      <input type="checkbox" checked={selected.has(vm.vmid)} onChange={() => toggleSelect(vm.vmid)} />
+                    </td>
                     <td style={{ padding: '10px 12px', color: 'var(--text-primary)', fontWeight: 500 }}>
                       {vm.name ?? `(${vm.vmid})`}
                     </td>
@@ -650,7 +845,23 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
                             style={{ padding: '4px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--accent-warning)', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.4 : 1 }}>
                             <RotateCcw size={12} />
                           </button>
+                          {vmType === 'qemu' && (<>
+                            <button onClick={() => handleAction(vm, 'reset')} disabled={busy !== null} title="Reset (hard)"
+                              style={{ padding: '4px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--accent-danger)', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.4 : 1 }}>
+                              <Zap size={12} />
+                            </button>
+                            <button onClick={() => handleAction(vm, 'suspend')} disabled={busy !== null} title="Suspend"
+                              style={{ padding: '4px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-muted)', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.4 : 1 }}>
+                              <Pause size={12} />
+                            </button>
+                          </>)}
                         </>)}
+                        {vm.status === 'paused' && vmType === 'qemu' && (
+                          <button onClick={() => handleAction(vm, 'resume')} disabled={busy !== null} title="Resume"
+                            style={{ padding: '4px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--accent-success)', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.4 : 1 }}>
+                            <PlayCircle size={12} />
+                          </button>
+                        )}
                         <button onClick={() => {}} title="Snapshots"
                           style={{ padding: '4px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-muted)', cursor: 'pointer' }}>
                           <Camera size={12} />
@@ -679,13 +890,210 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
       {consoleVm && (
         <ConsoleModal hostId={hostId} vm={consoleVm} onClose={() => setConsoleVm(null)} />
       )}
+      {actionPlan && (
+        <ChangePlanModal plan={actionPlan.plan} confirming={planConfirming} onConfirm={confirmActionPlan} onCancel={() => setActionPlan(null)} />
+      )}
+      {bulkPlan && (
+        <ChangePlanModal plan={bulkPlan.plan} confirming={bulkConfirming} onConfirm={confirmBulkStop} onCancel={() => setBulkPlan(null)} />
+      )}
     </div>
+  )
+}
+
+// ── Storage content upload modal ─────────────────────────────────────────────
+
+function UploadContentModal({ hostId, node, storage, onClose, onDone }: {
+  hostId: string; node: string; storage: string; onClose: () => void; onDone: () => void
+}) {
+  const [file, setFile] = useState<File | null>(null)
+  const [contentType, setContentType] = useState<'iso' | 'vztmpl'>('iso')
+  const [uploading, setUploading] = useState(false)
+
+  const handleUpload = async () => {
+    if (!file) return
+    setUploading(true)
+    try {
+      const form = new FormData()
+      form.append('content', contentType)
+      form.append('filename', file, file.name)
+      const res = await fetch(`/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content`, {
+        method: 'POST', credentials: 'include', body: form,
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.error?.message ?? res.statusText)
+      }
+      notify.success(`Uploaded "${file.name}"`)
+      onDone(); onClose()
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : 'Upload failed')
+    } finally { setUploading(false) }
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={e => { if (e.target === e.currentTarget && !uploading) onClose() }}>
+      <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: 24, width: '100%', maxWidth: 380 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 16 }}>Upload to {storage}</h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>Content type</label>
+            <select value={contentType} onChange={e => setContentType(e.target.value as 'iso' | 'vztmpl')}
+              style={{ width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13, background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
+              <option value="iso">ISO image</option>
+              <option value="vztmpl">Container template</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>File</label>
+            <input type="file" accept={contentType === 'iso' ? '.iso' : '.tar.gz,.tar.zst,.tar.xz'} onChange={e => setFile(e.target.files?.[0] ?? null)}
+              style={{ width: '100%', fontSize: 12, color: 'var(--text-secondary)' }} />
+          </div>
+          {file && <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>{file.name} — {fmtBytes(file.size)}</p>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <Button size="sm" variant="primary" disabled={!file} loading={uploading} onClick={handleUpload}>Upload</Button>
+            <Button size="sm" variant="ghost" onClick={onClose} disabled={uploading}>Cancel</Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Storage pool row (expandable content browser) ────────────────────────────
+
+function StoragePoolRow({ hostId, pool }: { hostId: string; pool: PveStorage }) {
+  const [open, setOpen] = useState(false)
+  const [content, setContent] = useState<PveStorageContent[]>([])
+  const [loading, setLoading] = useState(false)
+  const [showUpload, setShowUpload] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [delPlan, setDelPlan] = useState<{ volid: string; plan: ChangePlan } | null>(null)
+  const [confirming, setConfirming] = useState(false)
+
+  const node = pool.node ?? ''
+
+  const load = useCallback(async () => {
+    if (!node) return
+    setLoading(true)
+    try {
+      const list = await api.proxmox.getStorageContent(hostId, node, pool.storage)
+      setContent(Array.isArray(list) ? list : [])
+    } catch { setContent([]) }
+    finally { setLoading(false) }
+  }, [hostId, node, pool.storage])
+
+  const toggle = () => {
+    if (!open) load()
+    setOpen(o => !o)
+  }
+
+  const requestDelete = async (volid: string) => {
+    setBusy(volid)
+    try {
+      const res = await api.proxmox.deleteStorageContentPlan(hostId, node, pool.storage, volid)
+      setDelPlan({ volid, plan: res.plan })
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
+    finally { setBusy(null) }
+  }
+
+  const confirmDelete = async () => {
+    if (!delPlan) return
+    setConfirming(true)
+    try {
+      await api.proxmox.deleteStorageContent(hostId, node, pool.storage, delPlan.volid)
+      notify.success('Deleted')
+      setDelPlan(null)
+      await load()
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Delete failed') }
+    finally { setConfirming(false) }
+  }
+
+  const p_used = pct(pool.used, pool.total)
+  const barColor = p_used > 85 ? 'var(--accent-danger)' : p_used > 60 ? 'var(--accent-warning)' : 'var(--accent-success)'
+  const active = pool.active || (pool as unknown as Record<string, unknown>)['active'] === 1
+
+  return (
+    <>
+      <tr style={{ borderBottom: open ? 'none' : '1px solid var(--border-subtle)', cursor: node ? 'pointer' : 'default' }} onClick={node ? toggle : undefined}>
+        <td style={{ padding: '10px 12px', color: 'var(--text-primary)', fontWeight: 500, fontFamily: 'monospace' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {node && (open ? <ChevronDown size={12} style={{ color: 'var(--text-muted)' }} /> : <ChevronRight size={12} style={{ color: 'var(--text-muted)' }} />)}
+            {pool.storage}
+            {!node && <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'sans-serif' }} title="No node assigned — content browsing unavailable">(no node)</span>}
+          </span>
+        </td>
+        <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{pool.type}</td>
+        <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{fmtBytes(pool.used)}</td>
+        <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{fmtBytes(pool.avail)}</td>
+        <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{fmtBytes(pool.total)}</td>
+        <td style={{ padding: '10px 12px', minWidth: 120 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ flex: 1, height: 5, borderRadius: 3, background: 'var(--bg-base)' }}>
+              <div style={{ height: '100%', width: `${p_used}%`, borderRadius: 3, background: barColor }} />
+            </div>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 32, textAlign: 'right' }}>{p_used.toFixed(0)}%</span>
+          </div>
+        </td>
+        <td style={{ padding: '10px 12px' }}>
+          <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, background: active ? 'var(--accent-success-subtle)' : 'var(--bg-elevated)', color: active ? 'var(--accent-success)' : 'var(--text-muted)' }}>
+            {active ? 'active' : 'inactive'}
+          </span>
+        </td>
+      </tr>
+      {open && (
+        <tr>
+          <td colSpan={7} style={{ padding: '8px 12px 12px 30px', background: 'var(--bg-base)', borderBottom: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Content ({content.length})</span>
+              <button onClick={e => { e.stopPropagation(); setShowUpload(true) }}
+                style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--accent-primary)', cursor: 'pointer' }}>
+                <Upload size={10} /> Upload
+              </button>
+            </div>
+            {loading && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</span>}
+            {!loading && content.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No content.</span>}
+            {!loading && content.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    {['Volume', 'Type', 'Size', 'Created', ''].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '3px 8px', color: 'var(--text-muted)', fontWeight: 500, fontSize: 11 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {content.map(c => (
+                    <tr key={c.volid}>
+                      <td style={{ padding: '4px 8px', color: 'var(--text-primary)', fontFamily: 'monospace', maxWidth: '22rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.volid}>{c.volid}</td>
+                      <td style={{ padding: '4px 8px', color: 'var(--text-muted)' }}>{c.content}{c.vmid ? ` (VM ${c.vmid})` : ''}</td>
+                      <td style={{ padding: '4px 8px', color: 'var(--text-muted)' }}>{fmtBytes(c.size)}</td>
+                      <td style={{ padding: '4px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{c.ctime ? fmtRelTime(c.ctime) : '—'}</td>
+                      <td style={{ padding: '4px 8px' }}>
+                        <button disabled={busy !== null} onClick={() => requestDelete(c.volid)}
+                          style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--accent-danger)', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.5 : 1 }}>
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </td>
+        </tr>
+      )}
+      {showUpload && <UploadContentModal hostId={hostId} node={node} storage={pool.storage} onClose={() => setShowUpload(false)} onDone={load} />}
+      {delPlan && (
+        <ChangePlanModal plan={delPlan.plan} confirming={confirming} onConfirm={confirmDelete} onCancel={() => setDelPlan(null)} />
+      )}
+    </>
   )
 }
 
 // ── Storage table ─────────────────────────────────────────────────────────────
 
-function StorageTable({ pools }: { pools: PveStorage[] }) {
+function StorageTable({ hostId, pools }: { hostId: string; pools: PveStorage[] }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -697,37 +1105,319 @@ function StorageTable({ pools }: { pools: PveStorage[] }) {
           </tr>
         </thead>
         <tbody>
-          {pools.map(p => {
-            const p_used = pct(p.used, p.total)
-            const barColor = p_used > 85 ? 'var(--accent-danger)' : p_used > 60 ? 'var(--accent-warning)' : 'var(--accent-success)'
-            const active = p.active || (p as unknown as Record<string, unknown>)['active'] === 1
-            return (
-              <tr key={p.storage} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                <td style={{ padding: '10px 12px', color: 'var(--text-primary)', fontWeight: 500, fontFamily: 'monospace' }}>{p.storage}</td>
-                <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{p.type}</td>
-                <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{fmtBytes(p.used)}</td>
-                <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{fmtBytes(p.avail)}</td>
-                <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{fmtBytes(p.total)}</td>
-                <td style={{ padding: '10px 12px', minWidth: 120 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <div style={{ flex: 1, height: 5, borderRadius: 3, background: 'var(--bg-base)' }}>
-                      <div style={{ height: '100%', width: `${p_used}%`, borderRadius: 3, background: barColor }} />
-                    </div>
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 32, textAlign: 'right' }}>{p_used.toFixed(0)}%</span>
-                  </div>
-                </td>
-                <td style={{ padding: '10px 12px' }}>
-                  <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, background: active ? 'var(--accent-success-subtle)' : 'var(--bg-elevated)', color: active ? 'var(--accent-success)' : 'var(--text-muted)' }}>
-                    {active ? 'active' : 'inactive'}
-                  </span>
-                </td>
-              </tr>
-            )
-          })}
+          {pools.map(p => <StoragePoolRow key={p.storage} hostId={hostId} pool={p} />)}
         </tbody>
       </table>
       {pools.length === 0 && (
         <div style={{ padding: '32px 12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>No storage pools found.</div>
+      )}
+    </div>
+  )
+}
+
+// ── SMART data modal ──────────────────────────────────────────────────────────
+
+function SmartModal({ disk, data, onClose }: { disk: PveDisk; data: Record<string, unknown>; onClose: () => void }) {
+  const text = typeof data.text === 'string' ? data.text : null
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: 24, width: '100%', maxWidth: 560, maxHeight: '70vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>SMART — {disk.devpath}</h2>
+          <button onClick={onClose} style={{ marginLeft: 'auto', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={16} /></button>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
+          {disk.model ?? '—'} {disk.serial ? `· S/N ${disk.serial}` : ''} {disk.health ? `· health: ${disk.health}` : ''}
+        </p>
+        <pre style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
+          {text ?? JSON.stringify(data, null, 2)}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+// ── Initialize disk as storage modal ─────────────────────────────────────────
+
+function InitDiskModal({ hostId, node, disk, onClose, onDone }: {
+  hostId: string; node: string; disk: PveDisk; onClose: () => void; onDone: () => void
+}) {
+  const [fstype, setFstype] = useState('directory')
+  const [name, setName] = useState('')
+  const [raidlevel, setRaidlevel] = useState('single')
+  const [fetching, setFetching] = useState(false)
+  const [plan, setPlan] = useState<ChangePlan | null>(null)
+  const [confirming, setConfirming] = useState(false)
+
+  const review = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) return
+    setFetching(true)
+    try {
+      const res = await api.proxmox.initDiskPlan(hostId, node, disk.devpath, fstype, name.trim(), fstype === 'zfs' ? raidlevel : undefined)
+      setPlan(res.plan)
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
+    finally { setFetching(false) }
+  }
+
+  const confirm = async () => {
+    setConfirming(true)
+    try {
+      await api.proxmox.initDisk(hostId, node, disk.devpath, fstype, name.trim(), fstype === 'zfs' ? raidlevel : undefined)
+      notify.success(`Disk ${disk.devpath} initialized as "${name.trim()}"`)
+      onDone(); onClose()
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Initialize failed') }
+    finally { setConfirming(false) }
+  }
+
+  if (plan) {
+    return <ChangePlanModal plan={plan} confirming={confirming} onConfirm={confirm} onCancel={() => setPlan(null)} />
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: 24, width: '100%', maxWidth: 380 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 16 }}>Initialize {disk.devpath} as storage</h2>
+        <form onSubmit={review} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>Filesystem</label>
+            <select value={fstype} onChange={e => setFstype(e.target.value)}
+              style={{ width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13, background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
+              <option value="directory">Directory (ext4)</option>
+              <option value="lvm">LVM</option>
+              <option value="lvmthin">LVM-Thin</option>
+              <option value="zfs">ZFS</option>
+            </select>
+          </div>
+          {fstype === 'zfs' && (
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>RAID level</label>
+              <select value={raidlevel} onChange={e => setRaidlevel(e.target.value)}
+                style={{ width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13, background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
+                <option value="single">Single disk</option>
+                <option value="mirror">Mirror</option>
+              </select>
+            </div>
+          )}
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>Storage name</label>
+            <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="new-storage" required
+              style={{ width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13, background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <Button type="submit" size="sm" variant="primary" loading={fetching}>Review &amp; Initialize</Button>
+            <Button type="button" size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ── Disk passthrough modal ────────────────────────────────────────────────────
+
+function PassthroughModal({ hostId, disk, vms, onClose, onDone }: {
+  hostId: string; disk: PveDisk; vms: PveVm[]; onClose: () => void; onDone: () => void
+}) {
+  const qemuVms = vms.filter(v => v.type === 'qemu')
+  const [vmid, setVmid] = useState<number | ''>('')
+  const [bus, setBus] = useState('scsi1')
+  const [fetching, setFetching] = useState(false)
+  const [plan, setPlan] = useState<ChangePlan | null>(null)
+  const [confirming, setConfirming] = useState(false)
+
+  const BUS_RE = /^(scsi|ide|sata|virtio)\d+$/
+
+  const review = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!vmid) return
+    if (!BUS_RE.test(bus)) {
+      notify.error('Bus slot must be scsiN, ideN, sataN, or virtioN (e.g. scsi1)')
+      return
+    }
+    setFetching(true)
+    try {
+      const res = await api.proxmox.diskPassthroughPlan(hostId, vmid, disk.devpath, bus)
+      setPlan(res.plan)
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
+    finally { setFetching(false) }
+  }
+
+  const confirm = async () => {
+    if (!vmid) return
+    setConfirming(true)
+    try {
+      await api.proxmox.diskPassthrough(hostId, vmid, disk.devpath, bus)
+      notify.success(`${disk.devpath} attached to VM ${vmid} as ${bus}`)
+      onDone(); onClose()
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Attach failed') }
+    finally { setConfirming(false) }
+  }
+
+  if (plan) {
+    return <ChangePlanModal plan={plan} confirming={confirming} onConfirm={confirm} onCancel={() => setPlan(null)} />
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: 24, width: '100%', maxWidth: 380 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 16 }}>Attach {disk.devpath} to a VM</h2>
+        <form onSubmit={review} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>Target VM (QEMU only)</label>
+            <select value={vmid} onChange={e => setVmid(e.target.value ? Number(e.target.value) : '')} required
+              style={{ width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13, background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
+              <option value="">Select a VM…</option>
+              {qemuVms.map(v => <option key={v.vmid} value={v.vmid}>{v.name ?? `VM ${v.vmid}`} ({v.vmid})</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>Bus / slot</label>
+            <input value={bus} onChange={e => setBus(e.target.value)} placeholder="scsi1" required
+              style={{ width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13, background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <Button type="submit" size="sm" variant="primary" loading={fetching} disabled={!vmid}>Review &amp; Attach</Button>
+            <Button type="button" size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ── Physical disks panel ──────────────────────────────────────────────────────
+
+function DisksPanel({ hostId, nodes, vms }: { hostId: string; nodes: PveNode[]; vms: PveVm[] }) {
+  const [node, setNode] = useState(nodes[0]?.node ?? '')
+  const [disks, setDisks] = useState<PveDisk[]>([])
+  const [loading, setLoading] = useState(false)
+  const [smart, setSmart] = useState<{ disk: PveDisk; data: Record<string, unknown> } | null>(null)
+  const [smartLoading, setSmartLoading] = useState<string | null>(null)
+  const [wipePlan, setWipePlan] = useState<{ disk: PveDisk; plan: ChangePlan } | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const [initDisk, setInitDisk] = useState<PveDisk | null>(null)
+  const [passthroughDisk, setPassthroughDisk] = useState<PveDisk | null>(null)
+
+  useEffect(() => {
+    if (!node && nodes[0]) setNode(nodes[0].node)
+  }, [nodes, node])
+
+  const load = useCallback(async () => {
+    if (!node) return
+    setLoading(true)
+    try {
+      const list = await api.proxmox.getDisks(hostId, node)
+      setDisks(Array.isArray(list) ? list : [])
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to load disks')
+      setDisks([])
+    } finally { setLoading(false) }
+  }, [hostId, node])
+
+  useEffect(() => { load() }, [load])
+
+  const viewSmart = async (disk: PveDisk) => {
+    setSmartLoading(disk.devpath)
+    try {
+      const data = await api.proxmox.getDiskSmart(hostId, node, disk.devpath)
+      setSmart({ disk, data })
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch SMART data') }
+    finally { setSmartLoading(null) }
+  }
+
+  const requestWipe = async (disk: PveDisk) => {
+    try {
+      const res = await api.proxmox.wipeDiskPlan(hostId, node, disk.devpath)
+      setWipePlan({ disk, plan: res.plan })
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
+  }
+
+  const confirmWipe = async () => {
+    if (!wipePlan) return
+    setConfirming(true)
+    try {
+      await api.proxmox.wipeDisk(hostId, node, wipePlan.disk.devpath)
+      notify.success(`Wiping ${wipePlan.disk.devpath}`)
+      setWipePlan(null)
+      await load()
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Wipe failed') }
+    finally { setConfirming(false) }
+  }
+
+  return (
+    <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {nodes.length > 1 && (
+        <select value={node} onChange={e => setNode(e.target.value)}
+          style={{ alignSelf: 'flex-start', padding: '6px 10px', borderRadius: 6, fontSize: 12, background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
+          {nodes.map(n => <option key={n.node} value={n.node}>{n.node}</option>)}
+        </select>
+      )}
+      {loading && <div style={{ padding: '32px 12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>}
+      {!loading && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                {['Device', 'Model', 'Size', 'Type', 'Used by', 'Health', ''].map(h => (
+                  <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {disks.map(d => {
+                const healthStr = (d.health ?? '').toUpperCase()
+                const healthOk = !d.health || healthStr.includes('PASSED') || healthStr === 'OK'
+                return (
+                  <tr key={d.devpath} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-primary)', fontFamily: 'monospace', fontWeight: 500 }}>{d.devpath}</td>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12, maxWidth: '14rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.model}>{d.model ?? '—'}</td>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontSize: 12 }}>{fmtBytes(d.size)}</td>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{d.type ?? '—'}</td>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 12 }}>{d.used || '—'}</td>
+                    <td style={{ padding: '10px 12px' }}>
+                      <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, background: healthOk ? 'var(--accent-success-subtle)' : 'var(--accent-danger-subtle)', color: healthOk ? 'var(--accent-success)' : 'var(--accent-danger)' }}>
+                        {d.health ?? 'unknown'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '10px 12px' }}>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        <button disabled={smartLoading !== null} onClick={() => viewSmart(d)}
+                          style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-secondary)', cursor: smartLoading ? 'not-allowed' : 'pointer' }}>
+                          SMART
+                        </button>
+                        <button onClick={() => setInitDisk(d)}
+                          style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--accent-primary)', cursor: 'pointer' }}>
+                          Initialize
+                        </button>
+                        <button onClick={() => setPassthroughDisk(d)}
+                          style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--accent-warning)', cursor: 'pointer' }}>
+                          Passthrough
+                        </button>
+                        <button onClick={() => requestWipe(d)}
+                          style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--accent-danger)', cursor: 'pointer' }}>
+                          Wipe
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {disks.length === 0 && (
+            <div style={{ padding: '32px 12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>No physical disks found.</div>
+          )}
+        </div>
+      )}
+      {smart && <SmartModal disk={smart.disk} data={smart.data} onClose={() => setSmart(null)} />}
+      {initDisk && <InitDiskModal hostId={hostId} node={node} disk={initDisk} onClose={() => setInitDisk(null)} onDone={load} />}
+      {passthroughDisk && <PassthroughModal hostId={hostId} disk={passthroughDisk} vms={vms} onClose={() => setPassthroughDisk(null)} onDone={load} />}
+      {wipePlan && (
+        <ChangePlanModal plan={wipePlan.plan} confirming={confirming} onConfirm={confirmWipe} onCancel={() => setWipePlan(null)} />
       )}
     </div>
   )
@@ -891,8 +1581,14 @@ function HostPanel({ host }: { host: ProxmoxHost }) {
     } catch { /* non-critical */ }
   }, [])
 
+  const hasLoadedRef = useRef(false)
+
   const fetchAll = useCallback(async () => {
-    setLoading(true); setError(null)
+    // Only show the full-page loading state on the very first load — background
+    // polling refreshes (every) 5s) must update data in place without unmounting
+    // the panel, or expanded rows / selections / open modals reset on every tick.
+    if (!hasLoadedRef.current) setLoading(true)
+    setError(null)
     try {
       const [n, v, s, t] = await Promise.all([
         api.proxmox.getNodes(host.id),
@@ -904,15 +1600,20 @@ function HostPanel({ host }: { host: ProxmoxHost }) {
       setVms(Array.isArray(v) ? v : [])
       setStorage(Array.isArray(s) ? s : [])
       setTasks(Array.isArray(t) ? t : [])
+      hasLoadedRef.current = true
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : 'Failed to load data')
+      const message = err instanceof ApiClientError ? err.message : 'Failed to load data'
+      // A transient failure on a background poll shouldn't blow away an already-loaded
+      // panel (and any open modals/expanded rows in it) — only the first load fails hard.
+      if (!hasLoadedRef.current) setError(message)
+      else notify.error(message)
     } finally { setLoading(false) }
   }, [host.id])
 
   useEffect(() => {
     fetchAll()
     fetchTags()
-    const id = setInterval(fetchAll, 15_000)
+    const id = setInterval(fetchAll, 10_000)
     return () => clearInterval(id)
   }, [fetchAll, fetchTags])
 
@@ -943,9 +1644,9 @@ function HostPanel({ host }: { host: ProxmoxHost }) {
 
       <div>
         <div style={{ display: 'flex', gap: 4, marginBottom: 0, borderBottom: '1px solid var(--border-subtle)', paddingBottom: 10 }}>
-          {(['vms', 'storage', 'tasks', 'backups'] as HostTab[]).map(t => (
+          {(['vms', 'storage', 'disks', 'tasks', 'backups'] as HostTab[]).map(t => (
             <button key={t} onClick={() => setTab(t)} style={{ padding: '5px 16px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 500, background: tab === t ? 'var(--accent-primary)' : 'transparent', color: tab === t ? '#fff' : 'var(--text-secondary)', transition: 'background 0.15s' }}>
-              {t === 'vms' ? `VMs & LXCs (${vms.length})` : t === 'storage' ? `Storage (${storage.length})` : t === 'tasks' ? `Tasks (${tasks.length})` : 'Backups'}
+              {t === 'vms' ? `VMs & LXCs (${vms.length})` : t === 'storage' ? `Storage (${storage.length})` : t === 'disks' ? 'Disks' : t === 'tasks' ? `Tasks (${tasks.length})` : 'Backups'}
             </button>
           ))}
           <button onClick={fetchAll} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}>
@@ -955,7 +1656,8 @@ function HostPanel({ host }: { host: ProxmoxHost }) {
 
         <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderTop: 'none', borderRadius: '0 0 8px 8px', overflow: 'hidden' }}>
           {tab === 'vms'     && <VmsTable hostId={host.id} vms={vms} tagsMap={tagsMap} allTags={allTags} onRefresh={fetchAll} onTagsChange={fetchTags} />}
-          {tab === 'storage' && <StorageTable pools={storage} />}
+          {tab === 'storage' && <StorageTable hostId={host.id} pools={storage} />}
+          {tab === 'disks'   && <DisksPanel hostId={host.id} nodes={nodes} vms={vms} />}
           {tab === 'tasks'   && <TasksTable tasks={tasks} />}
           {tab === 'backups' && <BackupsPanel hostId={host.id} />}
         </div>

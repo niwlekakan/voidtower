@@ -1,9 +1,13 @@
-import { useEffect, useState, useCallback } from 'react'
-import { Play, Square, RotateCcw, Server, Database, ClipboardList } from 'lucide-react'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { Play, Square, RotateCcw, Server, Database, ClipboardList, Camera, Monitor, RotateCw, Trash2 } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
-import type { ProxmoxHost, PveVm, PveStorage, PveTask } from '@/api/types'
+import { ConsoleModal } from '@/pages/ProxmoxPage'
+import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
+import { api, ApiClientError } from '@/api/client'
+import { notify } from '@/store/notifications'
+import type { ProxmoxHost, PveVm, PveStorage, PveTask, PveSnapshot } from '@/api/types'
 
-type Tab = 'vms' | 'storage' | 'tasks'
+type Tab = 'vms' | 'storage' | 'tasks' | 'snapshots'
 
 function vmColor(s: string) {
   return s === 'running' ? '#22c55e' : s === 'stopped' ? '#94a3b8' : '#f59e0b'
@@ -40,6 +44,11 @@ export default function NativeProxmoxPanel() {
   const [tasks, setTasks] = useState<PveTask[]>([])
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState<string | null>(null)
+  const [consoleVm, setConsoleVm] = useState<PveVm | null>(null)
+  const [snapshots, setSnapshots] = useState<Record<number, PveSnapshot[]>>({})
+  const [snapLoading, setSnapLoading] = useState(false)
+  const [snapPlan, setSnapPlan] = useState<{ vmid: number; action: 'rollback' | 'delete'; snapname: string; plan: ChangePlan } | null>(null)
+  const [snapConfirming, setSnapConfirming] = useState(false)
 
   useEffect(() => {
     fetch('/api/proxmox/hosts', { credentials: 'include' })
@@ -51,9 +60,11 @@ export default function NativeProxmoxPanel() {
       })
   }, [])
 
+  const hasLoadedRef = useRef(false)
+
   const fetchAll = useCallback(async () => {
     if (!activeHost) return
-    setLoading(true)
+    if (!hasLoadedRef.current) setLoading(true)
     try {
       const [rv, rs, rt] = await Promise.all([
         fetch(`/api/proxmox/${activeHost}/vms`, { credentials: 'include' }),
@@ -63,6 +74,7 @@ export default function NativeProxmoxPanel() {
       if (rv.ok) setVms(await rv.json())
       if (rs.ok) setStorage(await rs.json())
       if (rt.ok) setTasks(await rt.json())
+      hasLoadedRef.current = true
     } finally {
       setLoading(false)
     }
@@ -71,7 +83,7 @@ export default function NativeProxmoxPanel() {
   useEffect(() => {
     if (activeHost) {
       fetchAll()
-      const t = setInterval(fetchAll, 15_000)
+      const t = setInterval(fetchAll, 10_000)
       return () => clearInterval(t)
     }
   }, [activeHost, fetchAll])
@@ -87,6 +99,61 @@ export default function NativeProxmoxPanel() {
     } finally {
       setActing(null)
     }
+  }
+
+  const vmsRef = useRef<PveVm[]>([])
+  vmsRef.current = vms
+
+  const fetchSnapshots = useCallback(async () => {
+    if (!activeHost || vmsRef.current.length === 0) return
+    setSnapLoading(true)
+    try {
+      const entries = await Promise.all(vmsRef.current.map(async vm => {
+        try {
+          const list = await api.proxmox.getSnapshots(activeHost, vm.vmid, (vm.type ?? 'qemu') as 'qemu' | 'lxc')
+          return [vm.vmid, list.filter(s => s.name !== 'current')] as const
+        } catch { return [vm.vmid, []] as const }
+      }))
+      setSnapshots(Object.fromEntries(entries))
+    } finally {
+      setSnapLoading(false)
+    }
+  }, [activeHost])
+
+  useEffect(() => {
+    if (tab === 'snapshots') fetchSnapshots()
+  }, [tab, fetchSnapshots])
+
+  async function requestRollback(vmid: number, snapname: string) {
+    try {
+      const res = await api.proxmox.rollbackSnapshotPlan(activeHost, vmid, snapname)
+      setSnapPlan({ vmid, action: 'rollback', snapname, plan: res.plan })
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
+  }
+
+  async function requestDelete(vmid: number, snapname: string) {
+    try {
+      const res = await api.proxmox.deleteSnapshotPlan(activeHost, vmid, snapname)
+      setSnapPlan({ vmid, action: 'delete', snapname, plan: res.plan })
+    } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to fetch plan') }
+  }
+
+  async function confirmSnapPlan() {
+    if (!snapPlan) return
+    setSnapConfirming(true)
+    try {
+      if (snapPlan.action === 'rollback') {
+        await api.proxmox.rollbackSnapshot(activeHost, snapPlan.vmid, snapPlan.snapname)
+        notify.success(`Rollback to "${snapPlan.snapname}" queued`)
+      } else {
+        await api.proxmox.deleteSnapshot(activeHost, snapPlan.vmid, snapPlan.snapname)
+        notify.success(`Snapshot "${snapPlan.snapname}" deleted`)
+      }
+      setSnapPlan(null)
+      await fetchSnapshots()
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : `${snapPlan.action === 'rollback' ? 'Rollback' : 'Delete'} failed`)
+    } finally { setSnapConfirming(false) }
   }
 
   if (hosts.length === 0) {
@@ -127,6 +194,7 @@ export default function NativeProxmoxPanel() {
         <button style={tabStyle('vms')}    onClick={() => setTab('vms')}>    <Server size={9} style={{ display: 'inline', marginRight: 3 }} />VMs</button>
         <button style={tabStyle('storage')} onClick={() => setTab('storage')}><Database size={9} style={{ display: 'inline', marginRight: 3 }} />Storage</button>
         <button style={tabStyle('tasks')}  onClick={() => setTab('tasks')}>  <ClipboardList size={9} style={{ display: 'inline', marginRight: 3 }} />Tasks</button>
+        <button style={tabStyle('snapshots')} onClick={() => setTab('snapshots')}><Camera size={9} style={{ display: 'inline', marginRight: 3 }} />Snapshots</button>
       </div>
 
       {loading ? <LoadingState /> : (
@@ -147,6 +215,9 @@ export default function NativeProxmoxPanel() {
                 <IconBtn title="Start"  onClick={() => { if (!acting) vmAction(vm.vmid, 'start') }}><Play size={11} /></IconBtn>
                 <IconBtn title="Stop"   onClick={() => { if (!acting) vmAction(vm.vmid, 'stop') }}><Square size={11} /></IconBtn>
                 <IconBtn title="Reboot" onClick={() => { if (!acting) vmAction(vm.vmid, 'reboot') }}><RotateCcw size={11} /></IconBtn>
+                {vm.status === 'running' && (
+                  <IconBtn title="Console" onClick={() => setConsoleVm(vm)}><Monitor size={11} /></IconBtn>
+                )}
               </NativeRow>
             ))
           )}
@@ -187,7 +258,37 @@ export default function NativeProxmoxPanel() {
               </NativeRow>
             ))
           )}
+
+          {tab === 'snapshots' && (
+            snapLoading ? <LoadingState /> :
+            Object.values(snapshots).every(s => s.length === 0) ? <EmptyState text="No snapshots" /> :
+            vms.filter(vm => (snapshots[vm.vmid] ?? []).length > 0).map(vm => (
+              <div key={vm.vmid}>
+                <div style={{ fontSize: 9, color: 'var(--text-muted)', padding: '4px 8px 0', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  {vm.name ?? vm.vmid}
+                </div>
+                {(snapshots[vm.vmid] ?? []).map(s => (
+                  <NativeRow key={`${vm.vmid}-${s.name}`}>
+                    <Camera size={11} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+                      {s.description && <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{s.description}</div>}
+                    </div>
+                    <IconBtn title="Rollback" onClick={() => requestRollback(vm.vmid, s.name)}><RotateCw size={11} /></IconBtn>
+                    <IconBtn title="Delete" onClick={() => requestDelete(vm.vmid, s.name)}><Trash2 size={11} /></IconBtn>
+                  </NativeRow>
+                ))}
+              </div>
+            ))
+          )}
         </>
+      )}
+
+      {consoleVm && (
+        <ConsoleModal hostId={activeHost} vm={consoleVm} onClose={() => setConsoleVm(null)} />
+      )}
+      {snapPlan && (
+        <ChangePlanModal plan={snapPlan.plan} confirming={snapConfirming} onConfirm={confirmSnapPlan} onCancel={() => setSnapPlan(null)} />
       )}
     </NativePanelShell>
   )

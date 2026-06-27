@@ -479,21 +479,68 @@ export const api = {
     getVms:     (hostId: string) => request<import('./types').PveVm[]>(`/api/proxmox/${hostId}/vms`),
     getStorage: (hostId: string) => request<import('./types').PveStorage[]>(`/api/proxmox/${hostId}/storage`),
     getTasks:   (hostId: string) => request<import('./types').PveTask[]>(`/api/proxmox/${hostId}/tasks`),
-    vmAction:     (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot') =>
+    vmAction:     (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot' | 'reset' | 'suspend' | 'resume') =>
       request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
+    vmActionPlan: (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot' | 'reset' | 'suspend') =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST', body: JSON.stringify({ dry_run: true }) }),
     getSnapshots: (hostId: string, vmid: number, kind: 'qemu' | 'lxc') =>
       request<import('./types').PveSnapshot[]>(`/api/proxmox/${hostId}/vms/${vmid}/snapshots?kind=${kind}`),
     createSnapshot: (hostId: string, vmid: number, name: string, desc: string) =>
       request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
+    createSnapshotPlan: (hostId: string, vmid: number, name: string, desc: string) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc, dry_run: true }) }),
     deleteSnapshot: (hostId: string, vmid: number, snapname: string) =>
       request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
+    deleteSnapshotPlan: (hostId: string, vmid: number, snapname: string) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE', body: JSON.stringify({ dry_run: true }) }),
     rollbackSnapshot: (hostId: string, vmid: number, snapname: string) =>
       request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
+    rollbackSnapshotPlan: (hostId: string, vmid: number, snapname: string) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST', body: JSON.stringify({ dry_run: true }) }),
     vncProxy: (hostId: string, vmid: number) =>
       request<{ ticket: string; port: number; proxmox_host: string; node: string; kind: string; vmid: number }>(
         `/api/proxmox/${hostId}/vms/${vmid}/vncproxy`, { method: 'POST' }),
     getBackupJobs: (hostId: string) =>
       request<{ jobs: import('./types').PveBackupJob[]; archives: import('./types').PveBackupArchive[] }>(`/api/proxmox/${hostId}/backup-jobs`),
+    diskPassthroughPlan: (hostId: string, vmid: number, diskPath: string, bus: string) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus, dry_run: true }) }),
+    diskPassthrough: (hostId: string, vmid: number, diskPath: string, bus: string) =>
+      request<{ ok: boolean }>(`/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus }) }),
+
+    // Storage content browser
+    getStorageContent: (hostId: string, node: string, storage: string) =>
+      request<import('./types').PveStorageContent[]>(`/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content`),
+    deleteStorageContentPlan: (hostId: string, node: string, storage: string, volid: string) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content?volid=${encodeURIComponent(volid)}`,
+        { method: 'DELETE', body: JSON.stringify({ dry_run: true }) }),
+    deleteStorageContent: (hostId: string, node: string, storage: string, volid: string) =>
+      request<{ ok: boolean; task: string }>(
+        `/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content?volid=${encodeURIComponent(volid)}`,
+        { method: 'DELETE', body: JSON.stringify({ dry_run: false }) }),
+
+    // Physical disks
+    getDisks: (hostId: string, node: string) =>
+      request<import('./types').PveDisk[]>(`/api/proxmox/${hostId}/nodes/${node}/disks`),
+    getDiskSmart: (hostId: string, node: string, disk: string) =>
+      request<Record<string, unknown>>(`/api/proxmox/${hostId}/nodes/${node}/disks/smart?disk=${encodeURIComponent(disk)}`),
+    wipeDiskPlan: (hostId: string, node: string, disk: string) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/proxmox/${hostId}/nodes/${node}/disks/wipe`, { method: 'POST', body: JSON.stringify({ disk, dry_run: true }) }),
+    wipeDisk: (hostId: string, node: string, disk: string) =>
+      request<{ ok: boolean; task: string }>(
+        `/api/proxmox/${hostId}/nodes/${node}/disks/wipe`, { method: 'POST', body: JSON.stringify({ disk }) }),
+    initDiskPlan: (hostId: string, node: string, disk: string, fstype: string, name: string, raidlevel?: string) =>
+      request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
+        `/api/proxmox/${hostId}/nodes/${node}/disks/init`, { method: 'POST', body: JSON.stringify({ disk, fstype, name, raidlevel, dry_run: true }) }),
+    initDisk: (hostId: string, node: string, disk: string, fstype: string, name: string, raidlevel?: string) =>
+      request<{ ok: boolean; task: string }>(
+        `/api/proxmox/${hostId}/nodes/${node}/disks/init`, { method: 'POST', body: JSON.stringify({ disk, fstype, name, raidlevel }) }),
   },
 
   proxmoxDeploy: {

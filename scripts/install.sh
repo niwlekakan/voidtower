@@ -1700,6 +1700,9 @@ cmd_uninstall() {
   # App catalog
   rm -rf /usr/share/voidtower
 
+  # PATH symlink
+  rm -f "/usr/local/bin/${BINARY_NAME}"
+
   # VoidTower install dir (binary + frontend dist + llama.cpp)
   rm -rf "${VT_INSTALL_DIR}"
   success "Removed ${VT_INSTALL_DIR}"
@@ -1818,6 +1821,27 @@ cmd_reset() {
   show_token
 }
 
+# ─── PATH symlink ─────────────────────────────────────────────────────────────
+# Creates /usr/local/bin/voidtower → /opt/voidtower/voidtower so the CLI
+# management commands (voidtower user list, voidtower backup run, etc.) work
+# without prefixing the full install path.  Also handles TrueNAS Scale, which
+# uses /usr/local/bin as its primary admin PATH but installs the binary under
+# /opt.  The symlink is idempotent — safe to call on every update/repair.
+install_path_symlink() {
+  local target="${VT_INSTALL_DIR}/${BINARY_NAME}"
+  local link="/usr/local/bin/${BINARY_NAME}"
+
+  [[ -x "$target" ]] || { warn "Binary not found at ${target} — skipping PATH symlink"; return 1; }
+
+  # Remove any stale link or file at the destination before (re)creating it.
+  if [[ -e "$link" || -L "$link" ]]; then
+    rm -f "$link"
+  fi
+  ln -s "$target" "$link" \
+    && success "Symlink: ${link} → ${target}" \
+    || warn "Could not create ${link} — run CLI commands as: ${target} <subcommand>"
+}
+
 # ─── Repair ───────────────────────────────────────────────────────────────────
 cmd_repair() {
   step "Repair VoidTower"
@@ -1830,6 +1854,7 @@ cmd_repair() {
 
   install_catalog
   install_service
+  install_path_symlink
 
   chown -R "${VT_USER}:${VT_GROUP}" "$VT_DATA_DIR" "$VT_CONFIG_DIR" "$VT_INSTALL_DIR" 2>/dev/null || true
   chmod 750 "$VT_INSTALL_DIR"
@@ -1865,6 +1890,7 @@ cmd_update() {
   fi
 
   install_catalog
+  install_path_symlink
 
   [[ "$HAVE_SYSTEMD" == true ]] && {
     systemctl daemon-reload
@@ -1997,6 +2023,7 @@ main() {
     build_from_source
   fi
 
+  install_path_symlink
   install_catalog
   install_service
   setup_domain

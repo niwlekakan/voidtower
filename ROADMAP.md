@@ -397,7 +397,7 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 
 ## App Vault — Planned Apps
 
-**Corrected count: 52 apps present, not 40** (`ls app-vault/apps/*.yml | wc -l`). The original "already in vault" list also self-contradicted the table below — it listed `jitsi` and `matrix-synapse` as already present while the planned-apps table *also* listed "Matrix / Synapse" and "Jitsi" as not-yet-added. Both are removed from the planned table below since they're confirmed present.
+**Corrected count: 54 apps present** (`ls app-vault/apps/*.yml | wc -l`). The original "already in vault" list also self-contradicted the table below — it listed `jitsi` and `matrix-synapse` as already present while the planned-apps table *also* listed "Matrix / Synapse" and "Jitsi" as not-yet-added. Both are removed from the planned table below since they're confirmed present.
 
 Apps mentioned in `future_plan.md` section 21 that are **still not** in `app-vault/apps/`:
 
@@ -418,7 +418,7 @@ Apps mentioned in `future_plan.md` section 21 that are **still not** in `app-vau
 | Stable Diffusion WebUI | AI | `comfyui.yml` already covers Stable Diffusion via ComfyUI — a dedicated AUTOMATIC1111-style WebUI is still missing |
 | Whisper (standalone) | AI | `studio.rs`'s STT panel covers transcription in-app; a standalone deployable Whisper API container for other apps to call is still missing |
 
-Apps already in `app-vault/apps/` (52 present): adguardhome, authentik, bazarr, changedetection, code-server, comfyui, dozzle, eurooffice, flaresolverr, freshrss, gitea, gluetun, grafana, homeassistant, immich, jellyfin, jellyseerr, jitsi, kavita, lidarr, llama-cpp, matrix-synapse, mealie, minio, n8n, navidrome, nextcloud, nginx-proxy, odysseus, ollama, opencloud, open-webui, outline, paperless, pihole, portainer, prowlarr, qbittorrent, radarr, readarr, recyclarr, redroid, searxng, sonarr, stirling-pdf, syncthing, tailscale, uptime-kuma, vaultwarden, vikunja, wireguard-easy, youkidex.
+Apps already in `app-vault/apps/` (54 present): adguardhome, anythingllm, authentik, bazarr, changedetection, code-server, comfyui, dozzle, eurooffice, flaresolverr, freshrss, gitea, gluetun, grafana, homeassistant, immich, jellyfin, jellyseerr, jitsi, kavita, lidarr, librechat, llama-cpp, matrix-synapse, mealie, minio, n8n, navidrome, nextcloud, nginx-proxy, odysseus, ollama, opencloud, open-webui, outline, paperless, pihole, portainer, prowlarr, qbittorrent, radarr, readarr, recyclarr, redroid, searxng, sonarr, stirling-pdf, syncthing, tailscale, uptime-kuma, vaultwarden, vikunja, wireguard-easy, youkidex.
 
 A full Servarr media-management stack (`bazarr`, `flaresolverr`, `gluetun`, `jellyseerr`, `lidarr`, `prowlarr`, `qbittorrent`, `radarr`, `readarr`, `recyclarr`, `sonarr`) has landed since this doc was last written and isn't mentioned anywhere above it — worth its own "Media Automation" row in the Current State table rather than being buried in a flat app list.
 
@@ -436,7 +436,8 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 | SSE event stream (`/api/integrations/events`) | Implemented |
 | Webhook bridge (inbound, HMAC-signed, triggers automations) | Implemented |
 | Emergency disable all AI access | Implemented |
-| MCP server (built-in, tool-serving) | **Implemented** — `backend/src/api/mcp.rs` (commit `3a23ed3`), real JSON-RPC SSE+message server at `/api/mcp` + `/api/mcp/message` with 10 tools (`list_nodes`, `get_node_metrics`, `list_containers`, `list_services`, `list_alerts`, `get_container_logs`, `list_routes`, `read_file`, `search_code`, `get_template`). This row directly contradicted the "Known Issues" section elsewhere in this doc, which correctly says it's done — the `mcp_enabled` config flag in `integrations.rs` only gates whether Odysseus *advertises* MCP to itself, it isn't a stub for the server's existence. Studio's MCP tool panel (`studio::mcp_tools`/`mcp_invoke`) reuses the same tool set. |
+| MCP server (built-in, tool-serving) | **Implemented** — `backend/src/api/mcp.rs` (commit `3a23ed3`), real JSON-RPC SSE+message server at `/api/mcp` + `/api/mcp/message` with 13 tools (`list_nodes`, `get_node_metrics`, `list_containers`, `list_services`, `list_alerts`, `get_container_logs`, `list_routes`, `read_file`, `search_code`, `get_template`, `list_secrets`, `get_policy_rules`, `get_audit_log`). Studio's MCP tool panel (`studio::mcp_tools`/`mcp_invoke`) reuses the same tool set. |
+| App-specific MCP servers (standalone) | **Implemented** (`11bade2`) — `odysseus-mcp-servers/voidtower_server.py` expanded to 38 tools (proxy, firewall, VM lifecycle, App Vault deploy/undeploy, service logs, tags, status checks). 39 new per-app standalone Python MCP servers ship alongside it, one per App Vault catalog app, ~413 tools total. Each registers independently in Odysseus or any MCP client; see `docs/integrations/mcp-server.md`. |
 | "Send to Odysseus" buttons in UI | Implemented (copy-to-clipboard variant) — `SendToOdysseus.tsx`, wired into Alerts/Services/Containers; no full context-packaging-with-redaction yet |
 | AI approval queue / pending action UI | Not implemented |
 | Event stream webhook outbound push | Not implemented — SSE only |

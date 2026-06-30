@@ -1,0 +1,48 @@
+id: anythingllm
+name: AnythingLLM
+description: All-in-one AI assistant with RAG, agents, multi-user workspaces, and MCP tool support
+category: ai
+version_hint: "latest"
+icon: "🔮"
+compose:
+  services:
+    anythingllm:
+      image: mintplexlabs/anythingllm:latest
+      restart: unless-stopped
+      ports:
+        - "3001:3001"
+      volumes:
+        - anythingllm_storage:/app/server/storage
+      environment:
+        - SERVER_PORT=3001
+        - STORAGE_DIR=/app/server/storage
+        - JWT_SECRET=${JWT_SECRET}
+        - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+        - VIRTUAL_HOST=anythingllm.local
+        - VIRTUAL_PORT=3001
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - anythingllm
+  volumes:
+    anythingllm_storage:
+
+  networks:
+    vt-proxy:
+      external: true
+
+required_env:
+  - key: JWT_SECRET
+    description: "JWT signing secret for AnythingLLM sessions (auto-generated)"
+    generate: random_hex_32
+
+ai_integration:
+  level: native
+  description: "AnythingLLM exposes an OpenAI-compatible API endpoint — add it as a VoidTower AI provider at http://anythingllm:3001/api/openai"
+
+links:
+  home: https://anythingllm.com
+  docs: https://docs.anythingllm.com

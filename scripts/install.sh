@@ -1646,25 +1646,6 @@ print_summary() {
   echo
 }
 
-# ─── Odysseus offer (interactive, non-integrated path) ────────────────────────
-offer_odysseus() {
-  [[ "$WITH_ODYSSEUS" == true ]] && return  # already handled
-  command -v docker &>/dev/null || return 0
-  echo; echo -e "  ${BOLD}Install Odysseus AI workspace?${RESET}"
-  echo -e "  [1] Yes (Docker)  [2] Save custom workspace URL  [3] Skip"
-  local choice; read -rp "  Choice [1-3]: " choice
-  case "${choice:-3}" in
-    1) local ODYSSEUS_DIR="${VT_INSTALL_DIR}/odysseus"
-       git clone --depth 1 --branch "${ODYSSEUS_BRANCH}" "https://github.com/${ODYSSEUS_REPO}" "$ODYSSEUS_DIR" 2>/dev/null && \
-         printf 'APP_PORT=7000\nAPP_BIND=127.0.0.1\nAUTH_ENABLED=true\nOLLAMA_BASE_URL=http://host.docker.internal:${OLLAMA_PORT}\n' > "${ODYSSEUS_DIR}/.env" && \
-         docker compose -f "${ODYSSEUS_DIR}/docker-compose.yml" up -d 2>/dev/null && \
-         success "Odysseus running at http://localhost:7000" || \
-         warn "Odysseus Docker install failed. Install manually." ;;
-    2) local ws_url; read -rp "  Workspace URL: " ws_url
-       [[ -n "$ws_url" ]] && echo "VOIDTOWER_AI_WORKSPACE_URL=${ws_url}" >> "${VT_CONFIG_DIR}/llm.env" ;;
-  esac
-}
-
 # ─── Uninstall ────────────────────────────────────────────────────────────────
 cmd_uninstall() {
   step "Uninstall VoidTower"
@@ -2042,9 +2023,6 @@ main() {
 
   # Legacy llama.cpp AI (only when not using integrated path)
   setup_ai_legacy
-
-  # Offer Odysseus interactively (non-integrated path, AI done, Docker available)
-  [[ "$AI_SETUP_DONE" == true && "$WITH_ODYSSEUS" != true ]] && offer_odysseus
 
   # Generate bootstrap token (token is created on first run and stored in config_dir)
   info "Generating bootstrap token…"

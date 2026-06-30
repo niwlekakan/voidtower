@@ -1,0 +1,95 @@
+id: librechat
+name: LibreChat
+description: Multi-provider AI chat with OpenAI, Anthropic, Ollama, and built-in MCP client support
+category: ai
+version_hint: "latest"
+icon: "🗨️"
+compose:
+  services:
+    librechat:
+      image: ghcr.io/danny-avila/librechat:latest
+      restart: unless-stopped
+      ports:
+        - "3080:3080"
+      volumes:
+        - librechat_images:/app/client/public/images
+        - librechat_logs:/app/api/logs
+      environment:
+        - HOST=0.0.0.0
+        - PORT=3080
+        - MONGO_URI=mongodb://mongodb:27017/LibreChat
+        - MEILI_HOST=http://meilisearch:7700
+        - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
+        - JWT_SECRET=${JWT_SECRET}
+        - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+        - CREDS_KEY=${CREDS_KEY}
+        - CREDS_IV=${CREDS_IV}
+        - OPENAI_API_KEY=${OPENAI_API_KEY:-user_provided}
+        - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-user_provided}
+        - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+        - VIRTUAL_HOST=librechat.local
+        - VIRTUAL_PORT=3080
+      depends_on:
+        - mongodb
+        - meilisearch
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - librechat
+
+    mongodb:
+      image: mongo:7
+      restart: unless-stopped
+      volumes:
+        - librechat_mongo:/data/db
+      networks:
+        default: {}
+
+    meilisearch:
+      image: getmeili/meilisearch:v1.7
+      restart: unless-stopped
+      environment:
+        - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
+        - MEILI_NO_ANALYTICS=true
+      volumes:
+        - librechat_meili:/meili_data
+      networks:
+        default: {}
+
+  volumes:
+    librechat_images:
+    librechat_logs:
+    librechat_mongo:
+    librechat_meili:
+
+  networks:
+    vt-proxy:
+      external: true
+
+required_env:
+  - key: MEILI_MASTER_KEY
+    description: "Meilisearch master key for message search indexing (auto-generated)"
+    generate: random_hex_32
+  - key: JWT_SECRET
+    description: "JWT signing secret for LibreChat sessions (auto-generated)"
+    generate: random_hex_32
+  - key: JWT_REFRESH_SECRET
+    description: "JWT refresh token signing secret (auto-generated)"
+    generate: random_hex_32
+  - key: CREDS_KEY
+    description: "AES-256 key for encrypting stored API credentials (auto-generated, 32 bytes hex)"
+    generate: random_hex_32
+  - key: CREDS_IV
+    description: "AES-256 IV for encrypting stored API credentials (auto-generated)"
+    generate: random_hex_32
+
+ai_integration:
+  level: native
+  description: "LibreChat supports MCP tool calls natively — configure MCP servers in the LibreChat admin panel; add VoidTower AI providers as custom OpenAI-compatible endpoints"
+
+links:
+  home: https://librechat.ai
+  docs: https://docs.librechat.ai

@@ -75,7 +75,23 @@ GET  /api/models/ollama/create/:id
 ```
 GET  /api/ai/llama
 POST /api/ai/llama/unload
+POST /api/ai/ask              { query, context?, provider_id? }   → SSE stream
+GET  /api/ai/context
 ```
+
+## AI Providers
+
+```
+GET    /api/ai/providers
+POST   /api/ai/providers                { kind, name, base_url?, api_key_ref?, api_key_value?, model?, priority? }
+PUT    /api/ai/providers/:id            { name?, enabled?, base_url?, model?, priority?, api_key_value? }
+DELETE /api/ai/providers/:id
+GET    /api/ai/providers/:id/health
+```
+
+Valid `kind` values: `odysseus` · `openai` · `anthropic` · `local`.  
+The orchestrator picks the enabled provider with the lowest `priority` number. Pass `provider_id` in `/api/ai/ask` to pin a specific provider for that request.  
+API key values are stored in the `settings` table under the name given in `api_key_ref`.
 
 ## VMs
 

@@ -121,6 +121,11 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {
                     "app_id": {"type": "string", "description": "App ID from the catalog (e.g. 'nextcloud')"},
                     "project_name": {"type": "string", "description": "Optional Docker Compose project name"},
+                    "env_overrides": {
+                        "type": "object",
+                        "description": "Optional env var overrides (key/value pairs, e.g. {\"ADMIN_PASSWORD\": \"secret\"})",
+                        "additionalProperties": {"type": "string"},
+                    },
                 },
                 "required": ["app_id"],
             },
@@ -268,6 +273,142 @@ async def list_tools() -> list[types.Tool]:
             description="Get a high-level health summary: active alerts, failing status checks, and recent failures",
             inputSchema={"type": "object", "properties": {}},
         ),
+        types.Tool(
+            name="vt_get_service_logs",
+            description="Get recent log lines from a systemd service",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Service name (e.g. nginx)"},
+                    "tail": {"type": "integer", "default": 100, "description": "Number of lines to return"},
+                },
+                "required": ["name"],
+            },
+        ),
+        types.Tool(
+            name="vt_list_proxies",
+            description="List all nginx reverse proxy rules with their domain, upstream, SSL status, and enabled state",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_toggle_proxy",
+            description="Enable or disable a specific nginx reverse proxy rule",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Proxy rule ID"},
+                },
+                "required": ["id"],
+            },
+        ),
+        types.Tool(
+            name="vt_list_firewall_rules",
+            description="List all active firewall rules (ufw/firewalld/iptables depending on what is installed)",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_list_app_catalog",
+            description="List all apps available in the App Vault catalog (installable one-click apps)",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_get_app_status",
+            description="Get the current status and container health of a deployed App Vault application",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "App project name (as shown in deployed apps list)"},
+                },
+                "required": ["name"],
+            },
+        ),
+        types.Tool(
+            name="vt_get_app_logs",
+            description="Get recent log lines from a deployed App Vault application",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "App project name"},
+                    "tail": {"type": "integer", "default": 100, "description": "Number of lines to return"},
+                },
+                "required": ["name"],
+            },
+        ),
+        types.Tool(
+            name="vt_control_app",
+            description="Start, stop, restart, or redeploy a deployed App Vault application",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "App project name"},
+                    "action": {"type": "string", "enum": ["start", "stop", "restart", "redeploy"]},
+                },
+                "required": ["name", "action"],
+            },
+        ),
+        types.Tool(
+            name="vt_get_app_compose",
+            description="Read the Docker Compose file for a deployed App Vault application",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "App project name"},
+                },
+                "required": ["name"],
+            },
+        ),
+        types.Tool(
+            name="vt_update_app_compose",
+            description="Replace the Docker Compose file for a deployed App Vault application. Changes take effect on next redeploy.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "App project name"},
+                    "content": {"type": "string", "description": "Full YAML content of the new compose file"},
+                },
+                "required": ["name", "content"],
+            },
+        ),
+        types.Tool(
+            name="vt_remove_app",
+            description="Remove a deployed App Vault application (removes config only — data on disk is not deleted)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "App project name"},
+                },
+                "required": ["name"],
+            },
+        ),
+        types.Tool(
+            name="vt_list_vms",
+            description="List all Proxmox virtual machines and LXC containers across all configured Proxmox hosts",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_control_vm",
+            description="Start, stop, reboot, or shutdown a Proxmox VM or LXC container",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "vmid": {"type": "integer", "description": "VM or container ID (e.g. 100)"},
+                    "kind": {"type": "string", "enum": ["qemu", "lxc"], "description": "VM type: qemu for VMs, lxc for containers"},
+                    "node": {"type": "string", "description": "Proxmox node name"},
+                    "action": {"type": "string", "enum": ["start", "stop", "reboot", "shutdown"]},
+                },
+                "required": ["vmid", "kind", "node", "action"],
+            },
+        ),
+        types.Tool(
+            name="vt_list_status_checks",
+            description="List all HTTP/TCP status checks and their current up/down state",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="vt_list_tags",
+            description="List all resource tags defined in VoidTower",
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 
@@ -305,6 +446,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 return _text(await vt_post("/api/apps/deploy", {
                     "app_id": arguments["app_id"],
                     "project_name": arguments.get("project_name"),
+                    "env_overrides": arguments.get("env_overrides"),
                 }))
 
             case "vt_create_proxy":
@@ -391,6 +533,66 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     "failing_checks": len(failing),
                     "failing": failing,
                 })
+
+            case "vt_get_service_logs":
+                tail = arguments.get("tail", 100)
+                data = await vt_get(f"/api/services/{arguments['name']}/logs", params={"tail": tail})
+                lines = data.get("lines", []) if isinstance(data, dict) else data
+                return [types.TextContent(type="text", text="\n".join(lines) if isinstance(lines, list) else str(lines))]
+
+            case "vt_list_proxies":
+                return _text(await vt_get("/api/proxy"))
+
+            case "vt_toggle_proxy":
+                return _text(await vt_post(f"/api/proxy/{arguments['id']}/toggle"))
+
+            case "vt_list_firewall_rules":
+                return _text(await vt_get("/api/firewall"))
+
+            case "vt_list_app_catalog":
+                return _text(await vt_get("/api/apps/catalog"))
+
+            case "vt_get_app_status":
+                return _text(await vt_get(f"/api/apps/{arguments['name']}/status"))
+
+            case "vt_get_app_logs":
+                tail = arguments.get("tail", 100)
+                data = await vt_get(f"/api/apps/{arguments['name']}/logs", params={"tail": tail})
+                lines = data.get("lines", []) if isinstance(data, dict) else data
+                return [types.TextContent(type="text", text="\n".join(lines) if isinstance(lines, list) else str(lines))]
+
+            case "vt_control_app":
+                name = arguments["name"]
+                action = arguments["action"]
+                return _text(await vt_post(f"/api/apps/{name}/{action}"))
+
+            case "vt_get_app_compose":
+                return _text(await vt_get(f"/api/apps/{arguments['name']}/compose"))
+
+            case "vt_update_app_compose":
+                return _text(await vt_post(f"/api/apps/{arguments['name']}/compose", {"content": arguments["content"]}))
+
+            case "vt_remove_app":
+                r = await client().delete(f"/api/apps/{arguments['name']}")
+                r.raise_for_status()
+                return _text({"removed": arguments["name"]})
+
+            case "vt_list_vms":
+                return _text(await vt_get("/api/vms/proxmox/vms"))
+
+            case "vt_control_vm":
+                return _text(await vt_post("/api/vms/proxmox/action", {
+                    "vmid": arguments["vmid"],
+                    "kind": arguments["kind"],
+                    "node": arguments["node"],
+                    "action": arguments["action"],
+                }))
+
+            case "vt_list_status_checks":
+                return _text(await vt_get("/api/status-checks"))
+
+            case "vt_list_tags":
+                return _text(await vt_get("/api/tags"))
 
             case _:
                 return _text({"error": f"Unknown tool: {name}"})

@@ -157,16 +157,24 @@ Concrete next steps given what's already there: add a request queue + "queued/ru
 
 ---
 
-### Void Mode — /ask Chat Popup (Odysseus Quick Chat)
+### Void Mode — /ask Chat Popup
 
-**The UX goal here already shipped, via a narrower mechanism than this section specifies — don't re-read this as greenfield.** `frontend/src/aios/AiosAskPopup.tsx` is a real animated, streaming, dismissible popup wired to focused-panel context, backed by `backend/src/api/ai_ask.rs` (`POST /api/ai/ask`). What's genuinely still missing is the *architecture* originally specified: a transparent wildcard reverse proxy giving the popup parity with Odysseus's own UI (arbitrary tool calls, memory, RAG, MCP passthrough) rather than a single hand-built endpoint with one fixed system prompt.
+**Substantially complete as of 2026-06-29.** `AiosAskPopup.tsx` is an animated, streaming, dismissible popup wired to focused-panel context. `ai_ask.rs` now routes through the multi-provider AI orchestrator (`backend/src/ai/`) — Odysseus, OpenAI, Anthropic, and local LLM are all supported; the popup exposes a provider selector dropdown.
 
-**Backend: Wildcard Odysseus Reverse Proxy**
+**Backend**
 
-- [ ] **`/api/odysseus/*` wildcard reverse proxy** — Not built. Current `ai_ask::ask` forwards only to Odysseus's `/api/chat/completions` with its own injected system prompt — not a verbatim passthrough of arbitrary Odysseus routes/methods. A single Axum wildcard route forwarding GET/POST/DELETE/etc. to `http://localhost:7000/{rest}` (body/headers/query as-is, response streamed back) would unlock tool calls/memory/RAG/MCP passthrough that the current narrow endpoint can't offer.
-- [ ] **System context injection on the wildcard path** — Superseded today by `ai_ask.rs`'s own fixed system-prompt injection (`[Focused panel: ...]` prepended) for its one endpoint; the generic "inject only on `/v1/chat/completions`, pass everything else through unmodified" version is not built.
-- [x] **Auth gate** — Done: `ai_ask::ask` requires a valid `vt_session` cookie, 401s otherwise. (Would need re-verifying for the wildcard route specifically once that's built.)
-- [ ] **Graceful degradation, `odysseus_unavailable`** — Partial: returns 400 with `{"error": "Odysseus not configured"}` when no URL is set, but doesn't distinguish "unreachable" from "unconfigured" the way the spec calls for.
+- [x] **Multi-provider orchestrator** — `backend/src/ai/orchestrator.rs`; providers loaded from `ai_providers` DB table; priority-based routing; per-request `provider_id` override via `POST /api/ai/ask { provider_id }`.
+- [x] **Auth gate** — `ai_ask::ask` requires a valid `vt_session` cookie.
+- [x] **Graceful degradation** — returns descriptive 400 when no providers configured and legacy `odysseus.allowed_url` is also unset.
+- [ ] **`/api/odysseus/*` wildcard reverse proxy** — Not built. `ai_ask::ask` sends to `/api/chat/completions` (or provider equivalent) only; arbitrary Odysseus routes/methods (tool calls, memory, RAG) are not proxied verbatim.
+
+**Frontend**
+
+- [x] **Animated chat popup with provider selector** — `AiosAskPopup.tsx`; lists enabled providers from `GET /api/ai/providers`; "Auto" uses priority order.
+- [x] **Context injection** — focused panel title sent as `context` field.
+- [ ] **Inline markdown / code block rendering** — plain text only today.
+- [ ] **Persistent thread across popup opens** — state resets on each open.
+- [ ] **Slash commands (`/ask`, `/clear`, `/copy`) in command bar** — not implemented.
 
 **Frontend: Chat Popup**
 

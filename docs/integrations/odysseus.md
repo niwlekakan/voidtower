@@ -2,6 +2,8 @@
 
 This document covers how to connect Odysseus (with the Voidwatch integration) to VoidTower.
 
+> **Architecture note (2026-06-29):** Odysseus is now one optional AI provider inside VoidTower's multi-provider AI orchestrator (`backend/src/ai/`). VoidTower does **not** import or modify Odysseus source — it calls it via HTTP only. You can use OpenAI, Anthropic, or a local LLM instead of, or alongside, Odysseus. Configure providers at **Settings → AI Providers** (`/ai-providers`). The legacy `odysseus.allowed_url` settings key still works as a fallback if no providers are configured in the new table.
+
 ## Overview
 
 Voidwatch is the AI operations layer in Odysseus. It connects to VoidTower via a scoped API token and exposes MCP tools that let Odysseus agents safely observe and manage your infrastructure.

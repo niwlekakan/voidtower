@@ -469,6 +469,18 @@ export const api = {
     },
   },
 
+  aiProviders: {
+    list: () => request<import('./types').AiProviderConfig[]>('/api/ai/providers'),
+    create: (req: import('./types').CreateAiProviderReq) =>
+      request<{ ok: boolean; id: string }>('/api/ai/providers', { method: 'POST', body: JSON.stringify(req) }),
+    update: (id: string, req: import('./types').UpdateAiProviderReq) =>
+      request<{ ok: boolean }>(`/api/ai/providers/${id}`, { method: 'PUT', body: JSON.stringify(req) }),
+    delete: (id: string) =>
+      request<{ ok: boolean }>(`/api/ai/providers/${id}`, { method: 'DELETE' }),
+    health: (id: string) =>
+      request<import('./types').AiProviderHealthResult>(`/api/ai/providers/${id}/health`),
+  },
+
   proxmox: {
     listHosts:  () => request<import('./types').ProxmoxHost[]>('/api/proxmox/hosts'),
     addHost:    (data: import('./types').AddHostRequest) =>

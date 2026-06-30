@@ -93,6 +93,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'System',
     items: [
+      { to: '/ai-providers',  icon: BrainCircuit,  label: 'AI Providers' },
       { to: '/integrations', icon: PlugZap,       label: 'Integrations' },
       { to: '/updates',      icon: ArrowUpCircle, label: 'Updates'      },
       { to: '/mods',         icon: Puzzle,        label: 'Mods'         },

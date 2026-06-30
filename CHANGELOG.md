@@ -11,6 +11,16 @@ Versioning is [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Multi-provider AI orchestrator** (`backend/src/ai/`) — VoidTower no longer depends on Odysseus as its sole AI backend. A new `AiProvider` trait abstracts chat completions and streaming; four adapters ship out of the box: `odysseus` (unchanged, HTTP-only), `openai`, `anthropic` (Claude), and `local` (Ollama / llama.cpp via OpenAI-compat endpoint). Providers are persisted in a new `ai_providers` DB table and managed at **Settings → AI Providers** (`/ai-providers`). The lowest-priority enabled provider is selected automatically; individual requests can pin a provider via `provider_id`. The existing `odysseus.allowed_url` settings key continues to work as a zero-config fallback for existing installs.
+- **`/api/ai/providers` endpoints** — `GET`, `POST`, `PUT /:id`, `DELETE /:id`, `GET /:id/health` for full provider lifecycle management including connectivity tests.
+- **Ask popup provider selector** (`AiosAskPopup.tsx`) — dropdown lists all enabled providers; "Auto" uses priority order; selection is per-conversation.
+
+### Changed
+
+- `POST /api/ai/ask` now routes through the multi-provider orchestrator instead of directly calling Odysseus. Accepts an optional `provider_id` field to pin a specific provider for that request.
+
+---
+
 - **App Vault — pre-deploy configuration modal** — clicking Deploy on a catalog app now opens a modal showing the full compose YAML, env var overrides, and any required secrets before deployment starts. After deploy, the modal streams the `docker compose up` log output so you can see exactly what happened.
 - **App Vault — `required_env` catalog field** — app definitions can declare required environment variables with an optional `generate` strategy (`random_hex_16`, `random_hex_24`, `random_hex_32`, `random_hex_50`, `random_hex_64`, `uuid`). Auto-generated secrets are injected at deploy time with no user input; manually required fields are shown as validated inputs in the pre-deploy modal.
 - **App Vault — Euro-Office** — new catalog entry for [Euro-Office DocumentServer](https://github.com/Euro-Office) (`ghcr.io/euro-office/documentserver:latest`). Collaborative DOCX/XLSX/PPTX editing server; `EUROOFFICE_JWT_SECRET` auto-generated on deploy.

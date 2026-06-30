@@ -40,6 +40,7 @@ import ModelsPage from '@/pages/Models'
 import StudioPage from '@/pages/Studio'
 import UpdatesPage from '@/pages/Updates'
 import IntegrationsPage from '@/pages/Integrations'
+import AiProvidersPage from '@/pages/AiProviders'
 import PolicyPage from '@/pages/Policy'
 import ModsPage from '@/pages/Mods'
 import PluginsPage from '@/pages/Plugins'
@@ -145,6 +146,7 @@ export default function App() {
             <Route path="plugins/:id"    element={<PluginPage />} />
             <Route path="tabs/:id"       element={<CustomTabView />} />
             <Route path="integrations"   element={<IntegrationsPage />} />
+            <Route path="ai-providers"   element={<AiProvidersPage />} />
             <Route path="files"      element={<FilesPage />} />
             <Route path="proxies"    element={<ProxiesPage />} />
             <Route path="security"   element={<SecurityPage />} />

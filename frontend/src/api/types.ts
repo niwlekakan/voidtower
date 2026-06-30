@@ -654,6 +654,48 @@ export interface OdysseusManifest {
   }[]
 }
 
+export type AiProviderKind = 'odysseus' | 'openai' | 'anthropic' | 'local'
+
+export interface AiProviderConfig {
+  id: string
+  kind: AiProviderKind
+  name: string
+  enabled: boolean
+  base_url: string | null
+  api_key_ref: string | null
+  model: string | null
+  priority: number
+  created_at: number
+  updated_at: number
+}
+
+export interface AiProviderHealthResult {
+  id: string
+  ok: boolean
+  error: string | null
+}
+
+export interface CreateAiProviderReq {
+  kind: AiProviderKind
+  name: string
+  enabled?: boolean
+  base_url?: string
+  api_key_ref?: string
+  api_key_value?: string
+  model?: string
+  priority?: number
+}
+
+export interface UpdateAiProviderReq {
+  name?: string
+  enabled?: boolean
+  base_url?: string
+  api_key_ref?: string
+  api_key_value?: string
+  model?: string
+  priority?: number
+}
+
 export interface AuditAction {
   id: string
   timestamp: number

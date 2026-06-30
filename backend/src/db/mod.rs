@@ -160,6 +160,24 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_checked_at INTEGER").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_latency_ms INTEGER").execute(&pool).await;
 
+    // AI provider abstraction layer
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ai_providers (
+            id          TEXT PRIMARY KEY,
+            kind        TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            base_url    TEXT,
+            api_key_ref TEXT,
+            model       TEXT,
+            priority    INTEGER NOT NULL DEFAULT 50,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await;
+
     Ok(pool)
 }
 

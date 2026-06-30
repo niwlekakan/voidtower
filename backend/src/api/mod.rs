@@ -77,6 +77,7 @@ pub mod lxc;
 pub mod agents;
 pub mod tabs;
 pub mod nav_config;
+pub mod ai_providers;
 
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -186,6 +187,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/ai/llama/unload", post(ai::llama_unload))
         .route("/api/ai/ask",          post(ai_ask::ask))
         .route("/api/ai/context",      get(ai_context::get_context))
+        // AI providers (multi-provider orchestrator)
+        .route("/api/ai/providers",            get(ai_providers::list).post(ai_providers::create))
+        .route("/api/ai/providers/:id",        put(ai_providers::update).delete(ai_providers::delete))
+        .route("/api/ai/providers/:id/health", get(ai_providers::health))
         // AI Studio
         .route("/api/studio/status",                       get(studio::status))
         .route("/api/studio/image/generate",               post(studio::image_generate))

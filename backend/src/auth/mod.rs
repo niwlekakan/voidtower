@@ -22,6 +22,8 @@ pub struct User {
     pub totp_secret: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Guest accounts (role = "guest") stop working past this unix timestamp.
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +43,7 @@ pub struct PublicUser {
     pub role: String,
     pub force_password_change: bool,
     pub totp_enabled: bool,
+    pub expires_at: Option<i64>,
 }
 
 impl From<User> for PublicUser {
@@ -51,6 +54,7 @@ impl From<User> for PublicUser {
             role: u.role,
             force_password_change: u.force_password_change,
             totp_enabled: u.totp_enabled,
+            expires_at: u.expires_at,
         }
     }
 }
@@ -129,13 +133,25 @@ pub async fn create_user(
     role: &str,
     force_change: bool,
 ) -> Result<User> {
+    create_user_ext(pool, username, password, role, force_change, None).await
+}
+
+/// Like `create_user`, but allows setting `expires_at` for time-boxed guest accounts.
+pub async fn create_user_ext(
+    pool: &SqlitePool,
+    username: &str,
+    password: &str,
+    role: &str,
+    force_change: bool,
+    expires_at: Option<i64>,
+) -> Result<User> {
     let id = Uuid::new_v4().to_string();
     let hash = hash_password(password)?;
     let now = unix_now();
 
     sqlx::query(
-        "INSERT INTO users (id, username, password_hash, role, force_password_change, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO users (id, username, password_hash, role, force_password_change, created_at, updated_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(username)
@@ -144,6 +160,7 @@ pub async fn create_user(
     .bind(force_change)
     .bind(now)
     .bind(now)
+    .bind(expires_at)
     .execute(pool)
     .await?;
 
@@ -157,6 +174,7 @@ pub async fn create_user(
         totp_secret: None,
         created_at: now,
         updated_at: now,
+        expires_at,
     })
 }
 
@@ -187,7 +205,7 @@ pub async fn change_password(
 pub async fn find_user_by_username(pool: &SqlitePool, username: &str) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
         "SELECT id, username, password_hash, role, force_password_change,
-                totp_enabled, totp_secret, created_at, updated_at
+                totp_enabled, totp_secret, created_at, updated_at, expires_at
          FROM users WHERE username = ?",
     )
     .bind(username)
@@ -200,7 +218,7 @@ pub async fn find_user_by_username(pool: &SqlitePool, username: &str) -> Result<
 pub async fn find_user_by_id(pool: &SqlitePool, user_id: &str) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
         "SELECT id, username, password_hash, role, force_password_change,
-                totp_enabled, totp_secret, created_at, updated_at
+                totp_enabled, totp_secret, created_at, updated_at, expires_at
          FROM users WHERE id = ?",
     )
     .bind(user_id)
@@ -257,12 +275,14 @@ pub async fn validate_session(pool: &SqlitePool, session_id: &str) -> Result<Opt
     let now = unix_now();
     let row = sqlx::query_as::<_, User>(
         "SELECT u.id, u.username, u.password_hash, u.role, u.force_password_change,
-                u.totp_enabled, u.totp_secret, u.created_at, u.updated_at
+                u.totp_enabled, u.totp_secret, u.created_at, u.updated_at, u.expires_at
          FROM sessions s
          JOIN users u ON u.id = s.user_id
-         WHERE s.id = ? AND s.expires_at > ?",
+         WHERE s.id = ? AND s.expires_at > ?
+           AND (u.expires_at IS NULL OR u.expires_at > ?)",
     )
     .bind(session_id)
+    .bind(now)
     .bind(now)
     .fetch_optional(pool)
     .await?;
@@ -381,7 +401,7 @@ pub async fn validate_api_token(
 pub async fn find_user_by_oidc_subject(pool: &SqlitePool, subject: &str) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
         "SELECT id, username, password_hash, role, force_password_change,
-                totp_enabled, totp_secret, created_at, updated_at
+                totp_enabled, totp_secret, created_at, updated_at, expires_at
          FROM users WHERE oidc_subject = ?",
     )
     .bind(subject)
@@ -427,6 +447,7 @@ pub async fn create_oidc_user(
         totp_secret: None,
         created_at: now,
         updated_at: now,
+        expires_at: None,
     })
 }
 

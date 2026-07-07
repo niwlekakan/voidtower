@@ -53,6 +53,7 @@ pub mod network;
 pub mod users;
 pub mod settings;
 pub mod wireguard;
+pub mod node_enroll;
 pub mod vms;
 pub mod tags;
 pub mod ai;
@@ -60,6 +61,7 @@ pub mod ai_ask;
 pub mod ai_context;
 pub mod studio;
 pub mod bearer_auth;
+pub mod demo_guard;
 pub mod integrations;
 pub mod models;
 pub mod storage;
@@ -289,6 +291,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wireguard", get(wireguard::list))
         .route("/api/wireguard/peers", post(wireguard::add_peer))
         .route("/api/wireguard/peers/:id", delete(wireguard::delete_peer))
+        // Fleet node enrollment (phones/tablets/pis joining over WireGuard)
+        .route("/api/nodes/pairing-code", post(node_enroll::create_pairing_code))
+        .route("/api/nodes/enroll",       post(node_enroll::enroll))
+        .route("/api/nodes",              get(node_enroll::list))
+        .route("/api/nodes/:id",          delete(node_enroll::delete_node))
+        .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat))
         .route("/api/settings/public",  get(settings::get_public))
         .route("/api/settings/ai-url", get(settings::get_ai_url).post(settings::set_ai_url))
         .route("/api/settings/general", get(settings::get_general).post(settings::set_general))
@@ -409,6 +417,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/webhooks/:id/test",  post(webhooks::test_webhook))
         .layer(cors)
         .layer(middleware::from_fn(security_headers))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), demo_guard::middleware))
         .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
         .with_state(state);
 

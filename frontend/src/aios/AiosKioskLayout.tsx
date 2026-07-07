@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { ICON_MAP, LABEL_MAP } from '@/aios/AiosDock'
-import AiosStatusBar from '@/aios/AiosStatusBar'
+import AiosStatusBar, { STATUS_BAR_H } from '@/aios/AiosStatusBar'
 import AnimatedBackground from '@/components/ui/AnimatedBackground'
 import { api } from '@/api/client'
 
@@ -30,7 +30,6 @@ function loadConfig(): KioskConfig {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const STATUS_BAR_H = 28
 const IDLE_SCREENSAVER_MS = 10 * 60 * 1000  // 10 minutes
 const INTERACTIVE_DURATION_MS = 5 * 60 * 1000  // 5 minutes
 const CRITICAL_FLASH_MS = 5_000

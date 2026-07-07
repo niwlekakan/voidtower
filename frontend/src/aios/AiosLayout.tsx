@@ -348,7 +348,7 @@ export default function AiosLayout() {
       savedX: geo.x, savedY: geo.y, savedW: geo.w, savedH: geo.h,
       ...geo,
     })
-  }, [workspacePanels, focusPanel, openPanel, tier, activeWorkspace, isPhone])
+  }, [workspacePanels, focusPanel, openPanel, tier, activeWorkspace, isPhone, statusBarH, dockH, dockLeft])
 
   const openOdysseus = useCallback((query?: string) => {
     const existing = panels.find((p) => p.component === 'odysseus')
@@ -380,12 +380,12 @@ export default function AiosLayout() {
         window.postMessage({ type: 'vt-command', text: query }, '*')
       }, 300)
     }
-  }, [panels, workspacePanels, focusPanel, openPanel, tier, activeWorkspace, isPhone])
+  }, [panels, workspacePanels, focusPanel, openPanel, tier, activeWorkspace, isPhone, statusBarH, dockH, dockLeft])
 
   // Keep store dims in sync with actual rendered bar/dock heights
   useEffect(() => {
     useAiosStore.getState().setDims(statusBarH, dockH, dockLeft)
-  }, [statusBarH, dockH])
+  }, [statusBarH, dockH, dockLeft])
 
   // Re-apply tile layout whenever tiling state or dimensions change
   useEffect(() => {

@@ -143,7 +143,9 @@ export const useAiosStore = create<AiosStore>()(
       splitPair: null,
       splitRatio: 0.5,
       deviceTier: 'desktop' as DeviceTier,
-      dims: { statusH: 36, dockH: 62, dockLeft: 0 },
+      // statusH must match STATUS_BAR_H exported from '@/aios/AiosStatusBar' — not imported
+      // here directly to avoid a circular dependency (that module imports useAiosStore).
+      dims: { statusH: 28, dockH: 62, dockLeft: 0 },
       _zCounter: 100,
 
       // ── Tiling initial state ──────────────────────────────────────────

@@ -416,6 +416,160 @@ export default function AiosPanel({ panel, tier, children, aiLevel: aiLevelProp 
     },
   })
 
+  // NOTE: all hooks below must stay above the phone/tv early returns —
+  // React requires the same hooks to run on every render regardless of tier.
+
+  // ── Titlebar drag ─────────────────────────────────────────────────────────
+
+  const onTitlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    if ((e.target as HTMLElement).closest('button')) return
+    if (tileMode) return  // drag disabled in tile mode
+    // Dragging a fullscreen panel restores it to floating first
+    if (panel.layoutMode === 'fullscreen') { restorePanel(panel.id); return }
+    if (panel.layoutMode !== 'floating') return
+    e.preventDefault()
+    focusPanel(panel.id)
+    draggingRef.current = true
+    dragStart.current = { px: e.clientX, py: e.clientY, ox: panel.x, oy: panel.y }
+    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+    if (panelRef.current) {
+      panelRef.current.style.willChange = 'transform'
+      panelRef.current.style.backdropFilter = 'none'
+      ;(panelRef.current.style as any).webkitBackdropFilter = 'none'
+    }
+  }, [tileMode, panel.id, panel.x, panel.y, panel.layoutMode, focusPanel, restorePanel])
+
+  const onTitlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return
+    e.preventDefault()
+    const dx = e.clientX - dragStart.current.px
+    const dy = e.clientY - dragStart.current.py
+    const nx = dragStart.current.ox + dx
+    const ny = dragStart.current.oy + dy
+    movePanel(panel.id, nx, ny)
+    if (tier === 'desktop' || tier === 'large' || tier === 'tablet') {
+      setSnapPreview(getSnapZone(e.clientX, e.clientY))
+    }
+    // Snap guide lines — check edges of other panels on the same workspace
+    const SNAP_THRESHOLD = 80
+    const otherPanels = panels.filter(
+      (p) => p.id !== panel.id && p.workspaceIndex === activeWorkspace && p.layoutMode !== 'minimized',
+    )
+    const guides: SnapGuide[] = []
+    const myEdges = { left: nx, right: nx + panel.w, top: ny, bottom: ny + panel.h }
+    for (const other of otherPanels) {
+      const edges = [
+        { axis: 'v' as const, pos: other.x },
+        { axis: 'v' as const, pos: other.x + other.w },
+        { axis: 'h' as const, pos: other.y },
+        { axis: 'h' as const, pos: other.y + other.h },
+      ]
+      for (const edge of edges) {
+        if (edge.axis === 'v') {
+          if (Math.abs(myEdges.left - edge.pos) < SNAP_THRESHOLD ||
+              Math.abs(myEdges.right - edge.pos) < SNAP_THRESHOLD) {
+            if (!guides.some((g) => g.axis === 'v' && g.pos === edge.pos)) {
+              guides.push(edge)
+            }
+          }
+        } else {
+          if (Math.abs(myEdges.top - edge.pos) < SNAP_THRESHOLD ||
+              Math.abs(myEdges.bottom - edge.pos) < SNAP_THRESHOLD) {
+            if (!guides.some((g) => g.axis === 'h' && g.pos === edge.pos)) {
+              guides.push(edge)
+            }
+          }
+        }
+      }
+    }
+    setSnapGuides(guides)
+  }, [panel.id, panel.w, panel.h, panels, activeWorkspace, movePanel, tier])
+
+  const onTitlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return
+    draggingRef.current = false
+    ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
+    if (panelRef.current) {
+      panelRef.current.style.willChange = 'auto'
+      panelRef.current.style.backdropFilter = 'var(--vt-blur)'
+      ;(panelRef.current.style as any).webkitBackdropFilter = 'var(--vt-blur)'
+    }
+    setSnapGuides([])
+    if (snapPreview) {
+      snapPanel(panel.id, snapPreview)
+      setSnapPreview(null)
+    }
+  }, [panel.id, snapPanel, snapPreview])
+
+  // ── Resize ────────────────────────────────────────────────────────────────
+
+  const onResizePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>, edge: ResizeEdge) => {
+    e.preventDefault()
+    e.stopPropagation()
+    focusPanel(panel.id)
+    resizingRef.current = true
+    resizeEdgeRef.current = edge
+    resizeStart.current = { px: e.clientX, py: e.clientY, x: panel.x, y: panel.y, w: panel.w, h: panel.h }
+    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+    if (panelRef.current) panelRef.current.style.willChange = 'transform'
+  }, [panel, focusPanel])
+
+  const onResizePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizingRef.current || !resizeEdgeRef.current) return
+    e.preventDefault()
+    const { px, py, x: sx, y: sy, w: sw, h: sh } = resizeStart.current
+    const dx = e.clientX - px
+    const dy = e.clientY - py
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const edge = resizeEdgeRef.current
+
+    let nx = sx, ny = sy, nw = sw, nh = sh
+
+    if (edge.includes('e')) nw = Math.max(MIN_W, Math.min(vw - sx, sw + dx))
+    if (edge.includes('s')) nh = Math.max(MIN_H, Math.min(vh - sy, sh + dy))
+    if (edge.includes('w')) { nw = Math.max(MIN_W, sw - dx); nx = sx + (sw - nw) }
+    if (edge.includes('n')) { nh = Math.max(MIN_H, sh - dy); ny = sy + (sh - nh) }
+
+    resizePanel(panel.id, nx, ny, nw, nh)
+  }, [panel.id, resizePanel])
+
+  const onResizePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizingRef.current) return
+    resizingRef.current = false
+    resizeEdgeRef.current = null
+    ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
+    if (panelRef.current) panelRef.current.style.willChange = 'auto'
+  }, [])
+
+  // ── Keyboard ──────────────────────────────────────────────────────────────
+
+  const onKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!isFocused) return
+    if (e.key === 'Escape') minimizePanel(panel.id)
+  }, [isFocused, panel.id, minimizePanel])
+
+  // ── Double-click titlebar ─────────────────────────────────────────────────
+
+  const onTitleDblClick = useCallback(() => {
+    if (panel.layoutMode === 'fullscreen') restorePanel(panel.id)
+    else snapPanel(panel.id, 'fullscreen')
+  }, [panel.layoutMode, panel.id, restorePanel, snapPanel])
+
+  // ── Context menu ──────────────────────────────────────────────────────────
+
+  const onTitleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setCtxMenu({ x: e.clientX, y: e.clientY })
+  }, [])
+
+  // ── Inspect ───────────────────────────────────────────────────────────────
+
+  const handleInspect = useCallback(() => {
+    openInspector(panel.id)
+  }, [panel.id, openInspector])
+
   // ── Phone tier ─────────────────────────────────────────────────────────────
   if (tier === 'phone') {
     return <PhoneSheetPanel panel={panel}>{children}</PhoneSheetPanel>
@@ -510,159 +664,6 @@ export default function AiosPanel({ panel, tier, children, aiLevel: aiLevelProp 
     const snapStyle = SNAP_STYLES[layoutMode]
     if (snapStyle) panelStyle = { ...panelStyle, ...snapStyle }
   }
-
-  // ── Titlebar drag ─────────────────────────────────────────────────────────
-
-  const onTitlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return
-    if ((e.target as HTMLElement).closest('button')) return
-    if (tileMode) return  // drag disabled in tile mode
-    // Dragging a fullscreen panel restores it to floating first
-    if (isFullscreen) { restorePanel(panel.id); return }
-    if (!isFloating) return
-    e.preventDefault()
-    focusPanel(panel.id)
-    draggingRef.current = true
-    dragStart.current = { px: e.clientX, py: e.clientY, ox: panel.x, oy: panel.y }
-    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
-    if (panelRef.current) {
-      panelRef.current.style.willChange = 'transform'
-      panelRef.current.style.backdropFilter = 'none'
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ;(panelRef.current.style as any).webkitBackdropFilter = 'none'
-    }
-  }, [isFloating, tileMode, panel.id, panel.x, panel.y, focusPanel])
-
-  const onTitlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return
-    e.preventDefault()
-    const dx = e.clientX - dragStart.current.px
-    const dy = e.clientY - dragStart.current.py
-    const nx = dragStart.current.ox + dx
-    const ny = dragStart.current.oy + dy
-    movePanel(panel.id, nx, ny)
-    if (tier === 'desktop' || tier === 'large' || tier === 'tablet') {
-      setSnapPreview(getSnapZone(e.clientX, e.clientY))
-    }
-    // Snap guide lines — check edges of other panels on the same workspace
-    const SNAP_THRESHOLD = 80
-    const otherPanels = panels.filter(
-      (p) => p.id !== panel.id && p.workspaceIndex === activeWorkspace && p.layoutMode !== 'minimized',
-    )
-    const guides: SnapGuide[] = []
-    const myEdges = { left: nx, right: nx + panel.w, top: ny, bottom: ny + panel.h }
-    for (const other of otherPanels) {
-      const edges = [
-        { axis: 'v' as const, pos: other.x },
-        { axis: 'v' as const, pos: other.x + other.w },
-        { axis: 'h' as const, pos: other.y },
-        { axis: 'h' as const, pos: other.y + other.h },
-      ]
-      for (const edge of edges) {
-        if (edge.axis === 'v') {
-          if (Math.abs(myEdges.left - edge.pos) < SNAP_THRESHOLD ||
-              Math.abs(myEdges.right - edge.pos) < SNAP_THRESHOLD) {
-            if (!guides.some((g) => g.axis === 'v' && g.pos === edge.pos)) {
-              guides.push(edge)
-            }
-          }
-        } else {
-          if (Math.abs(myEdges.top - edge.pos) < SNAP_THRESHOLD ||
-              Math.abs(myEdges.bottom - edge.pos) < SNAP_THRESHOLD) {
-            if (!guides.some((g) => g.axis === 'h' && g.pos === edge.pos)) {
-              guides.push(edge)
-            }
-          }
-        }
-      }
-    }
-    setSnapGuides(guides)
-  }, [panel.id, panel.w, panel.h, panels, activeWorkspace, movePanel, tier])
-
-  const onTitlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return
-    draggingRef.current = false
-    ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
-    if (panelRef.current) {
-      panelRef.current.style.willChange = 'auto'
-      panelRef.current.style.backdropFilter = 'var(--vt-blur)'
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ;(panelRef.current.style as any).webkitBackdropFilter = 'var(--vt-blur)'
-    }
-    setSnapGuides([])
-    if (snapPreview) {
-      snapPanel(panel.id, snapPreview)
-      setSnapPreview(null)
-    }
-  }, [panel.id, snapPanel, snapPreview])
-
-  // ── Resize ────────────────────────────────────────────────────────────────
-
-  const onResizePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>, edge: ResizeEdge) => {
-    e.preventDefault()
-    e.stopPropagation()
-    focusPanel(panel.id)
-    resizingRef.current = true
-    resizeEdgeRef.current = edge
-    resizeStart.current = { px: e.clientX, py: e.clientY, x: panel.x, y: panel.y, w: panel.w, h: panel.h }
-    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
-    if (panelRef.current) panelRef.current.style.willChange = 'transform'
-  }, [panel, focusPanel])
-
-  const onResizePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!resizingRef.current || !resizeEdgeRef.current) return
-    e.preventDefault()
-    const { px, py, x: sx, y: sy, w: sw, h: sh } = resizeStart.current
-    const dx = e.clientX - px
-    const dy = e.clientY - py
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    const edge = resizeEdgeRef.current
-
-    let nx = sx, ny = sy, nw = sw, nh = sh
-
-    if (edge.includes('e')) nw = Math.max(MIN_W, Math.min(vw - sx, sw + dx))
-    if (edge.includes('s')) nh = Math.max(MIN_H, Math.min(vh - sy, sh + dy))
-    if (edge.includes('w')) { nw = Math.max(MIN_W, sw - dx); nx = sx + (sw - nw) }
-    if (edge.includes('n')) { nh = Math.max(MIN_H, sh - dy); ny = sy + (sh - nh) }
-
-    resizePanel(panel.id, nx, ny, nw, nh)
-  }, [panel.id, resizePanel])
-
-  const onResizePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!resizingRef.current) return
-    resizingRef.current = false
-    resizeEdgeRef.current = null
-    ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
-    if (panelRef.current) panelRef.current.style.willChange = 'auto'
-  }, [])
-
-  // ── Keyboard ──────────────────────────────────────────────────────────────
-
-  const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (!isFocused) return
-    if (e.key === 'Escape') minimizePanel(panel.id)
-  }, [isFocused, panel.id, minimizePanel])
-
-  // ── Double-click titlebar ─────────────────────────────────────────────────
-
-  const onTitleDblClick = useCallback(() => {
-    if (layoutMode === 'fullscreen') restorePanel(panel.id)
-    else snapPanel(panel.id, 'fullscreen')
-  }, [layoutMode, panel.id, restorePanel, snapPanel])
-
-  // ── Context menu ──────────────────────────────────────────────────────────
-
-  const onTitleContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setCtxMenu({ x: e.clientX, y: e.clientY })
-  }, [])
-
-  // ── Inspect ───────────────────────────────────────────────────────────────
-
-  const handleInspect = useCallback(() => {
-    openInspector(panel.id)
-  }, [panel.id, openInspector])
 
   // ── Resize handle size helper ─────────────────────────────────────────────
 

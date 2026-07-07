@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Search, Command } from 'lucide-react'
 import { DOCK_ITEMS } from '@/aios/AiosDock'
 import type { DockItem } from '@/aios/AiosDock'
@@ -52,16 +52,20 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
   const isEmbed    = isUrl(query)
   const isPreset   = query.startsWith('>')
 
-  const presetResults = isPreset
-    ? PRESET_LIST.filter((p) => {
-        const q = query.slice(1).toLowerCase().trim()
-        return !q || p.name.includes(q) || p.label.toLowerCase().includes(q)
-      })
-    : []
+  const presetResults = useMemo(() => (
+    isPreset
+      ? PRESET_LIST.filter((p) => {
+          const q = query.slice(1).toLowerCase().trim()
+          return !q || p.name.includes(q) || p.label.toLowerCase().includes(q)
+        })
+      : []
+  ), [isPreset, query])
 
-  const results: DockItem[] = (isOdysseus || isEmbed || isPreset)
-    ? []
-    : DOCK_ITEMS.filter((item) => fuzzyMatch(item, query)).slice(0, 8)
+  const results: DockItem[] = useMemo(() => (
+    (isOdysseus || isEmbed || isPreset)
+      ? []
+      : DOCK_ITEMS.filter((item) => fuzzyMatch(item, query)).slice(0, 8)
+  ), [isOdysseus, isEmbed, isPreset, query])
 
   // ── Open panel helper ──────────────────────────────────────────────────────
 
@@ -138,7 +142,7 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
 
     doOpenPanel(target, targetLabel)
     setOpen(false); setQuery(''); setSelected(0)
-  }, [query, isEmbed, isOdysseus, isPreset, presetResults, results, selected, doOpenPanel, panels, focusPanel, applyPreset])
+  }, [query, isEmbed, isOdysseus, isPreset, presetResults, results, selected, doOpenPanel, panels, focusPanel, applyPreset, _onOdysseus])
 
   // ── Keyboard shortcut ─────────────────────────────────────────────────────
 

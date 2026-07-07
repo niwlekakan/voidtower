@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Trash2, Plus, AlertTriangle } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
 import { clearOdysseusConfigCache } from '@/aios/AiosOdysseus'
@@ -32,10 +32,10 @@ export default function NativeIntegrationsPanel() {
     const r = await fetch('/api/integrations/odysseus/config', { credentials: 'include' })
     if (r.ok) { const d = await r.json(); setOdy(d) }
   }
-  async function load() {
+  const load = useCallback(async () => {
     await Promise.all([loadTokens(), loadOdy()])
     setLoading(false)
-  }
+  }, [])
   async function revoke(id: string) {
     await fetch(`/api/integrations/tokens/${id}`, { method: 'DELETE', credentials: 'include' })
     loadTokens()
@@ -56,7 +56,7 @@ export default function NativeIntegrationsPanel() {
     loadOdy()
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
   useEffect(() => {
     if (!modal) return
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') setModal(false) }

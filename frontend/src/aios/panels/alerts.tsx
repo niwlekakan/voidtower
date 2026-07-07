@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { CheckCheck, XCircle } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
 
@@ -35,19 +35,19 @@ export default function NativeAlertsPanel() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('active')
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true)
     const r = await fetch(`/api/alerts?state=${tab}`, { credentials: 'include' })
     if (r.ok) { const d = await r.json(); setAlerts(d.alerts ?? []) }
     setLoading(false)
-  }
+  }, [tab])
 
   async function act(id: string, action: 'ack' | 'resolve') {
     await fetch(`/api/alerts/${id}/${action}`, { method: 'POST', credentials: 'include' })
     load()
   }
 
-  useEffect(() => { load() }, [tab])
+  useEffect(() => { load() }, [load])
 
   return (
     <NativePanelShell tabs={TABS} activeTab={tab} onTabChange={setTab}>

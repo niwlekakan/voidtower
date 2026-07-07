@@ -71,7 +71,8 @@ export default function MiniTerminal({ height = 220, initialCommand }: Props) {
       xtermRef.current = null
       wsRef.current = null
     }
-  }, []) // intentionally empty deps — runs once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally empty: runs once on mount, re-running would tear down and recreate the terminal/WS connection
+  }, [])
 
   return (
     <div

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Trash2, Download } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
 
@@ -24,7 +24,7 @@ export default function NativeModelsPanel() {
   const [pullMsg,  setPullMsg]  = useState('')
   const [deleting, setDeleting] = useState<string | null>(null)
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true)
     if (tab === 'all') {
       const r = await fetch('/api/models', { credentials: 'include' })
@@ -43,9 +43,9 @@ export default function NativeModelsPanel() {
       }
     }
     setLoading(false)
-  }
+  }, [tab])
 
-  useEffect(() => { load() }, [tab])
+  useEffect(() => { load() }, [load])
 
   async function pull() {
     if (!pullName.trim()) return

@@ -1,6 +1,7 @@
 use axum::{extract::{Query, State}, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
+use sqlx::{QueryBuilder, Sqlite};
 
 use crate::{auth, error::{AppError, Result}, AppState};
 
@@ -33,6 +34,37 @@ pub struct TimelineEvent {
     pub details: Option<String>,
     pub ip_address: Option<String>,
     pub source: Option<String>,
+}
+
+/// Appends the shared WHERE clause (outcome/search/from/to filters) to a query builder,
+/// using bound parameters so user-supplied values never reach the SQL string directly.
+fn push_timeline_where(qb: &mut QueryBuilder<'_, Sqlite>, q: &TimelineQuery) {
+    let mut first = true;
+
+    if let Some(o) = q.outcome.as_deref().filter(|o| *o != "all") {
+        qb.push(if first { " WHERE outcome = " } else { " AND outcome = " });
+        first = false;
+        qb.push_bind(o.to_string());
+    }
+    if let Some(ref s) = q.search {
+        let pattern = format!("%{s}%");
+        qb.push(if first { " WHERE (" } else { " AND (" });
+        first = false;
+        qb.push("action LIKE ").push_bind(pattern.clone());
+        qb.push(" OR resource_type LIKE ").push_bind(pattern.clone());
+        qb.push(" OR resource_id LIKE ").push_bind(pattern.clone());
+        qb.push(" OR details LIKE ").push_bind(pattern);
+        qb.push(")");
+    }
+    if let Some(from) = q.from {
+        qb.push(if first { " WHERE timestamp >= " } else { " AND timestamp >= " });
+        first = false;
+        qb.push_bind(from);
+    }
+    if let Some(to) = q.to {
+        qb.push(if first { " WHERE timestamp <= " } else { " AND timestamp <= " });
+        qb.push_bind(to);
+    }
 }
 
 fn classify(action: &str, resource_type: Option<&str>) -> &'static str {
@@ -88,31 +120,23 @@ pub async fn list(
 
     let limit = q.limit.clamp(1, 200);
 
-    // Build dynamic WHERE clauses
-    let mut wheres: Vec<String> = Vec::new();
-    if q.outcome.as_deref().map(|o| o != "all").unwrap_or(false) {
-        if let Some(ref o) = q.outcome { wheres.push(format!("outcome = '{}'", o.replace('\'', "''"))); }
-    }
-    if let Some(ref s) = q.search {
-        let s = s.replace('\'', "''");
-        wheres.push(format!("(action LIKE '%{s}%' OR resource_type LIKE '%{s}%' OR resource_id LIKE '%{s}%' OR details LIKE '%{s}%')"));
-    }
-    if let Some(from) = q.from { wheres.push(format!("timestamp >= {from}")); }
-    if let Some(to)   = q.to   { wheres.push(format!("timestamp <= {to}")); }
+    let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+        "SELECT a.id, a.timestamp, a.user_id, a.actor_type, a.action,
+                a.resource_type, a.resource_id, a.outcome, a.details, a.ip_address, a.source
+         FROM audit_log a"
+    );
+    push_timeline_where(&mut qb, &q);
+    qb.push(" ORDER BY a.timestamp DESC LIMIT ").push_bind(limit)
+      .push(" OFFSET ").push_bind(q.offset);
 
-    let where_sql = if wheres.is_empty() { String::new() } else { format!("WHERE {}", wheres.join(" AND ")) };
+    let rows = qb
+        .build_query_as::<(String, i64, Option<String>, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>)>()
+        .fetch_all(&state.db).await.map_err(AppError::Database)?;
 
-    let rows = sqlx::query_as::<_, (String, i64, Option<String>, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>)>(
-        &format!(
-            "SELECT a.id, a.timestamp, a.user_id, a.actor_type, a.action,
-                    a.resource_type, a.resource_id, a.outcome, a.details, a.ip_address, a.source
-             FROM audit_log a {where_sql}
-             ORDER BY a.timestamp DESC LIMIT {limit} OFFSET {offset}",
-            where_sql = where_sql, limit = limit, offset = q.offset
-        )
-    ).fetch_all(&state.db).await.map_err(AppError::Database)?;
-
-    let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM audit_log a {}", where_sql))
+    let mut count_qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new("SELECT COUNT(*) FROM audit_log a");
+    push_timeline_where(&mut count_qb, &q);
+    let total: i64 = count_qb
+        .build_query_scalar()
         .fetch_one(&state.db).await.map_err(AppError::Database)?;
 
     // Resolve usernames in one query

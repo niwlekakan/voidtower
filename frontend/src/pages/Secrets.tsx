@@ -81,6 +81,7 @@ function RevealModal({ secret, onClose }: { secret: SecretMeta; onClose: () => v
     api.secrets.reveal(secret.id)
       .then(r => setValue(r.value))
       .catch(e => { notify.error(e.message ?? 'Failed to reveal'); onClose() })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-reveal when the target secret changes, not on every onClose identity change
   }, [secret.id])
 
   const copy = () => {

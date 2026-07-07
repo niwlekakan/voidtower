@@ -79,11 +79,10 @@ async fn db_delete(state: &AppState, key: &str) -> Result<()> {
 
 fn write_ai_proxy_conf(port: u16, upstream: &str) -> std::io::Result<()> {
     let upstream = upstream.trim_end_matches('/');
-    // nginx runs inside Docker; rewrite localhost/127.0.0.1 to the Docker host gateway.
-    let host_ip = super::proxy::docker_host_ip();
-    let upstream = upstream
-        .replace("//localhost:", &format!("//{host_ip}:"))
-        .replace("//127.0.0.1:", &format!("//{host_ip}:"));
+    // nginx-proxy always runs as its own Docker container (bare-metal or Docker
+    // VoidTower installs alike) — rewrite localhost/127.0.0.1 so it resolves inside
+    // that container. See `rewrite_upstream_for_docker` for why.
+    let upstream = super::proxy::rewrite_upstream_for_docker(upstream);
     if let Some(dir) = std::path::Path::new(AI_PROXY_CONF).parent() {
         let _ = std::fs::create_dir_all(dir);
     }

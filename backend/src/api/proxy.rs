@@ -88,8 +88,14 @@ fn effective_conf_dir() -> &'static str {
     DOCKER_NGINX_CONF_DIR
 }
 
-/// Returns the IP the Docker nginx container should use to reach the host.
-/// Tries host.docker.internal → docker0 bridge addr → 172.17.0.1 fallback.
+/// Best-effort Docker host-gateway IP, resolved from wherever *this* process
+/// (VoidTower's own backend) happens to run. Only meaningful for VoidTower's own
+/// outbound connections (see `proxy_health`) — nginx-proxy runs as a separate
+/// Docker container attached to its own custom networks (`vt-proxy` / its compose
+/// project's `default`), not the `docker0` bridge, so an IP guessed here is not
+/// guaranteed reachable from inside that container regardless of whether VoidTower
+/// itself is bare-metal or containerized. Do not use this for nginx conf upstreams —
+/// see `rewrite_upstream_for_docker`.
 pub(crate) fn docker_host_ip() -> String {
     if let Ok(out) = std::process::Command::new("getent")
         .args(["hosts", "host.docker.internal"])
@@ -120,13 +126,19 @@ pub(crate) fn docker_host_ip() -> String {
     "172.17.0.1".to_string()
 }
 
-/// Rewrite localhost/127.0.0.1 in an upstream URL to the Docker host gateway IP,
-/// so nginx inside Docker can reach services running on the host.
-fn rewrite_upstream_for_docker(upstream: &str) -> String {
-    let host_ip = docker_host_ip();
+/// Rewrite localhost/127.0.0.1 in an upstream URL to `host.docker.internal`, so nginx
+/// running inside the nginx-proxy Docker container can reach services bound on the
+/// real host's loopback interface — whether VoidTower itself is installed bare-metal
+/// or in Docker. Resolution happens *inside the nginx-proxy container* via the
+/// `host-gateway` `extra_hosts` entry on its compose service (see
+/// `app-vault/apps/nginx-proxy.yml`), not by guessing a bridge-gateway IP from
+/// whatever host this backend process happens to run on (which may not even be the
+/// same Docker network nginx-proxy is attached to — it uses custom networks, not
+/// the default `docker0` bridge).
+pub(crate) fn rewrite_upstream_for_docker(upstream: &str) -> String {
     upstream
-        .replace("//localhost:", &format!("//{host_ip}:"))
-        .replace("//127.0.0.1:", &format!("//{host_ip}:"))
+        .replace("//localhost:", "//host.docker.internal:")
+        .replace("//127.0.0.1:", "//host.docker.internal:")
 }
 
 fn conf_path(domain: &str) -> std::path::PathBuf {
@@ -1292,11 +1304,14 @@ pub async fn toggle(
 
 // ── Health check ──────────────────────────────────────────────────────────────
 
-/// On-demand upstream reachability check for a single proxy entry. Reaches the
-/// upstream the same way nginx itself would (`rewrite_upstream_for_docker`),
-/// not the public domain — this tests "is the backend alive", not "is the
-/// whole proxy chain working", which the existing nginx `test`/reload actions
-/// already cover.
+/// On-demand upstream reachability check for a single proxy entry. This connects
+/// directly from VoidTower's own backend process, not from inside the nginx-proxy
+/// container, so it rewrites `localhost`/`127.0.0.1` using a best-effort Docker
+/// host-gateway IP guess (`docker_host_ip`) rather than the `host.docker.internal`
+/// hostname `rewrite_upstream_for_docker` writes into nginx confs — that hostname
+/// only resolves inside nginx-proxy's own container. This tests "is the backend
+/// alive", not "is the whole proxy chain working", which the existing nginx
+/// `test`/reload actions already cover.
 pub async fn proxy_health(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1311,7 +1326,10 @@ pub async fn proxy_health(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
 
-    let target = rewrite_upstream_for_docker(&cfg.upstream);
+    let host_ip = docker_host_ip();
+    let target = cfg.upstream
+        .replace("//localhost:", &format!("//{host_ip}:"))
+        .replace("//127.0.0.1:", &format!("//{host_ip}:"));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()

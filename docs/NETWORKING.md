@@ -642,7 +642,7 @@ through each layer. Substitute `myapp` / `<port>` for the real
 | **nginx-proxy (LAN, hostname)** | `http://myapp.local:8080` | Section 8 checklist satisfied + `myapp.local` resolves to `<host-ip>` on the client |
 | **Pi-hole DNS** | same as above | Local DNS > DNS Records: `myapp.local → <host-ip>` (section 5a) |
 | **AdGuard DNS** | same as above | Filters > DNS Rewrites: `myapp.local → <host-ip>` or wildcard `*.local → <host-ip>` (section 5b) |
-| **VoidTower Proxy Manager (custom domain / TLS)** | `https://myapp.example.com` | Add a Proxy entry with upstream `http://localhost:<port>` — VoidTower rewrites `localhost` to the Docker host IP automatically |
+| **VoidTower Proxy Manager (custom domain / TLS)** | `https://myapp.example.com` | Add a Proxy entry with upstream `http://localhost:<port>` — VoidTower rewrites `localhost` to `host.docker.internal` automatically, resolved inside nginx-proxy's own container |
 | **Tailscale (remote, direct port)** | `http://<tailscale-ip>:<port>` | Tailscale running on the host — no DNS needed, bypasses nginx-proxy entirely |
 | **Tailscale (remote, hostname routing)** | `http://myapp.local:8080` over the tailnet | Set Pi-hole/AdGuard as the tailnet's DNS (Tailscale admin > DNS > Nameservers), or `tailscale serve --bg http://localhost:8080` |
 | **WireGuard (remote, direct port)** | `http://10.8.0.1:<port>` | Connected to wireguard-easy's VPN subnet — no DNS needed |

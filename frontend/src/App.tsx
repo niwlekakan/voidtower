@@ -2,12 +2,13 @@ import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ThemeProvider } from '@/theme/ThemeProvider'
 import { useAuthStore } from '@/store/auth'
-import { api } from '@/api/client'
+import { api, isTauri } from '@/api/client'
 import AppLayout from '@/components/layout/AppLayout'
 import AiosLayout from '@/aios/AiosLayout'
 import { useThemeStore } from '@/store/theme'
 import LoginPage from '@/pages/Login'
 import BootstrapPage from '@/pages/Bootstrap'
+import HomePage from '@/pages/Home'
 import DashboardPage from '@/pages/Dashboard'
 import ServicesPage from '@/pages/Services'
 import ContainersPage from '@/pages/Containers'
@@ -127,7 +128,7 @@ export default function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/bootstrap" element={<BootstrapPage />} />
           <Route path="/" element={<RequireAuth><AuthedShell /></RequireAuth>}>
-            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route index element={isTauri() ? <HomePage /> : <Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="services"   element={<ServicesPage />} />
             <Route path="containers"     element={<ContainersPage />} />

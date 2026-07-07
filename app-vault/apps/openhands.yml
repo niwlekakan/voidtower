@@ -1,0 +1,42 @@
+id: openhands
+name: OpenHands
+description: Self-hosted developer control center for coding agents — run OpenHands, Claude Code, Codex, Gemini, or any ACP-compatible agent against your own projects
+category: ai
+version_hint: "1.0.0-rc.11"
+icon: "🙌"
+compose:
+  services:
+    openhands:
+      image: ghcr.io/openhands/agent-canvas:1.0.0-rc.11
+      restart: unless-stopped
+      ports:
+        - "8010:8000"
+      volumes:
+        - openhands_state:/home/openhands/.openhands
+        - ${PROJECTS_PATH}:/projects
+      environment:
+        - VIRTUAL_HOST=openhands.local
+        - VIRTUAL_PORT=8000
+      networks:
+        default: {}
+        vt-proxy:
+          aliases:
+            - openhands
+  volumes:
+    openhands_state:
+
+  networks:
+    vt-proxy:
+      external: true
+
+required_env:
+  - key: PROJECTS_PATH
+    description: "Host directory containing the project folders you want the agent to access, e.g. /home/youruser/projects. Must already exist on the host before deploying."
+
+ai_integration:
+  level: native
+  description: "OpenHands runs coding agents (OpenHands, Claude Code, Codex, Gemini, or any ACP-compatible agent) against LLM credentials you configure from its own Settings UI — not tied to VoidTower's AI provider config"
+
+links:
+  home: https://github.com/OpenHands/OpenHands
+  docs: https://docs.openhands.dev/overview/introduction

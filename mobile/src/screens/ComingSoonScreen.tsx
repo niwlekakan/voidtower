@@ -3,16 +3,16 @@ import { SafeAreaView, StyleSheet, Text } from 'react-native'
 import { colors } from '../theme/tokens'
 
 const COPY: Record<string, string> = {
-  Home: 'Scenes, rooms, and lights arrive once VoidTower talks to Home Assistant.',
   Media: 'Jellyfin, Spotify, and casting arrive once those integrations are wired up.',
   Devices: 'Device discovery and control arrive alongside the Home Assistant integration.',
   Audio: 'Whole-home audio zones arrive once Snapcast/WLED are wired up.',
 }
 
 /**
- * Shared placeholder for every phase-two tab (Home/Media/Devices/Audio).
+ * Shared placeholder for the remaining phase-two tabs (Media/Devices/Audio).
  * These all depend on backend integrations (Home Assistant, Jellyfin,
- * Spotify, Snapcast/WLED) that don't exist yet — see plan Part C.
+ * Spotify, Snapcast/WLED) that don't exist yet — see plan Part C. Home got
+ * its own real screen (HomeScreen) in the mobile UI restructure.
  */
 export function ComingSoonScreen({ tab }: { tab: keyof typeof COPY }) {
   return (

@@ -1,14 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
-import { api, MODULE_ENDPOINTS } from '../api/client'
-import type { Alert, MetricsSnapshot } from '../api/types'
-import { useAuth } from '../auth/AuthContext'
+import { MODULE_ENDPOINTS } from '../api/client'
 import { Card } from '../components/Card'
 import { MetricTile } from '../components/MetricTile'
 import { ModuleDrawer, ModuleDef } from '../components/ModuleDrawer'
 import { SectionLabel } from '../components/SectionLabel'
+import { useSystemStatus } from '../hooks/useSystemStatus'
 import { colors, severityColors } from '../theme/tokens'
 
+// Plain-language renames for the ones that read as jargon; everything else
+// (Firewall, WireGuard, VMs, Secrets, ...) keeps its technical name on
+// purpose — this IS the technical/advanced view, just reached deliberately.
 const MODULES: ModuleDef[] = [
   { id: 'services', label: 'Services', endpoint: MODULE_ENDPOINTS.services },
   { id: 'containers', label: 'Containers', endpoint: MODULE_ENDPOINTS.containers },
@@ -22,48 +24,23 @@ const MODULES: ModuleDef[] = [
   { id: 'firewall', label: 'Firewall', endpoint: MODULE_ENDPOINTS.firewall, summaryOnly: true },
   { id: 'wireguard', label: 'WireGuard', endpoint: MODULE_ENDPOINTS.wireguard },
   { id: 'proxies', label: 'Proxies', endpoint: MODULE_ENDPOINTS.proxies },
-  { id: 'automation', label: 'Automation', endpoint: MODULE_ENDPOINTS.automation },
+  { id: 'automation', label: 'Routines', endpoint: MODULE_ENDPOINTS.automation },
   { id: 'secrets', label: 'Secrets', endpoint: MODULE_ENDPOINTS.secrets },
-  { id: 'timeline', label: 'Timeline', endpoint: MODULE_ENDPOINTS.timeline },
-  { id: 'models', label: 'Models', endpoint: MODULE_ENDPOINTS.models },
-  { id: 'diagnostics', label: 'Diagnostics', endpoint: MODULE_ENDPOINTS.diagnostics, summaryOnly: true },
+  { id: 'timeline', label: 'Activity Log', endpoint: MODULE_ENDPOINTS.timeline },
+  { id: 'models', label: 'AI Models', endpoint: MODULE_ENDPOINTS.models },
+  { id: 'diagnostics', label: 'Health Check', endpoint: MODULE_ENDPOINTS.diagnostics, summaryOnly: true },
   { id: 'security', label: 'Security', endpoint: MODULE_ENDPOINTS.security },
   { id: 'updates', label: 'Updates', endpoint: MODULE_ENDPOINTS.updates, summaryOnly: true },
 ]
 
-const SEED_METRICS: MetricsSnapshot = {
-  hostname: 'demo-tower', uptime_secs: 432000, cpu_usage: 23, cpu_count: 8, cpu_model: 'Demo CPU',
-  ram_total: 32e9, ram_used: 11e9, swap_total: 0, swap_used: 0, load_avg: [0.5, 0.6, 0.4],
-  process_count: 210, os_name: 'Linux', kernel_version: '6.x-demo',
-  disks: [{ name: 'demo', mount_point: '/', total: 1e12, used: 4e11, available: 6e11, fs_type: 'ext4' }],
-  networks: [],
-  gpu: [{ name: 'Demo GPU', temp_c: 45, util_pct: 12, mem_util_pct: 20, mem_used_mb: 2000, mem_total_mb: 12000, power_w: 40, power_limit_w: 220 }],
-  timestamp: Date.now() / 1000,
-}
-const SEED_ALERTS: Alert[] = [
-  { id: 'demo-1', title: 'Demo alert', message: 'This is seed data — demo accounts never touch the real system.', severity: 'info', category: 'demo', state: 'active', created_at: Date.now() / 1000 },
-]
-
-export function TowerScreen() {
-  const { user } = useAuth()
-  const isDemo = user?.role === 'demo'
-  const [metrics, setMetrics] = useState<MetricsSnapshot | null>(isDemo ? SEED_METRICS : null)
-  const [alerts, setAlerts] = useState<Alert[]>(isDemo ? SEED_ALERTS : [])
+export function AdvancedScreen() {
+  const { metrics, alerts, isDemo, refresh } = useSystemStatus()
   const [refreshing, setRefreshing] = useState(false)
   const [openModule, setOpenModule] = useState<ModuleDef | null>(null)
 
-  const load = useCallback(async () => {
-    if (isDemo) return
-    const [m, a] = await Promise.allSettled([api.metrics.current(), api.alerts.list()])
-    if (m.status === 'fulfilled') setMetrics(m.value)
-    if (a.status === 'fulfilled') setAlerts(a.value.alerts)
-  }, [isDemo])
-
-  useEffect(() => { load() }, [load])
-
   const onRefresh = async () => {
     setRefreshing(true)
-    await load()
+    await refresh()
     setRefreshing(false)
   }
 
@@ -78,7 +55,7 @@ export function TowerScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accentPurple} />}
       >
         <View style={styles.header}>
-          <Text style={styles.title}>VoidTower</Text>
+          <Text style={styles.title}>Advanced</Text>
           <Text style={styles.subtitle}>
             {metrics ? `${metrics.hostname} · ${Math.floor(metrics.uptime_secs / 3600)}h uptime` : 'Loading…'}
             {isDemo ? ' · DEMO' : ''}

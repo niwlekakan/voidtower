@@ -706,6 +706,7 @@ const AI_LLM_KEY = 'vt-ai-llm-endpoint'
 interface AiSettings {
   url: string | null
   port: number
+  tls_port: number
   proxy_active: boolean
 }
 
@@ -758,10 +759,18 @@ function AIIntegrationsSection() {
         body: JSON.stringify({ url, port }),
       }).then(res => res.json())
 
-      setAiSettings({ url, port, proxy_active: r.proxy_active ?? false })
+      const tlsPort: number = r.tls_port ?? port + 1
+      setAiSettings({ url, port, tls_port: tlsPort, proxy_active: r.proxy_active ?? false })
 
       if (r.proxy_active) {
-        setSaveResult({ ok: true, message: `Proxy active on port ${port} — AI tab will use http://${window.location.hostname}:${port}/` })
+        setSaveResult({
+          ok: true,
+          message: `Proxy active on port ${port} (and ${tlsPort} for HTTPS) — AI tab will use ` +
+            `http://${window.location.hostname}:${port}/ or https://${window.location.hostname}:${tlsPort}/ ` +
+            `depending on how you reach VoidTower. The HTTPS listener uses a self-signed cert — the first time ` +
+            `you load the AI tab remotely over HTTPS, you may need to open that URL directly once and accept ` +
+            `the browser's certificate warning before the embedded tab will load.`,
+        })
       } else if (r.nginx_error) {
         setSaveResult({ ok: false, message: `URL saved, but proxy setup failed: ${r.nginx_error}` })
       } else {
@@ -775,7 +784,9 @@ function AIIntegrationsSection() {
   }
 
   const proxyUrl = aiSettings?.proxy_active
-    ? `http://${window.location.hostname}:${aiSettings.port}`
+    ? (window.location.protocol === 'https:'
+        ? `https://${window.location.hostname}:${aiSettings.tls_port}`
+        : `http://${window.location.hostname}:${aiSettings.port}`)
     : null
 
   return (

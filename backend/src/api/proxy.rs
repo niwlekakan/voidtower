@@ -141,6 +141,79 @@ pub(crate) fn rewrite_upstream_for_docker(upstream: &str) -> String {
         .replace("//127.0.0.1:", "//host.docker.internal:")
 }
 
+/// Best-effort local firewall port opener — tries ufw → firewalld → iptables, first
+/// match wins, silently no-ops if none are present/active. Shared by every feature
+/// that publishes a Docker-container port straight onto the host (App Vault embed
+/// ports, the AI proxy port) and therefore needs the host's own firewall to allow
+/// it through too.
+pub(crate) fn open_firewall_port(port: &str) {
+    let tcp = format!("{port}/tcp");
+    if std::process::Command::new("ufw")
+        .args(["status"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Status: active"))
+        .unwrap_or(false)
+    {
+        let _ = std::process::Command::new("ufw")
+            .args(["allow", &tcp, "comment", "VoidTower"])
+            .output();
+        return;
+    }
+    if std::process::Command::new("firewall-cmd")
+        .args(["--state"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        let _ = std::process::Command::new("firewall-cmd")
+            .args(["--permanent", "--add-port", &tcp, "--quiet"])
+            .output();
+        let _ = std::process::Command::new("firewall-cmd").args(["--reload", "--quiet"]).output();
+        return;
+    }
+    if std::process::Command::new("iptables")
+        .args(["-C", "INPUT", "-p", "tcp", "--dport", port, "-j", "ACCEPT"])
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
+    {
+        let _ = std::process::Command::new("iptables")
+            .args(["-I", "INPUT", "-p", "tcp", "--dport", port, "-j", "ACCEPT"])
+            .output();
+    }
+}
+
+/// Counterpart to `open_firewall_port` — removes the rule again so a port doesn't
+/// stay open once the feature that needed it (AI proxy, embed proxy) is disabled or
+/// moved to a different port. Best-effort, same backend detection order.
+pub(crate) fn close_firewall_port(port: &str) {
+    let tcp = format!("{port}/tcp");
+    if std::process::Command::new("ufw")
+        .args(["status"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Status: active"))
+        .unwrap_or(false)
+    {
+        let _ = std::process::Command::new("ufw").args(["delete", "allow", &tcp]).output();
+        return;
+    }
+    if std::process::Command::new("firewall-cmd")
+        .args(["--state"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        let _ = std::process::Command::new("firewall-cmd")
+            .args(["--permanent", "--remove-port", &tcp, "--quiet"])
+            .output();
+        let _ = std::process::Command::new("firewall-cmd").args(["--reload", "--quiet"]).output();
+        return;
+    }
+    let _ = std::process::Command::new("iptables")
+        .args(["-D", "INPUT", "-p", "tcp", "--dport", port, "-j", "ACCEPT"])
+        .output();
+}
+
 fn conf_path(domain: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(effective_conf_dir())
         .join(format!("voidtower-{domain}.conf"))

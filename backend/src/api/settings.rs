@@ -22,7 +22,15 @@ const NOTIF_DISCORD_KEY: &str = "notif_discord_webhook";
 const NOTIF_SLACK_KEY: &str = "notif_slack_webhook";
 const AI_PORT_KEY: &str = "ai_proxy_port";
 const AI_PROXY_CONF: &str = "/var/lib/voidtower/nginx/conf.d/voidtower-ai-proxy.conf";
+const AI_TLS_CERT: &str = "/var/lib/voidtower/nginx/conf.d/voidtower-ai-proxy.crt";
+const AI_TLS_KEY: &str = "/var/lib/voidtower/nginx/conf.d/voidtower-ai-proxy.key";
 const DEFAULT_AI_PORT: u16 = 7001;
+
+/// The AI proxy's HTTPS listener always sits one port above the HTTP one — no
+/// separate setting to track, and the two are always opened/closed together.
+fn ai_tls_port(port: u16) -> u16 {
+    port + 1
+}
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let session_id = jar
@@ -77,6 +85,38 @@ async fn db_delete(state: &AppState, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// Generates a self-signed cert for the AI proxy's HTTPS listener, once — same
+/// approach as `docker/entrypoint.sh` uses for VoidTower's own bundled nginx, but
+/// written to the conf.d bind-mount so nginx-proxy's container can read it
+/// without a dedicated Docker volume (same trick `htpasswd_path` uses in proxy.rs).
+fn ensure_ai_proxy_tls_cert() -> std::io::Result<()> {
+    if std::path::Path::new(AI_TLS_CERT).exists() && std::path::Path::new(AI_TLS_KEY).exists() {
+        return Ok(());
+    }
+    if let Some(dir) = std::path::Path::new(AI_TLS_CERT).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let out = std::process::Command::new("openssl")
+        .args([
+            "req", "-x509", "-nodes", "-days", "3650",
+            "-newkey", "rsa:2048",
+            "-keyout", AI_TLS_KEY,
+            "-out", AI_TLS_CERT,
+            "-subj", "/CN=voidtower-ai-proxy",
+        ])
+        .output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Writes both an HTTP (`port`) and HTTPS (`ai_tls_port(port)`) listener for the
+/// AI proxy. The HTTPS one exists so the AI tab's iframe can be loaded from a page
+/// served over HTTPS without the browser blocking it as mixed content — see
+/// `PersistentAIFrame` in `frontend/src/components/layout/AppLayout.tsx`.
 fn write_ai_proxy_conf(port: u16, upstream: &str) -> std::io::Result<()> {
     let upstream = upstream.trim_end_matches('/');
     // nginx-proxy always runs as its own Docker container (bare-metal or Docker
@@ -86,13 +126,10 @@ fn write_ai_proxy_conf(port: u16, upstream: &str) -> std::io::Result<()> {
     if let Some(dir) = std::path::Path::new(AI_PROXY_CONF).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let content = format!(
-        "# VoidTower AI proxy — auto-managed, do not edit\n\
-server {{\n\
-    listen {port};\n\
-    server_name _;\n\
-\n\
-    location / {{\n\
+    ensure_ai_proxy_tls_cert()?;
+    let tls_port = ai_tls_port(port);
+    let location = format!(
+        "    location / {{\n\
         proxy_pass {upstream}/;\n\
         proxy_set_header Host $proxy_host;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
@@ -114,7 +151,26 @@ server {{\n\
         proxy_hide_header Content-Security-Policy;\n\
         add_header X-Frame-Options \"ALLOWALL\" always;\n\
         add_header Content-Security-Policy \"frame-ancestors *\" always;\n\
-    }}\n\
+    }}\n"
+    );
+    let content = format!(
+        "# VoidTower AI proxy — auto-managed, do not edit\n\
+server {{\n\
+    listen {port};\n\
+    server_name _;\n\
+\n\
+{location}\
+}}\n\
+\n\
+server {{\n\
+    listen {tls_port} ssl;\n\
+    server_name _;\n\
+    ssl_certificate     {AI_TLS_CERT};\n\
+    ssl_certificate_key {AI_TLS_KEY};\n\
+    ssl_protocols       TLSv1.2 TLSv1.3;\n\
+    ssl_ciphers         HIGH:!aNULL:!MD5;\n\
+\n\
+{location}\
 }}\n"
     );
     std::fs::write(AI_PROXY_CONF, content)
@@ -125,12 +181,12 @@ fn remove_ai_proxy_conf() {
 }
 
 /// Patch `ports` in the nginx-proxy docker-compose.yml, then re-deploy to publish the change.
-/// `add_port`: port to add (as "{n}:{n}"); `remove_port`: old port to remove.
+/// `add_ports`: ports to add (as "{n}:{n}"); `remove_ports`: old ports to drop.
 /// Only calls `docker compose up -d` if the ports list actually changed.
 fn patch_nginx_compose_port(
     compose_path: &str,
-    add_port: Option<u16>,
-    remove_port: Option<u16>,
+    add_ports: &[u16],
+    remove_ports: &[u16],
 ) -> std::result::Result<(), String> {
     let content = std::fs::read_to_string(compose_path)
         .map_err(|e| format!("Cannot read nginx-proxy compose file: {e}"))?;
@@ -153,14 +209,14 @@ fn patch_nginx_compose_port(
 
     let mut changed = false;
 
-    if let Some(old) = remove_port {
+    for &old in remove_ports {
         let old_str = format!("{old}:{old}");
         let before = ports.len();
         ports.retain(|p| p.as_str().map(|s| s != old_str).unwrap_or(true));
         changed |= ports.len() != before;
     }
 
-    if let Some(new) = add_port {
+    for &new in add_ports {
         let new_str = format!("{new}:{new}");
         if !ports.iter().any(|p| p.as_str() == Some(&new_str)) {
             ports.push(serde_yaml::Value::String(new_str));
@@ -214,6 +270,7 @@ pub async fn get_ai_url(
     Ok(Json(serde_json::json!({
         "url": url,
         "port": port,
+        "tls_port": ai_tls_port(port),
         "proxy_active": proxy_active,
     })))
 }
@@ -232,12 +289,15 @@ pub async fn set_ai_url(
     let user = require_admin(&state, &jar).await?;
 
     let port = req.port.unwrap_or(DEFAULT_AI_PORT);
-    if port < 1024 {
-        return Err(AppError::BadRequest("Port must be >= 1024".into()));
+    // Upper-bounded so `ai_tls_port` (port + 1) can never overflow u16.
+    if !(1024..=65534).contains(&port) {
+        return Err(AppError::BadRequest("Port must be between 1024 and 65534".into()));
     }
+    let tls_port = ai_tls_port(port);
 
     // Fetch current port and nginx-proxy compose path before making changes
     let old_port: Option<u16> = db_get(&state, AI_PORT_KEY).await.and_then(|v| v.parse().ok());
+    let old_tls_port = old_port.map(ai_tls_port);
     let nginx_compose_path: Option<String> = sqlx::query_scalar(
         "SELECT compose_path FROM deployed_apps WHERE app_id = 'nginx-proxy' LIMIT 1",
     )
@@ -260,13 +320,33 @@ pub async fn set_ai_url(
             let nginx_result = tokio::task::spawn_blocking(move || {
                 write_ai_proxy_conf(port, &url_owned)
                     .map_err(|e| format!("Failed to write nginx config: {e}"))?;
-                if port_changed {
+
+                let result = if port_changed {
                     if let Some(cp) = nginx_compose_path {
-                        patch_nginx_compose_port(&cp, Some(port), old_port)?;
-                        return Ok("nginx-proxy redeployed with updated port binding".to_string());
+                        let remove: Vec<u16> = old_port.map(|p| vec![p, ai_tls_port(p)]).unwrap_or_default();
+                        patch_nginx_compose_port(&cp, &[port, tls_port], &remove)?;
+                        Ok("nginx-proxy redeployed with updated port binding".to_string())
+                    } else {
+                        reload_nginx_pub()
+                    }
+                } else {
+                    reload_nginx_pub()
+                };
+
+                // Best-effort — ensure the current ports are open, and close the old
+                // ones if they moved, so a stale port doesn't stay reachable forever.
+                super::proxy::open_firewall_port(&port.to_string());
+                super::proxy::open_firewall_port(&tls_port.to_string());
+                if port_changed {
+                    if let Some(op) = old_port {
+                        super::proxy::close_firewall_port(&op.to_string());
+                    }
+                    if let Some(otp) = old_tls_port {
+                        super::proxy::close_firewall_port(&otp.to_string());
                     }
                 }
-                reload_nginx_pub()
+
+                result
             })
             .await
             .unwrap();
@@ -282,12 +362,14 @@ pub async fn set_ai_url(
                     "ok": true,
                     "proxy_active": true,
                     "port": port,
+                    "tls_port": tls_port,
                     "nginx": msg,
                 }))),
                 Err(e) => Ok(Json(serde_json::json!({
                     "ok": true,
                     "proxy_active": false,
                     "port": port,
+                    "tls_port": tls_port,
                     "nginx_error": e,
                 }))),
             }
@@ -297,7 +379,14 @@ pub async fn set_ai_url(
             tokio::task::spawn_blocking(move || {
                 remove_ai_proxy_conf();
                 if let Some(cp) = nginx_compose_path {
-                    let _ = patch_nginx_compose_port(&cp, None, old_port);
+                    let remove: Vec<u16> = old_port.map(|p| vec![p, ai_tls_port(p)]).unwrap_or_default();
+                    let _ = patch_nginx_compose_port(&cp, &[], &remove);
+                }
+                if let Some(op) = old_port {
+                    super::proxy::close_firewall_port(&op.to_string());
+                }
+                if let Some(otp) = old_tls_port {
+                    super::proxy::close_firewall_port(&otp.to_string());
                 }
                 reload_nginx_pub()
             })

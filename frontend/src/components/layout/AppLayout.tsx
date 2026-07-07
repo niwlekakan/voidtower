@@ -28,9 +28,13 @@ function PersistentAIFrame({ visible }: { visible: boolean }) {
   useEffect(() => {
     fetch('/api/settings/ai-url', { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
-      .then((s: { url?: string; port?: number; proxy_active?: boolean } | null) => {
+      .then((s: { url?: string; port?: number; tls_port?: number; proxy_active?: boolean } | null) => {
         if (s?.proxy_active && s?.url) {
-          setSrc(`http://${window.location.hostname}:${s.port}/`)
+          // Match this page's own scheme — loading a plain http:// iframe from an
+          // https:// page gets blocked by the browser as mixed content.
+          const isHttps = window.location.protocol === 'https:'
+          const proxyPort = isHttps ? s.tls_port : s.port
+          setSrc(`${isHttps ? 'https' : 'http'}://${window.location.hostname}:${proxyPort}/`)
         } else if (s?.url) {
           setSrc(s.url)
         } else {

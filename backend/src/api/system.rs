@@ -4,7 +4,7 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
 const GITHUB_REPO: &str = "niwlekakan/voidtower";
-const GITHUB_BRANCH: &str = "voidtower-aio";
+const GITHUB_BRANCH: &str = "main";
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;

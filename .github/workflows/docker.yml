@@ -2,10 +2,10 @@ name: Docker
 
 on:
   push:
-    branches: [voidtower-aio]
+    branches: [main]
     tags: ['v*']
   pull_request:
-    branches: [voidtower-aio]
+    branches: [main]
 
 permissions:
   contents: read
@@ -26,7 +26,7 @@ jobs:
         with:
           images: ghcr.io/niwlekakan/voidtower
           tags: |
-            type=raw,value=aio-latest,enable=${{ github.ref == 'refs/heads/voidtower-aio' }}
+            type=raw,value=aio-latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern=aio-{{version}}
             type=sha,prefix=aio-,format=short
 

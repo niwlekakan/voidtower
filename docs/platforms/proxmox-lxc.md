@@ -38,11 +38,11 @@ Identical to any Ubuntu/Debian system — the installer handles Docker, systemd,
 
 ```bash
 # VoidTower only
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh \
   | sudo bash
 
 # Full AIO stack with Odysseus and AI
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh \
   | sudo bash -s -- --all-in-one --pull-model
 ```
 

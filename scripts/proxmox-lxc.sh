@@ -2,7 +2,7 @@
 # VoidTower — Proxmox LXC installer
 # Run ON the Proxmox host as root:
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/proxmox-lxc.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/proxmox-lxc.sh)"
 #
 # Options (all have interactive fallback):
 #   --yes              Non-interactive, accept all defaults
@@ -360,7 +360,7 @@ pct exec "$CT_ID" -- bash -c "
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -qq curl ca-certificates
-  curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+  curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh \
     | bash -s -- ${INSTALLER_FLAGS}
 " || die "VoidTower installation inside container failed — check: pct console ${CT_ID}"
 

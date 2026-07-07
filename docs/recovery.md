@@ -240,7 +240,7 @@ docker compose --profile aio up -d
 
 ```bash
 sudo bash scripts/install.sh --uninstall --yes
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh \
   | sudo bash -s -- --all-in-one
 ```
 

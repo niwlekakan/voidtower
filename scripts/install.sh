@@ -423,7 +423,7 @@ build_from_source() {
     SRC=$(mktemp -d -p /var/tmp 2>/dev/null || mktemp -d)
     local _tarball="$SRC/source.tar.gz"
     curl -fsSL --max-time 120 -o "$_tarball" \
-      "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" 2>&1
+      "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" 2>&1
     tar -xz --strip-components=1 -C "$SRC" -f "$_tarball"
     rm -f "$_tarball"
     success "Source downloaded"
@@ -503,7 +503,7 @@ install_catalog() {
     local tmp_cat; tmp_cat=$(mktemp -d)
     local _cat_tarball="$tmp_cat/catalog.tar.gz"
     if curl -fsSL -o "$_cat_tarball" \
-        "https://github.com/${REPO}/archive/refs/heads/voidtower-aio.tar.gz" 2>/dev/null; then
+        "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" 2>/dev/null; then
       tar -xz -C "$catalog_dir" --strip-components=3 --wildcards \
         "*/app-vault/apps/*.yml" -f "$_cat_tarball" 2>/dev/null || true
     fi

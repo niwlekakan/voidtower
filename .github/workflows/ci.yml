@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, dev, voidtower-aio]
+    branches: [main]
   pull_request:
-    branches: [main, voidtower-aio]
+    branches: [main]
 
 jobs:
   frontend:

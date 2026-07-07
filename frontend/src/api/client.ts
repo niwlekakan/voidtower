@@ -14,8 +14,33 @@ export class ApiClientError extends Error {
   }
 }
 
+/**
+ * The web app is served same-origin with the backend (through nginx), so the
+ * browser's own fetch + cookie jar works fine. The desktop (Tauri) app talks
+ * to a *remote* VoidTower instance from its own `tauri://` origin — from the
+ * webview's perspective that makes every API call cross-site, and the
+ * `vt_session` cookie (SameSite=Strict, backend/src/api/auth.rs) would never
+ * be sent back. `@tauri-apps/plugin-http`'s fetch runs the request through
+ * Rust instead of the webview's networking stack, so it isn't subject to
+ * browser same-site/CORS enforcement and keeps its own per-host cookie jar —
+ * swap to it only when actually running inside a Tauri window.
+ */
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window
+}
+
+let tauriFetchPromise: Promise<typeof fetch> | null = null
+function resolveFetch(): Promise<typeof fetch> {
+  if (!isTauri()) return Promise.resolve(fetch)
+  if (!tauriFetchPromise) {
+    tauriFetchPromise = import('@tauri-apps/plugin-http').then((m) => m.fetch as unknown as typeof fetch)
+  }
+  return tauriFetchPromise
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const doFetch = await resolveFetch()
+  const res = await doFetch(`${BASE}${path}`, {
     ...init,
     credentials: 'include',
     headers: {

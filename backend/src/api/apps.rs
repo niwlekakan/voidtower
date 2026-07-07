@@ -1581,7 +1581,7 @@ pub async fn open_ui(
                 // Open the port in the local firewall non-blocking.
                 let port_str = embed_port.to_string();
                 tokio::task::spawn_blocking(move || {
-                    open_firewall_port(&port_str);
+                    crate::api::proxy::open_firewall_port(&port_str);
                 });
             }
             embed_url = Some(format!("http://{}:{}", host, embed_port));
@@ -1598,46 +1598,6 @@ pub async fn open_ui(
         "embed_url": embed_url,
         "proxy_created": proxy_created,
     })))
-}
-
-fn open_firewall_port(port: &str) {
-    let tcp = format!("{port}/tcp");
-    // ufw
-    if std::process::Command::new("ufw")
-        .args(["status"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Status: active"))
-        .unwrap_or(false)
-    {
-        let _ = std::process::Command::new("ufw")
-            .args(["allow", &tcp, "comment", "VoidTower embed"])
-            .output();
-        return;
-    }
-    // firewalld
-    if std::process::Command::new("firewall-cmd")
-        .args(["--state"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        let _ = std::process::Command::new("firewall-cmd")
-            .args(["--permanent", "--add-port", &tcp, "--quiet"])
-            .output();
-        let _ = std::process::Command::new("firewall-cmd").args(["--reload", "--quiet"]).output();
-        return;
-    }
-    // iptables fallback
-    if std::process::Command::new("iptables")
-        .args(["-C", "INPUT", "-p", "tcp", "--dport", port, "-j", "ACCEPT"])
-        .output()
-        .map(|o| !o.status.success())
-        .unwrap_or(true)
-    {
-        let _ = std::process::Command::new("iptables")
-            .args(["-I", "INPUT", "-p", "tcp", "--dport", port, "-j", "ACCEPT"])
-            .output();
-    }
 }
 
 pub async fn update_compose(

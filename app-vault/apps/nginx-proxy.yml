@@ -23,6 +23,13 @@ compose:
         - nginx_html:/usr/share/nginx/html
       environment:
         - TRUST_DOWNSTREAM_PROXY=true
+      extra_hosts:
+        # Lets nginx resolve `host.docker.internal` on native Linux Docker too (this
+        # container isn't on the default `docker0` bridge, so a guessed bridge IP
+        # isn't reliable) — VoidTower rewrites localhost/127.0.0.1 upstreams to this
+        # hostname so proxied apps bound on the real host work whether VoidTower
+        # itself is installed bare-metal or in Docker.
+        - "host.docker.internal:host-gateway"
       networks:
         default: {}
         vt-proxy:

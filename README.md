@@ -2,11 +2,11 @@
 
 **Self-hosted Linux infrastructure management — with an AI operator built in.**
 
-VoidTower ships the infrastructure control plane together with [Odysseus](https://github.com/niwlekakan/odysseus/tree/odysseus-voidlink) (the AI workspace) and the **Voidwatch** integration that connects them — so an AI agent can inspect and manage your homelab with scoped, audited, policy-controlled access. The AI stack is an opt-in Docker Compose profile (`--profile aio`), not a separate install — run without it for infrastructure management only.
+VoidTower ships the infrastructure control plane together with [Odysseus](https://github.com/niwlekakan/odysseus/tree/odysseus-voidlink) (the AI workspace) and the **Voidwatch** integration that connects them, so an AI agent can inspect and manage your homelab with scoped, audited, policy-controlled access. The AI stack is an opt-in Docker Compose profile (`--profile aio`) rather than a separate install, so you can run without it for infrastructure management only.
 
 Everything else — Jellyfin, Nextcloud, Gitea, Portainer, and 20+ other apps — is **opt-in** from the VoidTower app catalog inside the UI.
 
-> Don't need the AI workspace? Skip `--profile aio` — see [Docker Compose profiles](#docker-compose-profiles) below.
+> Don't need the AI workspace? Skip `--profile aio`. See [Docker Compose profiles](#docker-compose-profiles) below.
 
 ---
 

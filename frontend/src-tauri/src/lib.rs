@@ -72,6 +72,17 @@ fn set_glass(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's accelerated (DMA-BUF/GBM) compositing path fails outright
+    // on some Linux GPU/driver combinations — observed as a fully blank or
+    // flat-grey window with "Failed to create GBM buffer" spam, unrelated to
+    // this app's own window transparency setting (confirmed by testing with
+    // transparency both on and off). Forcing WebKitGTK onto its
+    // non-composited rendering path sidesteps the broken path entirely; it's
+    // a standard, well-known workaround for this failure mode, not a hack
+    // specific to one machine. Must be set before the webview initializes.
+    #[cfg(target_os = "linux")]
+    std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_os::init())

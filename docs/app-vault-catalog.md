@@ -157,7 +157,7 @@ By default, apps deploy to the local Docker daemon. Apps can also be deployed to
 
 | Category | Examples |
 |---|---|
-| `media` | Jellyfin, Jellyseerr, Bazarr, Lidarr, Kavita |
+| `media` | Jellyfin, Seerr, Bazarr, Lidarr, Kavita |
 | `dev` | Gitea, Code Server |
 | `monitoring` | Grafana, Uptime Kuma, Dozzle |
 | `ai` | Ollama, Open WebUI, ComfyUI |

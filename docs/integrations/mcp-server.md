@@ -224,7 +224,7 @@ See [docs/api-tokens.md](../api-tokens.md) for how to create a token with these 
 | `readarr_server.py` | Readarr book manager | `READARR_URL`, `READARR_API_KEY` |
 | `prowlarr_server.py` | Prowlarr indexer manager | `PROWLARR_URL`, `PROWLARR_API_KEY` |
 | `bazarr_server.py` | Bazarr subtitle manager | `BAZARR_URL`, `BAZARR_API_KEY` |
-| `jellyseerr_server.py` | Jellyseerr request manager | `JELLYSEERR_URL`, `JELLYSEERR_API_KEY` |
+| `seerr_server.py` | Seerr request manager | `SEERR_URL`, `SEERR_API_KEY` |
 | **Media** | | |
 | `jellyfin_server.py` | Jellyfin media server | `JELLYFIN_URL`, `JELLYFIN_API_KEY` |
 | `immich_server.py` | Immich photo management | `IMMICH_URL`, `IMMICH_API_KEY` |

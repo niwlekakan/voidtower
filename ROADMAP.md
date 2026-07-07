@@ -14,7 +14,7 @@ Features confirmed present in the codebase (pages + API modules).
 | **Services** | List systemd units, start/stop/restart/enable/disable, view logs, tag filtering |
 | **Containers** | Docker list, start/stop/restart/remove, log viewer, exec shell, compose file editor with staged diff |
 | **App Vault** | 52 one-click deployments (see full list below), management panel with Containers/Compose/Logs tabs, custom-deploy form for arbitrary images |
-| **Media Automation** | Full Servarr stack in App Vault — Sonarr, Radarr, Lidarr, Readarr, Prowlarr, Bazarr, Jellyseerr, qBittorrent, Gluetun, Recyclarr, FlareSolverr |
+| **Media Automation** | Full Servarr stack in App Vault — Sonarr, Radarr, Lidarr, Readarr, Prowlarr, Bazarr, Seerr, qBittorrent, Gluetun, Recyclarr, FlareSolverr |
 | **AI / Models** | Download GGUFs, pull Ollama models, import into llama.cpp; AI workspace iframe embed; AI-based app recommendations |
 | **AI Studio** | Image generation, TTS, STT, output gallery, MCP tool inspector/invoker with auto-generated forms — Tower Mode page + Void Mode native panel |
 | **VMs** | KVM/QEMU via libvirt (`virsh`); Proxmox API integration — list/start/stop/reboot/reset/suspend/resume QEMU VMs and LXC containers, storage pool browser (list/upload/delete content), physical disk management (SMART, wipe, passthrough to VM), PBS backup tab, noVNC console, snapshots (create/rollback/delete with change-plan), VM state alerts, resource tags, AIOS native panel |
@@ -382,7 +382,7 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 - [x] Custom app deployment form — Done: `CustomDeployTab` in `frontend/src/pages/AppVault.tsx:196` (wired into the page at line 1398) — image, name, port map, volume map, env vars → generates and saves a compose file, no YAML knowledge needed.
 - [ ] AI integration badges — per-app badge tier: AI Native / AI Aware / AI Ready / none; defined in YAML catalog; shown as colored chip on app card
 - [ ] Per-app resource limits — CPU/memory caps surfaced in the existing compose editor (staged-diff pattern already built for Containers) instead of requiring the user to hand-edit the compose YAML to add `deploy.resources.limits`
-- [ ] Servarr stack pairing hints — now that the full Servarr suite (Sonarr/Radarr/Lidarr/Readarr/Prowlarr/Bazarr/Jellyseerr/qBittorrent/Gluetun/Recyclarr/FlareSolverr) is in the catalog, a "deploy as a pre-wired group" option (shared download client + indexer config) would save the multi-app manual wiring these apps normally require
+- [ ] Servarr stack pairing hints — now that the full Servarr suite (Sonarr/Radarr/Lidarr/Readarr/Prowlarr/Bazarr/Seerr/qBittorrent/Gluetun/Recyclarr/FlareSolverr) is in the catalog, a "deploy as a pre-wired group" option (shared download client + indexer config) would save the multi-app manual wiring these apps normally require
 
 ### VM / Android hosting
 
@@ -418,9 +418,9 @@ Apps mentioned in `future_plan.md` section 21 that are **still not** in `app-vau
 | Stable Diffusion WebUI | AI | `comfyui.yml` already covers Stable Diffusion via ComfyUI — a dedicated AUTOMATIC1111-style WebUI is still missing |
 | Whisper (standalone) | AI | `studio.rs`'s STT panel covers transcription in-app; a standalone deployable Whisper API container for other apps to call is still missing |
 
-Apps already in `app-vault/apps/` (54 present): adguardhome, anythingllm, authentik, bazarr, changedetection, code-server, comfyui, dozzle, eurooffice, flaresolverr, freshrss, gitea, gluetun, grafana, homeassistant, immich, jellyfin, jellyseerr, jitsi, kavita, lidarr, librechat, llama-cpp, matrix-synapse, mealie, minio, n8n, navidrome, nextcloud, nginx-proxy, odysseus, ollama, opencloud, open-webui, outline, paperless, pihole, portainer, prowlarr, qbittorrent, radarr, readarr, recyclarr, redroid, searxng, sonarr, stirling-pdf, syncthing, tailscale, uptime-kuma, vaultwarden, vikunja, wireguard-easy, youkidex.
+Apps already in `app-vault/apps/` (54 present): adguardhome, anythingllm, authentik, bazarr, changedetection, code-server, comfyui, dozzle, eurooffice, flaresolverr, freshrss, gitea, gluetun, grafana, homeassistant, immich, jellyfin, jitsi, kavita, lidarr, librechat, llama-cpp, matrix-synapse, mealie, minio, n8n, navidrome, nextcloud, nginx-proxy, odysseus, ollama, opencloud, open-webui, outline, paperless, pihole, portainer, prowlarr, qbittorrent, radarr, readarr, recyclarr, redroid, searxng, seerr, sonarr, stirling-pdf, syncthing, tailscale, uptime-kuma, vaultwarden, vikunja, wireguard-easy, youkidex.
 
-A full Servarr media-management stack (`bazarr`, `flaresolverr`, `gluetun`, `jellyseerr`, `lidarr`, `prowlarr`, `qbittorrent`, `radarr`, `readarr`, `recyclarr`, `sonarr`) has landed since this doc was last written and isn't mentioned anywhere above it — worth its own "Media Automation" row in the Current State table rather than being buried in a flat app list.
+A full Servarr media-management stack (`bazarr`, `flaresolverr`, `gluetun`, `seerr`, `lidarr`, `prowlarr`, `qbittorrent`, `radarr`, `readarr`, `recyclarr`, `sonarr`) has landed since this doc was last written and isn't mentioned anywhere above it — worth its own "Media Automation" row in the Current State table rather than being buried in a flat app list.
 
 ---
 

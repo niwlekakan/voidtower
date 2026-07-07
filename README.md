@@ -2,15 +2,15 @@
 
 **Self-hosted Linux infrastructure management — with an AI operator built in.**
 
-This is the **all-in-one branch** of VoidTower. It ships VoidTower (the infrastructure control plane) together with [Odysseus](https://github.com/niwlekakan/odysseus/tree/odysseus-voidlink) (the AI workspace) and the **Voidwatch** integration that connects them — so an AI agent can inspect and manage your homelab with scoped, audited, policy-controlled access.
+VoidTower ships the infrastructure control plane together with [Odysseus](https://github.com/niwlekakan/odysseus/tree/odysseus-voidlink) (the AI workspace) and the **Voidwatch** integration that connects them, so an AI agent can inspect and manage your homelab with scoped, audited, policy-controlled access. The AI stack is an opt-in Docker Compose profile (`--profile aio`) rather than a separate install, so you can run without it for infrastructure management only.
 
 Everything else — Jellyfin, Nextcloud, Gitea, Portainer, and 20+ other apps — is **opt-in** from the VoidTower app catalog inside the UI.
 
-> For the standalone VoidTower without AI integration, see the [`main` branch](https://github.com/niwlekakan/voidtower/tree/main).
+> Don't need the AI workspace? Skip `--profile aio`. See [Docker Compose profiles](#docker-compose-profiles) below.
 
 ---
 
-## What's in this branch
+## What's included
 
 | Component | Role | Port |
 |---|---|---|
@@ -392,7 +392,7 @@ sudo voidtower user list                    # bare metal
 | **Dashboard** | Customizable widgets — clock, weather, CPU/RAM/disk charts, container summary, alert count. Nine toggleable widgets with drag-to-reorder sections, config persisted per-browser. |
 | **Services** | Manage systemd units — start, stop, restart, enable/disable, view logs. Resource tag filtering. |
 | **Containers** | Docker container list, start/stop/restart, log viewer, per-container exec shell, compose file editor with staged diff before apply. Resource tag filtering. |
-| **App Vault** | 50+ one-click app deployments (Gitea, Nextcloud, Jellyfin, Grafana, Pi-hole, n8n, Ollama, Open WebUI, Home Assistant, Odysseus, and more). Pre-deploy modal shows compose config, env var overrides, and auto-generated secrets before launch. Deploy to Proxmox LXC directly from the catalog. |
+| **App Vault** | 50+ one-click app deployments (Gitea, Nextcloud, Jellyfin, Grafana, Pi-hole, n8n, Ollama, Open WebUI, OpenHands, Home Assistant, Odysseus, and more). Pre-deploy modal shows compose config, env var overrides, and auto-generated secrets before launch. Deploy to Proxmox LXC directly from the catalog. |
 | **AI Discover** | Ask the configured LLM to recommend self-hosted apps; results include Docker image names and direct deploy buttons for catalog matches. |
 | **Models** | Download GGUF models from URL with popular presets (Content-Type and GGUF magic-byte validated), pull models via Ollama by name, import downloaded GGUFs into Ollama. Live progress bars. |
 | **AI workspace** | Iframe-embed any OpenAI-compatible workspace (Odysseus, Open WebUI, etc.). Floating GPU controls panel shows VRAM bar, GPU utilisation %, llama.cpp process list, and one-click unload. |

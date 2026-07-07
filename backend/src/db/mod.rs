@@ -160,6 +160,11 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_checked_at INTEGER").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_latency_ms INTEGER").execute(&pool).await;
 
+    // Tiered accounts: guest accounts expire automatically (role = 'guest'),
+    // demo accounts are sandboxed to read-only (role = 'demo') — reuses the
+    // existing role-string ladder rather than a separate flag column.
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN expires_at INTEGER").execute(&pool).await;
+
     // AI provider abstraction layer
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS ai_providers (
@@ -173,6 +178,40 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
             priority    INTEGER NOT NULL DEFAULT 50,
             created_at  INTEGER NOT NULL,
             updated_at  INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await;
+
+    // Fleet node enrollment: pairing codes (single-use, short-lived) mint a node
+    // identity that owns exactly one WireGuard peer + one heartbeat bearer token.
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS node_pairing_codes (
+            id          TEXT PRIMARY KEY,
+            token_hash  TEXT NOT NULL UNIQUE,
+            created_by  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at  INTEGER NOT NULL,
+            used_at     INTEGER,
+            created_at  INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await;
+
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS nodes (
+            id              TEXT PRIMARY KEY,
+            display_name    TEXT NOT NULL,
+            device_type     TEXT NOT NULL DEFAULT 'other',
+            owner_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            wg_peer_id      TEXT,
+            wg_public_key   TEXT NOT NULL DEFAULT '',
+            token_hash      TEXT NOT NULL,
+            last_seen       INTEGER,
+            last_telemetry  TEXT,
+            agent_capable   INTEGER NOT NULL DEFAULT 0,
+            approved        INTEGER NOT NULL DEFAULT 1,
+            created_at      INTEGER NOT NULL
         )",
     )
     .execute(&pool)

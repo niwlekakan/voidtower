@@ -103,6 +103,21 @@ pub async fn login(
         return Err(AppError::Unauthorized);
     }
 
+    if let Some(exp) = user.expires_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if exp <= now {
+            audit::log(
+                &state.db, None, "human", "auth.login.expired",
+                Some("user"), Some(&user.id), "failure",
+                Some(&addr.ip().to_string()), None,
+            ).await;
+            return Err(AppError::BadRequest("This guest account has expired".to_string()));
+        }
+    }
+
     // TOTP check
     if user.totp_enabled {
         match &req.totp_code {

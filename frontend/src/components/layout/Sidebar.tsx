@@ -4,11 +4,11 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, ChevronDown, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2, LayoutPanelTop,
+  ChevronLeft, ChevronDown, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2, LayoutPanelTop, Home,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
-import { api } from '@/api/client'
+import { api, isTauri } from '@/api/client'
 import { useNavConfigStore, resolvedNavItems, resolvedNavGroups } from '@/store/navConfig'
 import { useSidebarPrefsStore, type SidebarAnimationStyle } from '@/store/sidebarPrefs'
 import { ICON_REGISTRY } from '@/components/ui/iconRegistry'
@@ -413,6 +413,17 @@ export default function Sidebar() {
     }))
     .filter((g) => g.items.length > 0)
 
+  // Desktop-app-only: a synthetic "Home" entry (never persisted to
+  // navConfig/backend) leading to the simplified landing page (App.tsx's
+  // isTauri() branch on the index route). The browser's nav is untouched —
+  // this only prepends when actually running inside a Tauri window.
+  const renderGroups = isTauri() && visibleGroups.length > 0
+    ? [
+        { ...visibleGroups[0], items: [{ to: '/', icon: Home, label: 'Home' }, ...visibleGroups[0].items] },
+        ...visibleGroups.slice(1),
+      ]
+    : visibleGroups
+
   const renderDropdownGroup = (id: string, label: string, items: { to: string; icon: React.ElementType; label: string }[]) => {
     const isOpen = openGroup?.id === id
     const toggle = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -448,7 +459,7 @@ export default function Sidebar() {
               {items.map(({ to, icon: DefaultIcon, label: itemLabel }) => {
                 const key = to.replace(/^\//, '')
                 const cfg = navMap[key]
-                const displayLabel = cfg?.label ?? itemLabel
+                const displayLabel = isTauri() && key === 'dashboard' ? 'Advanced' : (cfg?.label ?? itemLabel)
                 const Icon = (cfg?.icon && ICON_REGISTRY[cfg.icon]) || DefaultIcon
                 return (
                   <NavLink
@@ -501,7 +512,7 @@ export default function Sidebar() {
           {instanceName}
         </span>
         <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
-          {visibleGroups.map(({ group, items }) => renderDropdownGroup(group.id, group.label, items))}
+          {renderGroups.map(({ group, items }) => renderDropdownGroup(group.id, group.label, items))}
           {activePlugins.length > 0 &&
             renderDropdownGroup('plugins', 'Plugins', activePlugins.map((p) => ({ to: `/plugins/${p.id}`, icon: Blocks, label: p.name })))}
           {customTabs.length > 0 &&
@@ -571,7 +582,7 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-2 overflow-y-auto">
-        {(() => { let staggerIndex = -1; return visibleGroups.map(({ group, items: visibleItems }, gi) => {
+        {(() => { let staggerIndex = -1; return renderGroups.map(({ group, items: visibleItems }, gi) => {
           return (
             <div key={group.id} className={gi > 0 ? 'mt-3' : ''}>
               <div
@@ -585,7 +596,7 @@ export default function Sidebar() {
                 {visibleItems.map(({ to, icon: DefaultIcon, label }) => {
                   const key = to.replace(/^\//, '')
                   const cfg = navMap[key]
-                  const displayLabel = cfg?.label ?? label
+                  const displayLabel = isTauri() && key === 'dashboard' ? 'Advanced' : (cfg?.label ?? label)
                   const Icon = (cfg?.icon && ICON_REGISTRY[cfg.icon]) || DefaultIcon
                   staggerIndex += 1
                   const itemIndex = staggerIndex

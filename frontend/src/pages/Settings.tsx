@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/auth'
-import { api, ApiClientError } from '@/api/client'
+import { api, ApiClientError, isTauri } from '@/api/client'
 import type { UserRecord } from '@/api/types'
 import Button from '@/components/ui/Button'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
@@ -299,10 +299,6 @@ function DeveloperSection() {
 
 // ─── Desktop window section (Tauri app only) ─────────────────────────────────
 
-function isTauriRuntime() {
-  return typeof window !== 'undefined' && '__TAURI__' in window
-}
-
 function DesktopWindowSection() {
   const [ready, setReady] = useState(false)
   const [platform, setPlatform] = useState<string | null>(null)
@@ -310,14 +306,14 @@ function DesktopWindowSection() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!isTauriRuntime()) return
+    if (!isTauri()) return
     import('@tauri-apps/plugin-os').then(({ platform: getPlatform }) => {
       setPlatform(getPlatform())
       setReady(true)
     })
   }, [])
 
-  if (!isTauriRuntime()) return null
+  if (!isTauri()) return null
 
   const supported = platform === 'macos' || platform === 'windows'
 

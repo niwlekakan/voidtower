@@ -25,7 +25,7 @@ export class ApiClientError extends Error {
  * browser same-site/CORS enforcement and keeps its own per-host cookie jar —
  * swap to it only when actually running inside a Tauri window.
  */
-function isTauri(): boolean {
+export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI__' in window
 }
 

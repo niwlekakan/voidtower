@@ -297,6 +297,73 @@ function DeveloperSection() {
   )
 }
 
+// ─── Desktop window section (Tauri app only) ─────────────────────────────────
+
+function isTauriRuntime() {
+  return typeof window !== 'undefined' && '__TAURI__' in window
+}
+
+function DesktopWindowSection() {
+  const [ready, setReady] = useState(false)
+  const [platform, setPlatform] = useState<string | null>(null)
+  const [glass, setGlassOn] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    import('@tauri-apps/plugin-os').then(({ platform: getPlatform }) => {
+      setPlatform(getPlatform())
+      setReady(true)
+    })
+  }, [])
+
+  if (!isTauriRuntime()) return null
+
+  const supported = platform === 'macos' || platform === 'windows'
+
+  const toggleGlass = async () => {
+    const next = !glass
+    setError(null)
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('set_glass', { enabled: next })
+      setGlassOn(next)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <div className="card space-y-4" style={{ borderColor: 'var(--border-default)' }}>
+      <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Desktop window</h2>
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <div className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>Glass window</div>
+          <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            {supported
+              ? 'A translucent, blurred window background (macOS vibrancy / Windows Mica). Off by default.'
+              : error ?? "Window transparency effects aren't supported on Linux yet — this app's in-app theme blur (Settings → Appearance) still works."}
+          </div>
+        </div>
+        <button
+          role="switch"
+          aria-checked={glass}
+          disabled={!ready || !supported}
+          onClick={toggleGlass}
+          style={{
+            flexShrink: 0, width: 36, height: 20, borderRadius: 10, border: 'none',
+            cursor: !ready || !supported ? 'not-allowed' : 'pointer', position: 'relative',
+            opacity: !ready || !supported ? 0.4 : 1,
+            background: glass ? 'var(--accent-primary)' : 'var(--bg-elevated)',
+          }}
+        >
+          <span style={{ position: 'absolute', top: 2, left: glass ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s' }} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Disaster Recovery section ────────────────────────────────────────────────
 
 function DisasterRecoverySection() {
@@ -622,6 +689,9 @@ export default function SettingsPage() {
 
       {/* Developer */}
       {isAdmin && <DeveloperSection />}
+
+      {/* Desktop window (Tauri app only — no-ops/hides everywhere else) */}
+      <DesktopWindowSection />
 
       {/* Disaster Recovery — owner/admin only */}
       {isAdmin && <DisasterRecoverySection />}

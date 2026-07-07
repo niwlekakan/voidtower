@@ -124,6 +124,7 @@ export default function TimelinePage() {
       .finally(() => setLoading(false))
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- initial load only; onCategory/onSearch already trigger their own load() calls
   useEffect(() => { load(0, category, search) }, [])
 
   const onCategory = (cat: string) => { setCategory(cat); load(0, cat, search) }

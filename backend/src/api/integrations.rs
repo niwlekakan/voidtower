@@ -71,6 +71,16 @@ pub fn sha256_hex(s: &str) -> String {
     hex::encode(h.finalize())
 }
 
+/// Byte-for-byte comparison that doesn't short-circuit on the first mismatch,
+/// so timing doesn't leak how many leading bytes matched.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 pub fn generate_api_token() -> String {
     let bytes: [u8; 32] = rand::thread_rng().gen();
     format!("vt_{}", hex::encode(bytes))
@@ -693,8 +703,7 @@ pub async fn webhook(
         .trim_start_matches("Bearer ")
         .trim();
 
-    // Constant-time comparison via double-hash
-    if sha256_hex(provided) != sha256_hex(&expected_secret) {
+    if !constant_time_eq(&sha256_hex(provided), &sha256_hex(&expected_secret)) {
         return Err(AppError::Unauthorized);
     }
 

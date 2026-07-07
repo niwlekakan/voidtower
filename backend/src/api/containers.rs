@@ -85,6 +85,12 @@ pub async fn action(
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
+
+    // Require at least operator role for mutations
+    if user.role == "viewer" {
+        return Err(AppError::Forbidden);
+    }
+
     let ip = addr.ip().to_string();
 
     if !containers::is_docker_available() {
@@ -232,7 +238,13 @@ pub async fn exec_ws(
     Path(container_id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> std::result::Result<impl IntoResponse, AppError> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+
+    // Require at least operator role — this opens an interactive shell in the container
+    if user.role == "viewer" {
+        return Err(AppError::Forbidden);
+    }
+
     // Sanitise: only hex chars (short id) or alphanumeric/dash (name)
     if !container_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(AppError::BadRequest("Invalid container id".into()));

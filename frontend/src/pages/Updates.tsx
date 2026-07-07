@@ -3,6 +3,8 @@ import {
   ArrowUpCircle, CheckCircle, RefreshCw, RotateCcw, Server,
   Package, Loader2, XCircle, ChevronDown, ChevronUp, AlertTriangle, Container, Box,
 } from 'lucide-react'
+import { api } from '@/api/client'
+import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +76,8 @@ function Btn({ onClick, disabled, variant = 'primary', children }: {
 function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }) {
   const [checking, setChecking] = useState(false)
   const [applying, setApplying] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [plan, setPlan] = useState<ChangePlan | null>(null)
   const [notification, setNotification] = useState<string | null>(null)
 
   // Poll while checking
@@ -90,11 +94,24 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
     setTimeout(() => { setChecking(false); onRefresh() }, 500)
   }
 
-  const apply = async () => {
-    if (!confirm('Pull the latest image and recreate the VoidTower container? The UI will be briefly unavailable.')) return
+  const preview = async () => {
     setApplying(true)
+    try {
+      const res = await api.updates.applyVt(true)
+      if ('plan' in res) setPlan(res.plan)
+      else setApplying(false)
+    } catch { setApplying(false) }
+  }
+
+  const confirmApply = async () => {
+    setConfirming(true)
     setNotification('Update triggered — VoidTower will restart momentarily.')
-    await fetch('/api/updates/voidtower/apply', { method: 'POST', credentials: 'include' })
+    try {
+      await api.updates.applyVt(false)
+    } finally {
+      setConfirming(false)
+      setPlan(null)
+    }
     const poll = setInterval(async () => {
       try {
         const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
@@ -123,6 +140,15 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
 
   return (
     <div className="space-y-3">
+      {plan && (
+        <ChangePlanModal
+          plan={plan}
+          confirming={confirming}
+          onConfirm={confirmApply}
+          onCancel={() => { setPlan(null); setApplying(false) }}
+        />
+      )}
+
       {notification && (
         <div className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-primary)18', border: '1px solid var(--accent-primary)44', color: 'var(--accent-primary)' }}>
           {notification}
@@ -156,7 +182,7 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
           {info.update_status === 'checking' ? 'Checking…' : 'Check for update'}
         </Btn>
         {info.update_status === 'update-available' && (
-          <Btn onClick={apply} disabled={applying}>
+          <Btn onClick={preview} disabled={applying}>
             {applying ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
             {applying ? 'Updating…' : 'Apply update'}
           </Btn>
@@ -176,14 +202,30 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
 function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }) {
   const [applying, setApplying] = useState(false)
   const [rollingBack, setRollingBack] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const [showLog, setShowLog] = useState(false)
   const [notification, setNotification] = useState<string | null>(null)
+  const [applyPlan, setApplyPlan] = useState<ChangePlan | null>(null)
+  const [rollbackPlan, setRollbackPlan] = useState<{ plan: ChangePlan; tag: string } | null>(null)
 
-  const apply = async () => {
-    if (!confirm('Pull latest from GitHub, rebuild, and restart? A backup tag will be created for rollback.')) return
+  const previewApply = async () => {
     setApplying(true)
+    try {
+      const res = await api.updates.applyVt(true)
+      if ('plan' in res) setApplyPlan(res.plan)
+      else setApplying(false)
+    } catch { setApplying(false) }
+  }
+
+  const confirmApply = async () => {
+    setConfirming(true)
     setNotification('Update started — VoidTower will restart when done (may take a few minutes).')
-    await fetch('/api/updates/voidtower/apply', { method: 'POST', credentials: 'include' })
+    try {
+      await api.updates.applyVt(false)
+    } finally {
+      setConfirming(false)
+      setApplyPlan(null)
+    }
     const poll = setInterval(async () => {
       try {
         const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
@@ -192,14 +234,25 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
     }, 3000)
   }
 
-  const rollback = async (tag: string) => {
-    if (!confirm(`Roll back to ${tag} and rebuild? This will restart VoidTower.`)) return
+  const previewRollback = async (tag: string) => {
     setRollingBack(true)
-    setNotification(`Rolling back to ${tag}…`)
-    await fetch('/api/updates/voidtower/rollback', {
-      method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag }),
-    })
+    try {
+      const res = await api.updates.rollbackVt(tag, true)
+      if ('plan' in res) setRollbackPlan({ plan: res.plan, tag })
+      else setRollingBack(false)
+    } catch { setRollingBack(false) }
+  }
+
+  const confirmRollback = async () => {
+    if (!rollbackPlan) return
+    setConfirming(true)
+    setNotification(`Rolling back to ${rollbackPlan.tag}…`)
+    try {
+      await api.updates.rollbackVt(rollbackPlan.tag, false)
+    } finally {
+      setConfirming(false)
+      setRollbackPlan(null)
+    }
     const poll = setInterval(async () => {
       try {
         const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
@@ -213,6 +266,23 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
 
   return (
     <div className="space-y-3">
+      {applyPlan && (
+        <ChangePlanModal
+          plan={applyPlan}
+          confirming={confirming}
+          onConfirm={confirmApply}
+          onCancel={() => { setApplyPlan(null); setApplying(false) }}
+        />
+      )}
+      {rollbackPlan && (
+        <ChangePlanModal
+          plan={rollbackPlan.plan}
+          confirming={confirming}
+          onConfirm={confirmRollback}
+          onCancel={() => { setRollbackPlan(null); setRollingBack(false) }}
+        />
+      )}
+
       {notification && (
         <div className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-primary)18', border: '1px solid var(--accent-primary)44', color: 'var(--accent-primary)' }}>
           {notification}
@@ -254,7 +324,7 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
       <div className="flex flex-wrap gap-2">
         <Btn onClick={onRefresh} variant="secondary"><RefreshCw size={12} />Refresh</Btn>
         {info.behind > 0 && (
-          <Btn onClick={apply} disabled={applying}>
+          <Btn onClick={previewApply} disabled={applying}>
             {applying ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
             {applying ? 'Updating…' : 'Apply update'}
           </Btn>
@@ -270,7 +340,7 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
             {info.backup_tags.map(tag => (
               <div key={tag} className="flex items-center justify-between px-3 py-1.5 rounded" style={{ background: 'var(--bg-elevated)' }}>
                 <code className="text-xs" style={{ color: 'var(--text-primary)' }}>{tag}</code>
-                <Btn onClick={() => rollback(tag)} variant="danger" disabled={rollingBack}>
+                <Btn onClick={() => previewRollback(tag)} variant="danger" disabled={rollingBack}>
                   <RotateCcw size={11} />Roll back
                 </Btn>
               </div>
@@ -331,6 +401,8 @@ function DockerSection() {
   const [loading, setLoading] = useState(true)
   const [checking, setChecking] = useState(false)
   const [applying, setApplying] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const [applyPlan, setApplyPlan] = useState<{ plan: ChangePlan; containerId: string } | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -354,12 +426,26 @@ function DockerSection() {
     setTimeout(() => { setChecking(false); load() }, 500)
   }
 
-  const apply = async (containerId: string) => {
+  const previewApply = async (containerId: string) => {
     setApplying(containerId)
     try {
-      await fetch(`/api/updates/docker/${containerId}/apply`, { method: 'POST', credentials: 'include' })
+      const res = await api.updates.dockerApply(containerId, true)
+      if ('plan' in res) setApplyPlan({ plan: res.plan, containerId })
+      else setApplying(null)
+    } catch { setApplying(null) }
+  }
+
+  const confirmApply = async () => {
+    if (!applyPlan) return
+    setConfirming(true)
+    try {
+      await api.updates.dockerApply(applyPlan.containerId, false)
       await load()
-    } finally { setApplying(null) }
+    } finally {
+      setConfirming(false)
+      setApplying(null)
+      setApplyPlan(null)
+    }
   }
 
   const statusIcon = (s: DockerRow['status']) => {
@@ -374,6 +460,14 @@ function DockerSection() {
 
   return (
     <div style={card} className="space-y-3">
+      {applyPlan && (
+        <ChangePlanModal
+          plan={applyPlan.plan}
+          confirming={confirming}
+          onConfirm={confirmApply}
+          onCancel={() => { setApplyPlan(null); setApplying(null) }}
+        />
+      )}
       <SectionHeader icon={Container} title="Docker Images" badge={
         updatesAvailable > 0
           ? <Badge label={`${updatesAvailable} update${updatesAvailable !== 1 ? 's' : ''}`} color="var(--accent-warning, #f59e0b)" />
@@ -412,7 +506,7 @@ function DockerSection() {
                   </td>
                   <td className="px-3 py-2">
                     {row.status === 'update-available' && (
-                      <Btn onClick={() => apply(row.container_id)} disabled={applying === row.container_id}>
+                      <Btn onClick={() => previewApply(row.container_id)} disabled={applying === row.container_id}>
                         {applying === row.container_id ? <Loader2 size={11} className="animate-spin" /> : <ArrowUpCircle size={11} />}
                         {applying === row.container_id ? 'Updating…' : 'Pull & recreate'}
                       </Btn>
@@ -445,8 +539,10 @@ function OsSection() {
   const [info, setInfo] = useState<OsInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const [output, setOutput] = useState<string | null>(null)
   const [showPkgs, setShowPkgs] = useState(false)
+  const [plan, setPlan] = useState<ChangePlan | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -458,22 +554,36 @@ function OsSection() {
 
   useEffect(() => { load() }, [load])
 
-  const applyOs = async (dryRun: boolean) => {
-    if (!dryRun && !confirm('Apply all OS package updates? This may take a while.')) return
+  const previewApply = async () => {
     setApplying(true)
+    try {
+      const res = await api.updates.applyOs(true)
+      if ('plan' in res) setPlan(res.plan)
+    } finally { setApplying(false) }
+  }
+
+  const confirmApply = async () => {
+    setConfirming(true)
     setOutput(null)
     try {
-      const r = await fetch('/api/updates/os/apply', {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dry_run: dryRun }),
-      })
-      if (r.ok) { const d = await r.json(); setOutput(d.output) }
-    } finally { setApplying(false) }
+      const res = await api.updates.applyOs(false)
+      if ('output' in res) setOutput(res.output)
+    } finally {
+      setConfirming(false)
+      setPlan(null)
+    }
   }
 
   return (
     <div style={card} className="space-y-3">
+      {plan && (
+        <ChangePlanModal
+          plan={plan}
+          confirming={confirming}
+          onConfirm={confirmApply}
+          onCancel={() => setPlan(null)}
+        />
+      )}
       <SectionHeader icon={Package} title="OS Packages" badge={
         !loading && info ? (
           info.error ? <Badge label="Error" color="var(--accent-danger)" />
@@ -514,14 +624,14 @@ function OsSection() {
             <Btn onClick={load} variant="secondary" disabled={loading}><RefreshCw size={12} />Refresh</Btn>
             {!info.error && (
               <>
-                <Btn onClick={() => applyOs(true)} variant="secondary" disabled={applying}>
+                <Btn onClick={previewApply} variant="secondary" disabled={applying}>
                   {applying ? <Loader2 size={12} className="animate-spin" /> : <Server size={12} />}
-                  Dry run
+                  Preview
                 </Btn>
                 {info.available && (
-                  <Btn onClick={() => applyOs(false)} disabled={applying}>
+                  <Btn onClick={previewApply} disabled={applying}>
                     {applying ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
-                    {applying ? 'Applying…' : `Apply ${info.count} update${info.count !== 1 ? 's' : ''}`}
+                    {applying ? 'Loading…' : `Apply ${info.count} update${info.count !== 1 ? 's' : ''}`}
                   </Btn>
                 )}
               </>

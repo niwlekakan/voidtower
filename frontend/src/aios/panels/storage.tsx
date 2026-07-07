@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import NativePanelShell, { NativeRow, StatusDot, EmptyState, LoadingState } from './NativePanelShell'
 
 interface StorageDevice { name: string; size: number; type?: string; model?: string; fs_type?: string }
@@ -47,7 +47,7 @@ export default function NativeStoragePanel() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('devices')
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true)
     if (tab === 'devices') {
       const r = await fetch('/api/storage/devices', { credentials: 'include' })
@@ -63,9 +63,9 @@ export default function NativeStoragePanel() {
       } catch { setRaids([]) }
     }
     setLoading(false)
-  }
+  }, [tab])
 
-  useEffect(() => { load() }, [tab])
+  useEffect(() => { load() }, [load])
 
   return (
     <NativePanelShell tabs={TABS} activeTab={tab} onTabChange={setTab}>

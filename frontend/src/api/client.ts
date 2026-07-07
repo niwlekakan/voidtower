@@ -634,4 +634,27 @@ export const api = {
     import: (tabs: import('./types').ExportedTab[]) =>
       request<{ ok: boolean; imported: number }>('/api/tabs/import', { method: 'POST', body: JSON.stringify({ tabs }) }),
   },
+
+  updates: {
+    applyVt: (dryRun: boolean) =>
+      request<
+        | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
+        | { ok: boolean; backup_tag?: string }
+      >('/api/updates/voidtower/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+    rollbackVt: (tag: string, dryRun: boolean) =>
+      request<
+        | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
+        | { ok: boolean; rolling_back_to?: string }
+      >('/api/updates/voidtower/rollback', { method: 'POST', body: JSON.stringify({ tag, dry_run: dryRun }) }),
+    dockerApply: (id: string, dryRun: boolean) =>
+      request<
+        | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
+        | { ok: boolean; output: string; image: string }
+      >(`/api/updates/docker/${id}/apply`, { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+    applyOs: (dryRun: boolean) =>
+      request<
+        | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
+        | { ok: boolean; dry_run: boolean; output: string }
+      >('/api/updates/os/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+  },
 }

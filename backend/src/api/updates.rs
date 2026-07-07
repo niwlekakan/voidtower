@@ -98,6 +98,39 @@ fn vt_own_info() -> Option<(String, String, String, String)> {
     ))
 }
 
+// Returns (current_commit, remote_commit, behind, ahead, commits, fetch_error) for the
+// upstream branch tracked by `root`. Shared by vt_info and apply_vt's dry-run plan so
+// both always report the same numbers.
+fn git_ahead_behind(root: &std::path::Path) -> (String, String, usize, usize, Vec<CommitInfo>, Option<String>) {
+    let branch = { let b = run(root, "git", &["rev-parse", "--abbrev-ref", "HEAD"]); if b.is_empty() { "main".into() } else { b } };
+    let remote_ref = format!("origin/{branch}");
+
+    let fetch_err = std::process::Command::new("git").args(["fetch", "origin"]).current_dir(root)
+        .output().err().map(|e| e.to_string());
+
+    let current_commit = run(root, "git", &["rev-parse", "--short", "HEAD"]);
+    let remote_commit  = run(root, "git", &["rev-parse", "--short", &remote_ref]);
+    let behind: usize  = run(root, "git", &["rev-list", &format!("HEAD..{remote_ref}"), "--count"]).parse().unwrap_or(0);
+    let ahead: usize   = run(root, "git", &["rev-list", &format!("{remote_ref}..HEAD"), "--count"]).parse().unwrap_or(0);
+
+    let log = run(root, "git", &["log", &format!("HEAD..{remote_ref}"), "--format=%H|%s|%an|%ci", "--no-merges"]);
+    let commits = log.lines().filter(|l| !l.is_empty()).map(|l| {
+        let parts: Vec<&str> = l.splitn(4, '|').collect();
+        CommitInfo {
+            hash:    parts.first().unwrap_or(&"").chars().take(7).collect(),
+            subject: parts.get(1).unwrap_or(&"").to_string(),
+            author:  parts.get(2).unwrap_or(&"").to_string(),
+            date:    parts.get(3).unwrap_or(&"").get(..10).unwrap_or("").to_string(),
+        }
+    }).collect();
+
+    (current_commit, remote_commit, behind, ahead, commits, fetch_err)
+}
+
+fn git_update_risk(behind: usize) -> &'static str {
+    if behind <= 3 { "low" } else if behind <= 10 { "medium" } else { "high" }
+}
+
 pub async fn vt_info(State(state): State<AppState>, jar: CookieJar) -> Result<Json<VtUpdateInfo>> {
     require_admin(&state, &jar).await?;
 
@@ -140,27 +173,7 @@ pub async fn vt_info(State(state): State<AppState>, jar: CookieJar) -> Result<Js
     }
 
     let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
-    let branch = { let b = run(&root, "git", &["rev-parse", "--abbrev-ref", "HEAD"]); if b.is_empty() { "main".into() } else { b } };
-    let remote_ref = format!("origin/{branch}");
-
-    let fetch_err = std::process::Command::new("git").args(["fetch", "origin"]).current_dir(&root)
-        .output().err().map(|e| e.to_string());
-
-    let current_commit = run(&root, "git", &["rev-parse", "--short", "HEAD"]);
-    let remote_commit  = run(&root, "git", &["rev-parse", "--short", &remote_ref]);
-    let behind: usize  = run(&root, "git", &["rev-list", &format!("HEAD..{remote_ref}"), "--count"]).parse().unwrap_or(0);
-    let ahead: usize   = run(&root, "git", &["rev-list", &format!("{remote_ref}..HEAD"), "--count"]).parse().unwrap_or(0);
-
-    let log = run(&root, "git", &["log", &format!("HEAD..{remote_ref}"), "--format=%H|%s|%an|%ci", "--no-merges"]);
-    let commits = log.lines().filter(|l| !l.is_empty()).map(|l| {
-        let parts: Vec<&str> = l.splitn(4, '|').collect();
-        CommitInfo {
-            hash:    parts.first().unwrap_or(&"").chars().take(7).collect(),
-            subject: parts.get(1).unwrap_or(&"").to_string(),
-            author:  parts.get(2).unwrap_or(&"").to_string(),
-            date:    parts.get(3).unwrap_or(&"").get(..10).unwrap_or("").to_string(),
-        }
-    }).collect();
+    let (current_commit, remote_commit, behind, ahead, commits, fetch_err) = git_ahead_behind(&root);
 
     let tags_raw = run(&root, "git", &["tag", "--list", "vt-backup-*", "--sort=-creatordate"]);
     let backup_tags = tags_raw.lines().filter(|l| !l.is_empty()).map(String::from).take(10).collect();
@@ -209,12 +222,33 @@ pub async fn check_vt(State(state): State<AppState>, jar: CookieJar) -> Result<J
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn apply_vt(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+#[derive(Deserialize, Default)]
+pub struct ApplyReq { #[serde(default)] pub dry_run: bool }
+
+pub async fn apply_vt(
+    State(state): State<AppState>, jar: CookieJar, Json(req): Json<ApplyReq>,
+) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
     if is_docker() {
         let (image, hostname, compose_project, compose_file) = vt_own_info()
             .ok_or_else(|| AppError::FeatureUnavailable("Docker socket not available — mount /var/run/docker.sock".into()))?;
+
+        if req.dry_run {
+            return Ok(Json(serde_json::json!({
+                "dry_run": true,
+                "plan": {
+                    "title": "Update VoidTower (Docker)",
+                    "risk": "high",
+                    "changes": [
+                        { "label": "Current image", "value": image },
+                        { "label": "Action",        "value": "Pull latest image and recreate container" },
+                        { "label": "Downtime",      "value": "Brief — UI unavailable during restart" },
+                    ],
+                    "preview": null
+                }
+            })));
+        }
 
         // compose_file is a HOST path baked into the container label — it won't
         // exist inside the container unless explicitly volume-mounted. Fall back
@@ -241,6 +275,19 @@ pub async fn apply_vt(State(state): State<AppState>, jar: CookieJar) -> Result<J
     }
 
     if !is_dev_install() {
+        if req.dry_run {
+            return Ok(Json(serde_json::json!({
+                "dry_run": true,
+                "plan": {
+                    "title": "Update VoidTower (binary)",
+                    "risk": "medium",
+                    "changes": [
+                        { "label": "Action", "value": "Download latest release binary and restart" },
+                    ],
+                    "preview": null
+                }
+            })));
+        }
         // prod bare-metal: download latest release binary, replace in place, let systemd restart
         let dir_s = install_dir().to_string_lossy().to_string();
         let pid = std::process::id();
@@ -272,6 +319,25 @@ pub async fn apply_vt(State(state): State<AppState>, jar: CookieJar) -> Result<J
 
     // dev: git pull + rebuild + restart
     let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
+
+    if req.dry_run {
+        let (_, _, behind, _, commits, _) = git_ahead_behind(&root);
+        let preview = commits.iter().map(|c| c.subject.clone()).collect::<Vec<_>>().join("\n");
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "plan": {
+                "title": "Update VoidTower (git)",
+                "risk": git_update_risk(behind),
+                "changes": [
+                    { "label": "Backup tag",     "value": "vt-backup-<timestamp> (created automatically)" },
+                    { "label": "Commits behind", "value": behind.to_string() },
+                    { "label": "Action",         "value": "git pull + cargo build + npm build + restart" },
+                ],
+                "preview": if preview.is_empty() { None } else { Some(preview) }
+            }
+        })));
+    }
+
     let pid  = std::process::id();
     let ts   = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     let tag  = format!("vt-backup-{ts}");
@@ -295,7 +361,7 @@ pub async fn apply_vt(State(state): State<AppState>, jar: CookieJar) -> Result<J
 }
 
 #[derive(Deserialize)]
-pub struct RollbackReq { pub tag: String }
+pub struct RollbackReq { pub tag: String, #[serde(default)] pub dry_run: bool }
 
 pub async fn rollback_vt(
     State(state): State<AppState>, jar: CookieJar, Json(req): Json<RollbackReq>,
@@ -307,6 +373,22 @@ pub async fn rollback_vt(
     if !req.tag.starts_with("vt-backup-") || req.tag.contains('/') || req.tag.contains("..") {
         return Err(AppError::BadRequest("Invalid backup tag".into()));
     }
+
+    if req.dry_run {
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "plan": {
+                "title": "Rollback VoidTower",
+                "risk": "high",
+                "changes": [
+                    { "label": "Target tag", "value": req.tag },
+                    { "label": "Action",     "value": "git checkout + rebuild + restart" },
+                ],
+                "preview": null
+            }
+        })));
+    }
+
     let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
     let pid  = std::process::id();
     let script = format!(
@@ -411,6 +493,7 @@ pub async fn docker_check(State(state): State<AppState>, jar: CookieJar) -> Resu
 
 pub async fn docker_apply(
     State(state): State<AppState>, jar: CookieJar, Path(container_id): Path<String>,
+    Json(req): Json<ApplyReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
@@ -420,19 +503,36 @@ pub async fn docker_apply(
 
     let inspect = std::process::Command::new("docker")
         .args(["inspect", &container_id, "--format",
-               "{{.Config.Image}}|{{index .Config.Labels \"com.docker.compose.project\"}}|{{index .Config.Labels \"com.docker.compose.project.config_files\"}}"])
+               "{{.Name}}|{{.Config.Image}}|{{index .Config.Labels \"com.docker.compose.project\"}}|{{index .Config.Labels \"com.docker.compose.project.config_files\"}}"])
         .output().map_err(|e| AppError::Internal(e.into()))?;
     let info = String::from_utf8_lossy(&inspect.stdout);
-    let parts: Vec<&str> = info.trim().splitn(3, '|').collect();
-    let image           = parts.first().unwrap_or(&"").to_string();
-    let compose_project = parts.get(1).unwrap_or(&"").to_string();
-    let compose_file    = parts.get(2).unwrap_or(&"").to_string();
+    let parts: Vec<&str> = info.trim().splitn(4, '|').collect();
+    let name            = parts.first().unwrap_or(&"").trim_start_matches('/').to_string();
+    let image           = parts.get(1).unwrap_or(&"").to_string();
+    let compose_project = parts.get(2).unwrap_or(&"").to_string();
+    let compose_file    = parts.get(3).unwrap_or(&"").to_string();
 
     // compose_file is a HOST path from the container label — only use it if
     // it's accessible from inside this container (i.e. volume-mounted).
     let use_compose = !compose_file.is_empty()
         && !compose_project.is_empty()
         && std::path::Path::new(&compose_file).exists();
+
+    if req.dry_run {
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "plan": {
+                "title": "Update container",
+                "risk": "medium",
+                "changes": [
+                    { "label": "Container", "value": name },
+                    { "label": "Image",     "value": image },
+                    { "label": "Action",    "value": if use_compose { "docker compose pull + up -d" } else { "docker pull + restart" } },
+                ],
+                "preview": null
+            }
+        })));
+    }
 
     let output = if use_compose {
         let pull = std::process::Command::new("docker")
@@ -536,18 +636,10 @@ fn detect_pm() -> Option<&'static str> {
     ["apt-get", "pacman", "dnf", "yum", "zypper", "apk", "xbps-install"].iter().find(|&pm| std::process::Command::new("which").arg(pm).output().map(|o| o.status.success()).unwrap_or(false)).map(|v| v as _)
 }
 
-pub async fn os_info(State(state): State<AppState>, jar: CookieJar) -> Result<Json<OsUpdateInfo>> {
-    require_admin(&state, &jar).await?;
-
-    let pm = match detect_pm() {
-        Some(p) => p,
-        None => return Ok(Json(OsUpdateInfo {
-            package_manager: "unknown".into(), available: false, count: 0,
-            packages: vec![], error: Some("No supported package manager found".into()),
-        })),
-    };
-
-    let (packages, error) = match pm {
+// Shared by os_info and apply_os's dry-run plan so both always report the same
+// package list/count for a given package manager.
+fn list_upgradable_packages(pm: &str) -> (Vec<String>, Option<String>) {
+    match pm {
         "apt-get" => {
             let _ = std::process::Command::new("apt-get").args(["-qq", "update"]).output();
             match std::process::Command::new("apt-get").args(["-s", "upgrade", "-V"]).output() {
@@ -621,8 +713,25 @@ pub async fn os_info(State(state): State<AppState>, jar: CookieJar) -> Result<Js
             }
         }
         _ => (vec![], Some("Unsupported package manager".into())),
+    }
+}
+
+fn os_update_risk(count: usize) -> &'static str {
+    if count == 0 { "low" } else if count <= 10 { "medium" } else { "high" }
+}
+
+pub async fn os_info(State(state): State<AppState>, jar: CookieJar) -> Result<Json<OsUpdateInfo>> {
+    require_admin(&state, &jar).await?;
+
+    let pm = match detect_pm() {
+        Some(p) => p,
+        None => return Ok(Json(OsUpdateInfo {
+            package_manager: "unknown".into(), available: false, count: 0,
+            packages: vec![], error: Some("No supported package manager found".into()),
+        })),
     };
 
+    let (packages, error) = list_upgradable_packages(pm);
     let count = packages.len();
     Ok(Json(OsUpdateInfo {
         package_manager: pm.replace("apt-get", "apt").to_string(),
@@ -640,62 +749,55 @@ pub async fn apply_os(
 
     let pm = detect_pm().ok_or_else(|| AppError::FeatureUnavailable("No package manager found".into()))?;
 
+    if req.dry_run {
+        let (packages, error) = list_upgradable_packages(pm);
+        let count = packages.len();
+        let preview = packages.join("\n");
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "plan": {
+                "title": format!("Apply OS updates ({})", pm.replace("apt-get", "apt")),
+                "risk": os_update_risk(count),
+                "changes": [
+                    { "label": "Package manager",    "value": pm.replace("apt-get", "apt") },
+                    { "label": "Packages to update", "value": count.to_string() },
+                ],
+                "preview": if preview.is_empty() { None } else { Some(preview) }
+            },
+            "error": error
+        })));
+    }
+
     let output = match pm {
         "apt-get" => {
-            let args = if req.dry_run { vec!["apt-get", "-s", "upgrade"] } else { vec!["apt-get", "-y", "upgrade"] };
-            std::process::Command::new("sudo").args(&args[1..]).arg("-o").arg("Dpkg::Progress-Fancy=0")
+            std::process::Command::new("sudo").args(["apt-get", "-y", "upgrade"]).arg("-o").arg("Dpkg::Progress-Fancy=0")
                 .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_else(|e| e.to_string())
         }
         "pacman" => {
-            if req.dry_run {
-                std::process::Command::new("pacman").args(["-Qu"])
-                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|e| e.to_string())
-            } else {
-                std::process::Command::new("sudo").args(["pacman", "-Syu", "--noconfirm"])
-                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|e| e.to_string())
-            }
+            std::process::Command::new("sudo").args(["pacman", "-Syu", "--noconfirm"])
+                .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_else(|e| e.to_string())
         }
         "dnf" | "yum" => {
-            let flag = if req.dry_run { "--assumeno" } else { "-y" };
-            std::process::Command::new("sudo").args([pm, "upgrade", flag])
+            std::process::Command::new("sudo").args([pm, "upgrade", "-y"])
                 .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_else(|e| e.to_string())
         }
         "zypper" => {
-            if req.dry_run {
-                std::process::Command::new("zypper").args(["list-updates"])
-                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|e| e.to_string())
-            } else {
-                std::process::Command::new("sudo").args(["zypper", "--non-interactive", "update"])
-                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|e| e.to_string())
-            }
+            std::process::Command::new("sudo").args(["zypper", "--non-interactive", "update"])
+                .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_else(|e| e.to_string())
         }
         "apk" => {
-            if req.dry_run {
-                std::process::Command::new("apk").args(["list", "--upgradable"])
-                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|e| e.to_string())
-            } else {
-                std::process::Command::new("sudo").args(["apk", "upgrade"])
-                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|e| e.to_string())
-            }
+            std::process::Command::new("sudo").args(["apk", "upgrade"])
+                .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_else(|e| e.to_string())
         }
         "xbps-install" => {
-            if req.dry_run {
-                std::process::Command::new("xbps-install").args(["-nu"])
-                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|e| e.to_string())
-            } else {
-                std::process::Command::new("sudo").args(["xbps-install", "-Syu"])
-                    .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_else(|e| e.to_string())
-            }
+            std::process::Command::new("sudo").args(["xbps-install", "-Syu"])
+                .output().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_else(|e| e.to_string())
         }
         _ => "Unsupported package manager".into(),
     };

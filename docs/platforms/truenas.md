@@ -78,9 +78,9 @@ export POOL=tank   # replace with your ZFS pool name — run: zpool list
 
 ```bash
 mkdir -p /mnt/$POOL/voidtower-app
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/custom-app.yml \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/deploy/truenas/custom-app.yml \
   -o /mnt/$POOL/voidtower-app/custom-app.yml
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/.env.example \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/deploy/truenas/.env.example \
   -o /mnt/$POOL/voidtower-app/.env
 nano /mnt/$POOL/voidtower-app/.env  # set ODYSSEUS_ADMIN_PASSWORD and TRUENAS_POOL=$POOL
 ```
@@ -123,7 +123,7 @@ rm -rf /mnt/$POOL/voidtower/data \
 # 4. Pull the latest image and compose file
 docker pull ghcr.io/niwlekakan/voidtower:aio-latest
 mkdir -p /mnt/$POOL/voidtower-app
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/deploy/truenas/custom-app.yml \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/deploy/truenas/custom-app.yml \
   -o /mnt/$POOL/voidtower-app/custom-app.yml
 
 # 5. Start

@@ -160,7 +160,7 @@ pub async fn vt_info(State(state): State<AppState>, jar: CookieJar) -> Result<Js
             std::fs::read_to_string(dir.join(".version"))
                 .unwrap_or_else(|_| "unknown".into()).trim().to_string()
         };
-        let remote_commit = github_latest_commit("niwlekakan/voidtower", "voidtower-aio")
+        let remote_commit = github_latest_commit("niwlekakan/voidtower", "main")
             .unwrap_or_else(|| "unknown".into());
         let behind = if remote_commit != "unknown" && !current_commit.is_empty()
             && remote_commit != current_commit { 1 } else { 0 };

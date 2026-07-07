@@ -5,7 +5,7 @@
 ### Docker (recommended)
 
 ```bash
-git clone -b voidtower-aio https://github.com/niwlekakan/voidtower
+git clone -b main https://github.com/niwlekakan/voidtower
 cd voidtower
 cp .env.example .env          # set ODYSSEUS_ADMIN_PASSWORD at minimum
 docker compose --profile aio up -d
@@ -14,14 +14,14 @@ docker compose --profile aio up -d
 ### Bare metal / VM — VoidTower only
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh \
   | sudo bash
 ```
 
 ### Bare metal / VM — Full AIO stack
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh \
   | sudo bash -s -- --all-in-one --pull-model
 
 # Non-interactive with specific model

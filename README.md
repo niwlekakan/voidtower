@@ -27,7 +27,7 @@ No build required — the image is pulled automatically from GHCR.
 
 ```bash
 # 1. Clone and configure
-git clone -b voidtower-aio https://github.com/niwlekakan/voidtower
+git clone -b main https://github.com/niwlekakan/voidtower
 cd voidtower
 cp .env.example .env
 # Edit .env — set ODYSSEUS_ADMIN_PASSWORD at minimum
@@ -59,11 +59,11 @@ The `docker-compose.yml` mounts `/var/run/docker.sock` so VoidTower can manage c
 
 ```bash
 # VoidTower only
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh \
   | sudo bash
 
 # Full AIO stack
-curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/voidtower-aio/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/niwlekakan/voidtower/main/scripts/install.sh \
   | sudo bash -s -- --all-in-one --pull-model
 
 # Non-interactive with specific model

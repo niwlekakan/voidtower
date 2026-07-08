@@ -161,7 +161,9 @@ pub async fn login(
         .path("/")
         .build();
 
-    Ok((jar.add(cookie), Json(AuthResponse { user: user.into() })))
+    let mut public_user: PublicUser = user.into();
+    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    Ok((jar.add(cookie), Json(AuthResponse { user: public_user })))
 }
 
 pub async fn logout(
@@ -192,7 +194,9 @@ pub async fn me(
         .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
 
-    Ok(Json(AuthResponse { user: user.into() }))
+    let mut public_user: PublicUser = user.into();
+    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    Ok(Json(AuthResponse { user: public_user }))
 }
 
 pub async fn bootstrap(
@@ -256,7 +260,9 @@ pub async fn bootstrap(
         .path("/")
         .build();
 
-    Ok((jar.add(cookie), Json(AuthResponse { user: user.into() })))
+    let mut public_user: PublicUser = user.into();
+    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    Ok((jar.add(cookie), Json(AuthResponse { user: public_user })))
 }
 
 async fn provision_voidwatch(db: sqlx::SqlitePool, user_id: String, token_path: std::path::PathBuf) {

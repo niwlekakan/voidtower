@@ -54,6 +54,7 @@ pub mod users;
 pub mod settings;
 pub mod wireguard;
 pub mod node_enroll;
+pub mod members;
 pub mod vms;
 pub mod tags;
 pub mod ai;
@@ -297,6 +298,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/nodes",              get(node_enroll::list))
         .route("/api/nodes/:id",          delete(node_enroll::delete_node))
         .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat))
+        // Self-hosting hub: per-member app access / storage / custom-deploy
+        .route("/api/members", get(members::list_members))
+        .route("/api/members/me/access", get(members::get_my_access))
+        .route("/api/members/me/nodes",  get(members::list_my_nodes))
+        .route("/api/members/:user_id/access", get(members::get_access).post(members::grant_access))
+        .route("/api/members/:user_id/access/:app_id", delete(members::revoke_access))
+        .route("/api/members/:user_id/custom-deploy", post(members::set_custom_deploy))
+        .route("/api/members/:user_id/storage", post(members::set_quota))
+        .route("/api/members/:user_id/drives", post(members::add_drive))
+        .route("/api/members/drives/:drive_id", delete(members::remove_drive))
         .route("/api/settings/public",  get(settings::get_public))
         .route("/api/settings/ai-url", get(settings::get_ai_url).post(settings::set_ai_url))
         .route("/api/settings/general", get(settings::get_general).post(settings::set_general))

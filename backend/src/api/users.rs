@@ -83,7 +83,7 @@ pub async fn create(
             "Username ≥3 chars, password ≥8 chars".to_string(),
         ));
     }
-    if !matches!(req.role.as_str(), "admin" | "operator" | "viewer" | "guest" | "demo") {
+    if !matches!(req.role.as_str(), "admin" | "operator" | "viewer" | "guest" | "demo" | "member") {
         return Err(AppError::BadRequest("Invalid role".to_string()));
     }
 

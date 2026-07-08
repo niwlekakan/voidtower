@@ -169,10 +169,19 @@ export const api = {
   apps: {
     catalog:  () => request<{ apps: import('./types').AppDef[] }>('/api/apps/catalog'),
     deployed: () => request<import('./types').DeployedResponse>('/api/apps/deployed'),
-    deploy: (appId: string, projectName?: string, envOverrides?: Record<string, string>) =>
+    deploy: (
+      appId: string,
+      projectName?: string,
+      envOverrides?: Record<string, string>,
+      storageDriveId?: string,
+      targetNodeId?: string,
+    ) =>
       request<{ ok: boolean; project_name: string; generated_env?: Record<string, string> }>('/api/apps/deploy', {
         method: 'POST',
-        body: JSON.stringify({ app_id: appId, project_name: projectName, env_overrides: envOverrides }),
+        body: JSON.stringify({
+          app_id: appId, project_name: projectName, env_overrides: envOverrides,
+          storage_drive_id: storageDriveId, target_node_id: targetNodeId,
+        }),
       }),
     cancelDeploy: (p: string) =>
       request<{ ok: boolean; cancelled: boolean }>(`/api/apps/deploy/cancel/${p}`, { method: 'POST' }),
@@ -186,7 +195,10 @@ export const api = {
     getCompose:    (p: string) => request<{ compose_path: string; content: string }>(`/api/apps/${p}/compose`),
     updateCompose: (p: string, content: string) =>
       request<{ ok: boolean }>(`/api/apps/${p}/compose`, { method: 'POST', body: JSON.stringify({ content }) }),
-    deployCustom: (body: { name: string; image: string; ports: string[]; volumes: string[]; env: string[] }) =>
+    deployCustom: (body: {
+      name: string; image: string; ports: string[]; volumes: string[]; env: string[]
+      storage_drive_id?: string; target_node_id?: string
+    }) =>
       request<{ ok: boolean; project_name: string }>('/api/apps/deploy-custom', {
         method: 'POST', body: JSON.stringify(body),
       }),
@@ -288,6 +300,33 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ password, username }),
       }),
+  },
+
+  members: {
+    list: () => request<{ members: import('./types').MemberListEntry[] }>('/api/members'),
+    myAccess: () => request<import('./types').MemberAccessSummary>('/api/members/me/access'),
+    myNodes: () => request<{ nodes: import('./types').MemberNodeOption[] }>('/api/members/me/nodes'),
+    access: (userId: string) => request<import('./types').MemberAccessSummary>(`/api/members/${userId}/access`),
+    grantAccess: (userId: string, appId: string) =>
+      request<{ ok: boolean }>(`/api/members/${userId}/access`, {
+        method: 'POST', body: JSON.stringify({ app_id: appId }),
+      }),
+    revokeAccess: (userId: string, appId: string) =>
+      request<{ ok: boolean }>(`/api/members/${userId}/access/${appId}`, { method: 'DELETE' }),
+    setCustomDeploy: (userId: string, enabled: boolean) =>
+      request<{ ok: boolean; enabled: boolean }>(`/api/members/${userId}/custom-deploy`, {
+        method: 'POST', body: JSON.stringify({ enabled }),
+      }),
+    setQuota: (userId: string, quotaBytes: number, maxApps: number) =>
+      request<{ ok: boolean }>(`/api/members/${userId}/storage`, {
+        method: 'POST', body: JSON.stringify({ quota_bytes: quotaBytes, max_apps: maxApps }),
+      }),
+    addDrive: (userId: string, label: string, hostPath: string) =>
+      request<{ ok: boolean; id: string }>(`/api/members/${userId}/drives`, {
+        method: 'POST', body: JSON.stringify({ label, host_path: hostPath }),
+      }),
+    removeDrive: (driveId: string) =>
+      request<{ ok: boolean }>(`/api/members/drives/${driveId}`, { method: 'DELETE' }),
   },
 
   terminal: {

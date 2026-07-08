@@ -697,6 +697,9 @@ export default function SettingsPage() {
 
       {/* User management — admin/owner only */}
       {isAdmin && <UsersSection currentUserId={currentUser?.id ?? ''} />}
+
+      {/* Per-member app access / storage / custom-deploy — admin/owner only */}
+      {isAdmin && <MembersSection />}
     </div>
   )
 }
@@ -1324,6 +1327,7 @@ function UsersSection({ currentUserId }: { currentUserId: string }) {
     admin: 'var(--accent-warning)',
     operator: 'var(--accent-secondary)',
     viewer: 'var(--text-muted)',
+    member: 'var(--accent-success)',
   }
 
   return (
@@ -1369,10 +1373,12 @@ function UsersSection({ currentUserId }: { currentUserId: string }) {
               <option value="viewer">viewer</option>
               <option value="operator">operator</option>
               <option value="admin">admin</option>
+              <option value="member">member</option>
             </select>
           </div>
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
             User will be prompted to change their password on first login.
+            {newRole === 'member' && ' Grant them app access below, in Members.'}
           </p>
           <div className="flex gap-2">
             <Button size="sm" variant="primary" type="submit" loading={creating}>Create</Button>
@@ -1412,6 +1418,256 @@ function UsersSection({ currentUserId }: { currentUserId: string }) {
                 </button>
               )}
             </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Members section (per-member app access / storage / custom-deploy) ──────
+
+function bytesLabel(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1 }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+function MemberRow({ member, catalogApps, onChanged }: {
+  member: import('@/api/types').MemberListEntry
+  catalogApps: import('@/api/types').AppDef[]
+  onChanged: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [busyApp, setBusyApp] = useState<string | null>(null)
+  const [busyCustom, setBusyCustom] = useState(false)
+  const [quotaGb, setQuotaGb] = useState(String(Math.round(member.storage.quota_bytes / (1024 ** 3))))
+  const [maxApps, setMaxApps] = useState(String(member.storage.max_apps))
+  const [savingQuota, setSavingQuota] = useState(false)
+  const [driveLabel, setDriveLabel] = useState('')
+  const [drivePath, setDrivePath] = useState('')
+  const [addingDrive, setAddingDrive] = useState(false)
+
+  const toggleApp = async (appId: string, granted: boolean) => {
+    setBusyApp(appId)
+    try {
+      if (granted) await api.members.revokeAccess(member.id, appId)
+      else await api.members.grantAccess(member.id, appId)
+      onChanged()
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to update app access')
+    } finally {
+      setBusyApp(null)
+    }
+  }
+
+  const toggleCustom = async () => {
+    setBusyCustom(true)
+    try {
+      await api.members.setCustomDeploy(member.id, !member.can_deploy_custom)
+      onChanged()
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to update custom-deploy flag')
+    } finally {
+      setBusyCustom(false)
+    }
+  }
+
+  const saveQuota = async () => {
+    const gb = Number(quotaGb)
+    const apps = Number(maxApps)
+    if (!Number.isFinite(gb) || gb < 0 || !Number.isFinite(apps) || apps < 0) {
+      notify.error('Enter valid numbers'); return
+    }
+    setSavingQuota(true)
+    try {
+      await api.members.setQuota(member.id, Math.round(gb * 1024 ** 3), Math.round(apps))
+      notify.success('Quota updated')
+      onChanged()
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to update quota')
+    } finally {
+      setSavingQuota(false)
+    }
+  }
+
+  const addDrive = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setAddingDrive(true)
+    try {
+      await api.members.addDrive(member.id, driveLabel.trim(), drivePath.trim())
+      notify.success('Drive added')
+      setDriveLabel(''); setDrivePath('')
+      onChanged()
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to add drive')
+    } finally {
+      setAddingDrive(false)
+    }
+  }
+
+  const removeDrive = async (driveId: string) => {
+    try {
+      await api.members.removeDrive(driveId)
+      onChanged()
+    } catch (err) {
+      notify.error(err instanceof ApiClientError ? err.message : 'Failed to remove drive')
+    }
+  }
+
+  const usagePct = member.storage.quota_bytes > 0
+    ? Math.min(100, Math.round((member.storage.used_bytes / member.storage.quota_bytes) * 100))
+    : 0
+
+  return (
+    <div className="rounded" style={{ border: '1px solid var(--border-subtle)' }}>
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2.5 text-left"
+      >
+        <span className="flex items-center gap-2">
+          <span className="text-sm font-mono" style={{ color: 'var(--text-primary)' }}>{member.username}</span>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {member.app_ids.length} app{member.app_ids.length === 1 ? '' : 's'} · {member.storage.app_count}/{member.storage.max_apps} deployed
+          </span>
+        </span>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          {bytesLabel(member.storage.used_bytes)} / {bytesLabel(member.storage.quota_bytes)} ({usagePct}%)
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3 space-y-4" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+          <div className="pt-3">
+            <p className="text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>App access</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {catalogApps.map((app) => {
+                const granted = member.app_ids.includes(app.id)
+                return (
+                  <label key={app.id} className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    <input
+                      type="checkbox"
+                      checked={granted}
+                      disabled={busyApp === app.id}
+                      onChange={() => toggleApp(app.id, granted)}
+                    />
+                    {app.name}
+                  </label>
+                )
+              })}
+              {catalogApps.length === 0 && (
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>No catalog apps found.</span>
+              )}
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+            <input type="checkbox" checked={member.can_deploy_custom} disabled={busyCustom} onChange={toggleCustom} />
+            Allow custom (self-supplied image) deploys
+          </label>
+
+          <div>
+            <p className="text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Quota</p>
+            <div className="flex items-center gap-2">
+              <input
+                type="number" min={0} value={quotaGb} onChange={(e) => setQuotaGb(e.target.value)}
+                className="w-20 px-2 py-1 rounded text-xs font-mono outline-none"
+                style={{ background: 'var(--bg-root)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>GB storage ·</span>
+              <input
+                type="number" min={0} value={maxApps} onChange={(e) => setMaxApps(e.target.value)}
+                className="w-16 px-2 py-1 rounded text-xs font-mono outline-none"
+                style={{ background: 'var(--bg-root)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>max apps</span>
+              <Button size="sm" variant="ghost" onClick={saveQuota} loading={savingQuota}>Save</Button>
+            </div>
+            {member.storage.last_check_at && (
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                Usage last checked {new Date(member.storage.last_check_at * 1000).toLocaleString()}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <p className="text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>Assigned drives</p>
+            <div className="space-y-1">
+              {member.drives.map((d) => (
+                <div key={d.id} className="flex items-center gap-2 text-xs">
+                  <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{d.label}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{d.host_path}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    {d.free_bytes !== null ? `${bytesLabel(d.free_bytes)} free / ${bytesLabel(d.total_bytes)}` : 'not yet checked'}
+                  </span>
+                  <button onClick={() => removeDrive(d.id)} style={{ color: 'var(--accent-danger)' }} title="Remove drive">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+              {member.drives.length === 0 && (
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No drives assigned — deploys use their quota directory.</p>
+              )}
+            </div>
+            <form onSubmit={addDrive} className="flex items-center gap-2 mt-2">
+              <input
+                placeholder="Label" value={driveLabel} onChange={(e) => setDriveLabel(e.target.value)} required
+                className="w-24 px-2 py-1 rounded text-xs outline-none"
+                style={{ background: 'var(--bg-root)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+              <input
+                placeholder="/mnt/host/path" value={drivePath} onChange={(e) => setDrivePath(e.target.value)} required
+                className="flex-1 px-2 py-1 rounded text-xs font-mono outline-none"
+                style={{ background: 'var(--bg-root)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+              <Button size="sm" variant="ghost" type="submit" loading={addingDrive}>Add</Button>
+            </form>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+              Must already be mounted on this host — VoidTower only bind-mounts it, never formats/partitions.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MembersSection() {
+  const [members, setMembers] = useState<import('@/api/types').MemberListEntry[]>([])
+  const [catalogApps, setCatalogApps] = useState<import('@/api/types').AppDef[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const refresh = () => {
+    Promise.all([api.members.list(), api.apps.catalog()])
+      .then(([m, c]) => { setMembers(m.members); setCatalogApps(c.apps) })
+      .catch(() => notify.error('Failed to load members'))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { refresh() }, [])
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Members</h2>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>App access, custom-deploy, storage</span>
+      </div>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        A "member" only sees the apps you grant here, and can optionally deploy and manage their own —
+        create one with the role "member" above, then configure their access below.
+      </p>
+
+      {loading ? (
+        <p className="text-xs py-2" style={{ color: 'var(--text-muted)' }}>Loading…</p>
+      ) : members.length === 0 ? (
+        <p className="text-xs py-2" style={{ color: 'var(--text-muted)' }}>No members yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {members.map((m) => (
+            <MemberRow key={m.id} member={m} catalogApps={catalogApps} onChanged={refresh} />
           ))}
         </div>
       )}

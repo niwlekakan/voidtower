@@ -509,6 +509,17 @@ async fn main() -> Result<()> {
     let pmon_state = state.clone();
     tokio::spawn(api::proxmox::run_vm_state_monitor(pmon_state));
 
+    // Member storage-quota / assigned-drive usage poll (5 min) — same
+    // poll-interval shape as the backup last_check_at scheduler above.
+    let member_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            api::members::poll_member_storage(member_state.clone()).await;
+        }
+    });
+
     // Build router
     let api_routes = api::router(state);
 

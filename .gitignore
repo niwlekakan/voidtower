@@ -18,7 +18,6 @@ backend/dev-config/
 
 # Claude Code working files (agent worktrees, memory, session state)
 .claude/
-CLAUDE.md
 
 # Editor metadata
 .obsidian/
@@ -80,3 +79,6 @@ frontend/ds-bundle/
 frontend/.design-sync/.cache/
 frontend/.design-sync/learnings/
 frontend/.design-sync/node_modules
+
+# Dev-team runner state (machine-local; scripts/devteam/ is tracked)
+.devteam/

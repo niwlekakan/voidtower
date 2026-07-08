@@ -44,6 +44,12 @@ pub struct PublicUser {
     pub force_password_change: bool,
     pub totp_enabled: bool,
     pub expires_at: Option<i64>,
+    /// Whether this role currently requires TOTP enrollment. Derived from the
+    /// admin-configurable `mfa_required_roles` setting, not stored on the user
+    /// row — callers must set this explicitly (see `settings::mfa_required_for_role`)
+    /// since `User` alone doesn't carry the policy.
+    #[serde(default)]
+    pub mfa_required: bool,
 }
 
 impl From<User> for PublicUser {
@@ -55,6 +61,7 @@ impl From<User> for PublicUser {
             force_password_change: u.force_password_change,
             totp_enabled: u.totp_enabled,
             expires_at: u.expires_at,
+            mfa_required: false,
         }
     }
 }

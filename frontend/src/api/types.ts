@@ -4,6 +4,7 @@ export interface User {
   role: 'owner' | 'admin' | 'operator' | 'viewer'
   force_password_change: boolean
   totp_enabled: boolean
+  mfa_required: boolean
 }
 
 export interface UserRecord {

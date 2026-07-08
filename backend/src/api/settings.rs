@@ -21,6 +21,7 @@ const NOTIF_NTFY_URL_KEY: &str = "notif_ntfy_url";
 const NOTIF_DISCORD_KEY: &str = "notif_discord_webhook";
 const NOTIF_SLACK_KEY: &str = "notif_slack_webhook";
 const AI_PORT_KEY: &str = "ai_proxy_port";
+const MFA_REQUIRED_ROLES_KEY: &str = "mfa_required_roles";
 const AI_PROXY_CONF: &str = "/var/lib/voidtower/nginx/conf.d/voidtower-ai-proxy.conf";
 const AI_TLS_CERT: &str = "/var/lib/voidtower/nginx/conf.d/voidtower-ai-proxy.crt";
 const AI_TLS_KEY: &str = "/var/lib/voidtower/nginx/conf.d/voidtower-ai-proxy.key";
@@ -402,6 +403,71 @@ pub async fn set_ai_url(
             Ok(Json(serde_json::json!({ "ok": true, "proxy_active": false })))
         }
     }
+}
+
+// ─── MFA policy ──────────────────────────────────────────────────────────────
+
+/// Roles that get TOTP enrollment forced on first login when no explicit
+/// policy has been saved yet — the two roles with real infrastructure control.
+fn default_mfa_required_roles() -> Vec<String> {
+    vec!["owner".to_string(), "admin".to_string()]
+}
+
+fn valid_role(role: &str) -> bool {
+    matches!(role, "owner" | "admin" | "operator" | "viewer" | "guest" | "demo")
+}
+
+/// Whether the given role currently requires mandatory MFA enrollment.
+/// Reads the admin-configurable policy, falling back to the default list
+/// when unset or unparseable — never lets a bad value silently disable it.
+pub async fn mfa_required_for_role(state: &AppState, role: &str) -> bool {
+    let roles: Vec<String> = match db_get(state, MFA_REQUIRED_ROLES_KEY).await {
+        Some(v) => serde_json::from_str(&v).unwrap_or_else(|_| default_mfa_required_roles()),
+        None => default_mfa_required_roles(),
+    };
+    roles.iter().any(|r| r == role)
+}
+
+pub async fn get_mfa_policy(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
+    require_admin(&state, &jar).await?;
+    let roles = match db_get(&state, MFA_REQUIRED_ROLES_KEY).await {
+        Some(v) => serde_json::from_str(&v).unwrap_or_else(|_| default_mfa_required_roles()),
+        None => default_mfa_required_roles(),
+    };
+    Ok(Json(serde_json::json!({ "required_roles": roles })))
+}
+
+#[derive(Deserialize)]
+pub struct SetMfaPolicyReq {
+    pub required_roles: Vec<String>,
+}
+
+pub async fn set_mfa_policy(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<SetMfaPolicyReq>,
+) -> Result<Json<serde_json::Value>> {
+    let user = require_admin(&state, &jar).await?;
+
+    for role in &req.required_roles {
+        if !valid_role(role) {
+            return Err(AppError::BadRequest(format!("Invalid role: {role}")));
+        }
+    }
+
+    let value = serde_json::to_string(&req.required_roles)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    db_set(&state, MFA_REQUIRED_ROLES_KEY, &value).await?;
+
+    audit::log(
+        &state.db, Some(&user.id), "human", "settings.mfa_policy.set",
+        Some("settings"), None, "success", None,
+        Some(&format!("required_roles={}", req.required_roles.join(","))),
+    ).await;
+    Ok(Json(serde_json::json!({ "ok": true, "required_roles": req.required_roles })))
 }
 
 // ─── General settings ────────────────────────────────────────────────────────

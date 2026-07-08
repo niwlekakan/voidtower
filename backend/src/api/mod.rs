@@ -302,6 +302,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/settings/general", get(settings::get_general).post(settings::set_general))
         .route("/api/settings/notifications", get(settings::get_notifications).post(settings::set_notifications))
         .route("/api/settings/notifications/test", post(settings::test_notification))
+        .route("/api/settings/mfa-policy", get(settings::get_mfa_policy).post(settings::set_mfa_policy))
         // VMs (local KVM + Proxmox)
         .route("/api/vms/local", get(vms::list_local))
         .route("/api/vms/local/action", post(vms::local_action))

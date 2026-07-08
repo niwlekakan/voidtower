@@ -1,0 +1,51 @@
+{
+  "_comment": "scripts/devteam/settings.attended.json — copy to .claude/settings.json for ATTENDED tier only (bare-host daytime runs). Deliberately narrower than sandbox/forge autonomy: repo-local edits and the build/test/git toolchain, nothing else. Actions outside this list fail the task instead of prompting (print mode cannot prompt) — that is the intended behavior on a machine holding real credentials.",
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Edit(**)",
+      "Write(**)",
+      "Grep(**)",
+      "Glob(**)",
+      "Bash(cargo *)",
+      "Bash(cargo)",
+      "Bash(npm run *)",
+      "Bash(npm ci)",
+      "Bash(npm install)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git branch*)",
+      "Bash(git push origin devteam/*)",
+      "Bash(git fetch*)",
+      "Bash(scripts/devteam/gates.sh)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(rg *)",
+      "Bash(jq *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr view *)"
+    ],
+    "deny": [
+      "Bash(git push origin main*)",
+      "Bash(git push --force*)",
+      "Bash(rm -rf *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(sudo *)",
+      "Read(~/.ssh/**)",
+      "Read(~/.gnupg/**)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/bootstrap-token)"
+    ]
+  }
+}

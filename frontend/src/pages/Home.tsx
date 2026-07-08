@@ -24,23 +24,28 @@ function severityColor(severity: string): string {
 }
 
 /**
- * Desktop-app-only landing page (see App.tsx's isTauri() branch on the index
- * route) — a plain-language status summary instead of dropping straight into
- * the technical dashboard. The plain browser never renders this; it keeps
- * redirecting `/` to `/dashboard` exactly as before.
+ * Landing page for two audiences that both want a plain-language summary
+ * instead of the technical dashboard: the desktop app (see App.tsx's
+ * isTauri() branch on the index route) and any `member`-role user (who
+ * never sees the technical dashboard at all, on any client — see
+ * App.tsx's MemberGate and Sidebar.tsx's member-only nav). The plain
+ * browser for every other role keeps redirecting `/` to `/dashboard`
+ * exactly as before.
  */
 export default function HomePage() {
   const user = useAuthStore((s) => s.user)
   const navigate = useNavigate()
+  const isMember = user?.role === 'member'
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    if (isMember) { setLoading(false); return }
     api.alerts.list('active')
       .then((data) => setAlerts(data.alerts))
       .catch(() => { /* Home is best-effort; the dashboard shows real errors */ })
       .finally(() => setLoading(false))
-  }, [])
+  }, [isMember])
 
   const worstSeverity = alerts.reduce<'info' | 'warning' | 'critical' | null>((worst, a) => {
     const rank = { info: 0, warning: 1, critical: 2 }
@@ -57,7 +62,21 @@ export default function HomePage() {
         <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>{today()}</p>
       </div>
 
-      {!loading && (
+      {isMember ? (
+        <button
+          onClick={() => navigate('/apps')}
+          className="flex items-center gap-3 rounded-2xl p-4 text-left transition-colors"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-default)' }}
+        >
+          <span className="w-3 h-3 rounded-full shrink-0" style={{ background: 'var(--accent-primary)' }} />
+          <span className="flex flex-col">
+            <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>My apps</span>
+            <span className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+              Open, deploy, and manage the apps you've been given access to
+            </span>
+          </span>
+        </button>
+      ) : !loading && (
         <button
           onClick={() => navigate('/dashboard')}
           className="flex items-center gap-3 rounded-2xl p-4 text-left transition-colors"

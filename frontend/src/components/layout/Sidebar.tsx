@@ -424,6 +424,21 @@ export default function Sidebar() {
       ]
     : visibleGroups
 
+  // A `member` never sees infra nav (VMs, proxies, backups, nodes, Settings,
+  // etc.) — not just relabeled, actually hidden — regardless of client. Their
+  // whole world is the simplified Home view and their own app launcher.
+  const isMember = user?.role === 'member'
+  const memberGroups: { group: { id: string; label: string }; items: NavItem[] }[] = [
+    {
+      group: { id: 'member-home', label: 'VoidTower' },
+      items: [
+        { to: '/', icon: Home, label: 'Home' },
+        { to: '/apps', icon: Package, label: 'My Apps' },
+      ],
+    },
+  ]
+  const finalGroups = isMember ? memberGroups : renderGroups
+
   const renderDropdownGroup = (id: string, label: string, items: { to: string; icon: React.ElementType; label: string }[]) => {
     const isOpen = openGroup?.id === id
     const toggle = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -512,10 +527,10 @@ export default function Sidebar() {
           {instanceName}
         </span>
         <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
-          {renderGroups.map(({ group, items }) => renderDropdownGroup(group.id, group.label, items))}
-          {activePlugins.length > 0 &&
+          {finalGroups.map(({ group, items }) => renderDropdownGroup(group.id, group.label, items))}
+          {!isMember && activePlugins.length > 0 &&
             renderDropdownGroup('plugins', 'Plugins', activePlugins.map((p) => ({ to: `/plugins/${p.id}`, icon: Blocks, label: p.name })))}
-          {customTabs.length > 0 &&
+          {!isMember && customTabs.length > 0 &&
             renderDropdownGroup('my-tabs', 'My Tabs', customTabs.map((t) => ({ to: `/tabs/${t.id}`, icon: (t.icon && ICON_REGISTRY[t.icon]) || LayoutPanelTop, label: t.title })))}
         </div>
         {/* Search/GPU/UI-mode/tag/status/bell — merged in here instead of a separate TopBar row */}
@@ -582,7 +597,7 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-2 overflow-y-auto">
-        {(() => { let staggerIndex = -1; return renderGroups.map(({ group, items: visibleItems }, gi) => {
+        {(() => { let staggerIndex = -1; return finalGroups.map(({ group, items: visibleItems }, gi) => {
           return (
             <div key={group.id} className={gi > 0 ? 'mt-3' : ''}>
               <div
@@ -627,7 +642,7 @@ export default function Sidebar() {
           )
         }) })()}
           {/* Dynamic plugin pages */}
-          {activePlugins.length > 0 && (
+          {!isMember && activePlugins.length > 0 && (
             <div className="mt-3">
               <div
                 className="px-2 text-xs font-medium uppercase tracking-widest select-none"
@@ -659,7 +674,7 @@ export default function Sidebar() {
             </div>
           )}
           {/* Personal custom tabs */}
-          {customTabs.length > 0 && (
+          {!isMember && customTabs.length > 0 && (
             <div className="mt-3">
               <div
                 className="px-2 text-xs font-medium uppercase tracking-widest select-none"

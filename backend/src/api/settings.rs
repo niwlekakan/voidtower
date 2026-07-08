@@ -414,7 +414,7 @@ fn default_mfa_required_roles() -> Vec<String> {
 }
 
 fn valid_role(role: &str) -> bool {
-    matches!(role, "owner" | "admin" | "operator" | "viewer" | "guest" | "demo")
+    matches!(role, "owner" | "admin" | "operator" | "viewer" | "guest" | "demo" | "member")
 }
 
 /// Whether the given role currently requires mandatory MFA enrollment.

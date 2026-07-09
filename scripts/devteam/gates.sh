@@ -12,11 +12,33 @@ echo "[gates] G0 format (diff-scoped)"
 # reformats everything. Invoke rustfmt directly on the changed files instead, so a
 # PR is never held hostage by pre-existing formatting debt elsewhere in the repo
 # (and never needs to touch forbidden-zone files to satisfy a whitespace gate).
+#
+# rustfmt is inherently whole-file, not diff-scoped: `--check` reports every
+# non-conforming line in a touched file, including pre-existing debt this PR
+# never touched, so any task touching an already-messy file fails G0 forever
+# regardless of whether its own new lines are clean. Workers also have no
+# standing permission to invoke `rustfmt` as a separate top-level command —
+# only this script, already allowlisted, can. So: apply the formatting (not
+# just check it) here, then fail with a clear diff if that changed anything,
+# forcing a deliberate review-and-commit rather than a silent pass or a
+# permanent dead end.
 CHANGED_RS="$(echo "$CHANGED" | grep '\.rs$' | grep -v '^backend/target/' || true)"
 if [[ -n "$CHANGED_RS" ]]; then
   MISSING=""
   for f in $CHANGED_RS; do [[ -f "$ROOT/$f" ]] && MISSING="$MISSING $ROOT/$f"; done
-  [[ -n "$MISSING" ]] && rustfmt --edition 2021 --check $MISSING
+  if [[ -n "$MISSING" ]]; then
+    # shellcheck disable=SC2086
+    rustfmt --edition 2021 $MISSING
+    # shellcheck disable=SC2086
+    if ! git -C "$ROOT" diff --quiet -- $CHANGED_RS; then
+      echo "[gates] FAIL: rustfmt reformatted your changed file(s) — this also cleans up any"
+      echo "  pre-existing debt in them, since rustfmt is whole-file, not diff-scoped. Review"
+      echo "  the diff below, commit it, and re-run gates.sh:"
+      # shellcheck disable=SC2086
+      git -C "$ROOT" diff --stat -- $CHANGED_RS | sed 's/^/    /'
+      exit 1
+    fi
+  fi
 fi
 
 echo "[gates] G0 lint"
@@ -28,17 +50,21 @@ if echo "$CHANGED" | grep -Eq "$BLOCKLIST"; then
   # Forbidden-zone changes require an ACCEPTED ADR cited by the active spec,
   # and every changed path must fall inside that ADR's granted-paths block.
   # Citing a Proposed (unsigned) ADR is not authorization.
-  ADR_ID="$(grep -rhoE 'ADR-[0-9]{3}' "$ROOT/.devteam/active/" 2>/dev/null | head -1 || true)"
-  if [[ -z "$ADR_ID" ]]; then
+  # NOTE: a spec may legitimately cite more than one ADR (e.g. one for
+  # policy.rs, another for db/mod.rs's schema addition) — pass every cited id
+  # to adr.sh check and let it validate each file against the union of all
+  # their granted-paths, not just whichever ADR id happened to appear first.
+  ADR_IDS="$(grep -rhoE 'ADR-[0-9]{3}' "$ROOT/.devteam/active/" 2>/dev/null | sort -u | paste -sd, - || true)"
+  if [[ -z "$ADR_IDS" ]]; then
     echo "[gates] FAIL: forbidden-zone files changed but the active task spec cites no ADR:"
     echo "$CHANGED" | grep -E "$BLOCKLIST" | sed 's/^/  /'
     exit 1
   fi
   FZ_FILES="$(echo "$CHANGED" | grep -E "$BLOCKLIST")"
   # shellcheck disable=SC2086
-  "$ROOT/scripts/devteam/adr.sh" check "$ADR_ID" $FZ_FILES \
-    || { echo "[gates] FAIL: forbidden-zone changes not authorized by $ADR_ID"; exit 1; }
-  echo "[gates]   forbidden-zone changes authorized by $ADR_ID"
+  "$ROOT/scripts/devteam/adr.sh" check "$ADR_IDS" $FZ_FILES \
+    || { echo "[gates] FAIL: forbidden-zone changes not authorized by $ADR_IDS"; exit 1; }
+  echo "[gates]   forbidden-zone changes authorized by $ADR_IDS"
 fi
 
 echo "[gates] G1 tests"

@@ -60,20 +60,32 @@ case "${1:-}" in
     sed -i "s|^\*\*Status:\*\*.*|**Status:** Revoked ($(date -I)) — grant closed|" "$f"
     echo "✔ $id revoked; its zones are closed again." ;;
 
-  check)  # used by gates.sh: adr.sh check ADR-001 file1 file2 ...
-    id="${2:?id}"; shift 2
-    f="$(adr_file "$id")" || { echo "gates: cited $id does not exist"; exit 1; }
-    st="$(adr_status "$f")"
-    [[ "$st" == "Accepted" ]] || { echo "gates: $id has status '$st' — only Accepted grants authorize forbidden-zone changes"; exit 1; }
-    mapfile -t PATTERNS < <(granted_paths "$f")
+  check)  # used by gates.sh: adr.sh check ADR-001[,ADR-002,...] file1 file2 ...
+    # A spec may legitimately cite more than one ADR (e.g. one grant for
+    # policy.rs, a separate one for a db/mod.rs schema addition) — validate
+    # each file against the UNION of every cited ADR's granted paths, not
+    # just the first one. Every cited ADR must independently be Accepted;
+    # one Proposed grant in the list still blocks the whole check, since a
+    # spec citing an unsigned ADR alongside a signed one is not evidence the
+    # unsigned one was meant to be skippable.
+    ids="${2:?id}"; shift 2
+    ALL_PATTERNS=()
+    IFS=',' read -ra ID_LIST <<<"$ids"
+    for id in "${ID_LIST[@]}"; do
+      f="$(adr_file "$id")" || { echo "gates: cited $id does not exist"; exit 1; }
+      st="$(adr_status "$f")"
+      [[ "$st" == "Accepted" ]] || { echo "gates: $id has status '$st' — only Accepted grants authorize forbidden-zone changes"; exit 1; }
+      mapfile -t PATTERNS < <(granted_paths "$f")
+      ALL_PATTERNS+=("${PATTERNS[@]}")
+    done
     rc=0
     for file in "$@"; do
       ok=1
-      for p in "${PATTERNS[@]}"; do
+      for p in "${ALL_PATTERNS[@]}"; do
         # shellcheck disable=SC2053
         [[ "$file" == $p ]] && { ok=0; break; }
       done
-      [[ $ok -eq 0 ]] || { echo "gates: '$file' is NOT in $id's granted paths"; rc=1; }
+      [[ $ok -eq 0 ]] || { echo "gates: '$file' is NOT in any of ${ids}'s granted paths"; rc=1; }
     done
     exit $rc ;;
 

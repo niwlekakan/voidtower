@@ -1,4 +1,4 @@
-use crate::{auth, error::{AppError, Result}, AppState};
+use crate::{auth, error::{AppError, Result}, voidwatch::{Actor, ActorKind}, AppState};
 use axum::{
     body::Body,
     extract::{Multipart, Path, State},
@@ -560,7 +560,7 @@ pub async fn mcp_invoke(
     Json(req): Json<McpInvokeRequest>,
 ) -> Result<Json<serde_json::Value>> {
     require_user(&state, &jar).await?;
-    match super::mcp::invoke_tool(&state, &req.name, req.arguments).await {
+    match super::mcp::invoke_tool(&state, Actor { kind: ActorKind::User }, &req.name, req.arguments).await {
         Ok(text)  => Ok(Json(serde_json::json!({ "ok": true, "result": text }))),
         Err(e)    => Ok(Json(serde_json::json!({ "ok": false, "error": e }))),
     }

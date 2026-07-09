@@ -6,8 +6,9 @@ import {
   Plus, X, Box, Tag as TagIcon, Search, Download, ArrowDownToLine,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
-import type { AppDef, DeployedApp, ComposeContainer, Tag, TagMap, ExternalStack } from '@/api/types'
+import type { AppDef, DeployedApp, ComposeContainer, Tag, TagMap, ExternalStack, DriveSummary, MemberNodeOption } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { useAuthStore } from '@/store/auth'
 import { useEmbedStore } from '@/store/embedStore'
 import { useFiltersStore } from '@/store/filters'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
@@ -193,7 +194,11 @@ function buildYamlPreview(
   return lines.join('\n')
 }
 
-function CustomDeployTab({ onDeployed }: { onDeployed: () => void }) {
+function CustomDeployTab({ onDeployed, isMember, memberOpts }: {
+  onDeployed: () => void
+  isMember: boolean
+  memberOpts: ReturnType<typeof useMemberDeployOptions>
+}) {
   const [image,         setImage]         = useState('')
   const [name,          setName]          = useState('')
   const [ports,         setPorts]         = useState<[string, string][]>([])
@@ -219,6 +224,8 @@ function CustomDeployTab({ onDeployed }: { onDeployed: () => void }) {
         ports:   ports.filter(([h, c]) => h && c).map(([h, c]) => `${h}:${c}`),
         volumes: volumes.filter(([h, c]) => h && c).map(([h, c]) => `${h}:${c}`),
         env: env.filter(Boolean),
+        storage_drive_id: isMember ? memberOpts.driveId || undefined : undefined,
+        target_node_id: isMember ? memberOpts.nodeId || undefined : undefined,
       })
       setDone(res.project_name)
       onDeployed()
@@ -236,6 +243,8 @@ function CustomDeployTab({ onDeployed }: { onDeployed: () => void }) {
           Paste any Docker Hub image and configure ports, volumes, and env vars. VoidTower generates the compose file and deploys it instantly.
         </p>
       </div>
+
+      {isMember && <MemberDeployOptions opts={memberOpts} />}
 
       <div className="space-y-3 p-4 rounded-lg" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)' }}>
         {/* Image */}
@@ -1155,6 +1164,63 @@ function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, onRefr
   )
 }
 
+// ─── Member deploy options (drive / target node picker) ──────────────────────
+//
+// Only rendered for `member`-role users. Both selects default to "auto" — the
+// backend already picks the least-full assigned drive (or the member's quota
+// directory) and the primary host when nothing is chosen — so this is purely
+// an override, matching the "automatic by default, overridable" feel used for
+// both storage and node placement.
+
+function useMemberDeployOptions(isMember: boolean) {
+  const [drives, setDrives] = useState<DriveSummary[]>([])
+  const [nodes, setNodes] = useState<MemberNodeOption[]>([])
+  const [canDeployCustom, setCanDeployCustom] = useState(false)
+  const [driveId, setDriveId] = useState('')
+  const [nodeId, setNodeId] = useState('')
+
+  useEffect(() => {
+    if (!isMember) return
+    api.members.myAccess().then((d) => { setDrives(d.drives); setCanDeployCustom(d.can_deploy_custom) }).catch(() => {})
+    api.members.myNodes().then((d) => setNodes(d.nodes)).catch(() => {})
+  }, [isMember])
+
+  return { drives, nodes, canDeployCustom, driveId, setDriveId, nodeId, setNodeId }
+}
+
+function MemberDeployOptions({ opts }: { opts: ReturnType<typeof useMemberDeployOptions> }) {
+  const { drives, nodes, driveId, setDriveId, nodeId, setNodeId } = opts
+  if (drives.length === 0 && nodes.length === 0) return null
+  return (
+    <div className="card flex flex-wrap items-center gap-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
+      {drives.length > 0 && (
+        <label className="flex items-center gap-1.5">
+          Storage:
+          <select value={driveId} onChange={(e) => setDriveId(e.target.value)}
+            className="px-2 py-1 rounded text-xs"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+          >
+            <option value="">Auto (least-full drive)</option>
+            {drives.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+          </select>
+        </label>
+      )}
+      {nodes.length > 0 && (
+        <label className="flex items-center gap-1.5">
+          Device:
+          <select value={nodeId} onChange={(e) => setNodeId(e.target.value)}
+            className="px-2 py-1 rounded text-xs"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+          >
+            <option value="">Primary host</option>
+            {nodes.map((n) => <option key={n.id} value={n.id}>{n.display_name}</option>)}
+          </select>
+        </label>
+      )}
+    </div>
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function AppVaultPage() {
@@ -1172,6 +1238,8 @@ export default function AppVaultPage() {
   const [allTags, setAllTags]           = useState<Tag[]>([])
   const [tagMap, setTagMap]             = useState<TagMap>({})
   const globalTag = useFiltersStore((s) => s.globalTag)
+  const isMember = useAuthStore((s) => s.user?.role) === 'member'
+  const memberOpts = useMemberDeployOptions(isMember)
 
   const loadTags = useCallback(async () => {
     try {
@@ -1204,7 +1272,11 @@ export default function AppVaultPage() {
     setDeploying(app.id)
     setDeployError(null)
     try {
-      const result = await api.apps.deploy(app.id)
+      const result = await api.apps.deploy(
+        app.id, undefined, undefined,
+        isMember ? memberOpts.driveId || undefined : undefined,
+        isMember ? memberOpts.nodeId || undefined : undefined,
+      )
       notify.success(`${app.name} deployed as ${result.project_name}`)
       await load()
       setTab('deployed')
@@ -1238,14 +1310,17 @@ export default function AppVaultPage() {
         <Button size="sm" onClick={load} loading={loading}>Refresh</Button>
       </div>
 
-      {/* Tabs */}
+      {/* Tabs — members never see External/AI Discover (infra-adjacent), and only
+          see Custom Deploy if an admin opted them into it. */}
       <div className="flex gap-1 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
         {([
           { id: 'deployed', label: `Deployed (${deployed.length})` },
           { id: 'catalog',  label: `Catalog (${apps.length})` },
-          { id: 'external', label: '⇣ External' },
-          { id: 'discover', label: '✦ AI Discover' },
-          { id: 'custom',   label: '⊕ Custom Deploy' },
+          ...(isMember ? [] : [
+            { id: 'external', label: '⇣ External' } as const,
+            { id: 'discover', label: '✦ AI Discover' } as const,
+          ]),
+          ...((!isMember || memberOpts.canDeployCustom) ? [{ id: 'custom', label: '⊕ Custom Deploy' } as const] : []),
         ] as const).map(({ id, label }) => (
           <button
             key={id}
@@ -1260,6 +1335,8 @@ export default function AppVaultPage() {
           </button>
         ))}
       </div>
+
+      {isMember && tab === 'catalog' && <MemberDeployOptions opts={memberOpts} />}
 
       {tab === 'catalog' && (
         <>
@@ -1395,7 +1472,11 @@ export default function AppVaultPage() {
       )}
 
       {tab === 'custom' && (
-        <CustomDeployTab onDeployed={() => { load(); setTab('deployed') }} />
+        <CustomDeployTab
+          onDeployed={() => { load(); setTab('deployed') }}
+          isMember={isMember}
+          memberOpts={memberOpts}
+        />
       )}
 
       {tab === 'discover' && (

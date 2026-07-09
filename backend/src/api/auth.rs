@@ -103,6 +103,21 @@ pub async fn login(
         return Err(AppError::Unauthorized);
     }
 
+    if let Some(exp) = user.expires_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if exp <= now {
+            audit::log(
+                &state.db, None, "human", "auth.login.expired",
+                Some("user"), Some(&user.id), "failure",
+                Some(&addr.ip().to_string()), None,
+            ).await;
+            return Err(AppError::BadRequest("This guest account has expired".to_string()));
+        }
+    }
+
     // TOTP check
     if user.totp_enabled {
         match &req.totp_code {
@@ -146,7 +161,9 @@ pub async fn login(
         .path("/")
         .build();
 
-    Ok((jar.add(cookie), Json(AuthResponse { user: user.into() })))
+    let mut public_user: PublicUser = user.into();
+    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    Ok((jar.add(cookie), Json(AuthResponse { user: public_user })))
 }
 
 pub async fn logout(
@@ -177,7 +194,9 @@ pub async fn me(
         .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
 
-    Ok(Json(AuthResponse { user: user.into() }))
+    let mut public_user: PublicUser = user.into();
+    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    Ok(Json(AuthResponse { user: public_user }))
 }
 
 pub async fn bootstrap(
@@ -241,7 +260,9 @@ pub async fn bootstrap(
         .path("/")
         .build();
 
-    Ok((jar.add(cookie), Json(AuthResponse { user: user.into() })))
+    let mut public_user: PublicUser = user.into();
+    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    Ok((jar.add(cookie), Json(AuthResponse { user: public_user })))
 }
 
 async fn provision_voidwatch(db: sqlx::SqlitePool, user_id: String, token_path: std::path::PathBuf) {

@@ -160,6 +160,11 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_checked_at INTEGER").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_latency_ms INTEGER").execute(&pool).await;
 
+    // Tiered accounts: guest accounts expire automatically (role = 'guest'),
+    // demo accounts are sandboxed to read-only (role = 'demo') — reuses the
+    // existing role-string ladder rather than a separate flag column.
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN expires_at INTEGER").execute(&pool).await;
+
     // AI provider abstraction layer
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS ai_providers (
@@ -177,6 +182,108 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     )
     .execute(&pool)
     .await;
+
+    // Fleet node enrollment: pairing codes (single-use, short-lived) mint a node
+    // identity that owns exactly one WireGuard peer + one heartbeat bearer token.
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS node_pairing_codes (
+            id          TEXT PRIMARY KEY,
+            token_hash  TEXT NOT NULL UNIQUE,
+            created_by  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at  INTEGER NOT NULL,
+            used_at     INTEGER,
+            created_at  INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await;
+
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS nodes (
+            id              TEXT PRIMARY KEY,
+            display_name    TEXT NOT NULL,
+            device_type     TEXT NOT NULL DEFAULT 'other',
+            owner_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            wg_peer_id      TEXT,
+            wg_public_key   TEXT NOT NULL DEFAULT '',
+            token_hash      TEXT NOT NULL,
+            last_seen       INTEGER,
+            last_telemetry  TEXT,
+            agent_capable   INTEGER NOT NULL DEFAULT 0,
+            approved        INTEGER NOT NULL DEFAULT 1,
+            created_at      INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await;
+
+    // Self-hosting hub: per-member app access + self-deployed apps.
+    // `member` is a new role (see api::users::create / api::settings::valid_role)
+    // for a household/team member who only sees apps an admin explicitly grants —
+    // everything below is additive/nullable and no-ops for every other role.
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS member_app_access (
+            user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            app_id      TEXT NOT NULL,
+            granted_at  INTEGER NOT NULL,
+            PRIMARY KEY (user_id, app_id)
+        )",
+    )
+    .execute(&pool)
+    .await;
+
+    // One row per member: soft storage quota + container-count cap, plus the
+    // last poll's usage (see the storage-quota poll loop in main.rs, mirroring
+    // the backup_configs.last_check_at pattern).
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS member_storage (
+            user_id       TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            quota_bytes   INTEGER NOT NULL DEFAULT 5368709120,
+            max_apps      INTEGER NOT NULL DEFAULT 5,
+            used_bytes    INTEGER NOT NULL DEFAULT 0,
+            last_check_at INTEGER
+        )",
+    )
+    .execute(&pool)
+    .await;
+
+    // Admin-registered, already-mounted host paths assigned to a member as
+    // extra deploy-time storage capacity. VoidTower never formats/partitions/
+    // mounts anything here — see the plan's "Explicitly not doing" section.
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS member_drives (
+            id            TEXT PRIMARY KEY,
+            user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            label         TEXT NOT NULL,
+            host_path     TEXT NOT NULL,
+            total_bytes   INTEGER,
+            free_bytes    INTEGER,
+            last_check_at INTEGER,
+            created_at    INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await;
+
+    // Tiny per-member settings table — currently just the custom-deploy opt-in
+    // flag. Kept separate from member_storage (which is purely quota/drives)
+    // and from member_app_access (which is per-app catalog grants).
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS member_settings (
+            user_id           TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            can_deploy_custom INTEGER NOT NULL DEFAULT 0,
+            updated_at        INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await;
+
+    // deployed_apps: nullable member-tenancy columns. NULL on every row means
+    // "admin-deployed on the primary host" exactly as before this feature —
+    // existing deploys and the global admin view are completely unaffected.
+    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN owner_user_id TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN storage_root TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN target_node_id TEXT").execute(&pool).await;
 
     Ok(pool)
 }

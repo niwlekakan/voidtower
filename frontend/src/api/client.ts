@@ -14,8 +14,33 @@ export class ApiClientError extends Error {
   }
 }
 
+/**
+ * The web app is served same-origin with the backend (through nginx), so the
+ * browser's own fetch + cookie jar works fine. The desktop (Tauri) app talks
+ * to a *remote* VoidTower instance from its own `tauri://` origin — from the
+ * webview's perspective that makes every API call cross-site, and the
+ * `vt_session` cookie (SameSite=Strict, backend/src/api/auth.rs) would never
+ * be sent back. `@tauri-apps/plugin-http`'s fetch runs the request through
+ * Rust instead of the webview's networking stack, so it isn't subject to
+ * browser same-site/CORS enforcement and keeps its own per-host cookie jar —
+ * swap to it only when actually running inside a Tauri window.
+ */
+export function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI__' in window
+}
+
+let tauriFetchPromise: Promise<typeof fetch> | null = null
+function resolveFetch(): Promise<typeof fetch> {
+  if (!isTauri()) return Promise.resolve(fetch)
+  if (!tauriFetchPromise) {
+    tauriFetchPromise = import('@tauri-apps/plugin-http').then((m) => m.fetch as unknown as typeof fetch)
+  }
+  return tauriFetchPromise
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const doFetch = await resolveFetch()
+  const res = await doFetch(`${BASE}${path}`, {
     ...init,
     credentials: 'include',
     headers: {
@@ -144,10 +169,19 @@ export const api = {
   apps: {
     catalog:  () => request<{ apps: import('./types').AppDef[] }>('/api/apps/catalog'),
     deployed: () => request<import('./types').DeployedResponse>('/api/apps/deployed'),
-    deploy: (appId: string, projectName?: string, envOverrides?: Record<string, string>) =>
+    deploy: (
+      appId: string,
+      projectName?: string,
+      envOverrides?: Record<string, string>,
+      storageDriveId?: string,
+      targetNodeId?: string,
+    ) =>
       request<{ ok: boolean; project_name: string; generated_env?: Record<string, string> }>('/api/apps/deploy', {
         method: 'POST',
-        body: JSON.stringify({ app_id: appId, project_name: projectName, env_overrides: envOverrides }),
+        body: JSON.stringify({
+          app_id: appId, project_name: projectName, env_overrides: envOverrides,
+          storage_drive_id: storageDriveId, target_node_id: targetNodeId,
+        }),
       }),
     cancelDeploy: (p: string) =>
       request<{ ok: boolean; cancelled: boolean }>(`/api/apps/deploy/cancel/${p}`, { method: 'POST' }),
@@ -161,7 +195,10 @@ export const api = {
     getCompose:    (p: string) => request<{ compose_path: string; content: string }>(`/api/apps/${p}/compose`),
     updateCompose: (p: string, content: string) =>
       request<{ ok: boolean }>(`/api/apps/${p}/compose`, { method: 'POST', body: JSON.stringify({ content }) }),
-    deployCustom: (body: { name: string; image: string; ports: string[]; volumes: string[]; env: string[] }) =>
+    deployCustom: (body: {
+      name: string; image: string; ports: string[]; volumes: string[]; env: string[]
+      storage_drive_id?: string; target_node_id?: string
+    }) =>
       request<{ ok: boolean; project_name: string }>('/api/apps/deploy-custom', {
         method: 'POST', body: JSON.stringify(body),
       }),
@@ -263,6 +300,33 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ password, username }),
       }),
+  },
+
+  members: {
+    list: () => request<{ members: import('./types').MemberListEntry[] }>('/api/members'),
+    myAccess: () => request<import('./types').MemberAccessSummary>('/api/members/me/access'),
+    myNodes: () => request<{ nodes: import('./types').MemberNodeOption[] }>('/api/members/me/nodes'),
+    access: (userId: string) => request<import('./types').MemberAccessSummary>(`/api/members/${userId}/access`),
+    grantAccess: (userId: string, appId: string) =>
+      request<{ ok: boolean }>(`/api/members/${userId}/access`, {
+        method: 'POST', body: JSON.stringify({ app_id: appId }),
+      }),
+    revokeAccess: (userId: string, appId: string) =>
+      request<{ ok: boolean }>(`/api/members/${userId}/access/${appId}`, { method: 'DELETE' }),
+    setCustomDeploy: (userId: string, enabled: boolean) =>
+      request<{ ok: boolean; enabled: boolean }>(`/api/members/${userId}/custom-deploy`, {
+        method: 'POST', body: JSON.stringify({ enabled }),
+      }),
+    setQuota: (userId: string, quotaBytes: number, maxApps: number) =>
+      request<{ ok: boolean }>(`/api/members/${userId}/storage`, {
+        method: 'POST', body: JSON.stringify({ quota_bytes: quotaBytes, max_apps: maxApps }),
+      }),
+    addDrive: (userId: string, label: string, hostPath: string) =>
+      request<{ ok: boolean; id: string }>(`/api/members/${userId}/drives`, {
+        method: 'POST', body: JSON.stringify({ label, host_path: hostPath }),
+      }),
+    removeDrive: (driveId: string) =>
+      request<{ ok: boolean }>(`/api/members/drives/${driveId}`, { method: 'DELETE' }),
   },
 
   terminal: {

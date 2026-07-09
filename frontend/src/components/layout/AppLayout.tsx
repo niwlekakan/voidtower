@@ -5,6 +5,7 @@ import TopBar from './TopBar'
 import NotificationToasts from '@/components/ui/NotificationToasts'
 import CommandPalette from '@/components/ui/CommandPalette'
 import ForcePasswordChange from '@/components/ui/ForcePasswordChange'
+import ForceTotpSetup from '@/components/ui/ForceTotpSetup'
 import AnimatedBackground from '@/components/ui/AnimatedBackground'
 import { useMetrics } from '@/hooks/useMetrics'
 import { useAuthStore } from '@/store/auth'
@@ -125,6 +126,7 @@ export default function AppLayout() {
       <NotificationToasts />
       <CommandPalette />
       {user?.force_password_change && <ForcePasswordChange />}
+      {!user?.force_password_change && user?.mfa_required && !user?.totp_enabled && <ForceTotpSetup />}
     </div>
   )
 }

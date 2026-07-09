@@ -1,13 +1,14 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { ThemeProvider } from '@/theme/ThemeProvider'
 import { useAuthStore } from '@/store/auth'
-import { api } from '@/api/client'
+import { api, isTauri } from '@/api/client'
 import AppLayout from '@/components/layout/AppLayout'
 import AiosLayout from '@/aios/AiosLayout'
 import { useThemeStore } from '@/store/theme'
 import LoginPage from '@/pages/Login'
 import BootstrapPage from '@/pages/Bootstrap'
+import HomePage from '@/pages/Home'
 import DashboardPage from '@/pages/Dashboard'
 import ServicesPage from '@/pages/Services'
 import ContainersPage from '@/pages/Containers'
@@ -56,6 +57,20 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+/// A `member` never sees infra pages (VMs, proxies, backups, nodes, Settings,
+/// etc.) regardless of client — only the simplified Home view and their own
+/// app launcher. Every other role is completely unaffected.
+const MEMBER_ALLOWED_PATHS = ['/', '/apps']
+
+function MemberGate({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user)
+  const location = useLocation()
+  if (user?.role === 'member' && !MEMBER_ALLOWED_PATHS.includes(location.pathname)) {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 function AuthedShell() {
   const uiMode = useThemeStore((s) => s.uiMode)
   if (uiMode === 'void') return <AiosLayout />
@@ -93,7 +108,7 @@ function applyBranding(data: { instance_name?: string; custom_css?: string; inst
 }
 
 export default function App() {
-  const { setUser, setStatus } = useAuthStore()
+  const { setUser, setStatus, user } = useAuthStore()
 
   useEffect(() => {
     setStatus('loading')
@@ -126,8 +141,8 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/bootstrap" element={<BootstrapPage />} />
-          <Route path="/" element={<RequireAuth><AuthedShell /></RequireAuth>}>
-            <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="/" element={<RequireAuth><MemberGate><AuthedShell /></MemberGate></RequireAuth>}>
+            <Route index element={(isTauri() || user?.role === 'member') ? <HomePage /> : <Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="services"   element={<ServicesPage />} />
             <Route path="containers"     element={<ContainersPage />} />

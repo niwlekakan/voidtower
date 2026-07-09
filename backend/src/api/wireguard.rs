@@ -391,12 +391,32 @@ pub async fn add_peer(
     Json(req): Json<AddPeerRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
+    let result = add_peer_core(
+        &state,
+        &user,
+        &req.name,
+        &req.interface,
+        req.server_endpoint.as_deref(),
+    )
+    .await?;
+    Ok(Json(result))
+}
 
-    if req.name.trim().is_empty() {
+/// Core peer-provisioning logic, reused by both the HTTP handler above (cookie-session
+/// admin) and `node_enroll.rs` (pairing-code-authenticated node enrollment) so the
+/// WireGuard config generation exists in exactly one place.
+pub(crate) async fn add_peer_core(
+    state: &AppState,
+    user: &auth::User,
+    name: &str,
+    interface: &str,
+    server_endpoint: Option<&str>,
+) -> Result<serde_json::Value> {
+    if name.trim().is_empty() {
         return Err(AppError::BadRequest("Peer name is required".into()));
     }
 
-    let iface = req.interface.trim().to_string();
+    let iface = interface.trim().to_string();
 
     // Get server info
     let conf = read_conf(&iface);
@@ -434,7 +454,7 @@ pub async fn add_peer(
     ]);
 
     // Write to conf file (best-effort)
-    let conf_result = append_peer_to_conf(&iface, &req.name, &public_key, &client_ip);
+    let conf_result = append_peer_to_conf(&iface, name, &public_key, &client_ip);
 
     // Save to DB regardless (so we track it even if wg command had issues)
     let id = Uuid::new_v4().to_string();
@@ -444,7 +464,7 @@ pub async fn add_peer(
     )
     .bind(&id)
     .bind(&iface)
-    .bind(&req.name)
+    .bind(name)
     .bind(&public_key)
     .bind(&client_ip)
     .bind(now)
@@ -453,7 +473,7 @@ pub async fn add_peer(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     // Build client config
-    let endpoint = req.server_endpoint.as_deref()
+    let endpoint = server_endpoint
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .or_else(|| std::env::var("VOIDTOWER_WG_ENDPOINT").ok())
@@ -464,7 +484,7 @@ pub async fn add_peer(
     audit::log(
         &state.db, Some(&user.id), "human", "wireguard.peer_add",
         Some("wireguard_peer"), Some(&id), "success", None,
-        Some(&format!("name={},ip={client_ip},iface={iface}", req.name)),
+        Some(&format!("name={name},ip={client_ip},iface={iface}")),
     ).await;
 
     let warnings: Vec<String> = [
@@ -475,13 +495,13 @@ pub async fn add_peer(
     .flatten()
     .collect();
 
-    Ok(Json(serde_json::json!({
+    Ok(serde_json::json!({
         "id": id,
         "public_key": public_key,
         "allocated_ip": client_ip,
         "client_config": config_str,
         "warnings": warnings,
-    })))
+    }))
 }
 
 pub async fn delete_peer(
@@ -490,11 +510,22 @@ pub async fn delete_peer(
     Path(peer_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
+    let result = delete_peer_core(&state, &user, &peer_id).await?;
+    Ok(Json(result))
+}
+
+/// Core peer-removal logic, reused by the HTTP handler above and `node_enroll.rs`'s
+/// node-revocation flow (one call removes the WireGuard peer, DB row, and audit-logs it).
+pub(crate) async fn delete_peer_core(
+    state: &AppState,
+    user: &auth::User,
+    peer_id: &str,
+) -> Result<serde_json::Value> {
 
     let row: Option<PeerRow> = sqlx::query_as(
         "SELECT id, interface, name, public_key, allocated_ip, created_at FROM wireguard_peers WHERE id = ?",
     )
-    .bind(&peer_id)
+    .bind(peer_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
@@ -509,14 +540,14 @@ pub async fn delete_peer(
 
     // Remove from DB
     sqlx::query("DELETE FROM wireguard_peers WHERE id = ?")
-        .bind(&peer_id)
+        .bind(peer_id)
         .execute(&state.db)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
         &state.db, Some(&user.id), "human", "wireguard.peer_remove",
-        Some("wireguard_peer"), Some(&peer_id), "success", None,
+        Some("wireguard_peer"), Some(peer_id), "success", None,
         Some(&format!("name={},ip={}", peer.name, peer.allocated_ip)),
     ).await;
 
@@ -528,5 +559,5 @@ pub async fn delete_peer(
     .flatten()
     .collect();
 
-    Ok(Json(serde_json::json!({ "ok": true, "warnings": warnings })))
+    Ok(serde_json::json!({ "ok": true, "warnings": warnings }))
 }

@@ -5,6 +5,7 @@ use crate::{
     error::{AppError, Result},
     AppState,
 };
+use super::members;
 use axum::{
     body::Body,
     extract::{ConnectInfo, Path, State},
@@ -122,6 +123,14 @@ pub struct DeployedApp {
     pub primary_port: Option<i64>,
     #[serde(default = "default_origin")]
     pub origin: String,
+    /// Self-hosting hub tenancy (all nullable — NULL means "admin-deployed on
+    /// the primary host", i.e. every deploy before this feature existed).
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
+    #[serde(default)]
+    pub storage_root: Option<String>,
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 fn default_origin() -> String { "voidtower".into() }
@@ -165,6 +174,16 @@ pub struct DeployRequest {
     pub app_id: String,
     pub project_name: Option<String>,
     pub env_overrides: Option<HashMap<String, String>>,
+    /// Member-only: manual override of which assigned drive (by id) to use as
+    /// the volume root. Ignored for non-member callers. Absent/empty = auto
+    /// (least-full assigned drive, else the member's quota directory).
+    #[serde(default)]
+    pub storage_drive_id: Option<String>,
+    /// Member-only: manual override of which of the member's own
+    /// `agent_capable` nodes to target. Ignored for non-member callers.
+    /// Absent/empty = primary host.
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -507,6 +526,98 @@ fn rewrite_host_bind_mounts(compose: &mut Value, config: &crate::config::Config)
     }
 }
 
+/// For a member-owned deploy, rewrite the compose's top-level named-volume
+/// declarations (Docker-managed volumes living under `/var/lib/docker/volumes`,
+/// invisible to the member and outside their quota/drive) into bind mounts
+/// under the member's resolved `storage_root` — this is what makes "their own
+/// isolated storage" a real, member-visible host directory instead of an
+/// opaque Docker volume. Externally-declared volumes (`external: true`) are
+/// left untouched since they reference something outside VoidTower's control.
+fn rewrite_named_volumes_to_storage_root(compose: &mut Value, storage_root: &str, project_name: &str) {
+    let rewritable_names: Vec<String> = compose
+        .get("volumes")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .filter(|(_, def)| !def.get("external").and_then(|e| e.as_bool()).unwrap_or(false))
+                .map(|(k, _)| k.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    if rewritable_names.is_empty() {
+        return;
+    }
+
+    let base = std::path::Path::new(storage_root).join(project_name);
+
+    if let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) {
+        for svc in services.values_mut() {
+            let Some(vols) = svc.get_mut("volumes").and_then(|v| v.as_array_mut()) else { continue };
+            for vol in vols.iter_mut() {
+                let Some(s) = vol.as_str() else { continue };
+                let Some((name, rest)) = s.split_once(':') else { continue };
+                if !rewritable_names.iter().any(|n| n == name) {
+                    continue;
+                }
+                let host_path = base.join(name);
+                let _ = std::fs::create_dir_all(&host_path);
+                *vol = Value::String(format!("{}:{}", host_path.display(), rest));
+            }
+        }
+    }
+
+    // Drop the now-unused top-level declarations for the ones we rewrote —
+    // they're bind mounts on specific services now, not compose-managed volumes.
+    if let Some(vols) = compose.get_mut("volumes").and_then(|v| v.as_object_mut()) {
+        for name in &rewritable_names {
+            vols.remove(name);
+        }
+    }
+}
+
+/// Custom-tier compose security boundary (plan §5) — applied only to
+/// member-submitted custom deploys, never to catalog deploys (those are
+/// already backend-generated/vetted, not user-supplied). Silently downgrades
+/// privilege escalation (safe to strip); hard-rejects anything that would
+/// escape the member's own storage or the project-scoped bridge network,
+/// since those can't be "fixed" without changing what was actually asked for.
+fn validate_and_sanitize_custom_deploy(svc: &mut Value, storage_root: &str) -> std::result::Result<(), String> {
+    let Some(obj) = svc.as_object_mut() else { return Ok(()) };
+
+    // Strip privilege/capability escalation — safe to silently downgrade.
+    obj.remove("privileged");
+    obj.remove("cap_add");
+
+    // Reject host networking outright — custom deploys get the same
+    // project-scoped bridge network every catalog deploy already gets.
+    if obj.get("network_mode").and_then(|v| v.as_str()) == Some("host") {
+        return Err("network_mode: host is not allowed for member-deployed apps".to_string());
+    }
+
+    // Every bind-mount host path must resolve under the member's own
+    // storage_root; the Docker socket is never allowed regardless of path.
+    if let Some(vols) = obj.get("volumes").and_then(|v| v.as_array()) {
+        let canon_root = std::fs::canonicalize(storage_root).unwrap_or_else(|_| std::path::PathBuf::from(storage_root));
+        for vol in vols {
+            let Some(s) = vol.as_str() else { continue };
+            let host_part = s.split(':').next().unwrap_or("");
+            if host_part.is_empty() || !host_part.starts_with('/') {
+                continue; // named volume, not a host bind mount
+            }
+            if host_part.contains("docker.sock") {
+                return Err("Mounting the Docker socket is not allowed".to_string());
+            }
+            let host_path = std::path::Path::new(host_part);
+            let canon_host = std::fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
+            if !canon_host.starts_with(&canon_root) {
+                return Err(format!("Bind mount '{host_part}' is outside your own storage"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Detect the CUDA major version supported by the host driver.
 /// Parses "CUDA Version: X.Y" from `nvidia-smi -q` output.
 async fn detect_cuda_major_version() -> Option<u32> {
@@ -729,8 +840,24 @@ pub async fn catalog(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<CatalogResponse>> {
-    require_user(&state, &jar).await?;
-    let apps = load_catalog(&state.config.catalog_dir);
+    let user = require_user(&state, &jar).await?;
+    let mut apps = load_catalog(&state.config.catalog_dir);
+
+    // Members only ever see catalog apps an admin explicitly granted them —
+    // every other role sees the full catalog, unchanged.
+    if user.role == "member" {
+        let allowed: std::collections::HashSet<String> = sqlx::query_scalar(
+            "SELECT app_id FROM member_app_access WHERE user_id = ?",
+        )
+        .bind(&user.id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(AppError::Database)?
+        .into_iter()
+        .collect();
+        apps.retain(|a| allowed.contains(&a.id));
+    }
+
     Ok(Json(CatalogResponse { apps }))
 }
 
@@ -738,18 +865,29 @@ pub async fn deployed(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<DeployedResponse>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
 
     let docker_available = containers::is_docker_available();
-    let apps = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} ORDER BY deployed_at DESC"),
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .into_iter()
-    .map(row_to_app)
-    .collect();
+
+    // Members only ever see their own deployed apps (owner_user_id = self);
+    // every other role keeps seeing everything, exactly as before.
+    let rows = if user.role == "member" {
+        sqlx::query_as::<_, DeployedAppRow>(
+            &format!("{SELECT_DEPLOYED} WHERE owner_user_id = ? ORDER BY deployed_at DESC"),
+        )
+        .bind(&user.id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(AppError::Database)?
+    } else {
+        sqlx::query_as::<_, DeployedAppRow>(
+            &format!("{SELECT_DEPLOYED} ORDER BY deployed_at DESC"),
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(AppError::Database)?
+    };
+    let apps = rows.into_iter().map(row_to_app).collect();
 
     Ok(Json(DeployedResponse { apps, docker_available }))
 }
@@ -760,13 +898,25 @@ fn row_to_app(r: DeployedAppRow) -> DeployedApp {
         project_name: r.project_name, status: r.status,
         deployed_at: r.deployed_at, compose_path: r.compose_path,
         primary_port: r.primary_port, origin: r.origin,
+        owner_user_id: r.owner_user_id, storage_root: r.storage_root, target_node_id: r.target_node_id,
     }
 }
 
 const SELECT_DEPLOYED: &str =
     "SELECT id, app_id, app_name, project_name, status, deployed_at, compose_path, \
      COALESCE(primary_port, NULL) AS primary_port, \
-     COALESCE(origin, 'voidtower') AS origin FROM deployed_apps";
+     COALESCE(origin, 'voidtower') AS origin, \
+     owner_user_id, storage_root, target_node_id FROM deployed_apps";
+
+/// Non-admin `member` callers may only ever see/manage apps they own
+/// (`owner_user_id` matches their own id); every other role's visibility is
+/// unaffected (this only gates when `role == "member"`).
+fn require_app_owner_or_admin(user: &auth::User, row: &DeployedAppRow) -> Result<()> {
+    if user.role == "member" && row.owner_user_id.as_deref() != Some(user.id.as_str()) {
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
+}
 
 /// Runs `hook.command` inside the target container, retrying every 3s until it
 /// succeeds or `max_wait_secs` elapses. Spawned in the background so it doesn't
@@ -818,6 +968,9 @@ struct DeployedAppRow {
     compose_path: String,
     primary_port: Option<i64>,
     origin: String,
+    owner_user_id: Option<String>,
+    storage_root: Option<String>,
+    target_node_id: Option<String>,
 }
 
 pub async fn deploy(
@@ -858,6 +1011,21 @@ pub async fn deploy(
                 app.name, port_hint,
             )));
         }
+    }
+
+    // Self-hosting hub: resolve the acting member's ownership/storage/target-node
+    // context. Untouched (all None) for every other role, which preserves the
+    // exact pre-existing admin/global deploy behavior.
+    let mut owner_user_id: Option<String> = None;
+    let mut storage_root: Option<String> = None;
+    let mut target_node_id: Option<String> = None;
+    if user.role == "member" {
+        members::check_member_app_access(&state, &user.id, &app.id).await?;
+        members::check_member_quota(&state, &user.id).await?;
+        let resolved = members::resolve_member_storage_root(&state, &user.id, req.storage_drive_id.as_deref()).await?;
+        storage_root = Some(resolved.path);
+        target_node_id = members::resolve_member_target_node(&state, &user.id, req.target_node_id.as_deref()).await?;
+        owner_user_id = Some(user.id.clone());
     }
 
     let project_name = req
@@ -933,6 +1101,13 @@ pub async fn deploy(
         apply_nvidia_compat(&mut compose_val, detect_cuda_major_version().await);
     }
 
+    // Member deploys: redirect the app's own named-volume data onto the
+    // member's resolved storage (drive or quota dir) instead of an opaque
+    // Docker-managed volume.
+    if let Some(ref root) = storage_root {
+        rewrite_named_volumes_to_storage_root(&mut compose_val, root, &project_name);
+    }
+
     // Create any host-side bind-mount directories referenced in volumes.
     ensure_volume_dirs(&compose_val);
 
@@ -991,8 +1166,9 @@ pub async fn deploy(
 
     sqlx::query(
         "INSERT OR REPLACE INTO deployed_apps \
-         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin) \
-         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, 'voidtower')"
+         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin, \
+          owner_user_id, storage_root, target_node_id) \
+         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, 'voidtower', ?, ?, ?)"
     )
     .bind(&id)
     .bind(&app.id)
@@ -1001,6 +1177,9 @@ pub async fn deploy(
     .bind(now)
     .bind(compose_path.to_string_lossy().as_ref())
     .bind(primary_port)
+    .bind(&owner_user_id)
+    .bind(&storage_root)
+    .bind(&target_node_id)
     .execute(&state.db)
     .await
     .map_err(AppError::Database)?;
@@ -1014,7 +1193,11 @@ pub async fn deploy(
         Some(&app.id),
         "success",
         Some(&ip),
-        Some(&format!("project={}", project_name)),
+        Some(&format!(
+            "project={},owner={}",
+            project_name,
+            owner_user_id.as_deref().unwrap_or("admin"),
+        )),
     )
     .await;
 
@@ -1056,6 +1239,11 @@ pub struct CustomDeployRequest {
     pub volumes: Vec<String>,
     #[serde(default)]
     pub env: Vec<String>,
+    /// Member-only overrides — see `DeployRequest` for the same fields.
+    #[serde(default)]
+    pub storage_drive_id: Option<String>,
+    #[serde(default)]
+    pub target_node_id: Option<String>,
 }
 
 pub async fn deploy_custom(
@@ -1075,24 +1263,91 @@ pub async fn deploy_custom(
     if name.is_empty() || req.image.trim().is_empty() {
         return Err(AppError::BadRequest("name and image are required".into()));
     }
+
+    // Custom-tier deploys are a materially bigger trust boundary than the
+    // curated catalog (plan §5) — a member needs the opt-in flag, and their
+    // submission gets validated/sanitized below. Admin/operator callers keep
+    // the pre-existing free-form behavior untouched.
+    let is_member = user.role == "member";
+    let mut owner_user_id: Option<String> = None;
+    let mut storage_root: Option<String> = None;
+    let mut target_node_id: Option<String> = None;
+    if is_member {
+        if !members::member_can_deploy_custom(&state, &user.id).await {
+            return Err(AppError::Forbidden);
+        }
+        members::check_member_quota(&state, &user.id).await?;
+        let resolved = members::resolve_member_storage_root(&state, &user.id, req.storage_drive_id.as_deref()).await?;
+        storage_root = Some(resolved.path);
+        target_node_id = members::resolve_member_target_node(&state, &user.id, req.target_node_id.as_deref()).await?;
+        owner_user_id = Some(user.id.clone());
+    }
+
     // Sanitise project name — alphanumeric + hyphens only
     let project_name = format!("vt-custom-{}",
         name.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect::<String>()
     );
+
+    // Member port bindings: manual host ports must fall in the auto-allocated
+    // range; a bare container port (no host side given) gets one allocated.
+    let mut ports = req.ports.clone();
+    if is_member {
+        for p in ports.iter_mut() {
+            if let Some((host, _container)) = p.split_once(':') {
+                let h: u16 = host.parse().map_err(|_| AppError::BadRequest(format!("Invalid host port '{host}'")))?;
+                if !members::MEMBER_CUSTOM_PORT_RANGE.contains(&h) {
+                    return Err(AppError::BadRequest(format!(
+                        "Port {h} is outside the allowed range {}-{}",
+                        members::MEMBER_CUSTOM_PORT_RANGE.start(), members::MEMBER_CUSTOM_PORT_RANGE.end(),
+                    )));
+                }
+            } else {
+                let host_port = members::allocate_member_port(&state).await?;
+                *p = format!("{host_port}:{p}");
+            }
+        }
+    }
+
+    // Member volumes: a relative host path (or none) is anchored under their
+    // own storage_root automatically — they never need to know the real path.
+    let mut volumes = req.volumes.clone();
+    if is_member {
+        let root = storage_root.clone().unwrap_or_default();
+        for v in volumes.iter_mut() {
+            if let Some((host, rest)) = v.split_once(':') {
+                if !host.starts_with('/') {
+                    let full = std::path::Path::new(&root).join(host.trim_start_matches("./"));
+                    let _ = std::fs::create_dir_all(&full);
+                    *v = format!("{}:{}", full.display(), rest);
+                }
+            }
+        }
+    }
 
     // Build compose YAML manually
     let mut svc = serde_json::json!({
         "image": req.image.trim(),
         "restart": "unless-stopped",
     });
-    if !req.ports.is_empty() {
-        svc["ports"] = Value::Array(req.ports.iter().map(|p| Value::String(p.clone())).collect());
+    if !ports.is_empty() {
+        svc["ports"] = Value::Array(ports.iter().map(|p| Value::String(p.clone())).collect());
     }
-    if !req.volumes.is_empty() {
-        svc["volumes"] = Value::Array(req.volumes.iter().map(|v| Value::String(v.clone())).collect());
+    if !volumes.is_empty() {
+        svc["volumes"] = Value::Array(volumes.iter().map(|v| Value::String(v.clone())).collect());
     }
     if !req.env.is_empty() {
         svc["environment"] = Value::Array(req.env.iter().map(|e| Value::String(e.clone())).collect());
+    }
+
+    if is_member {
+        let root = storage_root.clone().unwrap_or_default();
+        validate_and_sanitize_custom_deploy(&mut svc, &root).map_err(AppError::BadRequest)?;
+        // Mandatory resource limits — arbitrary member-supplied images on
+        // shared infrastructure get a hard ceiling, unlike the vetted catalog.
+        if let Some(obj) = svc.as_object_mut() {
+            obj.entry("mem_limit".to_string()).or_insert(Value::String("1g".into()));
+            obj.entry("cpus".to_string()).or_insert(Value::String("1.0".into()));
+        }
     }
 
     let mut compose_val = serde_json::json!({
@@ -1139,17 +1394,20 @@ pub async fn deploy_custom(
 
     sqlx::query(
         "INSERT OR REPLACE INTO deployed_apps \
-         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin) \
-         VALUES (?, 'custom', ?, ?, 'running', ?, ?, ?, 'voidtower')"
+         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin, \
+          owner_user_id, storage_root, target_node_id) \
+         VALUES (?, 'custom', ?, ?, 'running', ?, ?, ?, 'voidtower', ?, ?, ?)"
     )
     .bind(&id).bind(&name).bind(&project_name)
     .bind(now).bind(compose_path.to_string_lossy().as_ref()).bind(primary_port)
+    .bind(&owner_user_id).bind(&storage_root).bind(&target_node_id)
     .execute(&state.db).await.map_err(AppError::Database)?;
 
     audit::log(
         &state.db, Some(&user.id), &user.username,
         "app.deploy_custom", Some("app"), Some(&project_name),
-        "success", Some(&ip), Some(&format!("image={}", req.image.trim())),
+        "success", Some(&ip),
+        Some(&format!("image={},owner={}", req.image.trim(), owner_user_id.as_deref().unwrap_or("admin"))),
     ).await;
 
     Ok(Json(serde_json::json!({ "ok": true, "project_name": project_name })))
@@ -1176,6 +1434,7 @@ pub async fn start_app(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
     if !compose_path.exists() {
@@ -1221,6 +1480,7 @@ pub async fn redeploy_app(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     // Re-read the latest catalog definition so updated env vars are picked up
     let catalog = load_catalog(&state.config.catalog_dir);
@@ -1301,6 +1561,7 @@ pub async fn restart_app(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
     containers::restart_compose(&project_name, &compose_path)
@@ -1330,6 +1591,7 @@ pub async fn remove_app(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
     let _ = containers::remove_compose(&project_name, &compose_path).await;
@@ -1357,7 +1619,7 @@ pub async fn app_logs(
     jar: CookieJar,
     Path(project_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
 
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
@@ -1367,6 +1629,7 @@ pub async fn app_logs(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
     let logs = containers::logs_compose(&project_name, &compose_path, 300)
@@ -1382,7 +1645,7 @@ pub async fn app_status(
     jar: CookieJar,
     Path(project_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
 
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
@@ -1392,6 +1655,7 @@ pub async fn app_status(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
     let containers = containers::status_compose(&project_name, &compose_path)
@@ -1418,6 +1682,7 @@ pub async fn stop_app(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
     containers::stop_compose(&project_name, &compose_path)
@@ -1451,7 +1716,7 @@ pub async fn get_compose(
     jar: CookieJar,
     Path(project_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
     )
@@ -1460,6 +1725,7 @@ pub async fn get_compose(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     let content = std::fs::read_to_string(&row.compose_path)
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -1619,6 +1885,7 @@ pub async fn update_compose(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
 
     // Validate that the content is valid YAML
     serde_yaml::from_str::<serde_yaml::Value>(&req.content)

@@ -1,0 +1,61 @@
+name: Desktop build
+
+# Builds the Tauri desktop app installers for all three platforms.
+# This can't be verified locally on Linux dev machines — Tauri links
+# against platform-native webview/windowing libraries, so there's no
+# cross-compiling a .dmg or .msi from Linux the way there is for the
+# plain Rust backend. macOS/Windows builds only happen here in CI.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+          - platform: windows-latest
+          - platform: ubuntu-latest
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Build only — no publish/release step; artifacts are uploaded below
+      # for a maintainer to grab and test manually.
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: frontend
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: voidtower-desktop-${{ matrix.platform }}
+          path: |
+            frontend/src-tauri/target/release/bundle/**
+          if-no-files-found: warn

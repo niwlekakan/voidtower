@@ -1,16 +1,60 @@
+export type Role = 'owner' | 'admin' | 'operator' | 'viewer' | 'guest' | 'demo' | 'member'
+
 export interface User {
   id: string
   username: string
-  role: 'owner' | 'admin' | 'operator' | 'viewer'
+  role: Role
   force_password_change: boolean
   totp_enabled: boolean
+  mfa_required: boolean
 }
 
 export interface UserRecord {
   id: string
   username: string
-  role: 'owner' | 'admin' | 'operator' | 'viewer'
+  role: Role
   force_password_change: boolean
+}
+
+// Self-hosting hub: per-member app access / storage / self-deployed apps
+export interface StorageSummary {
+  quota_bytes: number
+  max_apps: number
+  used_bytes: number
+  last_check_at: number | null
+  app_count: number
+}
+
+export interface DriveSummary {
+  id: string
+  label: string
+  host_path: string
+  total_bytes: number | null
+  free_bytes: number | null
+  last_check_at: number | null
+}
+
+export interface MemberAccessSummary {
+  app_ids: string[]
+  can_deploy_custom: boolean
+  storage: StorageSummary
+  drives: DriveSummary[]
+}
+
+export interface MemberListEntry {
+  id: string
+  username: string
+  app_ids: string[]
+  can_deploy_custom: boolean
+  storage: StorageSummary
+  drives: DriveSummary[]
+}
+
+export interface MemberNodeOption {
+  id: string
+  display_name: string
+  storage_free_bytes: number | null
+  last_seen: number | null
 }
 
 export interface MetricsSnapshot {
@@ -162,6 +206,9 @@ export interface DeployedApp {
   compose_path: string
   primary_port: number | null
   origin: string  // 'voidtower' | 'adopted' | 'custom'
+  owner_user_id?: string | null
+  storage_root?: string | null
+  target_node_id?: string | null
 }
 
 export interface ExternalContainer {

@@ -189,6 +189,82 @@ function TotpPanel() {
   )
 }
 
+// ── MFA policy panel (admin only) ─────────────────────────────────────────────
+
+const MFA_ROLES = ['owner', 'admin', 'operator', 'viewer', 'guest', 'demo'] as const
+
+function MfaPolicyPanel() {
+  const [roles, setRoles] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/settings/mfa-policy', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { required_roles: string[] } | null) => { if (d) setRoles(d.required_roles) })
+      .catch(() => notify.error('Failed to load MFA policy'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const toggle = async (role: string) => {
+    const next = roles.includes(role) ? roles.filter((r) => r !== role) : [...roles, role]
+    setRoles(next)
+    setSaving(true)
+    try {
+      const r = await fetch('/api/settings/mfa-policy', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ required_roles: next }),
+      })
+      if (!r.ok) throw new Error()
+      notify.success('MFA policy updated')
+    } catch {
+      notify.error('Failed to update MFA policy')
+      setRoles(roles) // revert
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="panel p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <KeyRound size={15} style={{ color: 'var(--accent-primary)' }} />
+        <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+          Roles requiring two-factor authentication
+        </span>
+      </div>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Accounts with these roles must set up two-factor authentication on their next login.
+      </p>
+      {loading ? (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading…</p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {MFA_ROLES.map((role) => {
+            const active = roles.includes(role)
+            return (
+              <button
+                key={role}
+                type="button"
+                disabled={saving}
+                onClick={() => toggle(role)}
+                className="px-2.5 py-1 rounded text-xs capitalize transition-colors disabled:opacity-50"
+                style={active
+                  ? { background: 'var(--accent-primary)', color: '#fff' }
+                  : { background: 'var(--bg-elevated)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}
+              >
+                {role}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function SecurityPage() {
@@ -244,6 +320,8 @@ export default function SecurityPage() {
       <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Security</h1>
 
       <TotpPanel />
+
+      {isAdmin && <MfaPolicyPanel />}
 
       {/* Active sessions */}
       <div className="panel overflow-hidden">

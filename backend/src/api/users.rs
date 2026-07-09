@@ -39,6 +39,8 @@ pub struct CreateUserRequest {
     pub username: String,
     pub password: String,
     pub role: String,
+    /// Required (and must be in the future) when role = "guest"; ignored otherwise.
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -55,7 +57,8 @@ pub async fn list(
     require_admin(&caller)?;
 
     let users = sqlx::query_as::<_, auth::User>(
-        "SELECT id, username, password_hash, role, force_password_change, created_at, updated_at \
+        "SELECT id, username, password_hash, role, force_password_change, \
+                totp_enabled, totp_secret, created_at, updated_at, expires_at \
          FROM users ORDER BY created_at",
     )
     .fetch_all(&state.db)
@@ -80,11 +83,26 @@ pub async fn create(
             "Username ≥3 chars, password ≥8 chars".to_string(),
         ));
     }
-    if !matches!(req.role.as_str(), "admin" | "operator" | "viewer") {
+    if !matches!(req.role.as_str(), "admin" | "operator" | "viewer" | "guest" | "demo" | "member") {
         return Err(AppError::BadRequest("Invalid role".to_string()));
     }
 
-    let user = auth::create_user(&state.db, &req.username, &req.password, &req.role, true)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let expires_at = if req.role == "guest" {
+        match req.expires_at {
+            Some(exp) if exp > now => Some(exp),
+            _ => return Err(AppError::BadRequest(
+                "Guest accounts require an expires_at timestamp in the future".to_string(),
+            )),
+        }
+    } else {
+        None
+    };
+
+    let user = auth::create_user_ext(&state.db, &req.username, &req.password, &req.role, true, expires_at)
         .await
         .map_err(|e| {
             if e.to_string().contains("UNIQUE") {
@@ -117,7 +135,8 @@ pub async fn delete_user(
     }
 
     let target = sqlx::query_as::<_, auth::User>(
-        "SELECT id, username, password_hash, role, force_password_change, created_at, updated_at \
+        "SELECT id, username, password_hash, role, force_password_change, \
+                totp_enabled, totp_secret, created_at, updated_at, expires_at \
          FROM users WHERE id = ?",
     )
     .bind(&user_id)

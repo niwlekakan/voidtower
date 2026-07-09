@@ -94,6 +94,25 @@ ending with exactly APPROVE or REJECT: <reason>. Change no code." \
   grep -q '^APPROVE$' "$LOGS/${id}.review.md" 2>/dev/null
 }
 
+preflight_deps() {  # $1 = spec. Honors "Depends-On: P0-01, P0-02" and "Requires-Path: path/to/file".
+  local spec="$1" missing=0 dep path
+  for dep in $(grep -ioE '^Depends-On:.*' "$spec" | sed 's/^[^:]*://' | tr ',' ' '); do
+    dep="$(echo "$dep" | tr -d '[:space:]')"; [[ -z "$dep" ]] && continue
+    # satisfied if any commit reachable from origin/main references the task id
+    if ! git -C "$ROOT" log origin/main --oneline --grep="$dep" | grep -q .; then
+      echo "[devteam]   ✖ dependency $dep is not merged to origin/main"; missing=1
+    fi
+  done
+  for path in $(grep -ioE '^Requires-Path:.*' "$spec" | sed 's/^[^:]*://'); do
+    if ! git -C "$ROOT" cat-file -e "origin/main:$path" 2>/dev/null; then
+      echo "[devteam]   ✖ required artifact missing on origin/main: $path"; missing=1
+    fi
+  done
+  [[ $missing -eq 0 ]] && return 0
+  echo "[devteam] $(basename "$spec"): dependencies unmet — building on a phantom is worse than waiting."
+  ask "  Run it anyway?" && return 0 || return 1
+}
+
 preflight_grant() {  # $1 = task spec path. Returns 0 to proceed, 1 to park.
   local spec="$1" id status
   id="$(grep -ohE 'ADR-[0-9]{3}' "$spec" | head -1 || true)"
@@ -154,7 +173,7 @@ start_loop() {
     echo "$id" > "$DT/CURRENT"
     echo "[devteam] ▶ $id (log: ${log#$ROOT/})"
 
-    if ! preflight_grant "$task"; then
+    if ! preflight_deps "$task" || ! preflight_grant "$task"; then
       stash "$task" "$BLOCKED/"; rm -f "$DT/CURRENT"; continue
     fi
 

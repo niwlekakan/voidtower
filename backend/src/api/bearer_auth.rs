@@ -7,6 +7,14 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 
+/// Marker extension carrying the *declared scopes* of the Bearer token that
+/// authenticated this request, inserted alongside `ApiTokenActor` so
+/// `auth::scope_enforce::middleware` (which runs right after this one, see
+/// `api/mod.rs`'s layer ordering) can check them against the route being
+/// hit — see docs/adr/ADR-003-auth-scope-enforcement.md.
+#[derive(Clone)]
+pub struct TokenScopes(pub Vec<String>);
+
 pub async fn middleware(
     State(state): State<AppState>,
     mut req: Request<axum::body::Body>,
@@ -14,13 +22,14 @@ pub async fn middleware(
 ) -> Response {
     // Only act when there is no existing session cookie
     if !has_session_cookie(req.headers()) {
-        if let Some(session_id) = resolve_session(&state, req.headers()).await {
+        if let Some((session_id, scopes)) = resolve_session(&state, req.headers()).await {
             let cookie = format!("vt_session={session_id}");
             if let Ok(val) = axum::http::HeaderValue::from_str(&cookie) {
                 req.headers_mut().insert(header::COOKIE, val);
             }
             // Mark request so policy engine knows this came via API token
             req.extensions_mut().insert(ApiTokenActor);
+            req.extensions_mut().insert(TokenScopes(scopes));
         }
     }
     next.run(req).await
@@ -33,7 +42,7 @@ fn has_session_cookie(headers: &HeaderMap) -> bool {
         .any(|v| v.to_str().unwrap_or("").contains("vt_session="))
 }
 
-async fn resolve_session(state: &AppState, headers: &HeaderMap) -> Option<String> {
+async fn resolve_session(state: &AppState, headers: &HeaderMap) -> Option<(String, Vec<String>)> {
     let raw_token = bearer_token(headers)?;
 
     // Hash for cache lookup
@@ -46,23 +55,28 @@ async fn resolve_session(state: &AppState, headers: &HeaderMap) -> Option<String
     // Return cached session if still valid
     {
         let cache = state.token_sessions.read().await;
-        if let Some((sid, exp)) = cache.get(&token_hash) {
+        if let Some((sid, exp, scopes)) = cache.get(&token_hash) {
             if *exp > now {
-                return Some(sid.clone());
+                return Some((sid.clone(), scopes.clone()));
             }
         }
     }
 
     // Validate token against DB
     let user_id = auth::validate_api_token_any(&state.db, raw_token).await.ok()?;
+    let scopes = auth::token_scopes(&state.db, raw_token).await.unwrap_or_default();
 
     // Create a 1-hour session
     let (sid, exp) = auth::create_temp_session(&state.db, &user_id).await.ok()?;
 
     // Cache it
-    state.token_sessions.write().await.insert(token_hash, (sid.clone(), exp));
+    state
+        .token_sessions
+        .write()
+        .await
+        .insert(token_hash, (sid.clone(), exp, scopes.clone()));
 
-    Some(sid)
+    Some((sid, scopes))
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {

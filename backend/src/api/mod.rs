@@ -82,6 +82,9 @@ pub mod tabs;
 pub mod nav_config;
 pub mod ai_providers;
 
+#[cfg(test)]
+mod scope_bypass_tests;
+
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -430,6 +433,12 @@ pub fn router(state: AppState) -> Router {
         .layer(cors)
         .layer(middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn_with_state(state.clone(), demo_guard::middleware))
+        // Must sit between bearer_auth (which sets the TokenScopes extension
+        // this reads) and the routes: `.layer()` calls wrap outside-in in the
+        // order added, so the *last* `.layer()` call runs *first* on the way
+        // in — scope_enforce is added here (before bearer_auth) so it runs
+        // after it, once TokenScopes is actually present on the request.
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::auth::scope_enforce::middleware))
         .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
         .with_state(state);
 

@@ -37,6 +37,10 @@ pub struct LoginAttempts {
 }
 use tower_http::services::{ServeDir, ServeFile};
 
+/// token_hash -> (session_id, expires_at_unix, token_scopes) — avoids a DB
+/// write (and a scopes lookup) on every Bearer request.
+pub type TokenSessionCache = HashMap<String, (String, i64, Vec<String>)>;
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub db: SqlitePool,
@@ -45,8 +49,7 @@ pub struct AppState {
     pub latest_metrics: Arc<RwLock<Option<MetricsSnapshot>>>,
     pub agents_tx: api::agents::AgentBroadcaster,
     pub secrets_key: Arc<[u8; 32]>,
-    // token_hash -> (session_id, expires_at_unix) — avoids a DB write on every Bearer request
-    pub token_sessions: Arc<RwLock<HashMap<String, (String, i64)>>>,
+    pub token_sessions: Arc<RwLock<TokenSessionCache>>,
     pub login_limiter: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, LoginAttempts>>>,
     pub deploy_registry: containers::DeployRegistry,
 }

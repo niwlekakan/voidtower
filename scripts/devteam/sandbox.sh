@@ -37,12 +37,18 @@ setup() {
   [[ -n "$ORIGIN" ]] || { echo "set DEVTEAM_ORIGIN=<git url> or run from a clone"; exit 1; }
   [[ -d "$CLONE/.git" ]] || git clone "$ORIGIN" "$CLONE"
 
+  # Repo-scoped git identity for agent commits. Agents are forbidden from touching
+  # git config (CLAUDE.md); the operator provides identity once, here.
+  git -C "$CLONE" config user.name  "${DEVTEAM_GIT_NAME:-VoidTower DevTeam}"
+  git -C "$CLONE" config user.email "${DEVTEAM_GIT_EMAIL:-devteam@voidtower.local}"
+
   podman build -t "$IMG" -f - "$BASE" <<'EOF'
 FROM docker.io/library/rust:1-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates nodejs npm ripgrep jq \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code
+RUN rustup component add rustfmt clippy
 RUN useradd -m dev
 USER dev
 WORKDIR /work
@@ -72,6 +78,8 @@ case "${1:-}" in
   setup) setup ;;
   run)
     shift
+    # -it (already set) gives the container a TTY so preflight/escalation prompts work.
+    # For overnight batches with no human present, pass --unattended through to devteam.sh.
     ( cd "$CLONE" && git fetch origin && git checkout -q main && git pull -q )
     _podman scripts/devteam/devteam.sh "$@"
     echo

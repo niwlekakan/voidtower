@@ -5,20 +5,40 @@
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 
-echo "[gates] G0 format/lint"
-( cd "$ROOT/backend" && cargo fmt --check )
+CHANGED="$(git -C "$ROOT" diff --name-only origin/main...HEAD)"
+
+echo "[gates] G0 format (diff-scoped)"
+# NOTE: `cargo fmt -- path.rs` walks the whole `mod` graph from the crate root and
+# reformats everything. Invoke rustfmt directly on the changed files instead, so a
+# PR is never held hostage by pre-existing formatting debt elsewhere in the repo
+# (and never needs to touch forbidden-zone files to satisfy a whitespace gate).
+CHANGED_RS="$(echo "$CHANGED" | grep '\.rs$' | grep -v '^backend/target/' || true)"
+if [[ -n "$CHANGED_RS" ]]; then
+  MISSING=""
+  for f in $CHANGED_RS; do [[ -f "$ROOT/$f" ]] && MISSING="$MISSING $ROOT/$f"; done
+  [[ -n "$MISSING" ]] && rustfmt --edition 2021 --check $MISSING
+fi
+
+echo "[gates] G0 lint"
 ( cd "$ROOT/backend" && cargo clippy --all-targets --all-features -- -D warnings )
 
 echo "[gates] G0 forbidden-zone diff check"
-CHANGED="$(git -C "$ROOT" diff --name-only origin/main...HEAD)"
 BLOCKLIST='^backend/src/policy\.rs$|^backend/src/auth/|^backend/src/api/auth\.rs$|^backend/src/oidc\.rs$|^backend/src/db/mod\.rs$|^\.github/workflows/|^scripts/devteam/|^CLAUDE\.md$|^docs/edd\.md$|^docs/gap-analysis\.md$'
 if echo "$CHANGED" | grep -Eq "$BLOCKLIST"; then
-  # allowed only if the active task spec explicitly cites an ADR granting it
-  if ! grep -Rq "ADR-" "$ROOT/.devteam/active/" 2>/dev/null; then
-    echo "[gates] FAIL: forbidden-zone files changed without an ADR-bearing task spec:"
+  # Forbidden-zone changes require an ACCEPTED ADR cited by the active spec,
+  # and every changed path must fall inside that ADR's granted-paths block.
+  # Citing a Proposed (unsigned) ADR is not authorization.
+  ADR_ID="$(grep -rhoE 'ADR-[0-9]{3}' "$ROOT/.devteam/active/" 2>/dev/null | head -1 || true)"
+  if [[ -z "$ADR_ID" ]]; then
+    echo "[gates] FAIL: forbidden-zone files changed but the active task spec cites no ADR:"
     echo "$CHANGED" | grep -E "$BLOCKLIST" | sed 's/^/  /'
     exit 1
   fi
+  FZ_FILES="$(echo "$CHANGED" | grep -E "$BLOCKLIST")"
+  # shellcheck disable=SC2086
+  "$ROOT/scripts/devteam/adr.sh" check "$ADR_ID" $FZ_FILES \
+    || { echo "[gates] FAIL: forbidden-zone changes not authorized by $ADR_ID"; exit 1; }
+  echo "[gates]   forbidden-zone changes authorized by $ADR_ID"
 fi
 
 echo "[gates] G1 tests"

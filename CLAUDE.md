@@ -36,6 +36,8 @@ Active ECC skills for this repo: `continuous-agent-loop`, `verification-loop`, `
 
 - **Forbidden zones** — never modify without a human-approved ADR referenced in your task spec: `backend/src/policy.rs` and Voidwatch semantics (mode ladder, risk classes, denylist), `backend/src/auth/`, `backend/src/api/auth.rs`, `backend/src/oidc.rs`, secrets/crypto code, `backend/src/db/mod.rs` schema, `.github/workflows/`, `scripts/devteam/` (the harness itself), `CLAUDE.md`, `docs/edd.md`, `docs/gap-analysis.md`.
 - **Never weaken a gate.** If a test, lint, or CI check blocks you, fix the code or escalate. Deleting/skipping/`#[ignore]`-ing a test, loosening clippy, or editing CI to pass is the single worst action you can take.
+- **Git config is operator-owned.** Never run `git config` (global or local). Identity is provisioned in the sandbox by the operator; if commits fail for missing identity, escalate — do not set it yourself.
+- **Formatting is diff-scoped.** `gates.sh` checks only files your diff touches. Never run repo-wide `cargo fmt` (it reformats the whole crate via the `mod` graph and will touch forbidden zones). Format only your own changed files.
 - **Default-deny mindset**: any AI-reachable endpoint you touch must route through the policy choke point (P0.1). Any new action name must have a `risk_class`. Any serialized output that could reach an AI context bundle goes through redaction.
 - **No new features.** During P0/P1 the backlog is hardening only. "While I'm here" improvements are scope creep — file an issue instead.
 - **No production contact.** You run inside the `vt-forge` sandbox. You have no credentials for the real homelab, and you must never add network calls to LAN addresses, real PVE endpoints, or non-allowlisted domains.
@@ -47,7 +49,14 @@ Write `.devteam/escalations/<task-id>.md` with: what blocked you, what you tried
 
 ## Forbidden-zone grants (ADRs)
 
-Some phases — P0 especially — legitimately require modifying forbidden-zone files. Authorization is an ADR in `docs/adr/`, written and committed by the human, cited by ID in your task spec (e.g. "Forbidden-zone grant: ADR-001"). The grant is scoped: it names exactly which paths it opens and under what constraints, and it expires at phase exit. A spec citing an ADR authorizes only the paths that ADR names — everything else in the forbidden list stays closed. No ADR citation in your spec = the zone is closed to you = escalate, exactly as the rules say.
+Some phases — P0 especially — legitimately require modifying forbidden-zone files. Authorization is an ADR in `docs/adr/` whose `**Status:**` is **Accepted**, cited by ID in your task spec.
+
+- **You may draft an ADR.** If your task needs a zone no accepted ADR covers, write `docs/adr/ADR-NNN-<slug>.md` with `**Status:** Proposed`, a fenced `granted-paths` block listing exact paths/globs, an "Explicitly NOT granted" section, and Constraints. Then escalate. Drafting is research and writing; you are good at it.
+- **You may never accept one.** Only the operator runs `adr.sh accept`. An agent that grants itself access to `policy.rs` has no forbidden zones. Never edit a `**Status:**` line.
+- **Proposed ≠ authorization.** `gates.sh` verifies the cited ADR is Accepted *and* that every forbidden-zone file in your diff matches its granted paths. A path outside the grant fails the gate even under an accepted ADR.
+- Grants are scoped and expire at phase exit (`adr.sh revoke`).
+
+Also draft an ADR — same rules, `Status: Proposed` — for any **architectural decision** the spec didn't dictate (deferring an enum variant, a data structure with cross-cutting consequences). Note it in your PR description. Those document decisions; they don't grant access.
 
 ---
 
@@ -91,11 +100,34 @@ Review the map before committing — item (4) doubles as the P0.1 ingress invent
 ```bash
 # Have the planner decompose the current phase into task specs (review them before running!)
 # The planner must use docs/codebase-map.md to name the exact files each task touches.
-claude -p "Act as planner. Read docs/gap-analysis.md phase P0 and docs/edd.md §3.2/§10.3. \
-Decompose P0 into task specs in .devteam/queue/, one file per task, numbered P0-01…, \
-each with: scope, contract copied verbatim from the docs, named acceptance tests, \
-forbidden zones, and review tier. Do not write any product code."
+claude -p "Act as planner. Read docs/gap-analysis.md phase P0, docs/edd.md §3.2/§10.3, \
+docs/codebase-map.md, CLAUDE.md's forbidden zones, and scripts/devteam/adr.sh. \
+1. Decompose P0 into task specs in .devteam/queue/, one file per task, numbered P0-01…, each \
+with: scope, contract copied verbatim from the docs, exact files to touch (named via the \
+codebase map), named acceptance tests, and review tier. Order tasks so no task depends on \
+infrastructure a later task builds. \
+2. For each spec, compute which files-to-touch fall in a forbidden zone. If any do and no \
+ACCEPTED ADR covers them (run 'scripts/devteam/adr.sh list'), draft \
+docs/adr/ADR-NNN-<slug>.md with: Status: Proposed, Context, Decision, a fenced \
+'granted-paths' block of exact paths/globs, an 'Explicitly NOT granted' section, \
+Constraints, and Expiry at phase exit. Group related tasks under one ADR; do not write one \
+ADR per task. \
+3. Wire each spec's '**ADR:**' field to its covering ADR id (or 'none — no forbidden zones') \
+and set '## Status:' to 'Ready (pending ADR-NNN acceptance)' or 'Ready'. Never write \
+'Status: Accepted' in an ADR — only the operator signs. \
+Write no product code and modify no forbidden-zone files."
 ```
+
+**Review the drafted ADRs, then sign the ones you agree with:**
+
+```bash
+scripts/devteam/adr.sh list             # ids, status, titles
+scripts/devteam/adr.sh show ADR-002     # scope, granted paths, constraints
+scripts/devteam/adr.sh accept ADR-002   # prints the grant, asks you to type the id back
+git add docs/adr && git commit -m "docs(adr): accept ADR-002" && git push origin main
+```
+
+Signing is deliberately the one manual act in this harness. Read the `granted-paths` block as if the agent will touch every path in it, because it will. Narrow anything too broad *before* accepting — edit the block, then sign.
 
 Inspect `.devteam/queue/` and edit/delete specs before starting the loop. **The queue is your steering wheel** — the team builds exactly what's in it, nothing else.
 
@@ -112,14 +144,21 @@ Rules that keep the tiers meaningful: **never** create `.devteam/FORGE_HOST` out
 ## Running the team
 
 ```bash
-scripts/devteam/devteam.sh start            # run until queue empty or stopped
-scripts/devteam/devteam.sh start --tasks 5  # bounded overnight batch (recommended)
+scripts/devteam/devteam.sh start                       # attended: streams live, prompts you to sign grants
+scripts/devteam/devteam.sh start --tasks 5             # bounded batch (recommended)
+scripts/devteam/devteam.sh start --tasks 5 --unattended # no prompts; blocked tasks park (forge/overnight)
 scripts/devteam/devteam.sh status           # active task, queue depth, last results
 scripts/devteam/devteam.sh pause            # finishes current task, then waits
 scripts/devteam/devteam.sh resume
 scripts/devteam/devteam.sh stop             # finishes current task, then exits
 scripts/devteam/devteam.sh logs [task-id]   # tail logs
 ```
+
+**Live output.** Each session streams a feed as it works — every tool call, file edit, and shell command with elapsed time, closing with duration, turns, tools, edits, and cost. Raw JSONL transcripts still land in `.devteam/logs/`.
+
+**You're asked, not blocked.** Before a worker starts, the runner resolves the ADR its spec cites; if that ADR is `Proposed`, it prints the granted paths and constraints and asks you to sign, right there. If a worker escalates having drafted a new ADR, the runner shows its question, offers the draft, and on approval requeues the task immediately instead of parking it. Tasks park only when you decline or under `--unattended`.
+
+The boundary itself never moves: an agent cannot sign its own grant, and `gates.sh` still checks every forbidden-zone path against the accepted ADR's `granted-paths` block. Only the latency changed — seconds, not a day.
 
 Mechanics: the runner takes one task from `.devteam/queue/`, runs a fresh worker session on it, runs `gates.sh`, then runs a **separate** adversarial-review session on the diff. Pass → PR is left open for you; fail → one retry with the failure appended to the spec, then the task moves to `.devteam/failed/`. Pause/stop are file-based (`.devteam/PAUSE`, `.devteam/STOP`) and honored between tasks — a hard kill is `Ctrl-C` plus VM snapshot rollback if the tree is suspect.
 

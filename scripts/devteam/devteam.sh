@@ -16,7 +16,7 @@ CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 PRETTY="$ROOT/scripts/devteam/pretty.js"
 ADR="$ROOT/scripts/devteam/adr.sh"
 
-usage() { echo "usage: devteam.sh {start [--tasks N] [--unattended]|pause|resume|stop|status|logs [id]}"; exit 1; }
+usage() { echo "usage: devteam.sh {sprint|start [--tasks N] [--unattended]|doctor [--fix]|automerge|lint|pause|resume|stop|status|logs [id]}"; exit 1; }
 
 ask() {  # ask() "prompt" -> 0 if yes. Reads the terminal, not the pipeline.
   [[ "$UNATTENDED" -eq 1 ]] && return 1
@@ -146,8 +146,16 @@ handle_escalation() {  # $1 = task spec, $2 = id  → 0 = retry now, 1 = park
   local esc="$ESC/${2}.md"
   echo; echo "[devteam] ⚠ $2 escalated. Question from the worker:"
   sed -n '/Minimal question/,/^## /p' "$esc" 2>/dev/null | sed '1d;$d' | sed 's/^/  │ /' | head -20
-  local draft; draft="$(grep -rlE '^\*\*Status:\*\*[[:space:]]*Proposed' "$ROOT/docs/adr/" 2>/dev/null | head -1 || true)"
-  if [[ -n "$draft" ]] && ask "  Worker drafted $(basename "$draft"). Review it now?"; then
+  # Prefer the ADR this escalation names; fall back to the most recently written Proposed one.
+  local cited draft
+  cited="$(grep -ohE 'ADR-[0-9]{3}' "$esc" 2>/dev/null | head -1 || true)"
+  draft=""
+  [[ -n "$cited" ]] && draft="$(ls -t "$ROOT/docs/adr/${cited}"*.md 2>/dev/null | head -1 || true)"
+  if [[ -z "$draft" ]]; then
+    draft="$(grep -rlE '^\*\*Status:\*\*[[:space:]]*Proposed' "$ROOT/docs/adr/" 2>/dev/null | xargs -r ls -t | head -1 || true)"
+  fi
+  if [[ -n "$draft" ]] && grep -qE '^\*\*Status:\*\*[[:space:]]*Proposed' "$draft" \
+     && ask "  Worker drafted $(basename "$draft"). Review it now?"; then
     ${PAGER:-less} "$draft" </dev/tty >/dev/tty || cat "$draft"
     if ask "  Sign it and retry this task now?"; then
       sed -i "s|^\*\*Status:\*\*.*|**Status:** Accepted (signed by operator $(git config user.name 2>/dev/null || echo operator) on $(date -I))|" "$draft"
@@ -160,6 +168,7 @@ handle_escalation() {  # $1 = task spec, $2 = id  → 0 = retry now, 1 = park
 
 start_loop() {
   guard_exec
+  lint_specs || { echo "[devteam] refusing to start with malformed specs."; exit 1; }
   local count=0
   git -C "$ROOT" fetch origin main -q || true
   while :; do
@@ -217,7 +226,151 @@ status() {
   echo "--- recent results ---"; ls -t "$LOGS"/*.review.md 2>/dev/null | head -5 | xargs -r grep -H '^APPROVE$\|^REJECT' 2>/dev/null || true
 }
 
+lint_specs() {  # validate machine-readable spec headers before anything runs
+  local bad=0 f
+  shopt -s nullglob
+  for f in "$QUEUE"/*.md "$ACTIVE"/*.md; do
+    local id; id="$(basename "$f" .md)"
+    grep -qE '^## Status:[[:space:]]*(Ready|Ready \(pending ADR-[0-9]{3}' "$f" \
+      || { echo "✖ $id: '## Status:' must be 'Ready' or 'Ready (pending ADR-NNN acceptance)'"; bad=1; }
+    grep -qE '^\*\*ADR:\*\*[[:space:]]*(ADR-[0-9]{3}|none)' "$f" \
+      || { echo "✖ $id: '**ADR:**' must cite ADR-NNN (comma-separated) or 'none'"; bad=1; }
+    grep -qiE '^(Depends-On|Requires-Path):' "$f" \
+      || echo "  ⚠ $id: no Depends-On/Requires-Path — fine only if it truly has no prerequisites"
+    grep -qiE '^## Status:.*BLOCKED' "$f" \
+      && { echo "✖ $id: still marked BLOCKED — resolve its ADR, then flip the field"; bad=1; }
+  done
+  shopt -u nullglob
+  [[ $bad -eq 0 ]] && echo "✔ all specs parse" || echo "→ fix these before running; workers will escalate otherwise"
+  return $bad
+}
+
+
+# ── doctor: detect and repair the mechanical state problems that cause escalations ──
+doctor() {
+  local fix="${1:-}" issues=0
+  echo "[doctor] repo state check"
+  git -C "$ROOT" fetch origin -q 2>/dev/null || true
+
+  # 1. duplicate ADRs (same granted-paths + same title body) → keep lowest id
+  local seen=""
+  for f in "$ROOT"/docs/adr/ADR-*.md; do
+    [[ -e "$f" ]] || continue
+    local h; h="$(sed -n '/^```granted-paths/,/^```$/p' "$f" | md5sum | cut -c1-8)"
+    [[ "$h" == "d41d8cd9" ]] && continue          # no grant block → not a grant ADR
+    if echo "$seen" | grep -q "$h"; then
+      echo "  ✖ duplicate grant ADR: $(basename "$f")"
+      [[ "$fix" == "--fix" ]] && { git -C "$ROOT" rm -q "$f"; echo "    → removed"; } || issues=1
+    else seen="$seen $h"; fi
+  done
+
+  # 2. specs citing an ADR that does not exist
+  shopt -s nullglob
+  for spec in "$QUEUE"/*.md "$ACTIVE"/*.md "$BLOCKED"/*.md; do
+    for id in $(grep -ohE 'ADR-[0-9]{3}' "$spec" | sort -u); do
+      ls "$ROOT/docs/adr/${id}"*.md >/dev/null 2>&1 || {
+        echo "  ✖ $(basename "$spec" .md) cites $id — file missing"; issues=1; }
+    done
+  done
+
+  # 3. specs stuck on BLOCKED whose ADRs are all Accepted → flip to Ready
+  for spec in "$QUEUE"/*.md "$BLOCKED"/*.md; do
+    grep -qiE '^## Status:.*BLOCKED' "$spec" || continue
+    local ok=1
+    for id in $(grep -ohE 'ADR-[0-9]{3}' "$spec" | sort -u); do
+      local f; f="$(ls "$ROOT/docs/adr/${id}"*.md 2>/dev/null | head -1)"
+      [[ -n "$f" ]] && grep -qE '^\*\*Status:\*\*[[:space:]]*Accepted' "$f" || ok=0
+    done
+    if [[ $ok -eq 1 ]]; then
+      echo "  ⚠ $(basename "$spec" .md): BLOCKED but its ADRs are Accepted"
+      if [[ "$fix" == "--fix" ]]; then
+        sed -i 's|^## Status:.*|## Status: Ready|I' "$spec"
+        grep -qiE '^\*\*ADR:\*\*' "$spec" || sed -i "3i **ADR:** $(grep -ohE 'ADR-[0-9]{3}' "$spec" | sort -u | paste -sd, -)" "$spec"
+        echo "    → flipped to Ready"
+      else issues=1; fi
+    fi
+  done
+
+  # 4. infer Depends-On from task numbering when absent (P0-03 depends on P0-02, P0-01)
+  for spec in "$QUEUE"/*.md; do
+    grep -qiE '^Depends-On:' "$spec" && continue
+    local id n prev
+    id="$(basename "$spec" .md)"; n="$(echo "$id" | grep -oE 'P[0-9]-[0-9]{2}' | cut -d- -f2)"
+    [[ -z "$n" || "$n" == "01" ]] && continue
+    prev="$(printf 'P0-%02d' $((10#$n - 1)))"
+    echo "  ⚠ $id has no Depends-On (would infer $prev)"
+    [[ "$fix" == "--fix" ]] && { sed -i "3i Depends-On: $prev" "$spec"; echo "    → added Depends-On: $prev"; } || issues=1
+  done
+  shopt -u nullglob
+
+  # 5. uncommitted ADR changes
+  if ! git -C "$ROOT" diff --quiet -- docs/adr/ 2>/dev/null; then
+    echo "  ⚠ docs/adr/ has uncommitted changes"
+    [[ "$fix" == "--fix" ]] && { git -C "$ROOT" add docs/adr && git -C "$ROOT" commit -qm "docs(adr): sync ADR state" && echo "    → committed"; } || issues=1
+  fi
+
+  [[ $issues -eq 0 ]] && echo "[doctor] clean" || echo "[doctor] issues found — rerun with: devteam.sh doctor --fix"
+  return $issues
+}
+
+# ── automerge: land PRs that provably need no human eyes ──
+FULL_REVIEW='^backend/src/policy\.rs$|^backend/src/voidwatch|^backend/src/auth/|^backend/src/api/auth\.rs$|^backend/src/oidc\.rs$|^backend/src/db/mod\.rs$|^backend/src/api/(mcp|integrations|studio|ai_ask)\.rs$'
+automerge() {
+  git -C "$ROOT" fetch origin -q
+  for b in $(git -C "$ROOT" branch -r --list 'origin/devteam/*' | sed 's|origin/||;s/^ *//'); do
+    local diff; diff="$(git -C "$ROOT" diff --name-only "origin/main...origin/$b")"
+    if echo "$diff" | grep -Eq "$FULL_REVIEW"; then
+      echo "[automerge] ⏸ $b touches full-review paths — left for you."; continue
+    fi
+    local rev; rev="$(ls "$LOGS"/$(basename "$b" | sed 's|.*/||').review.md 2>/dev/null | head -1)"
+    if [[ -z "$rev" ]] || ! grep -q '^APPROVE$' "$rev" 2>/dev/null; then
+      echo "[automerge] ⏸ $b has no APPROVE verdict — left for you."; continue
+    fi
+    ( cd "$ROOT" && git checkout -q "$b" && scripts/devteam/gates.sh >/dev/null 2>&1 ) || {
+      echo "[automerge] ✖ $b fails gates."; git -C "$ROOT" checkout -q main; continue; }
+    git -C "$ROOT" checkout -q main
+    git -C "$ROOT" merge --no-ff -q "origin/$b" -m "merge: $b (gates green, reviewer APPROVE, no full-review paths)"
+    echo "[automerge] ✔ merged $b"
+  done
+  git -C "$ROOT" push origin main -q && echo "[automerge] pushed."
+}
+
+# ── sprint: one interactive burst of signatures, then hours of unattended work ──
+sprint() {
+  guard_exec
+  doctor --fix || true
+  echo
+  local pending; pending="$(grep -rlE '^\*\*Status:\*\*[[:space:]]*Proposed' "$ROOT/docs/adr/" 2>/dev/null | sort || true)"
+  if [[ -n "$pending" ]]; then
+    echo "════ SIGNATURES NEEDED (${#pending} grants). This is the only human step. ════"
+    for f in $pending; do
+      local id; id="$(basename "$f" | grep -oE '^ADR-[0-9]{3}')"
+      echo; echo "── $id: $(head -1 "$f" | sed 's/^# *//')"
+      sed -n '/^```granted-paths/,/^```$/p' "$f" | sed '1d;$d' | sed 's/^/   grants: /'
+      sed -n '/^## Explicitly NOT granted/,/^## /p' "$f" | sed '1d;$d' | sed '/^$/d' | sed 's/^/   denies: /' | head -6
+      if ask "   Sign $id?"; then
+        sed -i "s|^\*\*Status:\*\*.*|**Status:** Accepted (signed by operator $(git config user.name 2>/dev/null || echo operator) on $(date -I))|" "$f"
+        echo "   ✔ $id accepted"
+      else echo "   ✖ $id left Proposed — tasks needing it will park."; fi
+    done
+    git -C "$ROOT" add docs/adr && git -C "$ROOT" commit -qm "docs(adr): accept pending grants" && git -C "$ROOT" push -q origin main
+    doctor --fix >/dev/null || true      # flip specs that just became unblocked
+  else
+    echo "[sprint] no grants pending signature."
+  fi
+  echo
+  lint_specs || { echo "[sprint] specs malformed after repair — inspect manually."; exit 1; }
+  echo "[sprint] running unattended from here. Ctrl-C to stop."
+  UNATTENDED=1 start_loop
+  echo; automerge
+  echo "[sprint] done. Remaining PRs need your review: $(git -C "$ROOT" branch -r --list 'origin/devteam/*' | wc -l)"
+}
+
 case "${1:-}" in
+  lint) lint_specs ;;
+  doctor) doctor "${2:-}" ;;
+  automerge) automerge ;;
+  sprint) sprint ;;
   start)
     shift
     while [[ $# -gt 0 ]]; do

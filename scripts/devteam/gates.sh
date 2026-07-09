@@ -49,6 +49,18 @@ if echo "$CHANGED" | grep -q '^frontend/'; then
   ( cd "$ROOT/frontend" && npm run lint && npm run build )
 fi
 
+echo "[gates] G1 ADR integrity"
+# ADRs are authorization records. A diff may ADD them; it may never delete or downgrade one.
+DELETED_ADR="$(git -C "$ROOT" diff --diff-filter=D --name-only origin/main...HEAD -- docs/adr/ || true)"
+[[ -z "$DELETED_ADR" ]] || { echo "[gates] FAIL: diff deletes ADR file(s):"; echo "$DELETED_ADR" | sed 's/^/  /'; exit 1; }
+for f in $(git -C "$ROOT" diff --name-only origin/main...HEAD -- docs/adr/ || true); do
+  # nobody may flip an Accepted ADR back to Proposed, or edit a granted-paths block, in a code PR
+  if git -C "$ROOT" show "origin/main:$f" 2>/dev/null | grep -qE '^\*\*Status:\*\*[[:space:]]*Accepted'; then
+    grep -qE '^\*\*Status:\*\*[[:space:]]*Accepted' "$ROOT/$f" \
+      || { echo "[gates] FAIL: $f was Accepted on main and is no longer — grants are not revocable by PR"; exit 1; }
+  fi
+done
+
 echo "[gates] G2 secret scan (basic)"
 ! git -C "$ROOT" diff origin/main...HEAD | grep -Eiq 'BEGIN (RSA|EC|OPENSSH) PRIVATE KEY|api[_-]?key\s*=\s*["'"'"'][A-Za-z0-9]{20,}' \
   || { echo "[gates] FAIL: possible secret in diff"; exit 1; }

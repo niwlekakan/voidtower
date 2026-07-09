@@ -144,7 +144,12 @@ Rules that keep the tiers meaningful: **never** create `.devteam/FORGE_HOST` out
 ## Running the team
 
 ```bash
-scripts/devteam/devteam.sh start                       # attended: streams live, prompts you to sign grants
+scripts/devteam/devteam.sh sprint                      # ← the normal way to run: repair state, batch-sign
+                                                       #   grants once, then work unattended, then automerge
+scripts/devteam/devteam.sh doctor --fix                # repair spec/ADR state without running anything
+scripts/devteam/devteam.sh automerge                   # land branches with green gates + APPROVE + no
+                                                       #   full-review paths; leaves the rest for you
+scripts/devteam/devteam.sh start                       # attended: streams live, prompts per grant
 scripts/devteam/devteam.sh start --tasks 5             # bounded batch (recommended)
 scripts/devteam/devteam.sh start --tasks 5 --unattended # no prompts; blocked tasks park (forge/overnight)
 scripts/devteam/devteam.sh status           # active task, queue depth, last results
@@ -153,6 +158,10 @@ scripts/devteam/devteam.sh resume
 scripts/devteam/devteam.sh stop             # finishes current task, then exits
 scripts/devteam/devteam.sh logs [task-id]   # tail logs
 ```
+
+**`sprint` is the intended workflow.** It (1) runs `doctor --fix` to repair the mechanical state that causes escalations — duplicate ADRs, specs citing missing ADRs, specs stuck on `BLOCKED` whose grants are now signed, missing `Depends-On`, uncommitted ADR changes; (2) shows you every `Proposed` grant once, in a single burst, with its granted and denied paths, and asks you to sign; (3) runs the whole queue unattended; (4) auto-merges every branch with green gates, an `APPROVE` verdict, and no full-review paths in its diff.
+
+What still reaches you: signing grants (four keystrokes per phase), and PRs touching `policy.rs`, `voidwatch*`, `auth/`, `oidc.rs`, `db/mod.rs`, or the AI ingress handlers. Those merge by hand, always. Phase P0 is almost entirely those files — it is the worst phase for this ratio and the most important one to read. From P1 on, most work auto-merges.
 
 **Live output.** Each session streams a feed as it works — every tool call, file edit, and shell command with elapsed time, closing with duration, turns, tools, edits, and cost. Raw JSONL transcripts still land in `.devteam/logs/`.
 

@@ -21,6 +21,7 @@
 # Usage:
 #   scripts/devteam/sandbox.sh setup                    # once
 #   scripts/devteam/sandbox.sh run [devteam args...]    # e.g. run start --tasks 3
+#   scripts/devteam/sandbox.sh run-auto [auto.sh args]  # drive the full P0→P3 roadmap
 #   scripts/devteam/sandbox.sh shell                    # debug shell inside
 set -euo pipefail
 
@@ -109,12 +110,8 @@ _podman() {
     "$IMG" "$@"
 }
 
-case "${1:-}" in
-  setup) setup ;;
-  run)
-    shift
+_reset_clone_to_origin() {
     # -it (already set) gives the container a TTY so preflight/escalation prompts work.
-    # For overnight batches with no human present, pass --unattended through to devteam.sh.
     # The sandbox clone is disposable; origin is the source of truth. Never merge here —
     # hard-track origin/main. Any local main commits (a worker that ignored the branch rule)
     # are preserved under refs sandbox-backup/* rather than silently discarded.
@@ -135,7 +132,27 @@ case "${1:-}" in
       fi
       git checkout -q -B main origin/main
     )
+}
+
+case "${1:-}" in
+  setup) setup ;;
+  run)
+    shift
+    # For overnight batches with no human present, pass --unattended through to devteam.sh.
+    _reset_clone_to_origin
     _podman scripts/devteam/devteam.sh "$@"
+    echo
+    echo "[sandbox] branches pushed to origin by workers; review PRs from your"
+    echo "[sandbox] normal checkout. Sandbox clone lives at: $CLONE"
+    ;;
+  run-auto)
+    shift
+    # Same reset as `run`, but drives scripts/devteam/auto.sh (the full P0→P3
+    # roadmap driver) instead of a single devteam.sh invocation. auto.sh's own
+    # `isolated()` check still refuses to run anywhere but here/forge — this
+    # subcommand just gets it into that isolated environment in the first place.
+    _reset_clone_to_origin
+    _podman scripts/devteam/auto.sh "${@:-run}"
     echo
     echo "[sandbox] branches pushed to origin by workers; review PRs from your"
     echo "[sandbox] normal checkout. Sandbox clone lives at: $CLONE"
@@ -145,5 +162,5 @@ case "${1:-}" in
     echo "[sandbox] testing push credentials (dry run, no writes)…"
     _podman bash -lc 'git ls-remote --heads origin >/dev/null 2>&1 && echo "✔ read OK" || { echo "✖ read FAILED"; exit 1; }
       git push --dry-run origin HEAD:refs/heads/devteam/_authtest 2>&1 | tail -2' ;;
-  *) echo "usage: sandbox.sh {setup|run [devteam args]|shell|auth-test}"; exit 1 ;;
+  *) echo "usage: sandbox.sh {setup|run [devteam args]|run-auto [auto.sh args]|shell|auth-test}"; exit 1 ;;
 esac

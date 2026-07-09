@@ -55,14 +55,25 @@ DELETED_ADR="$(git -C "$ROOT" diff --diff-filter=D --name-only origin/main...HEA
 [[ -z "$DELETED_ADR" ]] || { echo "[gates] FAIL: diff deletes ADR file(s):"; echo "$DELETED_ADR" | sed 's/^/  /'; exit 1; }
 for f in $(git -C "$ROOT" diff --name-only origin/main...HEAD -- docs/adr/ || true); do
   # nobody may flip an Accepted ADR back to Proposed, or edit a granted-paths block, in a code PR
-  if git -C "$ROOT" show "origin/main:$f" 2>/dev/null | grep -qE '^\*\*Status:\*\*[[:space:]]*Accepted'; then
+  # NOTE: capture then test, don't pipe `git show` into `grep -q` — under `set -o pipefail`,
+  # an early grep match can SIGPIPE `git show` before it finishes writing, which makes the
+  # pipeline report failure even though a match was found (reproduced against this exact
+  # failure mode in preflight_deps; see devteam.sh).
+  MAIN_ADR_CONTENT="$(git -C "$ROOT" show "origin/main:$f" 2>/dev/null)"
+  if grep -qE '^\*\*Status:\*\*[[:space:]]*Accepted' <<<"$MAIN_ADR_CONTENT"; then
     grep -qE '^\*\*Status:\*\*[[:space:]]*Accepted' "$ROOT/$f" \
       || { echo "[gates] FAIL: $f was Accepted on main and is no longer — grants are not revocable by PR"; exit 1; }
   fi
 done
 
 echo "[gates] G2 secret scan (basic)"
-! git -C "$ROOT" diff origin/main...HEAD | grep -Eiq 'BEGIN (RSA|EC|OPENSSH) PRIVATE KEY|api[_-]?key\s*=\s*["'"'"'][A-Za-z0-9]{20,}' \
+# Capture then test — do not pipe `git diff` into `grep -q`. Under `set -o pipefail`, grep
+# exits as soon as it finds the first match, which can SIGPIPE `git diff` before it finishes
+# writing the rest of the diff; the pipeline then reports failure for the wrong reason, but
+# worse, `!` would then treat the (SIGPIPE, non-grep) failure as "no secret found" even when
+# grep's own match was real. This is the one gate that must never fail open.
+FULL_DIFF="$(git -C "$ROOT" diff origin/main...HEAD)"
+! grep -Eiq 'BEGIN (RSA|EC|OPENSSH) PRIVATE KEY|api[_-]?key\s*=\s*["'"'"'][A-Za-z0-9]{20,}' <<<"$FULL_DIFF" \
   || { echo "[gates] FAIL: possible secret in diff"; exit 1; }
 
 echo "[gates] all green"

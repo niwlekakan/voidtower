@@ -98,8 +98,13 @@ preflight_deps() {  # $1 = spec. Honors "Depends-On: P0-01, P0-02" and "Requires
   local spec="$1" missing=0 dep path
   for dep in $(grep -ioE '^Depends-On:.*' "$spec" | sed 's/^[^:]*://' | tr ',' ' '); do
     dep="$(echo "$dep" | tr -d '[:space:]')"; [[ -z "$dep" ]] && continue
-    # satisfied if any commit reachable from origin/main references the task id
-    if ! git -C "$ROOT" log origin/main --oneline --grep="$dep" | grep -q .; then
+    [[ "${dep,,}" == "none" ]] && continue   # "Depends-On: none" — no real dependency
+    # satisfied if any commit reachable from origin/main references the task id.
+    # NOTE: must NOT pipe into `grep -q` here — under `set -o pipefail`, grep -q
+    # exits as soon as it sees the first match, closing the pipe while `git log`
+    # may still be writing; git log then gets SIGPIPE and the pipeline reports
+    # failure even though a match was found. Capture output instead.
+    if [[ -z "$(git -C "$ROOT" log origin/main --oneline --grep="$dep" 2>/dev/null)" ]]; then
       echo "[devteam]   ✖ dependency $dep is not merged to origin/main"; missing=1
     fi
   done

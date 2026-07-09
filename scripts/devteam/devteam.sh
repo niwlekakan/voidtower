@@ -227,28 +227,27 @@ status() {
 }
 
 lint_specs() {  # validate machine-readable spec headers before anything runs
-  local bad=0 f
+  local bad=0 f id
   shopt -s nullglob
   for f in "$QUEUE"/*.md "$ACTIVE"/*.md; do
-    local id; id="$(basename "$f" .md)"
-    grep -qE '^## Status:[[:space:]]*(Ready|Ready \(pending ADR-[0-9]{3}' "$f" \
-      || { echo "✖ $id: '## Status:' must be 'Ready' or 'Ready (pending ADR-NNN acceptance)'"; bad=1; }
-    grep -qE '^\*\*ADR:\*\*[[:space:]]*(ADR-[0-9]{3}|none)' "$f" \
+    id="$(basename "$f" .md)"
+    if grep -qiE '^##[[:space:]]*Status:.*BLOCKED' "$f"; then
+      echo "✖ $id: still marked BLOCKED — sign its ADR, then run 'doctor --fix'"; bad=1; continue
+    fi
+    grep -qiE '^##[[:space:]]*Status:[[:space:]]*Ready' "$f" \
+      || { echo "✖ $id: '## Status:' must start with 'Ready'"; bad=1; }
+    grep -qiE '^\*\*ADR:\*\*[[:space:]]*(ADR-[0-9]{3}|none)' "$f" \
       || { echo "✖ $id: '**ADR:**' must cite ADR-NNN (comma-separated) or 'none'"; bad=1; }
     grep -qiE '^(Depends-On|Requires-Path):' "$f" \
-      || echo "  ⚠ $id: no Depends-On/Requires-Path — fine only if it truly has no prerequisites"
-    grep -qiE '^## Status:.*BLOCKED' "$f" \
-      && { echo "✖ $id: still marked BLOCKED — resolve its ADR, then flip the field"; bad=1; }
+      || echo "  ⚠ $id: no Depends-On/Requires-Path — fine only if it has no prerequisites"
   done
   shopt -u nullglob
-  [[ $bad -eq 0 ]] && echo "✔ all specs parse" || echo "→ fix these before running; workers will escalate otherwise"
+  if [[ $bad -eq 0 ]]; then echo "✔ all specs parse"; else echo "→ run 'devteam.sh doctor --fix', or fix by hand"; fi
   return $bad
 }
 
-
-# ── doctor: detect and repair the mechanical state problems that cause escalations ──
 doctor() {
-  local fix="${1:-}" issues=0
+  local fix="${1:-}" issues=0 cited cited2
   echo "[doctor] repo state check"
   git -C "$ROOT" fetch origin -q 2>/dev/null || true
 
@@ -284,11 +283,24 @@ doctor() {
     if [[ $ok -eq 1 ]]; then
       echo "  ⚠ $(basename "$spec" .md): BLOCKED but its ADRs are Accepted"
       if [[ "$fix" == "--fix" ]]; then
-        sed -i 's|^## Status:.*|## Status: Ready|I' "$spec"
-        grep -qiE '^\*\*ADR:\*\*' "$spec" || sed -i "3i **ADR:** $(grep -ohE 'ADR-[0-9]{3}' "$spec" | sort -u | paste -sd, -)" "$spec"
-        echo "    → flipped to Ready"
+        sed -i 's|^##[[:space:]]*Status:.*|## Status: Ready|I' "$spec"
+        cited="$(grep -ohE 'ADR-[0-9]{3}' "$spec" | sort -u | paste -sd, -)"
+        if grep -qiE '^\*\*ADR:\*\*' "$spec"; then
+          sed -i "s|^\*\*ADR:\*\*.*|**ADR:** ${cited:-none}|I" "$spec"
+        else
+          sed -i "2i **ADR:** ${cited:-none}" "$spec"
+        fi
+        echo "    → flipped to Ready (ADR: ${cited:-none})"
       else issues=1; fi
     fi
+  done
+
+  # 3b. specs lacking an **ADR:** field get one synthesized from the ADRs they cite
+  for spec in "$QUEUE"/*.md "$ACTIVE"/*.md; do
+    grep -qiE '^\*\*ADR:\*\*' "$spec" && continue
+    cited2="$(grep -ohE 'ADR-[0-9]{3}' "$spec" | sort -u | paste -sd, -)"
+    echo "  ⚠ $(basename "$spec" .md): no '**ADR:**' field (cites: ${cited2:-none})"
+    [[ "$fix" == "--fix" ]] && { sed -i "2i **ADR:** ${cited2:-none}" "$spec"; echo "    → added"; } || issues=1
   done
 
   # 4. infer Depends-On from task numbering when absent (P0-03 depends on P0-02, P0-01)
@@ -340,10 +352,11 @@ sprint() {
   guard_exec
   doctor --fix || true
   echo
-  local pending; pending="$(grep -rlE '^\*\*Status:\*\*[[:space:]]*Proposed' "$ROOT/docs/adr/" 2>/dev/null | sort || true)"
-  if [[ -n "$pending" ]]; then
-    echo "════ SIGNATURES NEEDED (${#pending} grants). This is the only human step. ════"
-    for f in $pending; do
+  local -a pending=()
+  mapfile -t pending < <(grep -rlE '^\*\*Status:\*\*[[:space:]]*Proposed' "$ROOT/docs/adr/" 2>/dev/null | sort || true)
+  if [[ ${#pending[@]} -gt 0 ]]; then
+    echo "════ SIGNATURES NEEDED: ${#pending[@]} grant(s). This is the only human step. ════"
+    for f in "${pending[@]}"; do
       local id; id="$(basename "$f" | grep -oE '^ADR-[0-9]{3}')"
       echo; echo "── $id: $(head -1 "$f" | sed 's/^# *//')"
       sed -n '/^```granted-paths/,/^```$/p' "$f" | sed '1d;$d' | sed 's/^/   grants: /'

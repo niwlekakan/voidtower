@@ -129,7 +129,12 @@ fn with_connect_info(mut req: Request<Body>) -> Request<Body> {
     req
 }
 
-fn bearer_req(method: &str, uri: &str, token: &str, body: Option<serde_json::Value>) -> Request<Body> {
+fn bearer_req(
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Option<serde_json::Value>,
+) -> Request<Body> {
     let b = body.map(|v| v.to_string()).unwrap_or_default();
     with_connect_info(
         Request::builder()
@@ -142,7 +147,12 @@ fn bearer_req(method: &str, uri: &str, token: &str, body: Option<serde_json::Val
     )
 }
 
-fn cookie_req(method: &str, uri: &str, session_id: &str, body: Option<serde_json::Value>) -> Request<Body> {
+fn cookie_req(
+    method: &str,
+    uri: &str,
+    session_id: &str,
+    body: Option<serde_json::Value>,
+) -> Request<Body> {
     let b = body.map(|v| v.to_string()).unwrap_or_default();
     with_connect_info(
         Request::builder()
@@ -235,7 +245,13 @@ async fn token_scoped_to_exec_can_run_container_actions_but_not_system_update() 
     let token = insert_token(
         &db,
         &admin,
-        &["containers:read", "containers:restart", "containers:logs", "services:read", "services:restart"],
+        &[
+            "containers:read",
+            "containers:restart",
+            "containers:logs",
+            "services:read",
+            "services:restart",
+        ],
     )
     .await;
 
@@ -258,7 +274,12 @@ async fn token_scoped_to_exec_can_run_container_actions_but_not_system_update() 
     );
 
     let disaster_res = app
-        .oneshot(bearer_req("POST", "/api/disaster/export-config", &token, None))
+        .oneshot(bearer_req(
+            "POST",
+            "/api/disaster/export-config",
+            &token,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(disaster_res.status(), StatusCode::FORBIDDEN);
@@ -322,13 +343,23 @@ async fn human_session_cookie_login_is_unaffected_by_scope_changes() {
 
     let admin_res = app
         .clone()
-        .oneshot(cookie_req("GET", "/api/integrations/tokens", &admin_session, None))
+        .oneshot(cookie_req(
+            "GET",
+            "/api/integrations/tokens",
+            &admin_session,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(admin_res.status(), StatusCode::OK);
 
     let viewer_res = app
-        .oneshot(cookie_req("GET", "/api/integrations/tokens", &viewer_session, None))
+        .oneshot(cookie_req(
+            "GET",
+            "/api/integrations/tokens",
+            &viewer_session,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(viewer_res.status(), StatusCode::FORBIDDEN);
@@ -340,7 +371,8 @@ async fn human_session_cookie_login_is_unaffected_by_scope_changes() {
 /// (what every existing integration already uses) must keep working
 /// unchanged — "without breaking existing integrations".
 #[tokio::test]
-async fn voidtower_token_migration_splits_into_capability_tokens_without_breaking_existing_integrations() {
+async fn voidtower_token_migration_splits_into_capability_tokens_without_breaking_existing_integrations(
+) {
     let db = setup_db().await;
     let owner = insert_user(&db, "owner").await;
     let owner_session = insert_session(&db, &owner).await;
@@ -359,7 +391,9 @@ async fn voidtower_token_migration_splits_into_capability_tokens_without_breakin
         .await
         .unwrap();
     assert_eq!(legacy_res.status(), StatusCode::OK);
-    let legacy_body = axum::body::to_bytes(legacy_res.into_body(), usize::MAX).await.unwrap();
+    let legacy_body = axum::body::to_bytes(legacy_res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let legacy_json: serde_json::Value = serde_json::from_slice(&legacy_body).unwrap();
     assert_eq!(legacy_json["scopes"], serde_json::json!(["metrics:read"]));
 
@@ -375,7 +409,9 @@ async fn voidtower_token_migration_splits_into_capability_tokens_without_breakin
         .await
         .unwrap();
     assert_eq!(tier_res.status(), StatusCode::OK);
-    let tier_body = axum::body::to_bytes(tier_res.into_body(), usize::MAX).await.unwrap();
+    let tier_body = axum::body::to_bytes(tier_res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let tier_json: serde_json::Value = serde_json::from_slice(&tier_body).unwrap();
     let minted_scopes = tier_json["scopes"].as_array().unwrap();
     assert!(!minted_scopes.is_empty());
@@ -385,9 +421,9 @@ async fn voidtower_token_migration_splits_into_capability_tokens_without_breakin
     // are all read-only despite not sharing one suffix).
     const MUTATING_SUFFIXES: &[&str] = &[":restart", ":deploy", ":run", ":ack", ":manage"];
     assert!(
-        minted_scopes
+        minted_scopes.iter().all(|s| !MUTATING_SUFFIXES
             .iter()
-            .all(|s| !MUTATING_SUFFIXES.iter().any(|suf| s.as_str().unwrap().ends_with(suf))),
+            .any(|suf| s.as_str().unwrap().ends_with(suf))),
         "read tier must not mint any mutating scope, got {minted_scopes:?}"
     );
 
@@ -404,7 +440,9 @@ async fn voidtower_token_migration_splits_into_capability_tokens_without_breakin
         .await
         .unwrap();
     assert_eq!(never_res.status(), StatusCode::OK);
-    let never_body = axum::body::to_bytes(never_res.into_body(), usize::MAX).await.unwrap();
+    let never_body = axum::body::to_bytes(never_res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let never_json: serde_json::Value = serde_json::from_slice(&never_body).unwrap();
     let never_token = never_json["token"].as_str().unwrap().to_string();
 

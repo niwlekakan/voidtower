@@ -67,13 +67,25 @@ const ROUTE_SCOPES: &[(&str, &str, Requirement)] = &[
     // services:read / services:restart
     ("GET", "/api/services", Scope("services:read")),
     ("GET", "/api/services/:name", Scope("services:read")),
-    ("POST", "/api/services/:name/action", Scope("services:restart")),
+    (
+        "POST",
+        "/api/services/:name/action",
+        Scope("services:restart"),
+    ),
     // containers:read / containers:restart / containers:logs
     ("GET", "/api/containers", Scope("containers:read")),
     ("GET", "/api/containers/images", Scope("containers:read")),
-    ("POST", "/api/containers/:id/action", Scope("containers:restart")),
+    (
+        "POST",
+        "/api/containers/:id/action",
+        Scope("containers:restart"),
+    ),
     ("GET", "/api/containers/:id/logs", Scope("containers:logs")),
-    ("GET", "/api/containers/:id/logs/stream", Scope("containers:logs")),
+    (
+        "GET",
+        "/api/containers/:id/logs/stream",
+        Scope("containers:logs"),
+    ),
     // apps:read / apps:deploy / apps:restart
     ("GET", "/api/apps/catalog", Scope("apps:read")),
     ("GET", "/api/apps/detect-env", Scope("apps:read")),
@@ -82,7 +94,11 @@ const ROUTE_SCOPES: &[(&str, &str, Requirement)] = &[
     ("GET", "/api/apps/:project_name/logs", Scope("apps:read")),
     ("GET", "/api/apps/:project_name/compose", Scope("apps:read")),
     ("POST", "/api/apps/deploy", Scope("apps:deploy")),
-    ("POST", "/api/apps/:project_name/restart", Scope("apps:restart")),
+    (
+        "POST",
+        "/api/apps/:project_name/restart",
+        Scope("apps:restart"),
+    ),
     // backups:read / backups:run
     ("GET", "/api/backups", Scope("backups:read")),
     ("POST", "/api/backups/:id/run", Scope("backups:run")),

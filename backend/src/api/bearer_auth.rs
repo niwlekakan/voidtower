@@ -63,8 +63,12 @@ async fn resolve_session(state: &AppState, headers: &HeaderMap) -> Option<(Strin
     }
 
     // Validate token against DB
-    let user_id = auth::validate_api_token_any(&state.db, raw_token).await.ok()?;
-    let scopes = auth::token_scopes(&state.db, raw_token).await.unwrap_or_default();
+    let user_id = auth::validate_api_token_any(&state.db, raw_token)
+        .await
+        .ok()?;
+    let scopes = auth::token_scopes(&state.db, raw_token)
+        .await
+        .unwrap_or_default();
 
     // Create a 1-hour session
     let (sid, exp) = auth::create_temp_session(&state.db, &user_id).await.ok()?;

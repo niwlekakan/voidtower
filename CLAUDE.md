@@ -29,7 +29,7 @@ Active ECC skills for this repo: `continuous-agent-loop`, `verification-loop`, `
 3. **TDD**: write the acceptance tests named in the spec *first*. They must fail for the right reason before you implement.
 4. **Implement** to spec. Match existing code conventions (this is a single-crate codebase — see `backend/src/`; do not introduce workspace restructuring, new heavy dependencies, or new patterns without an ADR).
 5. **Verify** (`verification-loop`): `scripts/devteam/gates.sh` must pass locally — fmt, clippy `-D warnings`, tests, plus any task-specific gates. Fix until green; if blocked 3 attempts, escalate.
-6. **Commit** with Conventional Commits. Update docs touched by the change. Push branch, open PR with the task-id in the title, fill the PR template's spec-compliance checklist.
+6. **Commit** with Conventional Commits. Update docs touched by the change. Push the branch (`git push -u origin devteam/<task-id>-<slug>`). Do not open the PR — `automerge` or the operator does that from outside the sandbox. Put your spec-compliance notes and any scope judgment calls in the commit body.
 7. **Stop.** Do not start another task. Do not review your own PR.
 
 ## Hard rules
@@ -147,8 +147,8 @@ Rules that keep the tiers meaningful: **never** create `.devteam/FORGE_HOST` out
 scripts/devteam/devteam.sh sprint                      # ← the normal way to run: repair state, batch-sign
                                                        #   grants once, then work unattended, then automerge
 scripts/devteam/devteam.sh doctor --fix                # repair spec/ADR state without running anything
-scripts/devteam/devteam.sh automerge                   # land branches with green gates + APPROVE + no
-                                                       #   full-review paths; leaves the rest for you
+scripts/devteam/devteam.sh automerge                   # run from your HOST checkout (it pushes main,
+                                                       #   which the sandbox's token deliberately cannot)
 scripts/devteam/devteam.sh start                       # attended: streams live, prompts per grant
 scripts/devteam/devteam.sh start --tasks 5             # bounded batch (recommended)
 scripts/devteam/devteam.sh start --tasks 5 --unattended # no prompts; blocked tasks park (forge/overnight)

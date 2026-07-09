@@ -28,6 +28,7 @@ BASE="${DEVTEAM_SANDBOX_HOME:-$HOME/.devteam-sandbox}"
 CLONE="$BASE/voidtower"
 CFG="$BASE/claude-config"
 CARGO_CACHE="$BASE/cargo-cache"
+CREDS="$BASE/git-credentials"
 IMG="devteam-sandbox:latest"
 ORIGIN="${DEVTEAM_ORIGIN:-$(git config --get remote.origin.url 2>/dev/null || true)}"
 
@@ -41,6 +42,27 @@ setup() {
   # git config (CLAUDE.md); the operator provides identity once, here.
   git -C "$CLONE" config user.name  "${DEVTEAM_GIT_NAME:-VoidTower DevTeam}"
   git -C "$CLONE" config user.email "${DEVTEAM_GIT_EMAIL:-devteam@voidtower.local}"
+
+  # Push credentials: a fine-grained PAT scoped to THIS REPO ONLY.
+  #   Contents: RW · Pull requests: RW · Metadata: R
+  #   Workflows: NOT granted → GitHub itself rejects any push touching .github/workflows/,
+  #   which enforces forbidden zone #5 server-side rather than by convention.
+  # Protect main on GitHub (require PR) so this token can never push main directly.
+  if [[ ! -f "$CREDS" ]]; then
+    echo
+    echo "Paste a fine-grained GitHub PAT for niwlekakan/voidtower (input hidden):"
+    read -rs TOKEN
+    [[ -n "$TOKEN" ]] || { echo "no token given — agents will not be able to push."; }
+    if [[ -n "$TOKEN" ]]; then
+      umask 077
+      printf 'https://x-access-token:%s@github.com\n' "$TOKEN" > "$CREDS"
+      chmod 600 "$CREDS"
+      unset TOKEN
+      echo "stored in $CREDS (0600, mounted read-only into the sandbox)"
+    fi
+  fi
+  git -C "$CLONE" config credential.helper "store --file=/gitcreds"
+  git -C "$CLONE" remote set-url origin "https://github.com/$(basename "$(dirname "$ORIGIN")")/$(basename "$ORIGIN" .git).git" 2>/dev/null || true
 
   podman build -t "$IMG" -f - "$BASE" <<'EOF'
 FROM docker.io/library/rust:1-bookworm
@@ -70,6 +92,7 @@ _podman() {
     -v "$CLONE:/work:Z" \
     -v "$CFG:/claude-config:Z" \
     -v "$CARGO_CACHE:/cargo:Z" \
+    $( [[ -f "$CREDS" ]] && echo "-v $CREDS:/gitcreds:ro,Z" ) \
     -w /work \
     "$IMG" "$@"
 }

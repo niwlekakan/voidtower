@@ -362,7 +362,13 @@ sprint() {
   lint_specs || { echo "[sprint] specs malformed after repair — inspect manually."; exit 1; }
   echo "[sprint] running unattended from here. Ctrl-C to stop."
   UNATTENDED=1 start_loop
-  echo; automerge
+  echo
+  if [[ "$TIER" == "sandbox" ]]; then
+    echo "[sprint] queue drained. Branches are pushed; run 'scripts/devteam/devteam.sh automerge'"
+    echo "[sprint] from your host checkout to land them (the sandbox token cannot push main)."
+  else
+    automerge
+  fi
   echo "[sprint] done. Remaining PRs need your review: $(git -C "$ROOT" branch -r --list 'origin/devteam/*' | wc -l)"
 }
 

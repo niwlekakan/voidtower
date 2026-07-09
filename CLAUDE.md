@@ -144,8 +144,12 @@ Rules that keep the tiers meaningful: **never** create `.devteam/FORGE_HOST` out
 ## Running the team
 
 ```bash
-scripts/devteam/devteam.sh sprint                      # ← the normal way to run: repair state, batch-sign
-                                                       #   grants once, then work unattended, then automerge
+scripts/devteam/devteam.sh sprint --sign                # HOST ONLY (refuses inside a container): repair
+                                                       #   state, batch-sign pending grants, push to main
+scripts/devteam/devteam.sh sprint --run                 # sandbox/forge: work the queue unattended, then
+                                                       #   automerge. Never signs — pending grants just park.
+scripts/devteam/devteam.sh sprint                       # combined sign+run in one terminal; attended-host
+                                                       #   convenience only, refuses inside a container
 scripts/devteam/devteam.sh doctor --fix                # repair spec/ADR state without running anything
 scripts/devteam/devteam.sh automerge                   # run from your HOST checkout (it pushes main,
                                                        #   which the sandbox's token deliberately cannot)
@@ -159,7 +163,7 @@ scripts/devteam/devteam.sh stop             # finishes current task, then exits
 scripts/devteam/devteam.sh logs [task-id]   # tail logs
 ```
 
-**`sprint` is the intended workflow.** It (1) runs `doctor --fix` to repair the mechanical state that causes escalations — duplicate ADRs, specs citing missing ADRs, specs stuck on `BLOCKED` whose grants are now signed, missing `Depends-On`, uncommitted ADR changes; (2) shows you every `Proposed` grant once, in a single burst, with its granted and denied paths, and asks you to sign; (3) runs the whole queue unattended; (4) auto-merges every branch with green gates, an `APPROVE` verdict, and no full-review paths in its diff.
+**`sprint` is the intended workflow, split into a sign phase and a run phase.** The sandbox clone is disposable — `sandbox.sh run` resets it to `origin/main` on every invocation — so a signature made inside a container can be lost before it ever reaches origin, and the sandbox's repo-scoped token can't push `main` anyway. `sprint --sign` (1) runs `doctor --fix` to repair the mechanical state that causes escalations — duplicate ADRs, specs citing missing ADRs, specs stuck on `BLOCKED` whose grants are now signed, missing `Depends-On`, uncommitted ADR changes; (2) shows you every `Proposed` grant once, in a single burst, with its granted and denied paths, and asks you to sign; it commits and pushes the signature to `origin/main` itself, and **refuses outright if run inside a container**. `sprint --run` (3) runs the whole queue unattended and (4) auto-merges every branch with green gates, an `APPROVE` verdict, and no full-review paths in its diff — it never prompts for a signature; if grants are still `Proposed` it says so and lets the tasks needing them park. Plain `sprint` (no flag) does both in one terminal for the attended-host case, and likewise refuses inside a container.
 
 What still reaches you: signing grants (four keystrokes per phase), and PRs touching `policy.rs`, `voidwatch*`, `auth/`, `oidc.rs`, `db/mod.rs`, or the AI ingress handlers. Those merge by hand, always. Phase P0 is almost entirely those files — it is the worst phase for this ratio and the most important one to read. From P1 on, most work auto-merges.
 

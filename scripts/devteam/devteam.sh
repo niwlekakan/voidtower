@@ -273,18 +273,25 @@ doctor() {
   done
 
   # 3. specs stuck on BLOCKED whose ADRs are all Accepted → flip to Ready
+  #    Only the '**ADR:**' field counts as a citation (not any ADR-NNN mention
+  #    anywhere in the file, e.g. a boilerplate "grant: ADR-001" banner line) —
+  #    and a spec citing NO ADR at all must never be treated as vacuously
+  #    satisfied. A BLOCKED task with no cited ADR needs a human to draft one;
+  #    it must never auto-flip to Ready.
   for spec in "$QUEUE"/*.md "$BLOCKED"/*.md; do
     grep -qiE '^## Status:.*BLOCKED' "$spec" || continue
-    local ok=1
-    for id in $(grep -ohE 'ADR-[0-9]{3}' "$spec" | sort -u); do
+    local adr_field; adr_field="$(grep -im1 '^\*\*ADR:\*\*' "$spec" || true)"
+    local ok=1 found=0
+    for id in $(echo "$adr_field" | grep -ohE 'ADR-[0-9]{3}' | sort -u); do
+      found=1
       local f; f="$(ls "$ROOT/docs/adr/${id}"*.md 2>/dev/null | head -1)"
       [[ -n "$f" ]] && grep -qE '^\*\*Status:\*\*[[:space:]]*Accepted' "$f" || ok=0
     done
-    if [[ $ok -eq 1 ]]; then
+    if [[ $found -eq 1 && $ok -eq 1 ]]; then
       echo "  ⚠ $(basename "$spec" .md): BLOCKED but its ADRs are Accepted"
       if [[ "$fix" == "--fix" ]]; then
         sed -i 's|^##[[:space:]]*Status:.*|## Status: Ready|I' "$spec"
-        cited="$(grep -ohE 'ADR-[0-9]{3}' "$spec" | sort -u | paste -sd, -)"
+        cited="$(echo "$adr_field" | grep -ohE 'ADR-[0-9]{3}' | sort -u | paste -sd, -)"
         if grep -qiE '^\*\*ADR:\*\*' "$spec"; then
           sed -i "s|^\*\*ADR:\*\*.*|**ADR:** ${cited:-none}|I" "$spec"
         else
@@ -348,48 +355,96 @@ automerge() {
 }
 
 # ── sprint: one interactive burst of signatures, then hours of unattended work ──
-sprint() {
-  guard_exec
+# Signing must happen where a push to main can actually land and persist: the
+# sandbox clone is disposable (reset to origin/main on every sandbox.sh run), so
+# a signature made inside a container can be silently lost before it's pushed.
+# Refuse outright rather than let that happen quietly again.
+_in_container() { [[ -f /run/.containerenv || -f /.dockerenv ]]; }
+
+sprint_sign() {
+  if _in_container; then
+    echo "[sprint --sign] REFUSING: signing must happen on the host (or the forge VM),"
+    echo "  never inside a container. The sandbox's repo-scoped token cannot push main,"
+    echo "  and the sandbox clone resets to origin/main on its next run — any signature"
+    echo "  made here can be lost before it ever reaches origin. Run this on your host"
+    echo "  checkout, then run 'devteam.sh sprint --run' inside the sandbox/forge."
+    exit 1
+  fi
   doctor --fix || true
   echo
   local -a pending=()
   mapfile -t pending < <(grep -rlE '^\*\*Status:\*\*[[:space:]]*Proposed' "$ROOT/docs/adr/" 2>/dev/null | sort || true)
+  if [[ ${#pending[@]} -eq 0 ]]; then
+    echo "[sprint --sign] no grants pending signature."
+    return 0
+  fi
+  echo "════ SIGNATURES NEEDED: ${#pending[@]} grant(s). This is the only human step. ════"
+  for f in "${pending[@]}"; do
+    local id; id="$(basename "$f" | grep -oE '^ADR-[0-9]{3}')"
+    echo; echo "── $id: $(head -1 "$f" | sed 's/^# *//')"
+    sed -n '/^```granted-paths/,/^```$/p' "$f" | sed '1d;$d' | sed 's/^/   grants: /'
+    sed -n '/^## Explicitly NOT granted/,/^## /p' "$f" | sed '1d;$d' | sed '/^$/d' | sed 's/^/   denies: /' | head -6
+    if ask "   Sign $id?"; then
+      sed -i "s|^\*\*Status:\*\*.*|**Status:** Accepted (signed by operator $(git config user.name 2>/dev/null || echo operator) on $(date -I))|" "$f"
+      echo "   ✔ $id accepted"
+    else echo "   ✖ $id left Proposed — tasks needing it will park."; fi
+  done
+  git -C "$ROOT" add docs/adr && git -C "$ROOT" commit -qm "docs(adr): accept pending grants" && git -C "$ROOT" push -q origin main
+  doctor --fix >/dev/null || true      # flip specs that just became unblocked
+  echo "[sprint --sign] done. Signatures are pushed to origin/main."
+  echo "[sprint --sign] now run 'devteam.sh sprint --run' inside the sandbox/forge."
+}
+
+sprint_run() {
+  guard_exec
+  # This tier never signs — pending grants are surfaced, not prompted for, so an
+  # unattended run never blocks on stdin and a signature is never made somewhere
+  # it could be lost.
+  local -a pending=()
+  mapfile -t pending < <(grep -rlE '^\*\*Status:\*\*[[:space:]]*Proposed' "$ROOT/docs/adr/" 2>/dev/null | sort || true)
   if [[ ${#pending[@]} -gt 0 ]]; then
-    echo "════ SIGNATURES NEEDED: ${#pending[@]} grant(s). This is the only human step. ════"
-    for f in "${pending[@]}"; do
-      local id; id="$(basename "$f" | grep -oE '^ADR-[0-9]{3}')"
-      echo; echo "── $id: $(head -1 "$f" | sed 's/^# *//')"
-      sed -n '/^```granted-paths/,/^```$/p' "$f" | sed '1d;$d' | sed 's/^/   grants: /'
-      sed -n '/^## Explicitly NOT granted/,/^## /p' "$f" | sed '1d;$d' | sed '/^$/d' | sed 's/^/   denies: /' | head -6
-      if ask "   Sign $id?"; then
-        sed -i "s|^\*\*Status:\*\*.*|**Status:** Accepted (signed by operator $(git config user.name 2>/dev/null || echo operator) on $(date -I))|" "$f"
-        echo "   ✔ $id accepted"
-      else echo "   ✖ $id left Proposed — tasks needing it will park."; fi
-    done
-    git -C "$ROOT" add docs/adr && git -C "$ROOT" commit -qm "docs(adr): accept pending grants" && git -C "$ROOT" push -q origin main
-    doctor --fix >/dev/null || true      # flip specs that just became unblocked
-  else
-    echo "[sprint] no grants pending signature."
+    echo "[sprint --run] ${#pending[@]} grant(s) still Proposed — this tier never signs."
+    echo "[sprint --run] run 'devteam.sh sprint --sign' on your host first; tasks needing"
+    echo "[sprint --run] them will park until then."
   fi
   echo
-  lint_specs || { echo "[sprint] specs malformed after repair — inspect manually."; exit 1; }
-  echo "[sprint] running unattended from here. Ctrl-C to stop."
+  lint_specs || { echo "[sprint --run] specs malformed — fix on your host, then retry."; exit 1; }
+  echo "[sprint --run] running unattended from here. Ctrl-C to stop."
   UNATTENDED=1 start_loop
   echo
   if [[ "$TIER" == "sandbox" ]]; then
-    echo "[sprint] queue drained. Branches are pushed; run 'scripts/devteam/devteam.sh automerge'"
-    echo "[sprint] from your host checkout to land them (the sandbox token cannot push main)."
+    echo "[sprint --run] queue drained. Branches are pushed; run 'scripts/devteam/devteam.sh automerge'"
+    echo "[sprint --run] from your host checkout to land them (the sandbox token cannot push main)."
   else
     automerge
   fi
-  echo "[sprint] done. Remaining PRs need your review: $(git -C "$ROOT" branch -r --list 'origin/devteam/*' | wc -l)"
+  echo "[sprint --run] done. Remaining PRs need your review: $(git -C "$ROOT" branch -r --list 'origin/devteam/*' | wc -l)"
+}
+
+sprint() {
+  # Bare 'sprint' (no --sign/--run) is the combined attended-host convenience
+  # path: sign, then run, in one terminal. Refuse it in a container, where
+  # signing must never happen — use 'sprint --run' there instead.
+  if _in_container; then
+    echo "REFUSING: bare 'sprint' inside a container is ambiguous about who may sign."
+    echo "Use 'devteam.sh sprint --run' here; sign grants from your host with 'sprint --sign'."
+    exit 1
+  fi
+  sprint_sign
+  sprint_run
 }
 
 case "${1:-}" in
   lint) lint_specs ;;
   doctor) doctor "${2:-}" ;;
   automerge) automerge ;;
-  sprint) sprint ;;
+  sprint)
+    case "${2:-}" in
+      --sign) sprint_sign ;;
+      --run)  sprint_run ;;
+      "")     sprint ;;
+      *) echo "usage: devteam.sh sprint [--sign|--run]"; exit 1 ;;
+    esac ;;
   start)
     shift
     while [[ $# -gt 0 ]]; do

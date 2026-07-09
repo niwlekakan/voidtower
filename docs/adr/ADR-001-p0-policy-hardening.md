@@ -48,3 +48,16 @@ Task specs numbered `P0-*` that cite **ADR-001** are granted modification rights
 `gates.sh` accepts forbidden-zone diffs while the active spec cites "ADR-"; the scope above
 is enforced by the adversarial reviewer and the operator's full line review — every P0 PR is
 full-review tier regardless of gate status. On P0 exit, this ADR expires and the zones close.
+
+## Sequencing clarification (added %Y-%m-%d, in response to P0-01 escalation)
+
+P0-01 lands the choke point as a **no-op by default**: `voidwatch::evaluate()` exists, every
+AI-reachable mutating action routes through it, and its initial verdict logic preserves
+current observed behavior exactly. No behavioral change ships in P0-01.
+
+P0-02 then flips AI-actor semantics to default-deny with the generated allowlist. Constraint
+§5 of this ADR (allowlist preserving running automations) applies to **P0-02**, not P0-01.
+
+Rationale: routing and policy semantics must not change in the same PR — debugging a
+misrouted action and a wrong verdict simultaneously, in auth-adjacent code, is the failure
+mode this split avoids.

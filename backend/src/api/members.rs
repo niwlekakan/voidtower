@@ -235,7 +235,7 @@ pub async fn list_my_nodes(
             MemberNodeOption { id: r.id, display_name: r.display_name, storage_free_bytes, last_seen: r.last_seen }
         })
         .collect();
-    options.sort_by(|a, b| b.storage_free_bytes.unwrap_or(0).cmp(&a.storage_free_bytes.unwrap_or(0)));
+    options.sort_by_key(|o| std::cmp::Reverse(o.storage_free_bytes.unwrap_or(0)));
 
     Ok(Json(serde_json::json!({ "nodes": options })))
 }

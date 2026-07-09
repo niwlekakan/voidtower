@@ -207,7 +207,9 @@ timeline:read  network:read  storage:read  diagnostics:read
 proxy:read  proxy:manage  tags:read  vms:read  secrets:list
 ```
 
-See [docs/api-tokens.md](../api-tokens.md) for how to create a token with these scopes.
+See [docs/api-tokens.md](../api-tokens.md) for how to create a token with these scopes, including the
+`read`/`deploy`/`exec`/`admin-never` capability-tier minting shortcut — the recommended way to split a
+single god-token MCP integration into narrower per-capability tokens instead of one token with every scope.
 
 ---
 

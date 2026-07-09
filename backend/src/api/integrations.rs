@@ -65,6 +65,34 @@ pub const ALL_SCOPES: &[(&str, &str)] = &[
     ("tags:read", "List resource tags"),
 ];
 
+/// P0.6 part 2 (docs/gap-analysis.md §2): coarser, user-facing minting
+/// convenience layered on top of the fine-grained scope enforcement in
+/// `auth::scope_enforce` — each tier is just a fixed subset of `ALL_SCOPES`.
+/// `admin-never` is a hard invariant enforced structurally: its scope set is
+/// empty, so it can never match any entry in `scope_enforce::ROUTE_SCOPES`,
+/// not because minting trusts a self-reported label
+/// (docs/adr/ADR-003-auth-scope-enforcement.md, Constraint 4).
+pub const CAPABILITY_TIERS: &[(&str, &[&str])] = &[
+    (
+        "read",
+        &[
+            "metrics:read", "services:read", "containers:read", "containers:logs",
+            "apps:read", "backups:read", "alerts:read", "automation:read", "timeline:read",
+            "network:read", "files:read", "storage:read", "proxy:read", "diagnostics:read",
+            "secrets:list", "vms:read", "tags:read",
+        ],
+    ),
+    ("deploy", &["apps:read", "apps:deploy", "apps:restart"]),
+    (
+        "exec",
+        &[
+            "containers:read", "containers:restart", "containers:logs",
+            "services:read", "services:restart", "automation:read", "automation:run",
+        ],
+    ),
+    ("admin-never", &[]),
+];
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -161,7 +189,16 @@ pub struct TokenRow {
 #[derive(Deserialize)]
 pub struct CreateTokenReq {
     pub name: String,
+    /// Explicit scope list — the original minting path, still supported
+    /// unchanged for existing integrations. Ignored when `tier` is set.
+    #[serde(default)]
     pub scopes: Vec<String>,
+    /// Capability-tier minting convenience (see `CAPABILITY_TIERS`): one of
+    /// "read", "deploy", "exec", "admin-never". When set, this replaces
+    /// `scopes` with the tier's fixed scope subset server-side — the caller
+    /// cannot widen a tier by also passing `scopes`.
+    #[serde(default)]
+    pub tier: Option<String>,
     pub expires_days: Option<i64>,
     /// When set, this token can only access the listed secret IDs. None = unrestricted.
     pub secret_ids: Option<Vec<String>>,
@@ -231,14 +268,26 @@ pub async fn create_token(
     if req.name.trim().is_empty() {
         return Err(AppError::BadRequest("Token name is required".into()));
     }
-    if req.scopes.is_empty() {
-        return Err(AppError::BadRequest(
-            "At least one scope is required".into(),
-        ));
-    }
+    // Capability tier replaces the explicit `scopes` list server-side — a
+    // caller can't request "exec" and also smuggle in extra scopes via the
+    // `scopes` field, since that field is simply not consulted here.
+    let scopes: Vec<String> = if let Some(tier) = &req.tier {
+        let (_, tier_scopes) = CAPABILITY_TIERS
+            .iter()
+            .find(|(name, _)| name == tier)
+            .ok_or_else(|| AppError::BadRequest(format!("Unknown capability tier: {tier}")))?;
+        tier_scopes.iter().map(|s| s.to_string()).collect()
+    } else {
+        if req.scopes.is_empty() {
+            return Err(AppError::BadRequest(
+                "At least one scope is required".into(),
+            ));
+        }
+        req.scopes.clone()
+    };
 
     let valid: std::collections::HashSet<&str> = ALL_SCOPES.iter().map(|(s, _)| *s).collect();
-    for scope in &req.scopes {
+    for scope in &scopes {
         if !valid.contains(scope.as_str()) {
             return Err(AppError::BadRequest(format!("Unknown scope: {scope}")));
         }
@@ -249,7 +298,7 @@ pub async fn create_token(
     let id = Uuid::new_v4().to_string();
     let now = unix_now();
     let expires_at = req.expires_days.map(|d| now + d * 86400);
-    let scopes_json = serde_json::to_string(&req.scopes).unwrap_or_default();
+    let scopes_json = serde_json::to_string(&scopes).unwrap_or_default();
     let secret_ids_json = req
         .secret_ids
         .as_ref()
@@ -295,7 +344,7 @@ pub async fn create_token(
         id,
         token: raw_token,
         name: req.name,
-        scopes: req.scopes,
+        scopes,
         created_at: now,
         secret_ids: req.secret_ids,
     }))

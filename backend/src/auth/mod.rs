@@ -1,3 +1,5 @@
+pub mod scope_enforce;
+
 use anyhow::Result;
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -342,6 +344,28 @@ pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Resul
         .bind(now).bind(&row.id).execute(pool).await;
 
     Ok(row.user_id)
+}
+
+/// Looks up the declared scopes for a raw Bearer token, independent of
+/// whether the token owner's role would otherwise grant broader access.
+/// Used by `bearer_auth::middleware` to attach `TokenScopes` to the request
+/// so `scope_enforce::middleware` has something to check downstream — see
+/// docs/adr/ADR-003-auth-scope-enforcement.md.
+pub async fn token_scopes(pool: &SqlitePool, raw_token: &str) -> Result<Vec<String>> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(raw_token.as_bytes());
+    let token_hash = hex::encode(h.finalize());
+
+    let scopes_json: Option<String> =
+        sqlx::query_scalar("SELECT scopes FROM api_tokens WHERE token_hash = ?")
+            .bind(&token_hash)
+            .fetch_optional(pool)
+            .await?;
+
+    Ok(scopes_json
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default())
 }
 
 /// Create a short-lived (1 hour) session for API token requests.

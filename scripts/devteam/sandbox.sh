@@ -55,14 +55,23 @@ setup() {
     [[ -n "$TOKEN" ]] || { echo "no token given — agents will not be able to push."; }
     if [[ -n "$TOKEN" ]]; then
       umask 077
-      printf 'https://x-access-token:%s@github.com\n' "$TOKEN" > "$CREDS"
+      printf '%s' "$TOKEN" > "$CREDS"
       chmod 600 "$CREDS"
       unset TOKEN
       echo "stored in $CREDS (0600, mounted read-only into the sandbox)"
     fi
   fi
-  git -C "$CLONE" config credential.helper "store --file=/gitcreds"
-  git -C "$CLONE" remote set-url origin "https://github.com/$(basename "$(dirname "$ORIGIN")")/$(basename "$ORIGIN" .git).git" 2>/dev/null || true
+  # GIT_ASKPASS shim: git asks it for username/password; it answers from the env.
+  # More robust than credential.helper (which wants to write back to its own file).
+  {
+    echo '#!/bin/sh'
+    echo 'case "$1" in'
+    echo '  Username*) echo "x-access-token" ;;'
+    echo '  Password*) echo "${GITHUB_TOKEN}" ;;'
+    echo 'esac'
+  } > "$BASE/askpass.sh"
+  chmod +x "$BASE/askpass.sh"
+  git -C "$CLONE" config --unset-all credential.helper 2>/dev/null || true
 
   podman build -t "$IMG" -f - "$BASE" <<'EOF'
 FROM docker.io/library/rust:1-bookworm
@@ -92,7 +101,10 @@ _podman() {
     -v "$CLONE:/work:Z" \
     -v "$CFG:/claude-config:Z" \
     -v "$CARGO_CACHE:/cargo:Z" \
-    $( [[ -f "$CREDS" ]] && echo "-v $CREDS:/gitcreds:ro,Z" ) \
+    -v "$BASE/askpass.sh:/usr/local/bin/askpass:ro,Z" \
+    -e GIT_ASKPASS=/usr/local/bin/askpass \
+    -e GIT_TERMINAL_PROMPT=0 \
+    -e GITHUB_TOKEN="$(cat "$CREDS" 2>/dev/null || true)" \
     -w /work \
     "$IMG" "$@"
 }
@@ -129,5 +141,9 @@ case "${1:-}" in
     echo "[sandbox] normal checkout. Sandbox clone lives at: $CLONE"
     ;;
   shell) _podman bash ;;
-  *) echo "usage: sandbox.sh {setup|run [devteam args]|shell}"; exit 1 ;;
+  auth-test)
+    echo "[sandbox] testing push credentials (dry run, no writes)…"
+    _podman bash -lc 'git ls-remote --heads origin >/dev/null 2>&1 && echo "✔ read OK" || { echo "✖ read FAILED"; exit 1; }
+      git push --dry-run origin HEAD:refs/heads/devteam/_authtest 2>&1 | tail -2' ;;
+  *) echo "usage: sandbox.sh {setup|run [devteam args]|shell|auth-test}"; exit 1 ;;
 esac

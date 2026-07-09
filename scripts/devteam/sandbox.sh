@@ -80,7 +80,26 @@ case "${1:-}" in
     shift
     # -it (already set) gives the container a TTY so preflight/escalation prompts work.
     # For overnight batches with no human present, pass --unattended through to devteam.sh.
-    ( cd "$CLONE" && git fetch origin && git checkout -q main && git pull -q )
+    # The sandbox clone is disposable; origin is the source of truth. Never merge here —
+    # hard-track origin/main. Any local main commits (a worker that ignored the branch rule)
+    # are preserved under refs sandbox-backup/* rather than silently discarded.
+    (
+      cd "$CLONE"
+      git fetch origin -q
+      if [[ -n "$(git log --oneline origin/main..main 2>/dev/null)" ]]; then
+        bk="sandbox-backup/main-$(date +%Y%m%d-%H%M%S)"
+        git branch -f "$bk" main
+        echo "[sandbox] WARNING: local commits on main were preserved as '$bk':"
+        git log --oneline origin/main..main | sed 's/^/[sandbox]   /'
+        echo "[sandbox] Push it if you want it: git -C $CLONE push origin $bk"
+      fi
+      if ! git diff --quiet || ! git diff --cached --quiet; then
+        echo "[sandbox] NOTE: uncommitted changes in the clone will be discarded."
+        git stash push -u -m "devteam-autostash-$(date +%s)" >/dev/null 2>&1 || true
+        echo "[sandbox] (recover with: git -C $CLONE stash list)"
+      fi
+      git checkout -q -B main origin/main
+    )
     _podman scripts/devteam/devteam.sh "$@"
     echo
     echo "[sandbox] branches pushed to origin by workers; review PRs from your"

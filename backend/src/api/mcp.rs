@@ -3,6 +3,7 @@ use crate::{
     containers,
     error::AppError,
     services,
+    voidwatch::{self, ActionKind, Actor, ActorKind, Resource},
     AppState,
 };
 use axum::{
@@ -151,7 +152,7 @@ async fn dispatch(state: &AppState, req: JsonRpcRequest) -> JsonRpcResponse {
     match req.method.as_str() {
         "initialize" => handle_initialize(id),
         "tools/list" => handle_tools_list(id),
-        "tools/call" => handle_tools_call(state, id, req.params).await,
+        "tools/call" => handle_tools_call(state, id, req.params, Actor { kind: ActorKind::ApiToken }).await,
         _ => err_response(id, -32601, "Method not found"),
     }
 }
@@ -257,26 +258,14 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
 // tools/call
 // ---------------------------------------------------------------------------
 
-async fn handle_tools_call(state: &AppState, id: Option<Value>, params: Value) -> JsonRpcResponse {
+async fn handle_tools_call(state: &AppState, id: Option<Value>, params: Value, actor: Actor) -> JsonRpcResponse {
     let tool_name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n.to_string(),
         None => return err_response(id, -32602, "Missing tool name in params"),
     };
     let args = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
 
-    let result = match tool_name.as_str() {
-        "list_nodes"        => tool_list_nodes(state).await,
-        "get_node_metrics"  => tool_get_node_metrics(state).await,
-        "list_containers"   => tool_list_containers().await,
-        "list_services"     => tool_list_services().await,
-        "list_alerts"       => tool_list_alerts(state).await,
-        "get_container_logs" => tool_get_container_logs(args).await,
-        "list_routes"  => tool_list_routes(state),
-        "read_file"    => tool_read_file(state, args),
-        "search_code"  => tool_search_code(state, args),
-        "get_template" => tool_get_template(args),
-        _ => Err(format!("Unknown tool: {tool_name}")),
-    };
+    let result = invoke_tool(state, actor, &tool_name, args).await;
 
     match result {
         Ok(text) => ok_response(id, serde_json::json!({
@@ -434,7 +423,50 @@ pub fn tools_json() -> Value {
     handle_tools_list(None).result.unwrap_or(serde_json::json!({"tools":[]}))
 }
 
-pub async fn invoke_tool(state: &AppState, name: &str, args: Value) -> std::result::Result<String, String> {
+/// All MCP tools currently registered are read-only (verified against the match arms
+/// below). Anything not in this list is treated as `ActionKind::Mutating`, so
+/// `voidwatch::evaluate` requires an explicit allow rule before it can run — a tool
+/// added here that mutates state must be a deliberate addition to this list, not a
+/// silent default-allow.
+const READ_ONLY_TOOLS: &[&str] = &[
+    "list_nodes",
+    "get_node_metrics",
+    "list_containers",
+    "list_services",
+    "list_alerts",
+    "get_container_logs",
+    "list_routes",
+    "read_file",
+    "search_code",
+    "get_template",
+];
+
+fn tool_action_kind(name: &str) -> ActionKind {
+    if READ_ONLY_TOOLS.contains(&name) {
+        ActionKind::Read
+    } else {
+        ActionKind::Mutating
+    }
+}
+
+/// The single entry point for running an MCP tool, gated by `voidwatch::evaluate`.
+/// Used by both the bearer-token JSON-RPC dispatch (`handle_tools_call`) and the
+/// session-authenticated Studio panel (`api/studio.rs`'s `mcp_invoke`).
+pub async fn invoke_tool(state: &AppState, actor: Actor, name: &str, args: Value) -> std::result::Result<String, String> {
+    let verdict = voidwatch::evaluate(
+        &state.db,
+        actor,
+        tool_action_kind(name),
+        name,
+        Resource { resource_type: "mcp_tool", resource_id: name },
+    )
+    .await;
+
+    match verdict {
+        voidwatch::Verdict::Allow => {}
+        voidwatch::Verdict::Deny(reason) => return Err(format!("Denied by policy: {reason}")),
+    }
+
     match name {
         "list_nodes"         => tool_list_nodes(state).await,
         "get_node_metrics"   => tool_get_node_metrics(state).await,

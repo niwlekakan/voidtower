@@ -19,6 +19,7 @@ mod services;
 mod storage;
 mod terminal;
 mod vms;
+mod voidwatch;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

@@ -1,6 +1,6 @@
 # ADR-003 — Auth-model grant for Phase P0.6 (bearer-token scope enforcement)
 
-**Status:** Proposed
+**Status:** Accepted (signed by operator niwlekakan on 2026-07-09)
 **Date:** 2026-07-09
 **Expires:** at P0 phase exit (gap-analysis §2 exit criteria met and verified by the operator)
 

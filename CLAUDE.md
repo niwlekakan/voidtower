@@ -43,7 +43,11 @@ Active ECC skills for this repo: `continuous-agent-loop`, `verification-loop`, `
 
 ## Escalation
 
-Write `.devteam/escalations/<task-id>.md` with: what blocked you, what you tried, the minimal question for the human. Move your task file to `.devteam/blocked/`. End the session. Do not guess through ambiguity in policy, auth, schema, or protocol work — those are exactly the places guessing costs the most.
+Write `.devteam/escalations/<task-id>.md` with: what blocked you, what you tried, the minimal question for the human. Then end the session. **Do not move, rename, or delete your task file — the runner owns the queue lifecycle.** Do not guess through ambiguity in policy, auth, schema, or protocol work — those are exactly the places guessing costs the most.
+
+## Forbidden-zone grants (ADRs)
+
+Some phases — P0 especially — legitimately require modifying forbidden-zone files. Authorization is an ADR in `docs/adr/`, written and committed by the human, cited by ID in your task spec (e.g. "Forbidden-zone grant: ADR-001"). The grant is scoped: it names exactly which paths it opens and under what constraints, and it expires at phase exit. A spec citing an ADR authorizes only the paths that ADR names — everything else in the forbidden list stays closed. No ADR citation in your spec = the zone is closed to you = escalate, exactly as the rules say.
 
 ---
 

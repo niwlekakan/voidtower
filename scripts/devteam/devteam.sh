@@ -49,6 +49,10 @@ check_flags() {
 
 next_task() { ls "$QUEUE"/*.md 2>/dev/null | sort | head -1; }
 
+stash() {  # move a task file if it still exists (agents must not move files, but be tolerant)
+  [[ -f "$1" ]] && mv "$1" "$2" || true
+}
+
 run_worker() {  # $1 = task file (in ACTIVE), $2 = log file
   local task="$1" log="$2" id; id="$(basename "$task" .md)"
   "$CLAUDE_BIN" -p "You are a WORKER on the VoidTower dev team. Read CLAUDE.md and obey it \
@@ -89,23 +93,23 @@ start_loop() {
 
     if run_worker "$task" "$log"; then
       if [[ -f "$ESC/${id}.md" ]]; then
-        echo "[devteam] ⚠ $id escalated — needs human."; mv "$task" "$BLOCKED/"
+        echo "[devteam] ⚠ $id escalated — needs human."; stash "$task" "$BLOCKED/"
       elif ( cd "$ROOT" && git checkout -q "devteam/${id}" 2>/dev/null && scripts/devteam/gates.sh >>"$log" 2>&1 ) \
            && run_review "$task" "$log"; then
         echo "[devteam] ✔ $id — gates + review passed; PR awaiting human merge."
-        mv "$task" "$DONE/"
+        stash "$task" "$DONE/"
       else
         if [[ -f "$DT/retried/${id}" ]]; then
-          echo "[devteam] ✖ $id failed twice — moved to failed/."; mv "$task" "$FAILED/"
+          echo "[devteam] ✖ $id failed twice — moved to failed/."; stash "$task" "$FAILED/"
         else
           mkdir -p "$DT/retried"; touch "$DT/retried/${id}"
           printf '\n## RETRY CONTEXT\nPrevious attempt failed gates/review. See %s and %s\n' \
             "${log#$ROOT/}" ".devteam/logs/${id}.review.md" >> "$task"
-          mv "$task" "$QUEUE/"; echo "[devteam] ↺ $id requeued with failure context."
+          stash "$task" "$QUEUE/"; echo "[devteam] ↺ $id requeued with failure context."
         fi
       fi
     else
-      echo "[devteam] ✖ $id worker session errored — see log."; mv "$task" "$FAILED/"
+      echo "[devteam] ✖ $id worker session errored — see log."; stash "$task" "$FAILED/"
     fi
     git -C "$ROOT" checkout -q main || true
     rm -f "$DT/CURRENT"

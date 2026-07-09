@@ -3,8 +3,8 @@ use crate::{
     auth,
     containers::{self, ContainerAction},
     error::{AppError, Result},
-    policy,
     services::{self, ServiceAction},
+    voidwatch,
     AppState,
 };
 use axum::{
@@ -18,6 +18,7 @@ use futures_util::StreamExt;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::SqlitePool;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
@@ -673,6 +674,117 @@ pub struct WebhookReq {
     pub dry_run: Option<bool>,
 }
 
+/// Runs an `automation_id`-triggered job's command. Split out from `webhook()` so it
+/// can be exercised directly against a `SqlitePool` in tests.
+async fn run_automation_job(
+    db: &SqlitePool,
+    automation_id: &str,
+    job: (String, String, i64),
+    dry_run: bool,
+) -> Result<()> {
+    let verdict = voidwatch::evaluate(
+        db,
+        voidwatch::Actor { kind: voidwatch::ActorKind::Automation },
+        voidwatch::ActionKind::Mutating,
+        "automation.run",
+        voidwatch::Resource { resource_type: "automation_job", resource_id: automation_id },
+    )
+    .await;
+
+    if let voidwatch::Verdict::Deny(reason) = verdict {
+        audit::log_sourced(
+            db,
+            None,
+            "agent",
+            "integrations.webhook.automation_trigger",
+            Some("automation_job"),
+            Some(automation_id),
+            "blocked",
+            None,
+            Some(&reason),
+            Some("odysseus"),
+        )
+        .await;
+        return Err(AppError::PolicyDenied(reason));
+    }
+
+    audit::log_sourced(
+        db,
+        None,
+        "agent",
+        "integrations.webhook.automation_trigger",
+        Some("automation_job"),
+        Some(automation_id),
+        "success",
+        None,
+        Some(&format!("dry_run={dry_run}")),
+        Some("odysseus"),
+    )
+    .await;
+
+    if !dry_run {
+        let (job_id, command, timeout_secs) = job;
+        let db = db.clone();
+        tokio::spawn(async move {
+            let run_id = Uuid::new_v4().to_string();
+            let started = unix_now();
+            let _ = sqlx::query(
+                "INSERT INTO automation_runs (id, job_id, started_at, status, output) VALUES (?,?,?,'running','')",
+            )
+            .bind(&run_id)
+            .bind(&job_id)
+            .bind(started)
+            .execute(&db)
+            .await;
+
+            let timeout = Duration::from_secs(timeout_secs.max(1) as u64);
+            let (status, exit_code, output) = match tokio::time::timeout(timeout, async {
+                tokio::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(&command)
+                    .output()
+                    .await
+            })
+            .await
+            {
+                Ok(Ok(out)) => {
+                    let code = out.status.code().unwrap_or(-1) as i64;
+                    let status = if out.status.success() { "success" } else { "failure" };
+                    let output = String::from_utf8_lossy(&out.stdout).to_string()
+                        + &String::from_utf8_lossy(&out.stderr);
+                    (status.to_string(), Some(code), output)
+                }
+                _ => ("failure".to_string(), Some(-1), "Timeout or exec error".to_string()),
+            };
+
+            let finished = unix_now();
+            let _ = sqlx::query(
+                "UPDATE automation_runs SET finished_at=?, status=?, exit_code=?, output=? WHERE id=?",
+            )
+            .bind(finished)
+            .bind(&status)
+            .bind(exit_code)
+            .bind(&output)
+            .bind(&run_id)
+            .execute(&db)
+            .await;
+
+            let _ = sqlx::query(
+                "UPDATE automation_jobs SET last_run_at=?, last_status=?, last_exit_code=?, updated_at=? WHERE id=?",
+            )
+            .bind(finished)
+            .bind(&status)
+            .bind(exit_code)
+            .bind(finished)
+            .bind(&job_id)
+            .execute(&db)
+            .await;
+        });
+    }
+
+    Ok(())
+}
+
 pub async fn webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -719,79 +831,7 @@ pub async fn webhook(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-        audit::log_sourced(
-            &state.db,
-            None,
-            "agent",
-            "integrations.webhook.automation_trigger",
-            Some("automation_job"),
-            Some(&automation_id),
-            "success",
-            None,
-            Some(&format!("dry_run={dry_run}")),
-            Some("odysseus"),
-        )
-        .await;
-
-        if !dry_run {
-            let (job_id, command, timeout_secs) = job;
-            let db = state.db.clone();
-            tokio::spawn(async move {
-                let run_id = Uuid::new_v4().to_string();
-                let started = unix_now();
-                let _ = sqlx::query(
-                    "INSERT INTO automation_runs (id, job_id, started_at, status, output) VALUES (?,?,?,'running','')",
-                )
-                .bind(&run_id)
-                .bind(&job_id)
-                .bind(started)
-                .execute(&db)
-                .await;
-
-                let timeout = Duration::from_secs(timeout_secs.max(1) as u64);
-                let (status, exit_code, output) = match tokio::time::timeout(timeout, async {
-                    tokio::process::Command::new("bash")
-                        .arg("-c")
-                        .arg(&command)
-                        .output()
-                        .await
-                })
-                .await
-                {
-                    Ok(Ok(out)) => {
-                        let code = out.status.code().unwrap_or(-1) as i64;
-                        let status = if out.status.success() { "success" } else { "failure" };
-                        let output = String::from_utf8_lossy(&out.stdout).to_string()
-                            + &String::from_utf8_lossy(&out.stderr);
-                        (status.to_string(), Some(code), output)
-                    }
-                    _ => ("failure".to_string(), Some(-1), "Timeout or exec error".to_string()),
-                };
-
-                let finished = unix_now();
-                let _ = sqlx::query(
-                    "UPDATE automation_runs SET finished_at=?, status=?, exit_code=?, output=? WHERE id=?",
-                )
-                .bind(finished)
-                .bind(&status)
-                .bind(exit_code)
-                .bind(&output)
-                .bind(&run_id)
-                .execute(&db)
-                .await;
-
-                let _ = sqlx::query(
-                    "UPDATE automation_jobs SET last_run_at=?, last_status=?, last_exit_code=?, updated_at=? WHERE id=?",
-                )
-                .bind(finished)
-                .bind(&status)
-                .bind(exit_code)
-                .bind(finished)
-                .bind(&job_id)
-                .execute(&db)
-                .await;
-            });
-        }
+        run_automation_job(&state.db, &automation_id, job, dry_run).await?;
 
         return Ok(Json(serde_json::json!({
             "ok": true,
@@ -816,8 +856,15 @@ pub async fn webhook(
             };
 
         // Policy check — actor_type "automation" for webhook-sourced actions
-        let verdict = policy::check(&state.db, "automation", action_name, resource_type, &resource_id).await;
-        if let policy::PolicyVerdict::Deny(reason) = verdict {
+        let verdict = voidwatch::evaluate(
+            &state.db,
+            voidwatch::Actor { kind: voidwatch::ActorKind::Automation },
+            voidwatch::ActionKind::Mutating,
+            action_name,
+            voidwatch::Resource { resource_type, resource_id: &resource_id },
+        )
+        .await;
+        if let voidwatch::Verdict::Deny(reason) = verdict {
             audit::log_sourced(
                 &state.db, None, "agent",
                 &format!("integrations.webhook.{}.{}", resource_type, action_name),
@@ -933,4 +980,77 @@ pub async fn recent_actions(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(Json(serde_json::json!({ "actions": rows })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// `db::run_migrations` doesn't create `policy_rules` — see the same note in
+    /// `voidwatch::tests::setup_db`.
+    async fn setup_db() -> SqlitePool {
+        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS policy_rules (
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                actor_type    TEXT NOT NULL DEFAULT 'api_token',
+                action        TEXT NOT NULL DEFAULT '*',
+                resource_type TEXT NOT NULL DEFAULT '*',
+                resource_tag  TEXT,
+                effect        TEXT NOT NULL DEFAULT 'deny',
+                priority      INTEGER NOT NULL DEFAULT 100,
+                enabled       INTEGER NOT NULL DEFAULT 1,
+                created_at    INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    /// Reproduces the pre-P0-01 bypass: `automation_id`-triggered jobs ran regardless
+    /// of any policy rule, because nothing in this path ever consulted `policy_rules`.
+    /// Once `run_automation_job` routes through `voidwatch::evaluate`, a matching deny
+    /// rule must block the job (dry_run=true so a false pass can't hide behind "it
+    /// would have failed to spawn anyway" — a blocked job must return `Err` regardless).
+    #[tokio::test]
+    async fn integrations_automation_id_path_is_policy_gated() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO policy_rules (id, name, actor_type, action, resource_type, resource_tag, effect, priority, enabled, created_at)
+             VALUES ('deny-automation-run', 'test deny', 'automation', 'automation.run', 'automation_job', NULL, 'deny', 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = run_automation_job(
+            &pool,
+            "job-1",
+            ("job-1".to_string(), "echo pwned".to_string(), 5),
+            true,
+        )
+        .await;
+
+        assert!(result.is_err(), "a matching deny policy rule must block the automation_id-triggered job");
+    }
+
+    #[tokio::test]
+    async fn integrations_automation_id_path_runs_when_no_rule_matches() {
+        let pool = setup_db().await;
+
+        let result = run_automation_job(
+            &pool,
+            "job-1",
+            ("job-1".to_string(), "echo hi".to_string(), 5),
+            true,
+        )
+        .await;
+
+        assert!(result.is_ok(), "no-op-by-default: an unclassified automation job must still run absent a deny rule (ADR-001)");
+    }
 }

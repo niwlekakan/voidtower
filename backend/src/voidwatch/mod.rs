@@ -25,6 +25,7 @@
 //! the P0-01/P0-02 behavior described above — see [`mode::get_mode`]'s doc comment.
 
 pub(crate) mod allowlist_seed;
+pub mod denylist;
 pub mod mode;
 pub mod risk_class;
 

@@ -707,6 +707,31 @@ pub struct WebhookReq {
     pub dry_run: Option<bool>,
 }
 
+/// Neither `webhook()` call site below has anywhere to park a verdict short of a plain
+/// `Allow`: there's no approval-queue to hold a `RequireApproval` (P0-03 scope note), and
+/// no snapshot mechanism wired to this ingress path to satisfy `AllowRequireSnapshot` —
+/// unlike `api/proxmox.rs`'s `vm_snapshot`, nothing here can snapshot a Docker container
+/// or service before mutating it. So every non-`Allow` verdict blocks here; the safe
+/// interim behavior is to refuse rather than silently proceed as if it were `Allow`.
+///
+/// This one function is shared by both call sites specifically so that reasoning can't
+/// drift out of sync between them again — the P0-03 review's Finding 1 was exactly that
+/// drift: `run_automation_job`'s match arm was correct (`AllowRequireSnapshot` never
+/// actually occurs for its fixed `"automation_job"` resource type) but its "not reachable,
+/// treat like `Allow`" shape got copy-pasted onto `webhook()`'s structured-action match
+/// arm below, where `resource_type` is *not* fixed and does include `"container"` (a
+/// `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES` entry) — so `AllowRequireSnapshot` was
+/// reachable there and got silently treated as `Allow`, skipping the "mandatory" pre-apply
+/// snapshot Trusted mode is supposed to guarantee.
+fn verdict_block_reason(verdict: &voidwatch::Verdict) -> Option<&str> {
+    match verdict {
+        voidwatch::Verdict::Allow => None,
+        voidwatch::Verdict::Deny(reason)
+        | voidwatch::Verdict::RequireApproval(reason)
+        | voidwatch::Verdict::AllowRequireSnapshot(reason) => Some(reason),
+    }
+}
+
 /// Runs an `automation_id`-triggered job's command. Split out from `webhook()` so it
 /// can be exercised directly against a `SqlitePool` in tests.
 async fn run_automation_job(
@@ -729,7 +754,7 @@ async fn run_automation_job(
     )
     .await;
 
-    if let voidwatch::Verdict::Deny(reason) = verdict {
+    if let Some(reason) = verdict_block_reason(&verdict) {
         audit::log_sourced(
             db,
             None,
@@ -739,11 +764,11 @@ async fn run_automation_job(
             Some(automation_id),
             "blocked",
             None,
-            Some(&reason),
+            Some(reason),
             Some("odysseus"),
         )
         .await;
-        return Err(AppError::PolicyDenied(reason));
+        return Err(AppError::PolicyDenied(reason.to_string()));
     }
 
     audit::log_sourced(
@@ -918,7 +943,12 @@ pub async fn webhook(
             },
         )
         .await;
-        if let voidwatch::Verdict::Deny(reason) = verdict {
+        // See `verdict_block_reason`'s doc comment above — this is the call site whose
+        // resource_type (`"container"` for the restart/start/stop actions matched above)
+        // actually is snapshot-capable, so this is where Finding 1 was live: silently
+        // treating `AllowRequireSnapshot` as `Allow` let a Trusted-mode-mandated
+        // pre-apply snapshot be skipped entirely.
+        if let Some(reason) = verdict_block_reason(&verdict) {
             audit::log_sourced(
                 &state.db,
                 None,
@@ -928,11 +958,11 @@ pub async fn webhook(
                 Some(&resource_id),
                 "blocked",
                 None,
-                Some(&reason),
+                Some(reason),
                 Some("odysseus"),
             )
             .await;
-            return Err(AppError::PolicyDenied(reason));
+            return Err(AppError::PolicyDenied(reason.to_string()));
         }
 
         audit::log_sourced(
@@ -1094,6 +1124,19 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // Needed for the P0-03 mode-ladder pre-pass (`voidwatch::mode::get_mode`) —
+        // see the identical table in `voidwatch::mode::tests::setup_db`.
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS voidwatch_mode_settings (
+                scope         TEXT PRIMARY KEY,
+                mode          TEXT NOT NULL DEFAULT 'observer',
+                updated_at    INTEGER NOT NULL,
+                updated_by    TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         pool
     }
 
@@ -1168,5 +1211,87 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "an allowlisted action must still run");
+    }
+
+    /// `verdict_block_reason` is what both `webhook()` call sites consult before
+    /// executing a mutation — this is the shared logic Finding 1 (P0-03 adversarial
+    /// review) found broken at one of its two call sites. Assert directly that all three
+    /// non-`Allow` variants block, `AllowRequireSnapshot` included: silently treating it
+    /// like `Allow` is exactly how a Trusted-mode "mandatory" pre-apply snapshot got
+    /// skipped last time.
+    #[test]
+    fn verdict_block_reason_blocks_everything_but_allow() {
+        assert_eq!(verdict_block_reason(&voidwatch::Verdict::Allow), None);
+        assert_eq!(
+            verdict_block_reason(&voidwatch::Verdict::Deny("denied".into())),
+            Some("denied")
+        );
+        assert_eq!(
+            verdict_block_reason(&voidwatch::Verdict::RequireApproval(
+                "needs approval".into()
+            )),
+            Some("needs approval")
+        );
+        assert_eq!(
+            verdict_block_reason(&voidwatch::Verdict::AllowRequireSnapshot(
+                "needs snapshot".into()
+            )),
+            Some("needs snapshot"),
+            "AllowRequireSnapshot must block here (no snapshot mechanism is wired to this \
+             ingress path) — treating it like Allow is the regression this test guards \
+             against"
+        );
+    }
+
+    /// Reproduces the exact Finding 1 scenario end-to-end through `voidwatch::evaluate`:
+    /// Trusted mode, an allowlisted `(automation, restart, container)` tuple — precisely
+    /// the shape `webhook()`'s structured-action branch produces for `container.restart`.
+    /// `resource_type = "container"` is in `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES`,
+    /// so `evaluate()` must return `AllowRequireSnapshot`, and `verdict_block_reason` must
+    /// treat that as blocking rather than as `Allow` — otherwise a container gets
+    /// restarted with the mandatory pre-apply snapshot silently skipped.
+    #[tokio::test]
+    async fn structured_action_snapshot_required_verdict_blocks_instead_of_silently_allowing() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO voidwatch_mode_settings (scope, mode, updated_at) VALUES (?, ?, 0)",
+        )
+        .bind(crate::voidwatch::mode::GLOBAL_SCOPE)
+        .bind("trusted")
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at)
+             VALUES ('a1', 'automation', 'restart', 'container', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let verdict = voidwatch::evaluate(
+            &pool,
+            voidwatch::Actor {
+                kind: voidwatch::ActorKind::Automation,
+            },
+            voidwatch::ActionKind::Mutating,
+            "restart",
+            voidwatch::Resource {
+                resource_type: "container",
+                resource_id: "c1",
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(verdict, voidwatch::Verdict::AllowRequireSnapshot(_)),
+            "expected AllowRequireSnapshot for an allowlisted mutate-class action on a \
+             snapshot-capable resource type in Trusted mode, got {verdict:?}"
+        );
+        assert!(
+            verdict_block_reason(&verdict).is_some(),
+            "webhook()'s structured-action path has no snapshot mechanism wired up, so \
+             this verdict must block execution, not proceed as if it were Allow"
+        );
     }
 }

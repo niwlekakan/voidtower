@@ -63,11 +63,19 @@ pub async fn check(
     .unwrap_or_default();
 
     for rule in &rules {
-        if !matches_actor(&rule.actor_type, actor_type) { continue; }
-        if !matches_field(&rule.action, action)          { continue; }
-        if !matches_field(&rule.resource_type, resource_type) { continue; }
+        if !matches_actor(&rule.actor_type, actor_type) {
+            continue;
+        }
+        if !matches_field(&rule.action, action) {
+            continue;
+        }
+        if !matches_field(&rule.resource_type, resource_type) {
+            continue;
+        }
         if let Some(required_tag) = &rule.resource_tag {
-            if !tag_names.iter().any(|t| t == required_tag) { continue; }
+            if !tag_names.iter().any(|t| t == required_tag) {
+                continue;
+            }
         }
 
         return if rule.effect == "deny" {
@@ -77,7 +85,34 @@ pub async fn check(
         };
     }
 
-    PolicyVerdict::Allow
+    // No matching rule (gap-analysis P0.2): `user` sessions are RBAC-governed, not
+    // policy_rules-governed (see `voidwatch::ActorKind`'s doc comment), so their
+    // default-allow behavior is unchanged. `api_token` / `automation` / `ai` flip to
+    // default-deny — allowed only via an explicit entry in
+    // `voidwatch_default_allowlist`, seeded on upgrade by
+    // `db::seed_default_allowlist_if_empty` so pre-existing usage doesn't break.
+    if actor_type == "user" {
+        return PolicyVerdict::Allow;
+    }
+
+    let allowlisted: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM voidwatch_default_allowlist
+         WHERE actor_type = ? AND action = ? AND resource_type = ? LIMIT 1",
+    )
+    .bind(actor_type)
+    .bind(action)
+    .bind(resource_type)
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    if allowlisted.is_some() {
+        PolicyVerdict::Allow
+    } else {
+        PolicyVerdict::Deny(format!(
+            "No policy rule or default allowlist entry permits \"{action}\" on \"{resource_type}\" for actor type \"{actor_type}\" (default-deny)"
+        ))
+    }
 }
 
 fn matches_actor(rule_actor: &str, request_actor: &str) -> bool {
@@ -108,6 +143,158 @@ where
         parts: &mut axum::http::request::Parts,
         _state: &S,
     ) -> std::result::Result<Self, Self::Rejection> {
-        Ok(MaybeTokenActor(parts.extensions.get::<ApiTokenActor>().is_some()))
+        Ok(MaybeTokenActor(
+            parts.extensions.get::<ApiTokenActor>().is_some(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// Mirrors `voidwatch::tests::setup_db` — `db::run_migrations` doesn't create
+    /// `policy_rules` or `voidwatch_default_allowlist` (those live in `db::init_pool`
+    /// / `db::seed_default_allowlist_if_empty`, outside the migration path tests use
+    /// elsewhere in this crate), so tests here create them directly.
+    async fn setup_db() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS policy_rules (
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                actor_type    TEXT NOT NULL DEFAULT 'api_token',
+                action        TEXT NOT NULL DEFAULT '*',
+                resource_type TEXT NOT NULL DEFAULT '*',
+                resource_tag  TEXT,
+                effect        TEXT NOT NULL DEFAULT 'deny',
+                priority      INTEGER NOT NULL DEFAULT 100,
+                enabled       INTEGER NOT NULL DEFAULT 1,
+                created_at    INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
+                id            TEXT PRIMARY KEY,
+                actor_type    TEXT NOT NULL,
+                action        TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                created_at    INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    /// user sessions are RBAC-governed, not policy_rules-governed (see
+    /// `voidwatch::ActorKind` doc comment) — this is a pure regression guard that
+    /// `check()`'s default verdict for `"user"` never changes.
+    #[tokio::test]
+    async fn check_defaults_to_allow_for_user_actor_with_no_matching_rule() {
+        let pool = setup_db().await;
+
+        let verdict = check(&pool, "user", "restart", "container", "c1").await;
+
+        assert!(matches!(verdict, PolicyVerdict::Allow));
+    }
+
+    #[tokio::test]
+    async fn check_defaults_to_deny_for_ai_actor_with_no_matching_rule() {
+        let pool = setup_db().await;
+
+        let verdict = check(&pool, "ai", "restart", "container", "c1").await;
+
+        assert!(matches!(verdict, PolicyVerdict::Deny(_)));
+    }
+
+    #[tokio::test]
+    async fn check_defaults_to_deny_for_automation_actor_with_no_matching_rule() {
+        let pool = setup_db().await;
+
+        let verdict = check(&pool, "automation", "run", "automation_job", "job-1").await;
+
+        assert!(matches!(verdict, PolicyVerdict::Deny(_)));
+    }
+
+    /// api_token also flips to default-deny (gap-analysis P0.2) — a plain regression
+    /// guard alongside the ai/automation cases above.
+    #[tokio::test]
+    async fn check_defaults_to_deny_for_api_token_actor_with_no_matching_rule() {
+        let pool = setup_db().await;
+
+        let verdict = check(&pool, "api_token", "restart", "container", "c1").await;
+
+        assert!(matches!(verdict, PolicyVerdict::Deny(_)));
+    }
+
+    /// An entry in `voidwatch_default_allowlist` overrides the new default-deny for
+    /// non-`user` actor classes — this is the mechanism the P0.2 upgrade migration
+    /// relies on to avoid breaking currently-observed usage.
+    #[tokio::test]
+    async fn check_allows_default_deny_actor_when_allowlist_entry_matches() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at)
+             VALUES ('a1', 'automation', 'run', 'automation_job', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let verdict = check(&pool, "automation", "run", "automation_job", "job-1").await;
+
+        assert!(matches!(verdict, PolicyVerdict::Allow));
+    }
+
+    /// Seed of the P1 "exhaustive mode×risk×actor matrix" requirement (gap-analysis
+    /// §2 exit criteria) — written as a data-driven table over actor classes so P1 can
+    /// extend it with mode/risk dimensions instead of writing one-off tests per class.
+    #[tokio::test]
+    async fn check_default_verdict_matrix_by_actor_class() {
+        let pool = setup_db().await;
+
+        const CASES: &[(&str, bool)] = &[
+            ("user", true),
+            ("api_token", false),
+            ("automation", false),
+            ("ai", false),
+        ];
+
+        for (actor_type, expect_allow) in CASES {
+            let verdict = check(&pool, actor_type, "some_new_action", "container", "c1").await;
+            let allowed = matches!(verdict, PolicyVerdict::Allow);
+            assert_eq!(
+                allowed, *expect_allow,
+                "actor_type {actor_type:?}: expected allow={expect_allow}, got {verdict:?}"
+            );
+        }
+    }
+
+    /// An explicit deny rule still fires regardless of the actor-class default —
+    /// existing behavior, unchanged by the P0.2 default-deny flip.
+    #[tokio::test]
+    async fn check_explicit_deny_rule_still_fires_for_user_actor() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO policy_rules (id, name, actor_type, action, resource_type, resource_tag, effect, priority, enabled, created_at)
+             VALUES ('r1', 'test', 'user', 'remove', '*', NULL, 'deny', 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let verdict = check(&pool, "user", "remove", "container", "c1").await;
+
+        assert!(matches!(verdict, PolicyVerdict::Deny(_)));
     }
 }

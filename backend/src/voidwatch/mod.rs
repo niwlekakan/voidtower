@@ -379,9 +379,9 @@ mod tests {
     #[test]
     fn evaluate_is_the_only_caller_of_policy_check_from_ai_ingress() {
         const GATED_INGRESS_FILES: &[(&str, &str)] = &[
-            ("api/mcp.rs", include_str!("api/mcp.rs")),
-            ("api/studio.rs", include_str!("api/studio.rs")),
-            ("api/integrations.rs", include_str!("api/integrations.rs")),
+            ("api/mcp.rs", include_str!("../api/mcp.rs")),
+            ("api/studio.rs", include_str!("../api/studio.rs")),
+            ("api/integrations.rs", include_str!("../api/integrations.rs")),
         ];
 
         for (path, src) in GATED_INGRESS_FILES {

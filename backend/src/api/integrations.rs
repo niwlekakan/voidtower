@@ -729,21 +729,29 @@ async fn run_automation_job(
     )
     .await;
 
-    if let voidwatch::Verdict::Deny(reason) = verdict {
-        audit::log_sourced(
-            db,
-            None,
-            "agent",
-            "integrations.webhook.automation_trigger",
-            Some("automation_job"),
-            Some(automation_id),
-            "blocked",
-            None,
-            Some(&reason),
-            Some("odysseus"),
-        )
-        .await;
-        return Err(AppError::PolicyDenied(reason));
+    // `Deny` and `RequireApproval` are both blocking here: this webhook path has no
+    // approval-queue to park a `RequireApproval` verdict in yet (P0-03 scope note), so
+    // the safe interim behavior is to block rather than silently proceed as if it were
+    // `Allow`. `AllowRequireSnapshot` isn't reachable for `"automation_job"` resources
+    // (not in `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES`) but is handled structurally.
+    match &verdict {
+        voidwatch::Verdict::Allow | voidwatch::Verdict::AllowRequireSnapshot(_) => {}
+        voidwatch::Verdict::Deny(reason) | voidwatch::Verdict::RequireApproval(reason) => {
+            audit::log_sourced(
+                db,
+                None,
+                "agent",
+                "integrations.webhook.automation_trigger",
+                Some("automation_job"),
+                Some(automation_id),
+                "blocked",
+                None,
+                Some(reason),
+                Some("odysseus"),
+            )
+            .await;
+            return Err(AppError::PolicyDenied(reason.clone()));
+        }
     }
 
     audit::log_sourced(
@@ -918,21 +926,26 @@ pub async fn webhook(
             },
         )
         .await;
-        if let voidwatch::Verdict::Deny(reason) = verdict {
-            audit::log_sourced(
-                &state.db,
-                None,
-                "agent",
-                &format!("integrations.webhook.{}.{}", resource_type, action_name),
-                Some(resource_type),
-                Some(&resource_id),
-                "blocked",
-                None,
-                Some(&reason),
-                Some("odysseus"),
-            )
-            .await;
-            return Err(AppError::PolicyDenied(reason));
+        // See the matching comment on `run_automation_job`'s verdict handling above —
+        // `RequireApproval` blocks here too, for the same no-approval-queue-yet reason.
+        match &verdict {
+            voidwatch::Verdict::Allow | voidwatch::Verdict::AllowRequireSnapshot(_) => {}
+            voidwatch::Verdict::Deny(reason) | voidwatch::Verdict::RequireApproval(reason) => {
+                audit::log_sourced(
+                    &state.db,
+                    None,
+                    "agent",
+                    &format!("integrations.webhook.{}.{}", resource_type, action_name),
+                    Some(resource_type),
+                    Some(&resource_id),
+                    "blocked",
+                    None,
+                    Some(reason),
+                    Some("odysseus"),
+                )
+                .await;
+                return Err(AppError::PolicyDenied(reason.clone()));
+            }
         }
 
         audit::log_sourced(

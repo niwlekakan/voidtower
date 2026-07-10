@@ -432,6 +432,23 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
 
     crate::voidwatch::allowlist_seed::seed_default_allowlist_if_empty(&pool).await;
 
+    // Per-scope Voidwatch mode ladder storage (gap-analysis P0.3, ADR-002): the
+    // instance-wide default lives at scope `'global'`, per-device/app overrides at
+    // `'{resource_type}:{resource_id}'`. Additive only, like
+    // `voidwatch_default_allowlist` above — no seed row is inserted here (an absent row
+    // means "mode ladder not configured for this scope", which `voidwatch::mode::get_mode`
+    // treats as a deliberate no-op rather than a value this file would need to backfill).
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS voidwatch_mode_settings (
+            scope         TEXT PRIMARY KEY,
+            mode          TEXT NOT NULL DEFAULT 'observer',
+            updated_at    INTEGER NOT NULL,
+            updated_by    TEXT
+        )"#,
+    )
+    .execute(&pool)
+    .await;
+
     Ok(pool)
 }
 
@@ -724,10 +741,13 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// ADR-002 constraint 3: `voidwatch_default_allowlist`'s definition lives in
-    /// `tests/schema_golden.sql`, and this test asserts the live schema (produced by
-    /// the real `init_pool` path, not a hand-rolled test fixture) still matches it
-    /// byte-for-byte — a P1 baseline-migration prerequisite.
+    /// ADR-002 constraint 3: every P0-added table's definition lives in
+    /// `tests/schema_golden.sql` (statements separated by a lone `;` line, since the
+    /// live `sqlite_master.sql` text itself never contains one), and this test asserts
+    /// the live schema (produced by the real `init_pool` path, not a hand-rolled test
+    /// fixture) still matches each one byte-for-byte — a P1 baseline-migration
+    /// prerequisite. Extended in P0-03 to also cover `voidwatch_mode_settings`
+    /// alongside P0-02's original `voidwatch_default_allowlist` entry.
     #[tokio::test]
     async fn schema_golden_file_matches_live_schema_after_migration() {
         let db_path = std::env::temp_dir().join(format!(
@@ -736,21 +756,38 @@ mod tests {
         ));
 
         let pool = init_pool(&db_path).await.unwrap();
-        let live_sql: String = sqlx::query_scalar(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'voidwatch_default_allowlist'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        pool.close().await;
 
         let golden = include_str!("../../tests/schema_golden.sql");
-        assert_eq!(
-            live_sql.trim(),
-            golden.trim(),
-            "voidwatch_default_allowlist's live schema drifted from tests/schema_golden.sql \
-             — update the fixture deliberately if this table's definition changed"
-        );
+        for golden_stmt in golden.split("\n;\n") {
+            let golden_stmt = golden_stmt.trim();
+            if golden_stmt.is_empty() {
+                continue;
+            }
+            let table_name = golden_stmt
+                .strip_prefix("CREATE TABLE ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .unwrap_or_else(|| {
+                    panic!("couldn't parse table name from golden statement: {golden_stmt}")
+                });
+
+            let live_sql: String = sqlx::query_scalar(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .bind(table_name)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("table {table_name:?} from golden file not found in live schema: {e}")
+            });
+
+            assert_eq!(
+                live_sql.trim(),
+                golden_stmt,
+                "{table_name}'s live schema drifted from tests/schema_golden.sql — update \
+                 the fixture deliberately if this table's definition changed"
+            );
+        }
+        pool.close().await;
 
         let _ = std::fs::remove_file(&db_path);
         for suffix in ["-wal", "-shm"] {
@@ -759,8 +796,9 @@ mod tests {
     }
 
     /// ADR-002 constraint 4: an upgrade against a pre-P0.2-shaped database must add
-    /// `voidwatch_default_allowlist` without dropping or narrowing any pre-existing
-    /// table. Named acceptance test from the P0-02 task spec.
+    /// `voidwatch_default_allowlist` (P0-02) and `voidwatch_mode_settings` (P0-03)
+    /// without dropping or narrowing any pre-existing table. Named acceptance test from
+    /// the P0-02 task spec, extended by P0-03 for its own additive table.
     ///
     /// "Byte-identical" is checked at the column level (name + declared type), not by
     /// diffing the raw `sqlite_master.sql` text: the `before` fixture here is a
@@ -839,6 +877,7 @@ mod tests {
             }
         }
         assert!(after_tables.contains(&"voidwatch_default_allowlist".to_string()));
+        assert!(after_tables.contains(&"voidwatch_mode_settings".to_string()));
 
         pool.close().await;
         let _ = std::fs::remove_file(&db_path);

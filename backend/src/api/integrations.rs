@@ -1,11 +1,9 @@
 use crate::{
-    audit,
-    auth,
+    audit, auth,
     containers::{self, ContainerAction},
     error::{AppError, Result},
     services::{self, ServiceAction},
-    voidwatch,
-    AppState,
+    voidwatch, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -28,31 +26,43 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 pub const ALL_SCOPES: &[(&str, &str)] = &[
-    ("metrics:read",      "Read CPU, RAM, disk and network metrics"),
-    ("services:read",     "List systemd services and their state"),
-    ("services:restart",  "Start, stop and restart systemd services"),
-    ("containers:read",   "List Docker containers and images"),
-    ("containers:restart","Start, stop and restart Docker containers"),
-    ("containers:logs",   "Read container log output"),
-    ("apps:read",         "List deployed App Vault applications"),
-    ("apps:deploy",       "Deploy applications from the App Vault catalog"),
-    ("apps:restart",      "Restart deployed App Vault applications"),
-    ("backups:read",      "List backup jobs and snapshots"),
-    ("backups:run",       "Trigger a backup job to run now"),
-    ("alerts:read",       "List active alerts and status checks"),
-    ("alerts:ack",        "Acknowledge or resolve alerts"),
-    ("automation:read",   "List automation jobs and run history"),
-    ("automation:run",    "Trigger an automation job"),
-    ("timeline:read",     "Read the audit timeline"),
-    ("network:read",      "List network interfaces and LAN neighbours"),
-    ("files:read",        "Browse and read files (read-only)"),
-    ("storage:read",      "List storage devices and mount points"),
-    ("proxy:read",        "List nginx reverse proxy rules"),
-    ("proxy:manage",      "Add, toggle and reload nginx proxy rules"),
-    ("diagnostics:read",  "Run and read system diagnostics checks"),
-    ("secrets:list",      "List secret names and descriptions (values never returned)"),
-    ("vms:read",          "List KVM and Proxmox virtual machines"),
-    ("tags:read",         "List resource tags"),
+    ("metrics:read", "Read CPU, RAM, disk and network metrics"),
+    ("services:read", "List systemd services and their state"),
+    (
+        "services:restart",
+        "Start, stop and restart systemd services",
+    ),
+    ("containers:read", "List Docker containers and images"),
+    (
+        "containers:restart",
+        "Start, stop and restart Docker containers",
+    ),
+    ("containers:logs", "Read container log output"),
+    ("apps:read", "List deployed App Vault applications"),
+    (
+        "apps:deploy",
+        "Deploy applications from the App Vault catalog",
+    ),
+    ("apps:restart", "Restart deployed App Vault applications"),
+    ("backups:read", "List backup jobs and snapshots"),
+    ("backups:run", "Trigger a backup job to run now"),
+    ("alerts:read", "List active alerts and status checks"),
+    ("alerts:ack", "Acknowledge or resolve alerts"),
+    ("automation:read", "List automation jobs and run history"),
+    ("automation:run", "Trigger an automation job"),
+    ("timeline:read", "Read the audit timeline"),
+    ("network:read", "List network interfaces and LAN neighbours"),
+    ("files:read", "Browse and read files (read-only)"),
+    ("storage:read", "List storage devices and mount points"),
+    ("proxy:read", "List nginx reverse proxy rules"),
+    ("proxy:manage", "Add, toggle and reload nginx proxy rules"),
+    ("diagnostics:read", "Run and read system diagnostics checks"),
+    (
+        "secrets:list",
+        "List secret names and descriptions (values never returned)",
+    ),
+    ("vms:read", "List KVM and Proxmox virtual machines"),
+    ("tags:read", "List resource tags"),
 ];
 
 // ---------------------------------------------------------------------------
@@ -79,7 +89,10 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 pub fn generate_api_token() -> String {
@@ -198,7 +211,10 @@ pub async fn list_tokens(
             last_used_at: r.last_used_at,
             expires_at: r.expires_at,
             created_at: r.created_at,
-            secret_ids: r.secret_ids.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+            secret_ids: r
+                .secret_ids
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok()),
         })
         .collect();
 
@@ -216,7 +232,9 @@ pub async fn create_token(
         return Err(AppError::BadRequest("Token name is required".into()));
     }
     if req.scopes.is_empty() {
-        return Err(AppError::BadRequest("At least one scope is required".into()));
+        return Err(AppError::BadRequest(
+            "At least one scope is required".into(),
+        ));
     }
 
     let valid: std::collections::HashSet<&str> = ALL_SCOPES.iter().map(|(s, _)| *s).collect();
@@ -232,7 +250,10 @@ pub async fn create_token(
     let now = unix_now();
     let expires_at = req.expires_days.map(|d| now + d * 86400);
     let scopes_json = serde_json::to_string(&req.scopes).unwrap_or_default();
-    let secret_ids_json = req.secret_ids.as_ref().map(|ids| serde_json::to_string(ids).unwrap_or_default());
+    let secret_ids_json = req
+        .secret_ids
+        .as_ref()
+        .map(|ids| serde_json::to_string(ids).unwrap_or_default());
 
     sqlx::query(
         "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at, secret_ids)
@@ -250,7 +271,10 @@ pub async fn create_token(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let secret_ids_detail = secret_ids_json.as_deref().map(|s| format!(", secret_ids={s}")).unwrap_or_default();
+    let secret_ids_detail = secret_ids_json
+        .as_deref()
+        .map(|s| format!(", secret_ids={s}"))
+        .unwrap_or_default();
     audit::log(
         &state.db,
         Some(&user.id),
@@ -260,7 +284,10 @@ pub async fn create_token(
         Some(&id),
         "success",
         None,
-        Some(&format!("name={}, scopes={}{}", req.name, scopes_json, secret_ids_detail)),
+        Some(&format!(
+            "name={}, scopes={}{}",
+            req.name, scopes_json, secret_ids_detail
+        )),
     )
     .await;
 
@@ -384,7 +411,12 @@ pub async fn save_config(
         set_setting(&state, "odysseus.enabled", if e { "true" } else { "false" }).await;
     }
     if let Some(e) = req.mcp_enabled {
-        set_setting(&state, "odysseus.mcp_enabled", if e { "true" } else { "false" }).await;
+        set_setting(
+            &state,
+            "odysseus.mcp_enabled",
+            if e { "true" } else { "false" },
+        )
+        .await;
     }
     if let Some(url) = &req.allowed_url {
         set_setting(&state, "odysseus.allowed_url", url).await;
@@ -443,7 +475,8 @@ fn redact_value(v: &mut serde_json::Value) {
     match v {
         serde_json::Value::Object(map) => {
             // Remove any key that looks like it refers to secrets
-            let secret_keys: Vec<String> = map.keys()
+            let secret_keys: Vec<String> = map
+                .keys()
                 .filter(|k| {
                     let k = k.to_lowercase();
                     k.contains("secret") || k == "secret_ids"
@@ -684,10 +717,15 @@ async fn run_automation_job(
 ) -> Result<()> {
     let verdict = voidwatch::evaluate(
         db,
-        voidwatch::Actor { kind: voidwatch::ActorKind::Automation },
+        voidwatch::Actor {
+            kind: voidwatch::ActorKind::Automation,
+        },
         voidwatch::ActionKind::Mutating,
         "automation.run",
-        voidwatch::Resource { resource_type: "automation_job", resource_id: automation_id },
+        voidwatch::Resource {
+            resource_type: "automation_job",
+            resource_id: automation_id,
+        },
     )
     .await;
 
@@ -749,12 +787,20 @@ async fn run_automation_job(
             {
                 Ok(Ok(out)) => {
                     let code = out.status.code().unwrap_or(-1) as i64;
-                    let status = if out.status.success() { "success" } else { "failure" };
+                    let status = if out.status.success() {
+                        "success"
+                    } else {
+                        "failure"
+                    };
                     let output = String::from_utf8_lossy(&out.stdout).to_string()
                         + &String::from_utf8_lossy(&out.stderr);
                     (status.to_string(), Some(code), output)
                 }
-                _ => ("failure".to_string(), Some(-1), "Timeout or exec error".to_string()),
+                _ => (
+                    "failure".to_string(),
+                    Some(-1),
+                    "Timeout or exec error".to_string(),
+                ),
             };
 
             let finished = unix_now();
@@ -842,49 +888,71 @@ pub async fn webhook(
 
     // ── Structured resource actions ──────────────────────────────────────────
     if let Some(action_str) = req.action {
-        let resource_id = req.resource_id.ok_or_else(|| AppError::BadRequest("resource_id required".into()))?;
+        let resource_id = req
+            .resource_id
+            .ok_or_else(|| AppError::BadRequest("resource_id required".into()))?;
 
-        let (resource_type, action_name, container_action, service_action) =
-            match action_str.as_str() {
-                "container.restart" => ("container", "restart", Some(ContainerAction::Restart), None),
-                "container.start"   => ("container", "start",   Some(ContainerAction::Start),   None),
-                "container.stop"    => ("container", "stop",    Some(ContainerAction::Stop),     None),
-                "service.restart"   => ("service",   "restart", None, Some(ServiceAction::Restart)),
-                "service.start"     => ("service",   "start",   None, Some(ServiceAction::Start)),
-                "service.stop"      => ("service",   "stop",    None, Some(ServiceAction::Stop)),
-                other => return Err(AppError::BadRequest(format!("Unknown action: {}", other))),
-            };
+        let (resource_type, action_name, container_action, service_action) = match action_str
+            .as_str()
+        {
+            "container.restart" => ("container", "restart", Some(ContainerAction::Restart), None),
+            "container.start" => ("container", "start", Some(ContainerAction::Start), None),
+            "container.stop" => ("container", "stop", Some(ContainerAction::Stop), None),
+            "service.restart" => ("service", "restart", None, Some(ServiceAction::Restart)),
+            "service.start" => ("service", "start", None, Some(ServiceAction::Start)),
+            "service.stop" => ("service", "stop", None, Some(ServiceAction::Stop)),
+            other => return Err(AppError::BadRequest(format!("Unknown action: {}", other))),
+        };
 
         // Policy check — actor_type "automation" for webhook-sourced actions
         let verdict = voidwatch::evaluate(
             &state.db,
-            voidwatch::Actor { kind: voidwatch::ActorKind::Automation },
+            voidwatch::Actor {
+                kind: voidwatch::ActorKind::Automation,
+            },
             voidwatch::ActionKind::Mutating,
             action_name,
-            voidwatch::Resource { resource_type, resource_id: &resource_id },
+            voidwatch::Resource {
+                resource_type,
+                resource_id: &resource_id,
+            },
         )
         .await;
         if let voidwatch::Verdict::Deny(reason) = verdict {
             audit::log_sourced(
-                &state.db, None, "agent",
+                &state.db,
+                None,
+                "agent",
                 &format!("integrations.webhook.{}.{}", resource_type, action_name),
-                Some(resource_type), Some(&resource_id), "blocked",
-                None, Some(&reason), Some("odysseus"),
-            ).await;
+                Some(resource_type),
+                Some(&resource_id),
+                "blocked",
+                None,
+                Some(&reason),
+                Some("odysseus"),
+            )
+            .await;
             return Err(AppError::PolicyDenied(reason));
         }
 
         audit::log_sourced(
-            &state.db, None, "agent",
+            &state.db,
+            None,
+            "agent",
             &format!("integrations.webhook.{}.{}", resource_type, action_name),
-            Some(resource_type), Some(&resource_id),
+            Some(resource_type),
+            Some(&resource_id),
             if dry_run { "dry_run" } else { "success" },
-            None, Some(&format!("dry_run={dry_run}")), Some("odysseus"),
-        ).await;
+            None,
+            Some(&format!("dry_run={dry_run}")),
+            Some("odysseus"),
+        )
+        .await;
 
         if !dry_run {
             if let Some(ca) = container_action {
-                containers::container_action(&resource_id, ca).await
+                containers::container_action(&resource_id, ca)
+                    .await
                     .map_err(|e| AppError::BadRequest(e.to_string()))?;
             } else if let Some(sa) = service_action {
                 services::run_service_action(&resource_id, sa)
@@ -990,7 +1058,10 @@ mod tests {
     /// `db::run_migrations` doesn't create `policy_rules` — see the same note in
     /// `voidwatch::tests::setup_db`.
     async fn setup_db() -> SqlitePool {
-        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS policy_rules (
@@ -1003,6 +1074,20 @@ mod tests {
                 effect        TEXT NOT NULL DEFAULT 'deny',
                 priority      INTEGER NOT NULL DEFAULT 100,
                 enabled       INTEGER NOT NULL DEFAULT 1,
+                created_at    INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // P0.2: `policy::check`'s default-deny path for non-`user` actors consults
+        // this table (see `policy.rs::check`, `db::seed_default_allowlist_if_empty`).
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
+                id            TEXT PRIMARY KEY,
+                actor_type    TEXT NOT NULL,
+                action        TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
                 created_at    INTEGER NOT NULL
             )"#,
         )
@@ -1036,11 +1121,17 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_err(), "a matching deny policy rule must block the automation_id-triggered job");
+        assert!(
+            result.is_err(),
+            "a matching deny policy rule must block the automation_id-triggered job"
+        );
     }
 
+    /// Supersedes the P0-01 placeholder of the same name's old assertion: per
+    /// gap-analysis P0.2, an automation job with no matching policy rule and no
+    /// `voidwatch_default_allowlist` entry is now denied by default.
     #[tokio::test]
-    async fn integrations_automation_id_path_runs_when_no_rule_matches() {
+    async fn integrations_automation_id_path_denies_by_default_when_no_rule_or_allowlist_matches() {
         let pool = setup_db().await;
 
         let result = run_automation_job(
@@ -1051,6 +1142,31 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "no-op-by-default: an unclassified automation job must still run absent a deny rule (ADR-001)");
+        assert!(result.is_err(), "default-deny (P0.2): an unallowlisted automation job must not run absent an allow rule or allowlist entry");
+    }
+
+    /// A `voidwatch_default_allowlist` entry grandfathers a pre-existing automation
+    /// job's action back to `Allow` — the mechanism the P0.2 upgrade migration
+    /// relies on (`db::seed_default_allowlist_if_empty`).
+    #[tokio::test]
+    async fn integrations_automation_id_path_runs_when_allowlisted() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at)
+             VALUES ('a1', 'automation', 'automation.run', 'automation_job', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = run_automation_job(
+            &pool,
+            "job-1",
+            ("job-1".to_string(), "echo hi".to_string(), 5),
+            true,
+        )
+        .await;
+
+        assert!(result.is_ok(), "an allowlisted action must still run");
     }
 }

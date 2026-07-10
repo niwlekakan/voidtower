@@ -1,14 +1,22 @@
 //! The single choke point every AI/automation-reachable mutating action must pass
 //! through before it can reach an action handler (EDD §3.2, gap-analysis P0.1).
 //!
-//! P0-01 lands this as a **no-op by default** (ADR-001, sequencing clarification):
-//! `evaluate()` composes with the existing `policy::check` call convention unchanged,
-//! so the verdict for every currently-observed action is identical to pre-choke-point
-//! behavior. The only new behavior is structural — ingress points that previously
+//! P0-01 landed this as a **no-op by default** (ADR-001, sequencing clarification):
+//! `evaluate()` composed with the existing `policy::check` call convention unchanged,
+//! so the verdict for every then-observed action was identical to pre-choke-point
+//! behavior. The only new behavior was structural — ingress points that previously
 //! never consulted `policy_rules` at all (`api/mcp.rs`, `api/studio.rs`'s `mcp_invoke`)
-//! now do, so a rule added later actually takes effect for them. Actor-class-wide
-//! default-deny semantics (P0-02) and the risk_class/mode-ladder table (P0-03) are
-//! explicitly out of scope here.
+//! now do, so a rule added later actually takes effect for them.
+//!
+//! P0-02 (gap-analysis P0.2) ends the no-op: `policy::check` now default-**denies**
+//! `api_token` / `automation` / `ai` actors when no rule matches (an explicit
+//! `voidwatch_default_allowlist` entry, seeded from pre-existing usage on upgrade,
+//! is required — see [`allowlist_seed::seed_default_allowlist_if_empty`]). `user`
+//! sessions are unaffected — they're RBAC-governed, not `policy_rules`-governed
+//! (see `ActorKind`'s doc comment below). The risk_class/mode-ladder table (P0-03)
+//! is still out of scope here.
+
+pub(crate) mod allowlist_seed;
 
 use crate::policy;
 use sqlx::SqlitePool;
@@ -29,6 +37,16 @@ pub enum ActorKind {
     Automation,
     /// A logged-in human session (e.g. the Studio MCP tool panel).
     User,
+    /// An AI actor distinguishable from a human-held API token (gap-analysis P0.2).
+    /// No ingress point constructs this yet — per the P0-02 task spec's
+    /// scope-bypass caveat, today's `ApiToken` requests can't reliably tell a human
+    /// using a personal token from an AI acting on the god-token (see ADR-003 /
+    /// P0-06). This variant exists so `policy_rules` and `voidwatch_default_allowlist`
+    /// already have a distinct `"ai"` actor class to target once that signal lands.
+    /// Only constructed in tests until an ingress point wires it up — allowed here
+    /// rather than deleting the reserved variant.
+    #[allow(dead_code)]
+    Ai,
 }
 
 impl ActorKind {
@@ -37,6 +55,7 @@ impl ActorKind {
             ActorKind::ApiToken => "api_token",
             ActorKind::Automation => "automation",
             ActorKind::User => "user",
+            ActorKind::Ai => "ai",
         }
     }
 }
@@ -76,9 +95,11 @@ pub enum Verdict {
 /// `evaluate_is_the_only_caller_of_policy_check_from_ai_ingress` below.
 ///
 /// Read actions are never gated (nothing to protect). Mutating actions are checked
-/// against `policy_rules` exactly as `policy::check` always has: no matching rule
-/// still means `Allow`. That default flips to deny-unless-allowlisted in P0-02, not
-/// here — see ADR-001's sequencing clarification.
+/// against `policy_rules` and, for `ApiToken`/`Automation`/`Ai` actors, the
+/// `voidwatch_default_allowlist` no-matching-rule fallback (gap-analysis P0.2) —
+/// see `policy::check`'s doc comment. `User` actors keep the original
+/// no-matching-rule-means-`Allow` behavior; they're RBAC-governed, not
+/// `policy_rules`-governed.
 pub async fn evaluate(
     db: &SqlitePool,
     actor: Actor,
@@ -135,6 +156,20 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // P0.2: `policy::check`'s default-deny path for non-`user` actors consults
+        // this table (see `policy.rs::check`, `db::seed_default_allowlist_if_empty`).
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
+                id            TEXT PRIMARY KEY,
+                actor_type    TEXT NOT NULL,
+                action        TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                created_at    INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         pool
     }
 
@@ -185,13 +220,92 @@ mod tests {
         assert_eq!(verdict, Verdict::Allow);
     }
 
-    /// Adapted from the spec's `evaluate_denies_when_no_rule_and_actor_is_ai` per
-    /// ADR-001's sequencing clarification: P0-01 is a no-op choke point, so the
-    /// no-rule-matches default stays `Allow` (identical to `policy::check` today).
-    /// Default-deny for AI actors is P0-02.
+    /// Supersedes the P0-01 placeholder `evaluate_no_rule_defaults_to_allow_preserving_current_behavior`:
+    /// per gap-analysis P0.2, `api_token` (and `automation`/`ai`) actors now
+    /// default-deny when no rule matches and no `voidwatch_default_allowlist` entry
+    /// covers the action. `user` actors are unaffected — see `evaluate_no_rule_still_allows_user_actor` below.
     #[tokio::test]
-    async fn evaluate_no_rule_defaults_to_allow_preserving_current_behavior() {
+    async fn evaluate_no_rule_defaults_to_deny_for_non_user_actor() {
         let pool = setup_db().await;
+
+        let verdict = evaluate(
+            &pool,
+            Actor {
+                kind: ActorKind::ApiToken,
+            },
+            ActionKind::Mutating,
+            "restart_container",
+            Resource {
+                resource_type: "mcp_tool",
+                resource_id: "restart_container",
+            },
+        )
+        .await;
+
+        assert!(matches!(verdict, Verdict::Deny(_)));
+    }
+
+    /// Companion to the above: `user` sessions keep the pre-existing default-allow
+    /// behavior (gap-analysis P0.2 — RBAC governs users, not `policy_rules`).
+    #[tokio::test]
+    async fn evaluate_no_rule_still_allows_user_actor() {
+        let pool = setup_db().await;
+
+        let verdict = evaluate(
+            &pool,
+            Actor {
+                kind: ActorKind::User,
+            },
+            ActionKind::Mutating,
+            "restart_container",
+            Resource {
+                resource_type: "mcp_tool",
+                resource_id: "restart_container",
+            },
+        )
+        .await;
+
+        assert_eq!(verdict, Verdict::Allow);
+    }
+
+    /// The new `ai` actor class (gap-analysis P0.2) default-denies just like
+    /// `ApiToken`/`Automation` — no ingress point constructs `ActorKind::Ai` yet
+    /// (see its doc comment), but `evaluate()` must already handle it correctly
+    /// for the day one does.
+    #[tokio::test]
+    async fn evaluate_no_rule_defaults_to_deny_for_ai_actor() {
+        let pool = setup_db().await;
+
+        let verdict = evaluate(
+            &pool,
+            Actor {
+                kind: ActorKind::Ai,
+            },
+            ActionKind::Mutating,
+            "restart_container",
+            Resource {
+                resource_type: "mcp_tool",
+                resource_id: "restart_container",
+            },
+        )
+        .await;
+
+        assert!(matches!(verdict, Verdict::Deny(_)));
+    }
+
+    /// A `voidwatch_default_allowlist` entry grandfathers a non-`user` actor's
+    /// pre-existing action back to `Allow` — the mechanism the P0.2 upgrade
+    /// migration relies on (`db::seed_default_allowlist_if_empty`).
+    #[tokio::test]
+    async fn evaluate_allows_non_user_actor_when_allowlisted() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at)
+             VALUES ('a1', 'api_token', 'restart_container', 'mcp_tool', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let verdict = evaluate(
             &pool,

@@ -109,6 +109,7 @@ preflight_deps() {  # $1 = spec. Honors "Depends-On: P0-01, P0-02" and "Requires
     fi
   done
   for path in $(grep -ioE '^Requires-Path:.*' "$spec" | sed 's/^[^:]*://'); do
+    [[ "${path,,}" == "none" ]] && continue   # "Requires-Path: none" — no real requirement
     if ! git -C "$ROOT" cat-file -e "origin/main:$path" 2>/dev/null; then
       echo "[devteam]   ✖ required artifact missing on origin/main: $path"; missing=1
     fi

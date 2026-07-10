@@ -73,7 +73,10 @@ pub const ROUTE_RISK_CLASSES: &[(&str, &str, RiskClass)] = &[
     (
         "POST",
         "/api/apps/:project_name/delete-volumes",
-        RiskClass::Destructive,
+        // Reclassified from Destructive per ADR-004 reconciled denylist item 11
+        // (`keep_data=false` app removal, `voidwatch::denylist` — no literal `keep_data`
+        // flag exists in source, this is the unconditional volume-destroying analog).
+        RiskClass::Irreversible,
     ),
     ("POST", "/api/apps/:project_name/env", RiskClass::Mutate),
     ("POST", "/api/apps/:project_name/expose", RiskClass::Mutate),
@@ -82,7 +85,9 @@ pub const ROUTE_RISK_CLASSES: &[(&str, &str, RiskClass)] = &[
     (
         "POST",
         "/api/apps/:project_name/purge",
-        RiskClass::Destructive,
+        // Reclassified from Destructive per ADR-004 reconciled denylist item 11 (see
+        // `voidwatch::denylist` module doc comment for the full rationale).
+        RiskClass::Irreversible,
     ),
     (
         "POST",

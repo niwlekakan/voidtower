@@ -1,6 +1,5 @@
 use crate::{
-    auth,
-    containers,
+    auth, containers,
     error::AppError,
     services,
     voidwatch::{self, ActionKind, Actor, ActorKind, Resource},
@@ -60,7 +59,10 @@ fn err_response(id: Option<Value>, code: i32, message: impl Into<String>) -> Jso
         jsonrpc: "2.0",
         id,
         result: None,
-        error: Some(JsonRpcError { code, message: message.into() }),
+        error: Some(JsonRpcError {
+            code,
+            message: message.into(),
+        }),
     }
 }
 
@@ -103,10 +105,7 @@ async fn check_mcp_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Sta
 // SSE endpoint — GET /api/mcp
 // ---------------------------------------------------------------------------
 
-pub async fn sse_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn sse_handler(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(status) = check_mcp_auth(&state, &headers).await {
         return (status, "").into_response();
     }
@@ -134,8 +133,16 @@ pub async fn message_handler(
     Json(req): Json<JsonRpcRequest>,
 ) -> (StatusCode, Json<JsonRpcResponse>) {
     if let Err(status) = check_mcp_auth(&state, &headers).await {
-        let code = if status == StatusCode::UNAUTHORIZED { -32001 } else { -32003 };
-        let msg = if status == StatusCode::UNAUTHORIZED { "Unauthorized" } else { "MCP is not enabled" };
+        let code = if status == StatusCode::UNAUTHORIZED {
+            -32001
+        } else {
+            -32003
+        };
+        let msg = if status == StatusCode::UNAUTHORIZED {
+            "Unauthorized"
+        } else {
+            "MCP is not enabled"
+        };
         return (status, Json(err_response(req.id, code, msg)));
     }
 
@@ -152,7 +159,17 @@ async fn dispatch(state: &AppState, req: JsonRpcRequest) -> JsonRpcResponse {
     match req.method.as_str() {
         "initialize" => handle_initialize(id),
         "tools/list" => handle_tools_list(id),
-        "tools/call" => handle_tools_call(state, id, req.params, Actor { kind: ActorKind::ApiToken }).await,
+        "tools/call" => {
+            handle_tools_call(
+                state,
+                id,
+                req.params,
+                Actor {
+                    kind: ActorKind::ApiToken,
+                },
+            )
+            .await
+        }
         _ => err_response(id, -32601, "Method not found"),
     }
 }
@@ -162,11 +179,14 @@ async fn dispatch(state: &AppState, req: JsonRpcRequest) -> JsonRpcResponse {
 // ---------------------------------------------------------------------------
 
 fn handle_initialize(id: Option<Value>) -> JsonRpcResponse {
-    ok_response(id, serde_json::json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": { "tools": {} },
-        "serverInfo": { "name": "voidtower", "version": "0.1.0" }
-    }))
+    ok_response(
+        id,
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": { "tools": {} },
+            "serverInfo": { "name": "voidtower", "version": "0.1.0" }
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -174,107 +194,124 @@ fn handle_initialize(id: Option<Value>) -> JsonRpcResponse {
 // ---------------------------------------------------------------------------
 
 fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
-    ok_response(id, serde_json::json!({
-        "tools": [
-            {
-                "name": "list_nodes",
-                "description": "List all VoidTower nodes with health status",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "get_node_metrics",
-                "description": "Get current CPU/RAM/disk metrics for the local node",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "list_containers",
-                "description": "List all Docker containers with status",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "list_services",
-                "description": "List systemd services with active state",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "list_alerts",
-                "description": "List active alerts",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "get_container_logs",
-                "description": "Get recent logs for a container",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "container_id": { "type": "string" }
-                    },
-                    "required": ["container_id"]
+    ok_response(
+        id,
+        serde_json::json!({
+            "tools": [
+                {
+                    "name": "list_nodes",
+                    "description": "List all VoidTower nodes with health status",
+                    "inputSchema": { "type": "object", "properties": {} }
+                },
+                {
+                    "name": "get_node_metrics",
+                    "description": "Get current CPU/RAM/disk metrics for the local node",
+                    "inputSchema": { "type": "object", "properties": {} }
+                },
+                {
+                    "name": "list_containers",
+                    "description": "List all Docker containers with status",
+                    "inputSchema": { "type": "object", "properties": {} }
+                },
+                {
+                    "name": "list_services",
+                    "description": "List systemd services with active state",
+                    "inputSchema": { "type": "object", "properties": {} }
+                },
+                {
+                    "name": "list_alerts",
+                    "description": "List active alerts",
+                    "inputSchema": { "type": "object", "properties": {} }
+                },
+                {
+                    "name": "get_container_logs",
+                    "description": "Get recent logs for a container",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "container_id": { "type": "string" }
+                        },
+                        "required": ["container_id"]
+                    }
+                },
+                {
+                    "name": "list_routes",
+                    "description": "List all registered VoidTower API routes",
+                    "inputSchema": { "type": "object", "properties": {} }
+                },
+                {
+                    "name": "read_file",
+                    "description": "Read a file from the VoidTower project (path relative to repo root, e.g. backend/src/api/apps.rs)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string", "description": "Relative path within project root" }
+                        },
+                        "required": ["path"]
+                    }
+                },
+                {
+                    "name": "search_code",
+                    "description": "Search for a string/symbol across backend/src and frontend/src",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string", "description": "Search string (grep)" }
+                        },
+                        "required": ["query"]
+                    }
+                },
+                {
+                    "name": "get_template",
+                    "description": "Get a VoidTower extension template. Names: new_api_endpoint, new_tower_page, new_native_panel, new_background, new_catalog_entry, new_mcp_tool",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" }
+                        },
+                        "required": ["name"]
+                    }
                 }
-            },
-            {
-                "name": "list_routes",
-                "description": "List all registered VoidTower API routes",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "read_file",
-                "description": "Read a file from the VoidTower project (path relative to repo root, e.g. backend/src/api/apps.rs)",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "Relative path within project root" }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "search_code",
-                "description": "Search for a string/symbol across backend/src and frontend/src",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Search string (grep)" }
-                    },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "get_template",
-                "description": "Get a VoidTower extension template. Names: new_api_endpoint, new_tower_page, new_native_panel, new_background, new_catalog_entry, new_mcp_tool",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "name": { "type": "string" }
-                    },
-                    "required": ["name"]
-                }
-            }
-        ]
-    }))
+            ]
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
 // tools/call
 // ---------------------------------------------------------------------------
 
-async fn handle_tools_call(state: &AppState, id: Option<Value>, params: Value, actor: Actor) -> JsonRpcResponse {
+async fn handle_tools_call(
+    state: &AppState,
+    id: Option<Value>,
+    params: Value,
+    actor: Actor,
+) -> JsonRpcResponse {
     let tool_name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n.to_string(),
         None => return err_response(id, -32602, "Missing tool name in params"),
     };
-    let args = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
 
     let result = invoke_tool(state, actor, &tool_name, args).await;
 
     match result {
-        Ok(text) => ok_response(id, serde_json::json!({
-            "content": [{ "type": "text", "text": text }]
-        })),
-        Err(e) => ok_response(id, serde_json::json!({
-            "content": [{ "type": "text", "text": format!("Error: {e}") }],
-            "isError": true
-        })),
+        Ok(text) => ok_response(
+            id,
+            serde_json::json!({
+                "content": [{ "type": "text", "text": text }]
+            }),
+        ),
+        Err(e) => ok_response(
+            id,
+            serde_json::json!({
+                "content": [{ "type": "text", "text": format!("Error: {e}") }],
+                "isError": true
+            }),
+        ),
     }
 }
 
@@ -285,14 +322,15 @@ async fn handle_tools_call(state: &AppState, id: Option<Value>, params: Value, a
 async fn tool_list_nodes(state: &AppState) -> Result<String, String> {
     // Return the local node; cluster peers can be added when the cluster module exposes them.
     let hostname = std::env::var("HOSTNAME")
-        .or_else(|_| {
-            std::fs::read_to_string("/etc/hostname")
-                .map(|s| s.trim().to_string())
-        })
+        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .unwrap_or_else(|_| "local".to_string());
 
     let metrics_opt = state.latest_metrics.read().await.clone();
-    let status = if metrics_opt.is_some() { "healthy" } else { "unknown" };
+    let status = if metrics_opt.is_some() {
+        "healthy"
+    } else {
+        "unknown"
+    };
 
     let node = serde_json::json!([{
         "id": "local",
@@ -305,7 +343,11 @@ async fn tool_list_nodes(state: &AppState) -> Result<String, String> {
 }
 
 async fn tool_get_node_metrics(state: &AppState) -> Result<String, String> {
-    let snap = state.latest_metrics.read().await.clone()
+    let snap = state
+        .latest_metrics
+        .read()
+        .await
+        .clone()
         .ok_or_else(|| "Metrics not yet collected".to_string())?;
 
     serde_json::to_string(&snap).map_err(|e| e.to_string())
@@ -313,11 +355,14 @@ async fn tool_get_node_metrics(state: &AppState) -> Result<String, String> {
 
 async fn tool_list_containers() -> Result<String, String> {
     if !containers::is_docker_available() {
-        return serde_json::to_string(&serde_json::json!({ "docker_available": false, "containers": [] }))
-            .map_err(|e| e.to_string());
+        return serde_json::to_string(
+            &serde_json::json!({ "docker_available": false, "containers": [] }),
+        )
+        .map_err(|e| e.to_string());
     }
 
-    let cs = containers::list_containers().await
+    let cs = containers::list_containers()
+        .await
         .map_err(|e| e.to_string())?;
 
     serde_json::to_string(&serde_json::json!({ "docker_available": true, "containers": cs }))
@@ -354,8 +399,7 @@ async fn tool_list_alerts(state: &AppState) -> Result<String, String> {
     .await
     .map_err(|e| e.to_string())?;
 
-    serde_json::to_string(&serde_json::json!({ "alerts": rows }))
-        .map_err(|e| e.to_string())
+    serde_json::to_string(&serde_json::json!({ "alerts": rows })).map_err(|e| e.to_string())
 }
 
 async fn tool_get_container_logs(args: Value) -> Result<String, String> {
@@ -368,18 +412,19 @@ async fn tool_get_container_logs(args: Value) -> Result<String, String> {
         return Err("Docker is not available".to_string());
     }
 
-    let lines = containers::get_container_logs(container_id, 100).await
+    let lines = containers::get_container_logs(container_id, 100)
+        .await
         .map_err(|e| e.to_string())?;
 
-    serde_json::to_string(&serde_json::json!({ "lines": lines }))
-        .map_err(|e| e.to_string())
+    serde_json::to_string(&serde_json::json!({ "lines": lines })).map_err(|e| e.to_string())
 }
 
 fn tool_list_routes(state: &AppState) -> std::result::Result<String, String> {
     let root = super::ai_context::safe_project_root_from_frontend_dir(&state.config.frontend_dir);
     let src = std::fs::read_to_string(root.join("backend/src/api/mod.rs"))
         .map_err(|e| format!("Could not read mod.rs: {e}"))?;
-    let lines: Vec<&str> = src.lines()
+    let lines: Vec<&str> = src
+        .lines()
         .map(|l| l.trim())
         .filter(|l| l.starts_with(".route("))
         .collect();
@@ -387,7 +432,9 @@ fn tool_list_routes(state: &AppState) -> std::result::Result<String, String> {
 }
 
 fn tool_read_file(state: &AppState, args: Value) -> std::result::Result<String, String> {
-    let path = args.get("path").and_then(|v| v.as_str())
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'path' argument".to_string())?;
     let root = super::ai_context::safe_project_root_from_frontend_dir(&state.config.frontend_dir);
     let content = super::ai_context::read_project_file(&root, path)?;
@@ -399,13 +446,17 @@ fn tool_read_file(state: &AppState, args: Value) -> std::result::Result<String, 
 }
 
 fn tool_get_template(args: Value) -> std::result::Result<String, String> {
-    let name = args.get("name").and_then(|v| v.as_str())
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'name' argument".to_string())?;
     super::ai_context::get_template(name)
 }
 
 fn tool_search_code(state: &AppState, args: Value) -> std::result::Result<String, String> {
-    let query = args.get("query").and_then(|v| v.as_str())
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'query' argument".to_string())?;
     let root = super::ai_context::safe_project_root_from_frontend_dir(&state.config.frontend_dir);
     super::ai_context::search_project_code(&root, query)
@@ -420,7 +471,9 @@ fn _use_app_error(_: AppError) {}
 // ---------------------------------------------------------------------------
 
 pub fn tools_json() -> Value {
-    handle_tools_list(None).result.unwrap_or(serde_json::json!({"tools":[]}))
+    handle_tools_list(None)
+        .result
+        .unwrap_or(serde_json::json!({"tools":[]}))
 }
 
 /// All MCP tools currently registered are read-only (verified against the match arms
@@ -452,32 +505,48 @@ fn tool_action_kind(name: &str) -> ActionKind {
 /// The single entry point for running an MCP tool, gated by `voidwatch::evaluate`.
 /// Used by both the bearer-token JSON-RPC dispatch (`handle_tools_call`) and the
 /// session-authenticated Studio panel (`api/studio.rs`'s `mcp_invoke`).
-pub async fn invoke_tool(state: &AppState, actor: Actor, name: &str, args: Value) -> std::result::Result<String, String> {
+pub async fn invoke_tool(
+    state: &AppState,
+    actor: Actor,
+    name: &str,
+    args: Value,
+) -> std::result::Result<String, String> {
     let verdict = voidwatch::evaluate(
         &state.db,
         actor,
         tool_action_kind(name),
         name,
-        Resource { resource_type: "mcp_tool", resource_id: name },
+        Resource {
+            resource_type: "mcp_tool",
+            resource_id: name,
+        },
     )
     .await;
 
     match verdict {
-        voidwatch::Verdict::Allow => {}
+        // MCP tool resources are always classified `"mcp_tool"` (never one of
+        // `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES`), so `AllowRequireSnapshot`
+        // isn't reachable here today — handled structurally anyway rather than assumed,
+        // same reasoning as the `Read`-classified-tools-only state `READ_ONLY_TOOLS`
+        // documents above.
+        voidwatch::Verdict::Allow | voidwatch::Verdict::AllowRequireSnapshot(_) => {}
+        voidwatch::Verdict::RequireApproval(reason) => {
+            return Err(format!("Requires approval: {reason}"))
+        }
         voidwatch::Verdict::Deny(reason) => return Err(format!("Denied by policy: {reason}")),
     }
 
     match name {
-        "list_nodes"         => tool_list_nodes(state).await,
-        "get_node_metrics"   => tool_get_node_metrics(state).await,
-        "list_containers"    => tool_list_containers().await,
-        "list_services"      => tool_list_services().await,
-        "list_alerts"        => tool_list_alerts(state).await,
+        "list_nodes" => tool_list_nodes(state).await,
+        "get_node_metrics" => tool_get_node_metrics(state).await,
+        "list_containers" => tool_list_containers().await,
+        "list_services" => tool_list_services().await,
+        "list_alerts" => tool_list_alerts(state).await,
         "get_container_logs" => tool_get_container_logs(args).await,
-        "list_routes"        => tool_list_routes(state),
-        "read_file"          => tool_read_file(state, args),
-        "search_code"        => tool_search_code(state, args),
-        "get_template"       => tool_get_template(args),
-        other                => Err(format!("Unknown tool: {other}")),
+        "list_routes" => tool_list_routes(state),
+        "read_file" => tool_read_file(state, args),
+        "search_code" => tool_search_code(state, args),
+        "get_template" => tool_get_template(args),
+        other => Err(format!("Unknown tool: {other}")),
     }
 }

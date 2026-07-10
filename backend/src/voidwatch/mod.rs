@@ -381,7 +381,10 @@ mod tests {
         const GATED_INGRESS_FILES: &[(&str, &str)] = &[
             ("api/mcp.rs", include_str!("../api/mcp.rs")),
             ("api/studio.rs", include_str!("../api/studio.rs")),
-            ("api/integrations.rs", include_str!("../api/integrations.rs")),
+            (
+                "api/integrations.rs",
+                include_str!("../api/integrations.rs"),
+            ),
         ];
 
         for (path, src) in GATED_INGRESS_FILES {

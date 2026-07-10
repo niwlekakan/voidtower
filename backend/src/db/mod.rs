@@ -15,9 +15,13 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
         .await?;
 
     // Enable WAL mode and foreign keys
-    sqlx::query("PRAGMA journal_mode=WAL").execute(&pool).await?;
+    sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(&pool)
+        .await?;
     sqlx::query("PRAGMA foreign_keys=ON").execute(&pool).await?;
-    sqlx::query("PRAGMA synchronous=NORMAL").execute(&pool).await?;
+    sqlx::query("PRAGMA synchronous=NORMAL")
+        .execute(&pool)
+        .await?;
 
     run_migrations(&pool).await?;
 
@@ -37,47 +41,93 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     .await;
 
     // Add columns introduced after initial schema — safe to ignore if already present
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN allow_embed INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_check_at INTEGER").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_check_status TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_restore_test_at INTEGER").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_restore_test_status TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN primary_port INTEGER").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_secret TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE audit_log ADD COLUMN source TEXT").execute(&pool).await;
+    let _ = sqlx::query(
+        "ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(&pool)
+    .await;
+    let _ =
+        sqlx::query("ALTER TABLE proxy_configs ADD COLUMN allow_embed INTEGER NOT NULL DEFAULT 0")
+            .execute(&pool)
+            .await;
+    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_check_at INTEGER")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_check_status TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_restore_test_at INTEGER")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN last_restore_test_status TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN primary_port INTEGER")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_secret TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE audit_log ADD COLUMN source TEXT")
+        .execute(&pool)
+        .await;
 
     // Item #7A: secret rotation version counter
-    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN version INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE secrets ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+        .execute(&pool)
+        .await;
     // Item #7B: per-token secret scope restriction (JSON array of secret IDs, NULL = unrestricted)
-    let _ = sqlx::query("ALTER TABLE api_tokens ADD COLUMN secret_ids TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE api_tokens ADD COLUMN secret_ids TEXT")
+        .execute(&pool)
+        .await;
     // Item #10A: scheduled restore-test cron expression
-    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN restore_test_schedule TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE backup_configs ADD COLUMN restore_test_schedule TEXT")
+        .execute(&pool)
+        .await;
     // Disaster recovery import uses ON CONFLICT(name) — needs a unique index
-    let _ = sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_jobs_name ON automation_jobs(name)").execute(&pool).await;
+    let _ = sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_jobs_name ON automation_jobs(name)",
+    )
+    .execute(&pool)
+    .await;
 
     // App embed: dedicated LAN port per app (port-based nginx, no DNS needed)
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN embed_port INTEGER").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN embed_port INTEGER")
+        .execute(&pool)
+        .await;
 
     // SSH session encrypted password storage
-    let _ = sqlx::query("ALTER TABLE ssh_sessions ADD COLUMN password_enc TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE ssh_sessions ADD COLUMN password_enc TEXT")
+        .execute(&pool)
+        .await;
 
     // External / adopted app origin tracking
-    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN origin TEXT NOT NULL DEFAULT 'voidtower'").execute(&pool).await;
+    let _ = sqlx::query(
+        "ALTER TABLE deployed_apps ADD COLUMN origin TEXT NOT NULL DEFAULT 'voidtower'",
+    )
+    .execute(&pool)
+    .await;
 
     // Proxmox multi-host management (added post-initial schema)
-    let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS proxmox_hosts (
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS proxmox_hosts (
         id          TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
         url         TEXT NOT NULL,
         node        TEXT NOT NULL DEFAULT 'pve',
         fingerprint TEXT,
         created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    )"#).execute(&pool).await;
+    )"#,
+    )
+    .execute(&pool)
+    .await;
 
     // Policy engine — rules governing what automated actors (API tokens, automations) may do
-    let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS policy_rules (
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS policy_rules (
         id            TEXT PRIMARY KEY,
         name          TEXT NOT NULL,
         actor_type    TEXT NOT NULL DEFAULT 'api_token',
@@ -88,20 +138,52 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
         priority      INTEGER NOT NULL DEFAULT 100,
         enabled       INTEGER NOT NULL DEFAULT 1,
         created_at    INTEGER NOT NULL
-    )"#).execute(&pool).await;
+    )"#,
+    )
+    .execute(&pool)
+    .await;
 
     // Seed three default deny rules on first install (skip if any rules already exist)
     let rule_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM policy_rules")
-        .fetch_one(&pool).await.unwrap_or(0);
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
     if rule_count == 0 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
         let seeds = [
-            (uuid::Uuid::new_v4().to_string(), "Block AI access to ai-no-touch resources",   "api_token", "*",      "*",      Some("ai-no-touch"), "deny", 10i64),
-            (uuid::Uuid::new_v4().to_string(), "Block AI access to critical resources",       "api_token", "*",      "*",      Some("critical"),    "deny", 20i64),
-            (uuid::Uuid::new_v4().to_string(), "Block API tokens from deleting anything",     "api_token", "remove", "*",      None,                "deny", 30i64),
+            (
+                uuid::Uuid::new_v4().to_string(),
+                "Block AI access to ai-no-touch resources",
+                "api_token",
+                "*",
+                "*",
+                Some("ai-no-touch"),
+                "deny",
+                10i64,
+            ),
+            (
+                uuid::Uuid::new_v4().to_string(),
+                "Block AI access to critical resources",
+                "api_token",
+                "*",
+                "*",
+                Some("critical"),
+                "deny",
+                20i64,
+            ),
+            (
+                uuid::Uuid::new_v4().to_string(),
+                "Block API tokens from deleting anything",
+                "api_token",
+                "remove",
+                "*",
+                None,
+                "deny",
+                30i64,
+            ),
         ];
         for (id, name, actor_type, action, resource_type, resource_tag, effect, priority) in seeds {
             let _ = sqlx::query(
@@ -115,7 +197,8 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     }
 
     // Plugin registry
-    let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS plugins (
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS plugins (
         id           TEXT PRIMARY KEY,
         name         TEXT NOT NULL,
         description  TEXT NOT NULL DEFAULT '',
@@ -126,15 +209,26 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
         nav_group    TEXT,
         enabled      INTEGER NOT NULL DEFAULT 1,
         installed_at INTEGER NOT NULL
-    )"#).execute(&pool).await;
+    )"#,
+    )
+    .execute(&pool)
+    .await;
 
     // Authentik / OIDC SSO
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN oidc_subject TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN oidc_subject TEXT")
+        .execute(&pool)
+        .await;
     let _ = sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject ON users(oidc_subject) WHERE oidc_subject IS NOT NULL").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN sso_protect INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+    let _ =
+        sqlx::query("ALTER TABLE proxy_configs ADD COLUMN sso_protect INTEGER NOT NULL DEFAULT 0")
+            .execute(&pool)
+            .await;
 
-    let _ = sqlx::query(r#"CREATE TABLE IF NOT EXISTS oidc_config (
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS oidc_config (
         id               TEXT PRIMARY KEY DEFAULT 'default',
         enabled          INTEGER NOT NULL DEFAULT 0,
         issuer_url       TEXT,
@@ -147,23 +241,49 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
         default_role     TEXT NOT NULL DEFAULT 'viewer',
         auto_provision   INTEGER NOT NULL DEFAULT 1,
         updated_at       INTEGER NOT NULL DEFAULT 0
-    )"#).execute(&pool).await;
+    )"#,
+    )
+    .execute(&pool)
+    .await;
 
     // Proxy: full edit form, presets, health dashboard
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN custom_headers TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN rate_limit_rpm INTEGER").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN basic_auth_user TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN basic_auth_pass_hash TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN websocket_extended INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN cache_static INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_status TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_checked_at INTEGER").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_latency_ms INTEGER").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN custom_headers TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN rate_limit_rpm INTEGER")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN basic_auth_user TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN basic_auth_pass_hash TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE proxy_configs ADD COLUMN websocket_extended INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(&pool)
+    .await;
+    let _ =
+        sqlx::query("ALTER TABLE proxy_configs ADD COLUMN cache_static INTEGER NOT NULL DEFAULT 0")
+            .execute(&pool)
+            .await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_status TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_checked_at INTEGER")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE proxy_configs ADD COLUMN health_latency_ms INTEGER")
+        .execute(&pool)
+        .await;
 
     // Tiered accounts: guest accounts expire automatically (role = 'guest'),
     // demo accounts are sandboxed to read-only (role = 'demo') — reuses the
     // existing role-string ladder rather than a separate flag column.
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN expires_at INTEGER").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN expires_at INTEGER")
+        .execute(&pool)
+        .await;
 
     // AI provider abstraction layer
     let _ = sqlx::query(
@@ -281,9 +401,15 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     // deployed_apps: nullable member-tenancy columns. NULL on every row means
     // "admin-deployed on the primary host" exactly as before this feature —
     // existing deploys and the global admin view are completely unaffected.
-    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN owner_user_id TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN storage_root TEXT").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN target_node_id TEXT").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN owner_user_id TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN storage_root TEXT")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE deployed_apps ADD COLUMN target_node_id TEXT")
+        .execute(&pool)
+        .await;
 
     // Default-deny allowlist (gap-analysis P0.2, ADR-002): actor_type/action/
     // resource_type tuples that `policy::check` treats as implicitly allowed once

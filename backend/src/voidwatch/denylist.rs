@@ -39,7 +39,8 @@
 //! ## Items with no corresponding endpoint yet (verified against source, not assumed)
 //!
 //! ADR-004 flagged items 4, 9, 10, and 12 as unmapped in its own pass and asked the
-//! implementer to verify each before writing its acceptance test:
+//! implementer to verify each before writing its acceptance test. Item 10 is now resolved
+//! (see below) — 4, 9, and 12 remain N/A:
 //!
 //! - **Item 4, secrets master-key operations**: no master-key rotation/access endpoint
 //!   exists anywhere in `backend/src/api/secrets.rs` or `backend/src/` (`rg -n
@@ -49,26 +50,17 @@
 //!   `restart` (soft process restart via `kill -TERM` + re-exec, not a host power action) and
 //!   `update` (already covered by item 1); there is no `poweroff`/`reboot`/`shutdown -h`
 //!   endpoint for the physical/VM host VoidTower itself runs on. N/A — nothing to gate yet.
-//! - **Item 10, deletion of the last remaining snapshot/backup of a resource**: unlike 4/9/12,
-//!   this one has *two* plausible, non-equivalent code paths, and picking the wrong one would
-//!   be worse than picking neither. `api/backups.rs`'s `DELETE /api/backups/:id` (`delete`)
-//!   only removes a `backup_configs` schedule row — verified in source, its sibling
-//!   `delete_plan` handler even says so explicitly ("existing backup data on disk is NOT
-//!   deleted"), and `delete` does the same `DELETE FROM backup_configs` with no data-path
-//!   difference. Actual backup/snapshot *data* only gets destroyed by
-//!   `api/proxmox.rs`'s `vm_delete_snapshot` (`DELETE
-//!   /api/proxmox/:host_id/vms/:vmid/snapshot/:snapname`), a genuinely different resource
-//!   model (Proxmox VM snapshots, countable via `list_snapshots`) than restic backup
-//!   *configs* (which don't track underlying data at this layer at all). ADR-004's own text
-//!   ("count-dependent condition... add a check in the backup-deletion path
-//!   (`backend/src/api/backups.rs`)") assumed the former without verifying it deletes data —
-//!   it doesn't. This is a genuine design question (which resource type "backup" refers to
-//!   here, and whether it's one item or two), not a missing grant — `api/backups.rs` and
-//!   `api/proxmox.rs` are both outside CLAUDE.md's actual forbidden-zone list (confirmed
-//!   against `.devteam/escalations/P0-03-mode-ladder-risk-classes.md`'s own correction of the
-//!   same mistaken assumption). Not included in [`IRREVERSIBILITY_DENYLIST`] below; escalated
-//!   narrowly rather than guessed — see
-//!   `.devteam/escalations/P0-04-irreversibility-denylist.md`.
+//! - **Item 10, deletion of the last remaining snapshot/backup of a resource** — resolved
+//!   (operator decision, 2026-07-11): `api/backups.rs`'s `DELETE /api/backups/:id` only
+//!   removes a `backup_configs` schedule row (verified in source; its sibling `delete_plan`
+//!   handler says so explicitly — "existing backup data on disk is NOT deleted"), so it isn't
+//!   actual data loss. `api/proxmox.rs`'s `vm_delete_snapshot` (`DELETE
+//!   /api/proxmox/:host_id/vms/:vmid/snapshot/:snapname`) is the route that destroys real,
+//!   irrecoverable point-in-time recovery data, so it's the one gated here. A static route
+//!   table can't express the literal count-dependent condition ("last remaining"), so this
+//!   coarsely gates every snapshot deletion in YOLO mode — the same accepted-false-positive
+//!   tradeoff already used for item 6 (`firewall_disable`, below). `backup_configs` deletion
+//!   is left off this list since it deletes no data.
 //! - **Item 12, device decommission**: this repo has no multi-node agent yet (that's P3
 //!   scope per the task spec) — `api/node_enroll.rs`'s `delete_node` deletes an *enrolled*
 //!   node record (and its WireGuard peer), which is ordinary resource deletion, not
@@ -105,9 +97,8 @@ pub struct DenylistItem {
 }
 
 /// ADR-004's reconciled irreversibility denylist, source-verified routes only. Items 4, 9,
-/// 10, and 12 have no corresponding endpoint yet (or, for item 10, an endpoint this task has
-/// no grant to modify) and are intentionally absent — see the module doc comment above, not
-/// silently dropped.
+/// and 12 have no corresponding endpoint yet and are intentionally absent — see the module
+/// doc comment above, not silently dropped.
 pub const IRREVERSIBILITY_DENYLIST: &[DenylistItem] = &[
     DenylistItem {
         id: "self_update",
@@ -169,6 +160,17 @@ pub const IRREVERSIBILITY_DENYLIST: &[DenylistItem] = &[
             ("POST", "/api/apps/:project_name/purge"),
             ("POST", "/api/apps/:project_name/delete-volumes"),
         ],
+    },
+    DenylistItem {
+        id: "last_snapshot_deletion",
+        description: "Deletion of a VM snapshot — coarse gate on every snapshot deletion, since a \
+                       static route table can't express the literal \"last remaining\" count \
+                       condition (see module doc comment); backup_configs schedule deletion is \
+                       excluded since it destroys no data",
+        routes: &[(
+            "DELETE",
+            "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",
+        )],
     },
 ];
 
@@ -270,6 +272,11 @@ mod tests {
         assert_item_routes_are_irreversible("app_removal_without_keep_data");
     }
 
+    #[test]
+    fn yolo_mode_still_requires_approval_for_last_snapshot_deletion() {
+        assert_item_routes_are_irreversible("last_snapshot_deletion");
+    }
+
     /// ADR-004 constraint 4: assert *structurally* that no route can alter the constant, not
     /// just that today's routes happen not to. Two checks: (1) no route registered in
     /// `api::router()` mentions "denylist" in its path (there is no mutation endpoint for
@@ -302,7 +309,10 @@ mod tests {
     /// just for the one action name available to test today.
     #[tokio::test]
     async fn denylist_applies_regardless_of_actor_class() {
-        use crate::voidwatch::{self, mode, tests::create_policy_tables, ActionKind, Actor, ActorKind, Resource, Verdict};
+        use crate::voidwatch::{
+            self, mode, tests::create_policy_tables, ActionKind, Actor, ActorKind, Resource,
+            Verdict,
+        };
         use sqlx::sqlite::SqlitePoolOptions;
 
         let pool = SqlitePoolOptions::new()

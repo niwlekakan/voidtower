@@ -382,12 +382,10 @@ mod tests {
     #[tokio::test]
     async fn check_resource_tag_scoped_rule_only_applies_to_tagged_resources() {
         let pool = setup_db().await;
-        sqlx::query(
-            "INSERT INTO tags (id, name) VALUES ('t1', 'prod')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO tags (id, name) VALUES ('t1', 'prod')")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(
             "INSERT INTO resource_tags (resource_type, resource_id, tag_id) VALUES ('container', 'c-tagged', 't1')",
         )

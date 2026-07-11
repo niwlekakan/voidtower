@@ -1,6 +1,6 @@
 # ADR-002 — Narrow schema-addition grant for Phase P0
 
-**Status:** Accepted (signed by operator VoidTower DevTeam on 2026-07-09)
+**Status:** Revoked (2026-07-11) — grant closed
 **Date:** 2026-07-09
 **Expires:** at P0 phase exit (`adr.sh revoke ADR-002`)
 

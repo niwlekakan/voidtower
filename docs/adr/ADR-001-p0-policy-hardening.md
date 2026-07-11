@@ -1,6 +1,6 @@
 # ADR-001 — Forbidden-zone grant for Phase P0 (AI blast-radius hardening)
 
-**Status:** Accepted (human-authored)
+**Status:** Revoked (2026-07-11) — grant closed
 **Date:** 2026-07-09
 **Expires:** at P0 phase exit (gap-analysis §2 exit criteria met and verified by the operator)
 

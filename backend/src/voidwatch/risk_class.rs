@@ -373,7 +373,12 @@ pub const ROUTE_RISK_CLASSES: &[(&str, &str, RiskClass)] = &[
     (
         "DELETE",
         "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",
-        RiskClass::Destructive,
+        // Reclassified from Destructive to Irreversible per ADR-004 item 10 (deletion of the
+        // last remaining snapshot of a resource). A static route table can't express the
+        // count-dependent condition ("last remaining"), so this coarsely gates every snapshot
+        // deletion in YOLO mode — the same accepted-false-positive tradeoff already documented
+        // for item 6 (firewall_disable) in denylist.rs.
+        RiskClass::Irreversible,
     ),
     (
         "GET",

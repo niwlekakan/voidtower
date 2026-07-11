@@ -147,6 +147,30 @@ preflight_grant() {  # $1 = task spec path. Returns 0 to proceed, 1 to park.
   esac
 }
 
+# Reset the working tree to a known-clean origin/main before each task. devteam.sh delegates
+# all git branching/committing to the worker session itself (see run_worker's prompt) — nothing
+# here checks out branches or cleans up between tasks. Left unchecked, one worker's uncommitted
+# leftovers (a partial edit, a self-heal reformat never committed, a rate-limit interruption
+# mid-change) silently become the NEXT worker's starting state, which has produced real
+# contamination incidents (an unrelated file's uncommitted reformat bleeding into an unrelated
+# task's diff). Same safety shape as sandbox.sh's _reset_clone_to_origin: never discard, only
+# stash/backup.
+reset_worktree_for_task() {
+  ( cd "$ROOT"
+    git fetch origin -q || true
+    if [[ -n "$(git log --oneline origin/main..main 2>/dev/null)" ]]; then
+      local bk="devteam-backup/main-$(date +%Y%m%d-%H%M%S)"
+      git branch -f "$bk" main
+      echo "[devteam] WARNING: local commits on main preserved as '$bk' (push it if wanted)"
+    fi
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+      echo "[devteam] NOTE: uncommitted changes from a prior task stashed before starting the next."
+      git stash push -u -m "devteam-autostash-$(date +%s)" >/dev/null 2>&1 || true
+    fi
+    git checkout -q -B main origin/main
+  )
+}
+
 # A worker escalated. If it drafted an ADR, offer to sign it and retry immediately.
 handle_escalation() {  # $1 = task spec, $2 = id  → 0 = retry now, 1 = park
   local esc="$ESC/${2}.md"
@@ -187,6 +211,11 @@ start_loop() {
     task="$ACTIVE/$(basename "$task")"
     echo "$id" > "$DT/CURRENT"
     echo "[devteam] ▶ $id (log: ${log#$ROOT/})"
+    # Clear any stale escalation file from a prior attempt on this task id — otherwise the
+    # post-run "did this worker escalate?" check below can't distinguish a fresh escalation
+    # from leftover state, and parks a task whose retry never actually re-escalated.
+    rm -f "$ESC/${id}.md"
+    reset_worktree_for_task
 
     if ! preflight_deps "$task" || ! preflight_grant "$task"; then
       stash "$task" "$BLOCKED/"; rm -f "$DT/CURRENT"; continue

@@ -3,7 +3,9 @@
 #
 # Runs the full gap-analysis roadmap (P0→P3) end to end with two human touchpoints per phase:
 #   1. Sign the phase's forbidden-zone grants  (adr.sh accept — four keystrokes, once)
-#   2. Phase-exit verification on real hardware (you create .devteam/phase-exit/<PHASE>.ok)
+#   2. Phase-exit verification (you review the phase's full-review PRs and create
+#      .devteam/phase-exit/<PHASE>.ok) — a software review; VoidTower runs on any hardware,
+#      so no real-homelab checklist is required except P3's own device-agent exit criteria.
 #
 # Everything else — planning, spec authoring, ADR drafting, implementation, adversarial review,
 # gates, merging, phase transition, map refresh — happens without you.
@@ -105,7 +107,7 @@ preserving its six-section structure. Verify every claim against source. Commit 
   local open_prs; open_prs="$(git -C "$ROOT" branch -r --list 'origin/devteam/*' | wc -l)"
   notify "$phase queue drained. $open_prs branch(es) await your review. Phase-exit test needed."
   say "$phase drained. Awaiting phase-exit verification."
-  say "  Review remaining PRs, run the hardware checks in docs/gap-analysis.md, then:"
+  say "  Review remaining PRs against this phase's exit criteria in docs/gap-analysis.md, then:"
   say "    touch .devteam/phase-exit/${phase}.ok && scripts/devteam/auto.sh run"
   [[ -f "$DT/phase-exit/${phase}.ok" ]] || return 20
 

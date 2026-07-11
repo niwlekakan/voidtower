@@ -106,6 +106,8 @@ _podman() {
     -e GIT_ASKPASS=/usr/local/bin/askpass \
     -e GIT_TERMINAL_PROMPT=0 \
     -e GITHUB_TOKEN="$(cat "$CREDS" 2>/dev/null || true)" \
+    ${DEVTEAM_BUDGET_USD:+-e DEVTEAM_BUDGET_USD="$DEVTEAM_BUDGET_USD"} \
+    ${DEVTEAM_NTFY_URL:+-e DEVTEAM_NTFY_URL="$DEVTEAM_NTFY_URL"} \
     -w /work \
     "$IMG" "$@"
 }

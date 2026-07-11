@@ -26,7 +26,9 @@ The EDD assumed a greenfield project where implementation was the work. The repo
 
 ---
 
-## 2. P0 — Close the AI blast radius *(highest urgency, small surface)*
+## 2. P0 — Close the AI blast radius *(highest urgency, small surface)* — **STATUS: COMPLETE (2026-07-11)**
+
+All six work items below are merged to `main`. P0.3's frontend/approvals-queue half (making mode-ladder verdicts mandatory, not advisory, at the six UI-driven handlers) was deliberately deferred — see [issue #11](https://github.com/niwlekakan/voidtower/issues/11) — because it needs an approvals-queue mechanism ADR-002 explicitly scoped out of this phase; the backend mode ladder itself shipped. Phase-exit (`.devteam/phase-exit/P0.ok`) is a software review against the exit criteria below, not a hardware checklist — VoidTower runs on any hardware.
 
 **The chain to break:** prompt-injected Odysseus → MCP/integration API using `VOIDTOWER_TOKEN` → un-gated action endpoints → host with `docker.sock` mounted (root-equivalent) → includes VoidTower's own self-update mechanism.
 

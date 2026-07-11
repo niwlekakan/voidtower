@@ -3,10 +3,15 @@ use axum_extra::extract::cookie::CookieJar;
 use serde_json::Value;
 use std::path::Path;
 
-use crate::{auth, error::{AppError, Result}, AppState};
+use crate::{
+    auth,
+    error::{AppError, Result},
+    AppState,
+};
 
 async fn require_any_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let session_id = jar.get("vt_session")
+    let session_id = jar
+        .get("vt_session")
         .map(|c| c.value().to_string())
         .ok_or(AppError::Unauthorized)?;
     auth::validate_session(&state.db, &session_id)
@@ -17,15 +22,20 @@ async fn require_any_user(state: &AppState, jar: &CookieJar) -> Result<auth::Use
 
 fn project_root(state: &AppState) -> std::path::PathBuf {
     // frontend_dir is frontend/dist — go up two levels to reach repo root
-    state.config.frontend_dir
-        .parent().and_then(|p| p.parent())
+    state
+        .config
+        .frontend_dir
+        .parent()
+        .and_then(|p| p.parent())
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
 }
 
 fn walk_rs_files(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("rs") {
@@ -40,7 +50,9 @@ fn walk_rs_files(dir: &Path) -> Vec<String> {
 
 fn walk_tsx_files(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("tsx") {
@@ -57,11 +69,18 @@ fn extract_routes(mod_rs: &str) -> Vec<Value> {
     let mut routes = Vec::new();
     for line in mod_rs.lines() {
         let trimmed = line.trim();
-        if !trimmed.starts_with(".route(") { continue; }
+        if !trimmed.starts_with(".route(") {
+            continue;
+        }
         // .route("/api/foo", get(handler).post(handler2))
         let inner = trimmed.trim_start_matches(".route(").trim_end_matches(')');
         let mut parts = inner.splitn(2, ',');
-        let path = parts.next().unwrap_or("").trim().trim_matches('"').to_string();
+        let path = parts
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .to_string();
         let methods_raw = parts.next().unwrap_or("").trim().to_string();
         // extract method names: get(, post(, put(, delete(, patch(
         let mut methods = Vec::new();
@@ -77,10 +96,7 @@ fn extract_routes(mod_rs: &str) -> Vec<Value> {
     routes
 }
 
-pub async fn get_context(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<Value>> {
+pub async fn get_context(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Value>> {
     require_any_user(&state, &jar).await?;
 
     let root = project_root(&state);
@@ -133,6 +149,16 @@ pub async fn get_context(
             "api_types": "frontend/src/api/types.ts"
         }
     });
+
+    // This bundle is the ROADMAP-named "Odysseus context bundle" — it's built from
+    // directory listings and static strings today, but `routes` is parsed out of a
+    // real source file and could pick up secret material if that file ever
+    // embedded one (e.g. a route path or comment). Route it through the same
+    // redaction choke point as the MCP tools before it reaches an AI context.
+    let serialized = serde_json::to_string(&context).map_err(|e| AppError::Internal(e.into()))?;
+    let redacted = super::mcp::redact::redact_for_ai(&state, &serialized).await;
+    let context: Value =
+        serde_json::from_str(&redacted).map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(Json(context))
 }
@@ -340,7 +366,9 @@ fn templates_list() -> serde_json::Value {
 // ── read_file / search_code helpers (used by MCP tools) ──────────────────────
 
 pub fn safe_project_root_from_frontend_dir(frontend_dir: &Path) -> std::path::PathBuf {
-    frontend_dir.parent().and_then(|p| p.parent())
+    frontend_dir
+        .parent()
+        .and_then(|p| p.parent())
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
 }
@@ -368,14 +396,24 @@ pub fn search_project_code(root: &Path, query: &str) -> std::result::Result<Stri
     for dir in &search_dirs {
         let target = root.join(dir);
         if let Ok(output) = std::process::Command::new("grep")
-            .args(["-rn", "--include=*.rs", "--include=*.ts", "--include=*.tsx",
-                   "-m", "5", query, target.to_str().unwrap_or("")])
+            .args([
+                "-rn",
+                "--include=*.rs",
+                "--include=*.ts",
+                "--include=*.tsx",
+                "-m",
+                "5",
+                query,
+                target.to_str().unwrap_or(""),
+            ])
             .output()
         {
             let text = String::from_utf8_lossy(&output.stdout);
             // Make paths relative to root
             for line in text.lines().take(30) {
-                let rel = line.strip_prefix(root.to_str().unwrap_or("")).unwrap_or(line);
+                let rel = line
+                    .strip_prefix(root.to_str().unwrap_or(""))
+                    .unwrap_or(line);
                 hits.push(rel.trim_start_matches('/').to_string());
             }
         }
@@ -385,5 +423,78 @@ pub fn search_project_code(root: &Path, query: &str) -> std::result::Result<Stri
         Ok(format!("No results for: {query}"))
     } else {
         Ok(hits.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// `get_context`'s `routes` field is parsed out of a real source file on
+    /// disk (`backend/src/api/mod.rs`) via `extract_routes` — this proves that
+    /// if that file ever embedded a registered secret verbatim (e.g. in a route
+    /// path or a comment), this bundle must not repeat it back into an AI
+    /// context. Fixture a minimal project root with a `mod.rs` containing a
+    /// route line that embeds a registered secret, and confirm it's stripped.
+    #[tokio::test]
+    async fn redaction_corpus_never_appears_in_get_context_output() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session_id = crate::api::mcp::test_support::user_with_session(&pool).await;
+
+        let secret_value = "fakevendor_XYZ123456789registeredsecretvalue";
+        let key: [u8; 32] = [5u8; 32];
+        let enc = crate::api::secrets::encrypt(&key, secret_value).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) VALUES ('s1', 'leaked-route', NULL, ?, 0, 0)",
+        )
+        .bind(&enc)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let root = std::env::temp_dir().join(format!(
+            "vt-redact-test-get-context-{}-{}",
+            std::process::id(),
+            secret_value.len(),
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("backend/src/api")).unwrap();
+        std::fs::create_dir_all(root.join("frontend/dist")).unwrap();
+        std::fs::write(
+            root.join("backend/src/api/mod.rs"),
+            format!(".route(\"/api/secret-{secret_value}\", get(handler))\n"),
+        )
+        .unwrap();
+
+        let mut state = crate::api::mcp::test_support::build(pool);
+        state.secrets_key = Arc::new(key);
+        state.config = Arc::new(crate::config::Config {
+            frontend_dir: root.join("frontend/dist"),
+            ..crate::config::Config::default()
+        });
+
+        let jar = CookieJar::new().add(axum_extra::extract::cookie::Cookie::new(
+            "vt_session",
+            session_id,
+        ));
+
+        let resp = get_context(State(state), jar).await.unwrap();
+        let body_text = serde_json::to_string(&resp.0).unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(
+            !body_text.contains(secret_value),
+            "registered secret leaked into get_context routes"
+        );
+        assert!(
+            body_text.contains("REDACTED"),
+            "expected the route path to show redaction happened"
+        );
+        assert!(
+            body_text.contains("architecture"),
+            "context bundle should still serialize normally"
+        );
     }
 }

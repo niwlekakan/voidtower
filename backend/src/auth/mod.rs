@@ -1,3 +1,5 @@
+pub mod scope_enforce;
+
 use anyhow::Result;
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -234,7 +236,12 @@ pub async fn find_user_by_id(pool: &SqlitePool, user_id: &str) -> Result<Option<
     Ok(user)
 }
 
-pub async fn set_totp(pool: &SqlitePool, user_id: &str, secret: Option<&str>, enabled: bool) -> Result<()> {
+pub async fn set_totp(
+    pool: &SqlitePool,
+    user_id: &str,
+    secret: Option<&str>,
+    enabled: bool,
+) -> Result<()> {
     sqlx::query("UPDATE users SET totp_secret = ?, totp_enabled = ?, updated_at = ? WHERE id = ?")
         .bind(secret)
         .bind(enabled)
@@ -313,7 +320,6 @@ pub async fn delete_expired_sessions(pool: &SqlitePool) -> Result<u64> {
     Ok(result.rows_affected())
 }
 
-
 /// Validate a Bearer token without requiring a specific scope.
 /// Updates last_used_at and returns the owner's user_id.
 pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Result<String> {
@@ -323,7 +329,11 @@ pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Resul
     let token_hash = hex::encode(h.finalize());
 
     #[derive(sqlx::FromRow)]
-    struct Row { id: String, user_id: String, expires_at: Option<i64> }
+    struct Row {
+        id: String,
+        user_id: String,
+        expires_at: Option<i64>,
+    }
 
     let row = sqlx::query_as::<_, Row>(
         "SELECT id, user_id, expires_at FROM api_tokens WHERE token_hash = ?",
@@ -335,13 +345,40 @@ pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Resul
 
     let now = unix_now();
     if let Some(exp) = row.expires_at {
-        if exp < now { return Err(anyhow::anyhow!("Token expired")); }
+        if exp < now {
+            return Err(anyhow::anyhow!("Token expired"));
+        }
     }
 
     let _ = sqlx::query("UPDATE api_tokens SET last_used_at = ? WHERE id = ?")
-        .bind(now).bind(&row.id).execute(pool).await;
+        .bind(now)
+        .bind(&row.id)
+        .execute(pool)
+        .await;
 
     Ok(row.user_id)
+}
+
+/// Looks up the declared scopes for a raw Bearer token, independent of
+/// whether the token owner's role would otherwise grant broader access.
+/// Used by `bearer_auth::middleware` to attach `TokenScopes` to the request
+/// so `scope_enforce::middleware` has something to check downstream — see
+/// docs/adr/ADR-003-auth-scope-enforcement.md.
+pub async fn token_scopes(pool: &SqlitePool, raw_token: &str) -> Result<Vec<String>> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(raw_token.as_bytes());
+    let token_hash = hex::encode(h.finalize());
+
+    let scopes_json: Option<String> =
+        sqlx::query_scalar("SELECT scopes FROM api_tokens WHERE token_hash = ?")
+            .bind(&token_hash)
+            .fetch_optional(pool)
+            .await?;
+
+    Ok(scopes_json
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default())
 }
 
 /// Create a short-lived (1 hour) session for API token requests.
@@ -393,7 +430,9 @@ pub async fn validate_api_token(
 
     let scopes: Vec<String> = serde_json::from_str(&row.scopes).unwrap_or_default();
     if !scopes.iter().any(|s| s == required_scope) {
-        return Err(anyhow::anyhow!("Token missing required scope: {required_scope}"));
+        return Err(anyhow::anyhow!(
+            "Token missing required scope: {required_scope}"
+        ));
     }
 
     let _ = sqlx::query("UPDATE api_tokens SET last_used_at = ? WHERE id = ?")

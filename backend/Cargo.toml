@@ -54,6 +54,10 @@ nix = { version = "0.27", features = ["fs", "user", "process", "signal"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+# "util" gives ServiceExt::oneshot, needed to drive the router end-to-end in
+# tests (e.g. scope_bypass_tests.rs) without a real listener. Test-only: the
+# release binary still builds against plain `tower` from [dependencies].
+tower = { version = "0.4", features = ["util"] }
 
 [profile.release]
 opt-level = 3

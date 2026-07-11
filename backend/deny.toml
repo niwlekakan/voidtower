@@ -1,0 +1,73 @@
+# cargo-deny configuration (P1-05, ADR-005). Run: `cd backend && cargo deny check`.
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Baseline policy: catch new supply-chain problems going forward. Pre-existing
+# advisories already present in the current dependency tree are ignored below
+# by ID, each with a reason, rather than silently retroactively failing CI on
+# day one — see the `[advisories.ignore]` comment for why none of these are
+# fixed by a version bump in this task.
+
+[graph]
+all-features = false
+
+[output]
+feature-depth = 1
+
+# This section is considered when running `cargo deny check advisories`.
+[advisories]
+# Pre-existing findings in the dependency tree at the time this baseline was
+# authored (2026-07-11). This task (P1-05) is CI/CODEOWNERS-only per its spec
+# and ADR-005's grant does not extend to unnamed runtime-dependency bumps in
+# this task's Files-to-touch list (ci.yml, CODEOWNERS, deny.toml only) — so
+# fixing these belongs to a dedicated dependency-bump task, not this one. Any
+# advisory NOT listed here still fails the check, so this is a ratchet, not a
+# blanket exemption.
+ignore = [
+    { id = "RUSTSEC-2026-0204", reason = "crossbeam-epoch 0.9.18, transitive; fix requires a dependency bump outside this task's granted files (ci.yml/CODEOWNERS/deny.toml only)" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 (Marvin Attack); upstream has no fixed release yet" },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.101.7, transitive via an older rustls major version still in the tree; bump is a dependency-tree change outside this task's scope" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.101.7, same root cause as RUSTSEC-2026-0098" },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.101.7, same root cause as RUSTSEC-2026-0098" },
+    { id = "RUSTSEC-2024-0363", reason = "sqlx 0.7.4; fix is a major version bump (0.8) with breaking API changes across the crate, out of scope for this CI-only task" },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 unmaintained (transitive); no replacement upgrade path evaluated in this task" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 1.0.4 unmaintained (transitive); superseded by rustls-pki-types upstream, tracked as a future dependency-bump task" },
+    { id = "RUSTSEC-2017-0008", reason = "serial 0.4.0 unmaintained, transitive via portable-pty; no safe upgrade available upstream" },
+    { id = "RUSTSEC-2026-0190", reason = "anyhow 1.0.102 unsoundness in Error::downcast_mut(), a method not used by this crate; tracked for a future bump" },
+]
+
+# This section is considered when running `cargo deny check licenses`.
+[licenses]
+# The license set this crate's dependency tree actually uses today (verified
+# via `cargo deny check licenses` against the current Cargo.lock), plus this
+# crate's own AGPL-3.0-or-later. Adding a dependency under a license not in
+# this list is a deliberate, reviewable change to this file, not silent drift.
+allow = [
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+# This section is considered when running `cargo deny check bans`.
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow-workspace = false
+
+# This section is considered when running `cargo deny check sources`.
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

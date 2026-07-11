@@ -43,3 +43,40 @@ jobs:
       - name: Test
         working-directory: backend
         run: cargo test --all-features
+
+  supply-chain:
+    name: Supply chain (cargo-deny + cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      # cargo-audit is installed with `cargo install` (not the rustsec/audit-check
+      # action) because this repo's crate lives in `backend/`, not the repo root
+      # (no root Cargo.toml/Cargo.lock) — invoking cargo directly with
+      # `working-directory: backend` matches how the `backend` job above already
+      # runs clippy/test against this non-root layout, instead of depending on a
+      # marketplace action's assumptions about where the lockfile lives.
+      - name: Install cargo-deny and cargo-audit
+        run: cargo install --locked cargo-deny cargo-audit
+      - name: cargo deny check
+        working-directory: backend
+        run: cargo deny check
+      # Advisories already present in the dependency tree at baseline time are
+      # ignored by ID in backend/deny.toml's [advisories.ignore] (cargo-deny) and
+      # via --ignore flags below (cargo-audit); either fix requires a
+      # dependency-tree change out of this job's scope, or no fix is available
+      # upstream yet. Any NEW advisory not in this list still fails the job.
+      - name: cargo audit
+        working-directory: backend
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2026-0204 \
+            --ignore RUSTSEC-2026-0185 \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2026-0098 \
+            --ignore RUSTSEC-2026-0099 \
+            --ignore RUSTSEC-2026-0104 \
+            --ignore RUSTSEC-2024-0363

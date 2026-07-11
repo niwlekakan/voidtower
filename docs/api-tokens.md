@@ -107,6 +107,33 @@ apps:read  apps:deploy  containers:read  containers:restart  proxy:read  proxy:m
 
 ---
 
+## Capability tiers
+
+`POST /api/integrations/tokens` also accepts a `tier` field as a coarser
+shortcut instead of an explicit `scopes` array — useful for splitting a
+single god-token AI stack integration into narrower, purpose-built tokens
+(gap-analysis P0.6). When `tier` is set, the server derives the token's
+scopes from a fixed table; any `scopes` field in the same request is
+ignored.
+
+| Tier | Scopes granted |
+|---|---|
+| `read` | Every read-only scope listed above |
+| `deploy` | `apps:read`, `apps:deploy`, `apps:restart` |
+| `exec` | `containers:read`, `containers:restart`, `containers:logs`, `services:read`, `services:restart`, `automation:read`, `automation:run` |
+| `admin-never` | None — this tier mints a token that structurally cannot reach any admin/owner-gated route, regardless of the minting user's own role |
+
+This is an API-only capability for now — the Settings → Integrations UI
+still only exposes the explicit `scopes` picker.
+
+**Migrating an existing `VOIDTOWER_TOKEN`:** if your AI stack currently uses
+one broadly-scoped (or legacy unscoped) token for everything, mint
+replacement tier tokens for what it actually needs, update the consuming
+service's env vars, then revoke the old token — there is no automatic
+migration, and the old token is not silently upgraded to a tier.
+
+---
+
 ## Secret restriction
 
 When creating a token that needs access to specific secrets (e.g. a script that reads a database password), you can restrict it to only those secret IDs using the **Secret restriction** field. The token will be rejected for `secrets:list` calls to any secret not in the allowed list.
@@ -127,3 +154,4 @@ Go to **Settings → Integrations → API Tokens** and click **Revoke** next to 
 - Token usage is tracked (`last_used_at` timestamp updated on each authenticated request)
 - All token creation and revocation events appear in the audit timeline
 - The SSE stream checks the emergency-disable flag — if Odysseus integration is emergency-disabled, `alerts:read` tokens cannot connect to `/api/integrations/events`
+- Scopes are enforced by a single middleware for every route a Bearer token can reach (not per-handler) — a route with no listed scope requirement is closed to tokens by default, not implicitly open

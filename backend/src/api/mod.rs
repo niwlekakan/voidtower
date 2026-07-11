@@ -12,11 +12,19 @@ use tower_http::cors::{Any, CorsLayer};
 async fn security_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    h.insert("x-frame-options",        HeaderValue::from_static("DENY"));
-    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
-    h.insert("referrer-policy",        HeaderValue::from_static("strict-origin-when-cross-origin"));
-    h.insert("content-security-policy", HeaderValue::from_static(
-        "default-src 'self'; \
+    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    h.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        "referrer-policy",
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    h.insert(
+        "content-security-policy",
+        HeaderValue::from_static(
+            "default-src 'self'; \
          script-src 'self' 'unsafe-inline' 'unsafe-eval'; \
          style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob:; \
@@ -24,64 +32,76 @@ async fn security_headers(req: Request, next: Next) -> Response {
          font-src 'self' data:; \
          worker-src blob:; \
          frame-src *; \
-         frame-ancestors 'none';"
-    ));
+         frame-ancestors 'none';",
+        ),
+    );
     res
 }
 
+pub mod agents;
+pub mod ai;
+pub mod ai_ask;
+pub mod ai_context;
+pub mod ai_providers;
 pub mod alerts;
 pub mod apps;
 pub mod audit;
 pub mod auth;
 pub mod automation;
 pub mod backups;
+pub mod bearer_auth;
 pub mod capabilities;
 pub mod containers;
+pub mod demo_guard;
 pub mod diagnostics;
+pub mod disaster;
 pub mod events;
 pub mod files;
 pub mod firewall;
+pub mod integrations;
+pub mod lxc;
+pub mod mcp;
+pub mod members;
 pub mod metrics;
+pub mod models;
+pub mod mods;
+pub mod nav_config;
+pub mod network;
+pub mod node_enroll;
+pub mod plugins;
+pub mod policy;
+pub mod proxmox;
 pub mod proxy;
 pub mod secrets;
-pub mod timeline;
 pub mod security;
 pub mod services;
-pub mod status;
-pub mod terminal;
-pub mod network;
-pub mod users;
 pub mod settings;
-pub mod wireguard;
-pub mod node_enroll;
-pub mod members;
-pub mod vms;
-pub mod tags;
-pub mod ai;
-pub mod ai_ask;
-pub mod ai_context;
-pub mod studio;
-pub mod bearer_auth;
-pub mod demo_guard;
-pub mod integrations;
-pub mod models;
+pub mod status;
 pub mod storage;
+pub mod studio;
 pub mod system;
-pub mod updates;
-pub mod totp;
-pub mod mods;
-pub mod webhooks;
-pub mod mcp;
-pub mod proxmox;
-pub mod disaster;
-pub mod policy;
-pub mod plugins;
-pub mod lxc;
-pub mod agents;
 pub mod tabs;
-pub mod nav_config;
-pub mod ai_providers;
+pub mod tags;
+pub mod terminal;
+pub mod timeline;
+pub mod totp;
+pub mod updates;
+pub mod users;
+pub mod vms;
+pub mod webhooks;
+pub mod wireguard;
 
+#[cfg(test)]
+mod scope_bypass_tests;
+
+// The route table below (`router()`'s two `Router::new()` chains) predates
+// rustfmt adoption in this crate and is hand-aligned; `#[rustfmt::skip]`
+// keeps it that way so gates.sh's mandatory whole-file rustfmt pass (any
+// task touching this file triggers one) can't reflow `.route("path", ...)`
+// calls onto multiple lines — `risk_class.rs`'s
+// `every_registered_route_has_a_risk_class` test parses this file as text
+// and requires the route path string to stay adjacent to `.route(`.
+#[rustfmt::skip]
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -430,6 +450,12 @@ pub fn router(state: AppState) -> Router {
         .layer(cors)
         .layer(middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn_with_state(state.clone(), demo_guard::middleware))
+        // Must sit between bearer_auth (which sets the TokenScopes extension
+        // this reads) and the routes: `.layer()` calls wrap outside-in in the
+        // order added, so the *last* `.layer()` call runs *first* on the way
+        // in — scope_enforce is added here (before bearer_auth) so it runs
+        // after it, once TokenScopes is actually present on the request.
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::auth::scope_enforce::middleware))
         .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
         .with_state(state);
 

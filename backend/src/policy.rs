@@ -297,4 +297,121 @@ mod tests {
 
         assert!(matches!(verdict, PolicyVerdict::Deny(_)));
     }
+
+    /// P1-03 mutation-testing finding: no existing test exercised a `"*"` wildcard
+    /// `actor_type` reaching this function (every prior test's wildcard-actor rule was
+    /// either short-circuited by `ActionKind::Read` or intercepted by a mode-ladder
+    /// mode before ever reaching `policy::check`), so `matches_actor`'s
+    /// `rule_actor == "*"` branch had no test that would fail if that comparison were
+    /// flipped to `!=`. Calling `check()` directly bypasses the mode ladder entirely,
+    /// closing the gap: a wildcard-actor rule must fire for every concrete actor type.
+    #[tokio::test]
+    async fn check_wildcard_actor_rule_applies_to_any_actor_type() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO policy_rules (id, name, actor_type, action, resource_type, resource_tag, effect, priority, enabled, created_at)
+             VALUES ('r1', 'test', '*', 'restart', 'container', NULL, 'deny', 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            check(&pool, "user", "restart", "container", "c1").await,
+            PolicyVerdict::Deny(_)
+        ));
+        assert!(matches!(
+            check(&pool, "api_token", "restart", "container", "c1").await,
+            PolicyVerdict::Deny(_)
+        ));
+    }
+
+    /// P1-03 mutation-testing finding: every existing rule/actor pair in this module's
+    /// tests happened to match, so `matches_actor` returning unconditional `true`
+    /// (rather than actually comparing) never changed a verdict. This pins the
+    /// opposite case: a rule scoped to one specific actor type must not apply to a
+    /// request from a different one.
+    #[tokio::test]
+    async fn check_specific_actor_rule_does_not_apply_to_a_different_actor() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO policy_rules (id, name, actor_type, action, resource_type, resource_tag, effect, priority, enabled, created_at)
+             VALUES ('r1', 'test', 'user', 'restart', 'container', NULL, 'allow', 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The rule is scoped to "user" and must not apply to "api_token" — which then
+        // falls through to the P0.2 default-deny fallback (no allowlist entry here).
+        assert!(matches!(
+            check(&pool, "api_token", "restart", "container", "c1").await,
+            PolicyVerdict::Deny(_)
+        ));
+    }
+
+    /// P1-03 mutation-testing finding: same gap as `matches_actor` above, for
+    /// `matches_field` (shared by both the `action` and `resource_type` comparisons):
+    /// every existing rule's action/resource_type happened to equal the request's, so
+    /// `matches_field` returning unconditional `true` never changed a verdict either.
+    #[tokio::test]
+    async fn check_specific_action_rule_does_not_match_a_different_action() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO policy_rules (id, name, actor_type, action, resource_type, resource_tag, effect, priority, enabled, created_at)
+             VALUES ('r1', 'test', '*', 'remove', '*', NULL, 'deny', 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The rule only matches action "remove" — "restart" must fall through
+        // unmatched. "user" default-allows with no matching rule (RBAC-governed).
+        assert!(matches!(
+            check(&pool, "user", "restart", "container", "c1").await,
+            PolicyVerdict::Allow
+        ));
+    }
+
+    /// P1-03 mutation-testing finding: `resource_tag`-scoped rules had no test
+    /// coverage at all (every rule inserted across this crate's tests passes `NULL`),
+    /// so the `if !tag_names.iter().any(...) { continue; }` guard's `!` and `==` had
+    /// nothing that would fail if deleted/flipped. Exercises both directions: a
+    /// tag-scoped rule applies to a resource carrying that tag, and is skipped for one
+    /// that doesn't.
+    #[tokio::test]
+    async fn check_resource_tag_scoped_rule_only_applies_to_tagged_resources() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO tags (id, name) VALUES ('t1', 'prod')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO resource_tags (resource_type, resource_id, tag_id) VALUES ('container', 'c-tagged', 't1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO policy_rules (id, name, actor_type, action, resource_type, resource_tag, effect, priority, enabled, created_at)
+             VALUES ('r1', 'test', '*', 'restart', 'container', 'prod', 'deny', 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Carries the "prod" tag — the tag-scoped rule applies.
+        assert!(matches!(
+            check(&pool, "user", "restart", "container", "c-tagged").await,
+            PolicyVerdict::Deny(_)
+        ));
+        // Does not carry the "prod" tag — the rule must be skipped; "user" then
+        // default-allows with no other matching rule.
+        assert!(matches!(
+            check(&pool, "user", "restart", "container", "c-untagged").await,
+            PolicyVerdict::Allow
+        ));
+    }
 }

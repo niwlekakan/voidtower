@@ -452,3 +452,42 @@ async fn voidtower_token_migration_splits_into_capability_tokens_without_breakin
         .unwrap();
     assert_eq!(blocked_res.status(), StatusCode::FORBIDDEN);
 }
+
+/// ADR-003's Decision requires the "route with no table entry" case to be a
+/// deliberate, tested default rather than a silent gap matching the original
+/// bug. `GET /api/webhooks` carries no `ROUTE_SCOPES` entry; a Bearer token
+/// must be denied there by the default-deny behavior even though it holds an
+/// unrelated real scope, while a human session-cookie login must still work
+/// normally, since the middleware is a no-op for non-token-originated
+/// requests.
+#[tokio::test]
+async fn unlisted_route_scope_behavior_is_deliberate_and_tested() {
+    let db = setup_db().await;
+    let admin = insert_user(&db, "admin").await;
+    let admin_session = insert_session(&db, &admin).await;
+    let token = insert_token(&db, &admin, &["metrics:read"]).await;
+
+    let app = crate::api::router(test_support::build(db));
+
+    let token_res = app
+        .clone()
+        .oneshot(bearer_req("GET", "/api/webhooks", &token, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        token_res.status(),
+        StatusCode::FORBIDDEN,
+        "a Bearer token must be denied on a route with no ROUTE_SCOPES entry, \
+         even when it holds an unrelated real scope"
+    );
+
+    let human_res = app
+        .oneshot(cookie_req("GET", "/api/webhooks", &admin_session, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        human_res.status(),
+        StatusCode::OK,
+        "an unlisted route must still work normally for human session logins"
+    );
+}

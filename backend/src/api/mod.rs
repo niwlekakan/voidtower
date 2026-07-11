@@ -94,6 +94,14 @@ pub mod wireguard;
 #[cfg(test)]
 mod scope_bypass_tests;
 
+// The route table below (`router()`'s two `Router::new()` chains) predates
+// rustfmt adoption in this crate and is hand-aligned; `#[rustfmt::skip]`
+// keeps it that way so gates.sh's mandatory whole-file rustfmt pass (any
+// task touching this file triggers one) can't reflow `.route("path", ...)`
+// calls onto multiple lines — `risk_class.rs`'s
+// `every_registered_route_has_a_risk_class` test parses this file as text
+// and requires the route path string to stay adjacent to `.route(`.
+#[rustfmt::skip]
 pub fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -103,37 +111,28 @@ pub fn router(state: AppState) -> Router {
     // Embed proxy: separate sub-router — must NOT have security_headers so that
     // the upstream response can use frame-ancestors * instead of DENY.
     let embed_router = Router::new()
-        .route(
-            "/api/apps/embed/:project_name/*path",
-            get(apps::embed_proxy),
-        )
+        .route("/api/apps/embed/:project_name/*path", get(apps::embed_proxy))
         .route("/plugin-assets/:id/*path", get(plugins::serve_asset))
         .layer(cors.clone())
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            bearer_auth::middleware,
-        ))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
         .with_state(state.clone());
 
     let main_router = Router::new()
         // Health
         .route("/api/health", get(auth::health))
         // Auth
-        .route("/api/auth/login", post(auth::login))
-        .route("/api/auth/logout", post(auth::logout))
-        .route("/api/auth/me", get(auth::me))
+        .route("/api/auth/login",     post(auth::login))
+        .route("/api/auth/logout",    post(auth::logout))
+        .route("/api/auth/me",        get(auth::me))
         .route("/api/auth/bootstrap", post(auth::bootstrap))
         // Authentik / OIDC SSO
-        .route("/api/auth/oidc/login", get(auth::oidc_login))
+        .route("/api/auth/oidc/login",    get(auth::oidc_login))
         .route("/api/auth/oidc/callback", get(auth::oidc_callback))
-        .route("/api/auth/oidc/status", get(auth::oidc_status))
-        .route(
-            "/api/oidc/config",
-            get(auth::get_oidc_config).put(auth::save_oidc_config),
-        )
+        .route("/api/auth/oidc/status",   get(auth::oidc_status))
+        .route("/api/oidc/config",        get(auth::get_oidc_config).put(auth::save_oidc_config))
         // TOTP
-        .route("/api/auth/totp/setup", post(totp::setup))
-        .route("/api/auth/totp/enable", post(totp::enable))
+        .route("/api/auth/totp/setup",   post(totp::setup))
+        .route("/api/auth/totp/enable",  post(totp::enable))
         .route("/api/auth/totp/disable", post(totp::disable))
         // Metrics
         .route("/api/metrics/current", get(metrics::get_current))
@@ -153,47 +152,32 @@ pub fn router(state: AppState) -> Router {
         .route("/api/containers/:id/logs/stream", get(containers::logs_ws))
         .route("/api/containers/:id/exec", get(containers::exec_ws))
         .route("/api/containers/:id/compose", get(containers::get_compose))
-        .route(
-            "/api/containers/:id/compose/propose",
-            post(containers::propose_compose),
-        )
-        .route(
-            "/api/containers/:id/compose/apply",
-            post(containers::apply_compose),
-        )
+        .route("/api/containers/:id/compose/propose", post(containers::propose_compose))
+        .route("/api/containers/:id/compose/apply", post(containers::apply_compose))
         // App Vault
-        .route("/api/apps/catalog", get(apps::catalog))
+        .route("/api/apps/catalog",    get(apps::catalog))
         .route("/api/apps/detect-env", get(apps::detect_env))
-        .route("/api/apps/deployed", get(apps::deployed))
+        .route("/api/apps/deployed",   get(apps::deployed))
         .route("/api/apps/deploy", post(apps::deploy))
-        .route(
-            "/api/apps/deploy/cancel/:project_name",
-            post(apps::cancel_deploy),
-        )
+        .route("/api/apps/deploy/cancel/:project_name", post(apps::cancel_deploy))
         .route("/api/apps/deploy-custom", post(apps::deploy_custom))
         .route("/api/apps/open-ui", post(apps::open_ui))
         .route("/api/apps/:project_name", delete(apps::remove_app))
-        .route("/api/apps/:project_name/start", post(apps::start_app))
-        .route("/api/apps/:project_name/stop", post(apps::stop_app))
-        .route("/api/apps/:project_name/restart", post(apps::restart_app))
+        .route("/api/apps/:project_name/start",   post(apps::start_app))
+        .route("/api/apps/:project_name/stop",    post(apps::stop_app))
+        .route("/api/apps/:project_name/restart",  post(apps::restart_app))
         .route("/api/apps/:project_name/redeploy", post(apps::redeploy_app))
-        .route("/api/apps/:project_name/logs", get(apps::app_logs))
-        .route("/api/apps/:project_name/status", get(apps::app_status))
-        .route(
-            "/api/apps/:project_name/compose",
-            get(apps::get_compose).post(apps::update_compose),
-        )
-        .route("/api/apps/detect-external", get(apps::detect_external))
-        .route("/api/apps/adopt", post(apps::adopt_app))
-        .route("/api/apps/:project_name/convert", post(apps::convert_app))
-        .route("/api/apps/:project_name/pull", post(apps::pull_app))
-        .route("/api/apps/:project_name/env", post(apps::patch_app_env))
-        .route("/api/apps/:project_name/expose", post(apps::expose_app))
-        .route(
-            "/api/apps/:project_name/delete-volumes",
-            post(apps::delete_app_volumes),
-        )
-        .route("/api/apps/:project_name/purge", post(apps::purge_app))
+        .route("/api/apps/:project_name/logs",     get(apps::app_logs))
+        .route("/api/apps/:project_name/status",  get(apps::app_status))
+        .route("/api/apps/:project_name/compose",  get(apps::get_compose).post(apps::update_compose))
+        .route("/api/apps/detect-external",        get(apps::detect_external))
+        .route("/api/apps/adopt",                  post(apps::adopt_app))
+        .route("/api/apps/:project_name/convert",        post(apps::convert_app))
+        .route("/api/apps/:project_name/pull",           post(apps::pull_app))
+        .route("/api/apps/:project_name/env",            post(apps::patch_app_env))
+        .route("/api/apps/:project_name/expose",         post(apps::expose_app))
+        .route("/api/apps/:project_name/delete-volumes", post(apps::delete_app_volumes))
+        .route("/api/apps/:project_name/purge",          post(apps::purge_app))
         // Backups
         .route("/api/backups", get(backups::list).post(backups::create))
         .route("/api/backups/:id/delete-plan", post(backups::delete_plan))
@@ -212,79 +196,52 @@ pub fn router(state: AppState) -> Router {
         .route("/api/alerts/:id/resolve", post(alerts::resolve))
         .route("/api/alerts/:id", delete(alerts::delete_alert))
         // Files
-        .route("/api/files/roots", get(files::roots))
-        .route("/api/files/list", get(files::list))
-        .route("/api/files/read", get(files::read_file))
-        .route("/api/files/write", post(files::write_file))
-        .route("/api/files/mkdir", post(files::mkdir))
+        .route("/api/files/roots",  get(files::roots))
+        .route("/api/files/list",   get(files::list))
+        .route("/api/files/read",   get(files::read_file))
+        .route("/api/files/write",  post(files::write_file))
+        .route("/api/files/mkdir",  post(files::mkdir))
         .route("/api/files/delete", delete(files::delete))
-        .route("/api/files/rename", post(files::rename))
+        .route("/api/files/rename",   post(files::rename))
         .route("/api/files/activity", get(files::activity))
-        .route("/api/files/raw", get(files::serve_raw))
+        .route("/api/files/raw",      get(files::serve_raw))
         // AI / llama.cpp / ask
-        .route("/api/ai/llama", get(ai::llama_status))
+        .route("/api/ai/llama",        get(ai::llama_status))
         .route("/api/ai/llama/unload", post(ai::llama_unload))
-        .route("/api/ai/ask", post(ai_ask::ask))
-        .route("/api/ai/context", get(ai_context::get_context))
+        .route("/api/ai/ask",          post(ai_ask::ask))
+        .route("/api/ai/context",      get(ai_context::get_context))
         // AI providers (multi-provider orchestrator)
-        .route(
-            "/api/ai/providers",
-            get(ai_providers::list).post(ai_providers::create),
-        )
-        .route(
-            "/api/ai/providers/:id",
-            put(ai_providers::update).delete(ai_providers::delete),
-        )
+        .route("/api/ai/providers",            get(ai_providers::list).post(ai_providers::create))
+        .route("/api/ai/providers/:id",        put(ai_providers::update).delete(ai_providers::delete))
         .route("/api/ai/providers/:id/health", get(ai_providers::health))
         // AI Studio
-        .route("/api/studio/status", get(studio::status))
-        .route("/api/studio/image/generate", post(studio::image_generate))
-        .route("/api/studio/images/:filename", get(studio::serve_image))
-        .route("/api/studio/tts/generate", post(studio::tts_generate))
-        .route("/api/studio/audio/:filename", get(studio::serve_audio))
-        .route("/api/studio/stt/transcribe", post(studio::stt_transcribe))
-        .route("/api/studio/gallery", get(studio::gallery_list))
-        .route(
-            "/api/studio/gallery/:kind/:filename",
-            delete(studio::gallery_delete),
-        )
-        .route("/api/studio/mcp/tools", get(studio::mcp_tools))
-        .route("/api/studio/mcp/invoke", post(studio::mcp_invoke))
+        .route("/api/studio/status",                       get(studio::status))
+        .route("/api/studio/image/generate",               post(studio::image_generate))
+        .route("/api/studio/images/:filename",             get(studio::serve_image))
+        .route("/api/studio/tts/generate",                 post(studio::tts_generate))
+        .route("/api/studio/audio/:filename",              get(studio::serve_audio))
+        .route("/api/studio/stt/transcribe",               post(studio::stt_transcribe))
+        .route("/api/studio/gallery",                      get(studio::gallery_list))
+        .route("/api/studio/gallery/:kind/:filename",      delete(studio::gallery_delete))
+        .route("/api/studio/mcp/tools",                    get(studio::mcp_tools))
+        .route("/api/studio/mcp/invoke",                   post(studio::mcp_invoke))
         // Models
-        .route("/api/models", get(models::list_models))
-        .route("/api/models/download", post(models::start_download))
+        .route("/api/models",              get(models::list_models))
+        .route("/api/models/download",     post(models::start_download))
         .route("/api/models/download/:id", get(models::download_status))
-        .route("/api/models/active", get(models::get_active))
-        .route("/api/models/load", post(models::load_model))
-        .route(
-            "/api/models/llama-config",
-            get(models::get_llama_config).post(models::save_llama_config),
-        )
-        .route(
-            "/api/models/ollama-config",
-            get(models::get_ollama_config).post(models::save_ollama_config),
-        )
-        .route("/api/models/ollama", get(models::get_ollama_tags))
-        .route("/api/models/ollama/pull", post(models::start_ollama_pull))
-        .route(
-            "/api/models/ollama/pull/:id",
-            get(models::get_ollama_pull_status),
-        )
-        .route(
-            "/api/models/ollama/create",
-            post(models::start_ollama_create),
-        )
-        .route(
-            "/api/models/ollama/create/:id",
-            get(models::get_ollama_create_status),
-        )
-        .route("/api/models/:filename", delete(models::delete_model))
+        .route("/api/models/active",          get(models::get_active))
+        .route("/api/models/load",            post(models::load_model))
+        .route("/api/models/llama-config",    get(models::get_llama_config).post(models::save_llama_config))
+        .route("/api/models/ollama-config",   get(models::get_ollama_config).post(models::save_ollama_config))
+        .route("/api/models/ollama",            get(models::get_ollama_tags))
+        .route("/api/models/ollama/pull",       post(models::start_ollama_pull))
+        .route("/api/models/ollama/pull/:id",   get(models::get_ollama_pull_status))
+        .route("/api/models/ollama/create",     post(models::start_ollama_create))
+        .route("/api/models/ollama/create/:id", get(models::get_ollama_create_status))
+        .route("/api/models/:filename",       delete(models::delete_model))
         // OpenAI-compatible proxy — no auth, Odysseus-facing
-        .route("/v1/models", get(models::openai_list_models))
-        .route(
-            "/v1/chat/completions",
-            post(models::openai_chat_completions),
-        )
+        .route("/v1/models",             get(models::openai_list_models))
+        .route("/v1/chat/completions",   post(models::openai_chat_completions))
         // Proxy manager
         .route("/api/proxy", get(proxy::list).post(proxy::create))
         .route("/api/proxy/nginx-setup", get(proxy::nginx_setup_status))
@@ -292,58 +249,31 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxy/nginx/logs", get(proxy::nginx_logs))
         .route("/api/proxy/nginx/status", get(proxy::nginx_status))
         .route("/api/proxy/ai-auto", post(proxy::ai_auto_proxy))
-        .route(
-            "/api/proxy/:id",
-            delete(proxy::delete_proxy).put(proxy::update_proxy),
-        )
+        .route("/api/proxy/:id", delete(proxy::delete_proxy).put(proxy::update_proxy))
         .route("/api/proxy/:id/toggle", post(proxy::toggle))
         .route("/api/proxy/:id/health", get(proxy::proxy_health))
         // Security
         .route("/api/security/sessions", get(security::list_sessions))
-        .route(
-            "/api/security/sessions/revoke-others",
-            post(security::revoke_all_other),
-        )
-        .route(
-            "/api/security/sessions/:id",
-            delete(security::revoke_session),
-        )
+        .route("/api/security/sessions/revoke-others", post(security::revoke_all_other))
+        .route("/api/security/sessions/:id", delete(security::revoke_session))
         // Users
         .route("/api/users", get(users::list).post(users::create))
         .route("/api/users/me/password", post(users::change_my_password))
         .route("/api/users/:id", delete(users::delete_user))
         // Terminal
         .route("/api/terminal/ws", get(terminal::ws_handler))
-        .route(
-            "/api/terminal/ssh/sessions",
-            get(terminal::list_ssh_sessions).post(terminal::create_ssh_session),
-        )
-        .route(
-            "/api/terminal/ssh/sessions/:id",
-            delete(terminal::delete_ssh_session).put(terminal::update_ssh_session),
-        )
+        .route("/api/terminal/ssh/sessions", get(terminal::list_ssh_sessions).post(terminal::create_ssh_session))
+        .route("/api/terminal/ssh/sessions/:id", delete(terminal::delete_ssh_session).put(terminal::update_ssh_session))
         .route("/api/terminal/ssh/ws", get(terminal::ssh_ws_handler))
-        .route(
-            "/api/terminal/local/sessions",
-            get(terminal::list_local_sessions).post(terminal::create_local_session),
-        )
-        .route(
-            "/api/terminal/local/sessions/:id",
-            put(terminal::update_local_session).delete(terminal::delete_local_session),
-        )
+        .route("/api/terminal/local/sessions", get(terminal::list_local_sessions).post(terminal::create_local_session))
+        .route("/api/terminal/local/sessions/:id", put(terminal::update_local_session).delete(terminal::delete_local_session))
         // Audit
         .route("/api/audit", get(audit::list))
         // Timeline
         .route("/api/timeline", get(timeline::list))
         // Automation
-        .route(
-            "/api/automation",
-            get(automation::list).post(automation::create),
-        )
-        .route(
-            "/api/automation/:id",
-            delete(automation::delete).patch(automation::update),
-        )
+        .route("/api/automation", get(automation::list).post(automation::create))
+        .route("/api/automation/:id", delete(automation::delete).patch(automation::update))
         .route("/api/automation/:id/run", post(automation::run_now))
         .route("/api/automation/:id/runs", get(automation::runs))
         // Agent visualization
@@ -351,14 +281,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agents/ws", get(agents::ws_handler))
         .route("/api/agents/export", get(agents::export))
         .route("/api/agents/import", post(agents::import))
-        .route(
-            "/api/agents/:id",
-            put(agents::update).delete(agents::delete),
-        )
-        .route(
-            "/api/agents/:id/status",
-            get(agents::get_status).post(agents::post_status),
-        )
+        .route("/api/agents/:id", put(agents::update).delete(agents::delete))
+        .route("/api/agents/:id/status", get(agents::get_status).post(agents::post_status))
         // Custom tabs
         .route("/api/tabs", get(tabs::list).post(tabs::create))
         .route("/api/tabs/order", put(tabs::reorder))
@@ -366,18 +290,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tabs/import", post(tabs::import))
         .route("/api/tabs/:id", put(tabs::update).delete(tabs::delete))
         // Nav config (per-user + owner-set instance default)
-        .route(
-            "/api/nav-config",
-            get(nav_config::get_nav_config)
-                .post(nav_config::save_nav_config)
-                .delete(nav_config::delete_nav_config),
-        )
-        .route(
-            "/api/nav-config/default",
-            get(nav_config::get_nav_default)
-                .post(nav_config::set_nav_default)
-                .delete(nav_config::delete_nav_default),
-        )
+        .route("/api/nav-config", get(nav_config::get_nav_config).post(nav_config::save_nav_config).delete(nav_config::delete_nav_config))
+        .route("/api/nav-config/default", get(nav_config::get_nav_default).post(nav_config::set_nav_default).delete(nav_config::delete_nav_default))
         // Firewall
         .route("/api/firewall", get(firewall::get_status))
         .route("/api/firewall/rules", post(firewall::add_rule))
@@ -389,10 +303,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/diagnostics", get(diagnostics::get_diagnostics))
         // Secrets
         .route("/api/secrets", get(secrets::list).post(secrets::create))
-        .route(
-            "/api/secrets/:id",
-            delete(secrets::delete).patch(secrets::update),
-        )
+        .route("/api/secrets/:id", delete(secrets::delete).patch(secrets::update))
         .route("/api/secrets/:id/reveal", get(secrets::reveal))
         .route("/api/secrets/:id/rotate", post(secrets::rotate))
         // Network neighbors (LAN scan)
@@ -402,300 +313,153 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wireguard/peers", post(wireguard::add_peer))
         .route("/api/wireguard/peers/:id", delete(wireguard::delete_peer))
         // Fleet node enrollment (phones/tablets/pis joining over WireGuard)
-        .route(
-            "/api/nodes/pairing-code",
-            post(node_enroll::create_pairing_code),
-        )
-        .route("/api/nodes/enroll", post(node_enroll::enroll))
-        .route("/api/nodes", get(node_enroll::list))
-        .route("/api/nodes/:id", delete(node_enroll::delete_node))
+        .route("/api/nodes/pairing-code", post(node_enroll::create_pairing_code))
+        .route("/api/nodes/enroll",       post(node_enroll::enroll))
+        .route("/api/nodes",              get(node_enroll::list))
+        .route("/api/nodes/:id",          delete(node_enroll::delete_node))
         .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat))
         // Self-hosting hub: per-member app access / storage / custom-deploy
         .route("/api/members", get(members::list_members))
         .route("/api/members/me/access", get(members::get_my_access))
-        .route("/api/members/me/nodes", get(members::list_my_nodes))
-        .route(
-            "/api/members/:user_id/access",
-            get(members::get_access).post(members::grant_access),
-        )
-        .route(
-            "/api/members/:user_id/access/:app_id",
-            delete(members::revoke_access),
-        )
-        .route(
-            "/api/members/:user_id/custom-deploy",
-            post(members::set_custom_deploy),
-        )
+        .route("/api/members/me/nodes",  get(members::list_my_nodes))
+        .route("/api/members/:user_id/access", get(members::get_access).post(members::grant_access))
+        .route("/api/members/:user_id/access/:app_id", delete(members::revoke_access))
+        .route("/api/members/:user_id/custom-deploy", post(members::set_custom_deploy))
         .route("/api/members/:user_id/storage", post(members::set_quota))
         .route("/api/members/:user_id/drives", post(members::add_drive))
-        .route(
-            "/api/members/drives/:drive_id",
-            delete(members::remove_drive),
-        )
-        .route("/api/settings/public", get(settings::get_public))
-        .route(
-            "/api/settings/ai-url",
-            get(settings::get_ai_url).post(settings::set_ai_url),
-        )
-        .route(
-            "/api/settings/general",
-            get(settings::get_general).post(settings::set_general),
-        )
-        .route(
-            "/api/settings/notifications",
-            get(settings::get_notifications).post(settings::set_notifications),
-        )
-        .route(
-            "/api/settings/notifications/test",
-            post(settings::test_notification),
-        )
-        .route(
-            "/api/settings/mfa-policy",
-            get(settings::get_mfa_policy).post(settings::set_mfa_policy),
-        )
+        .route("/api/members/drives/:drive_id", delete(members::remove_drive))
+        .route("/api/settings/public",  get(settings::get_public))
+        .route("/api/settings/ai-url", get(settings::get_ai_url).post(settings::set_ai_url))
+        .route("/api/settings/general", get(settings::get_general).post(settings::set_general))
+        .route("/api/settings/notifications", get(settings::get_notifications).post(settings::set_notifications))
+        .route("/api/settings/notifications/test", post(settings::test_notification))
+        .route("/api/settings/mfa-policy", get(settings::get_mfa_policy).post(settings::set_mfa_policy))
         // VMs (local KVM + Proxmox)
         .route("/api/vms/local", get(vms::list_local))
         .route("/api/vms/local/action", post(vms::local_action))
-        .route(
-            "/api/vms/proxmox/config",
-            get(vms::get_proxmox_config).post(vms::set_proxmox_config),
-        )
+        .route("/api/vms/proxmox/config", get(vms::get_proxmox_config).post(vms::set_proxmox_config))
         .route("/api/vms/proxmox/vms", get(vms::list_proxmox))
         .route("/api/vms/proxmox/action", post(vms::proxmox_action))
         .route("/api/vms/proxmox/test", post(vms::test_proxmox))
         // Tags
-        .route("/api/tags", get(tags::list).post(tags::create))
-        .route("/api/tags/for", get(tags::tags_for_resource))
-        .route("/api/tags/map", get(tags::tags_map))
-        .route("/api/tags/assign", post(tags::assign))
-        .route("/api/tags/unassign", post(tags::unassign))
-        .route("/api/tags/:id", delete(tags::delete).patch(tags::update))
+        .route("/api/tags",           get(tags::list).post(tags::create))
+        .route("/api/tags/for",       get(tags::tags_for_resource))
+        .route("/api/tags/map",       get(tags::tags_map))
+        .route("/api/tags/assign",    post(tags::assign))
+        .route("/api/tags/unassign",  post(tags::unassign))
+        .route("/api/tags/:id",       delete(tags::delete).patch(tags::update))
         // Storage management
-        .route("/api/storage/devices", get(storage::list_devices))
-        .route("/api/storage/mounts", get(storage::list_mounts_handler))
-        .route("/api/storage/mount", post(storage::mount_device))
-        .route("/api/storage/umount", post(storage::umount_device))
-        .route(
-            "/api/storage/fstab",
-            get(storage::get_fstab).post(storage::add_fstab),
-        )
-        .route("/api/storage/fstab/:idx", delete(storage::remove_fstab))
-        .route("/api/storage/smart/:dev", get(storage::get_smart))
-        .route("/api/storage/raid", get(storage::get_raid))
-        .route("/api/storage/raid/create", post(storage::create_raid))
-        .route("/api/storage/raid/stop", post(storage::stop_raid))
-        .route("/api/storage/format", post(storage::format_device))
-        .route(
-            "/api/storage/paths",
-            get(storage::get_storage_paths).post(storage::set_storage_paths),
-        )
+        .route("/api/storage/devices",      get(storage::list_devices))
+        .route("/api/storage/mounts",       get(storage::list_mounts_handler))
+        .route("/api/storage/mount",        post(storage::mount_device))
+        .route("/api/storage/umount",       post(storage::umount_device))
+        .route("/api/storage/fstab",        get(storage::get_fstab).post(storage::add_fstab))
+        .route("/api/storage/fstab/:idx",   delete(storage::remove_fstab))
+        .route("/api/storage/smart/:dev",   get(storage::get_smart))
+        .route("/api/storage/raid",         get(storage::get_raid))
+        .route("/api/storage/raid/create",  post(storage::create_raid))
+        .route("/api/storage/raid/stop",    post(storage::stop_raid))
+        .route("/api/storage/format",       post(storage::format_device))
+        .route("/api/storage/paths",        get(storage::get_storage_paths).post(storage::set_storage_paths))
         // Integrations (API tokens, Odysseus config, manifest, SSE, webhooks)
-        .route("/api/integrations/scopes", get(integrations::scopes_list))
-        .route(
-            "/api/integrations/tokens",
-            get(integrations::list_tokens).post(integrations::create_token),
-        )
-        .route(
-            "/api/integrations/tokens/:id",
-            delete(integrations::revoke_token),
-        )
-        .route(
-            "/api/integrations/odysseus/config",
-            get(integrations::get_config).post(integrations::save_config),
-        )
-        .route(
-            "/api/integrations/odysseus/manifest",
-            get(integrations::manifest),
-        )
-        .route(
-            "/api/integrations/odysseus/theme",
-            get(integrations::sync_theme),
-        )
-        .route("/api/integrations/events", get(integrations::event_stream))
-        .route("/api/integrations/webhooks", post(integrations::webhook))
-        .route(
-            "/api/integrations/actions",
-            get(integrations::recent_actions),
-        )
-        .route("/api/system/version", get(system::version))
-        .route("/api/system/update-check", get(system::update_check))
-        .route("/api/system/restart", post(system::restart))
-        .route("/api/system/update", post(system::update))
+        .route("/api/integrations/scopes",                  get(integrations::scopes_list))
+        .route("/api/integrations/tokens",                  get(integrations::list_tokens).post(integrations::create_token))
+        .route("/api/integrations/tokens/:id",              delete(integrations::revoke_token))
+        .route("/api/integrations/odysseus/config",         get(integrations::get_config).post(integrations::save_config))
+        .route("/api/integrations/odysseus/manifest",       get(integrations::manifest))
+        .route("/api/integrations/odysseus/theme",          get(integrations::sync_theme))
+        .route("/api/integrations/events",                  get(integrations::event_stream))
+        .route("/api/integrations/webhooks",                post(integrations::webhook))
+        .route("/api/integrations/actions",                 get(integrations::recent_actions))
+        .route("/api/system/version",       get(system::version))
+        .route("/api/system/update-check",  get(system::update_check))
+        .route("/api/system/restart",       post(system::restart))
+        .route("/api/system/update",        post(system::update))
         // Updates page
-        .route("/api/updates/voidtower", get(updates::vt_info))
-        .route("/api/updates/voidtower/check", post(updates::check_vt))
-        .route("/api/updates/voidtower/apply", post(updates::apply_vt))
-        .route(
-            "/api/updates/voidtower/rollback",
-            post(updates::rollback_vt),
-        )
-        .route("/api/updates/odysseus", get(updates::odysseus_info))
-        .route("/api/updates/odysseus/apply", post(updates::apply_odysseus))
-        .route("/api/updates/docker", get(updates::docker_info))
-        .route("/api/updates/docker/check", post(updates::docker_check))
-        .route("/api/updates/docker/:id/apply", post(updates::docker_apply))
-        .route("/api/updates/os", get(updates::os_info))
-        .route("/api/updates/os/apply", post(updates::apply_os))
+        .route("/api/updates/voidtower",           get(updates::vt_info))
+        .route("/api/updates/voidtower/check",     post(updates::check_vt))
+        .route("/api/updates/voidtower/apply",     post(updates::apply_vt))
+        .route("/api/updates/voidtower/rollback",  post(updates::rollback_vt))
+        .route("/api/updates/odysseus",            get(updates::odysseus_info))
+        .route("/api/updates/odysseus/apply",      post(updates::apply_odysseus))
+        .route("/api/updates/docker",              get(updates::docker_info))
+        .route("/api/updates/docker/check",        post(updates::docker_check))
+        .route("/api/updates/docker/:id/apply",    post(updates::docker_apply))
+        .route("/api/updates/os",                  get(updates::os_info))
+        .route("/api/updates/os/apply",            post(updates::apply_os))
         // Proxmox multi-host management
-        .route(
-            "/api/proxmox/hosts",
-            get(proxmox::list_hosts).post(proxmox::create_host),
-        )
-        .route("/api/proxmox/hosts/:host_id", delete(proxmox::delete_host))
-        .route("/api/proxmox/:host_id/nodes", get(proxmox::list_nodes))
-        .route("/api/proxmox/:host_id/vms", get(proxmox::list_vms))
-        .route("/api/proxmox/:host_id/storage", get(proxmox::list_storage))
-        .route("/api/proxmox/:host_id/tasks", get(proxmox::list_tasks))
-        .route(
-            "/api/proxmox/:host_id/backup-jobs",
-            get(proxmox::list_backup_jobs),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/start",
-            post(proxmox::vm_start),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/stop",
-            post(proxmox::vm_stop),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/shutdown",
-            post(proxmox::vm_shutdown),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/reboot",
-            post(proxmox::vm_reboot),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/reset",
-            post(proxmox::vm_reset),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/suspend",
-            post(proxmox::vm_suspend),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/resume",
-            post(proxmox::vm_resume),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/snapshot",
-            post(proxmox::vm_snapshot),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/rollback/:snapname",
-            post(proxmox::vm_rollback),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",
-            delete(proxmox::vm_delete_snapshot),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/snapshots",
-            get(proxmox::list_snapshots),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/vncproxy",
-            post(proxmox::vm_vncproxy),
-        )
-        .route(
-            "/api/proxmox/:host_id/vms/:vmid/disk-passthrough",
-            post(proxmox::vm_disk_passthrough),
-        )
-        .route(
-            "/api/proxmox/:host_id/lxc/deploy",
-            post(proxmox::deploy_app_to_lxc),
-        )
-        .route(
-            "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
+        .route("/api/proxmox/hosts",                                  get(proxmox::list_hosts).post(proxmox::create_host))
+        .route("/api/proxmox/hosts/:host_id",                         delete(proxmox::delete_host))
+        .route("/api/proxmox/:host_id/nodes",                         get(proxmox::list_nodes))
+        .route("/api/proxmox/:host_id/vms",                           get(proxmox::list_vms))
+        .route("/api/proxmox/:host_id/storage",                       get(proxmox::list_storage))
+        .route("/api/proxmox/:host_id/tasks",                         get(proxmox::list_tasks))
+        .route("/api/proxmox/:host_id/backup-jobs",                   get(proxmox::list_backup_jobs))
+        .route("/api/proxmox/:host_id/vms/:vmid/start",               post(proxmox::vm_start))
+        .route("/api/proxmox/:host_id/vms/:vmid/stop",                post(proxmox::vm_stop))
+        .route("/api/proxmox/:host_id/vms/:vmid/shutdown",            post(proxmox::vm_shutdown))
+        .route("/api/proxmox/:host_id/vms/:vmid/reboot",              post(proxmox::vm_reboot))
+        .route("/api/proxmox/:host_id/vms/:vmid/reset",               post(proxmox::vm_reset))
+        .route("/api/proxmox/:host_id/vms/:vmid/suspend",             post(proxmox::vm_suspend))
+        .route("/api/proxmox/:host_id/vms/:vmid/resume",              post(proxmox::vm_resume))
+        .route("/api/proxmox/:host_id/vms/:vmid/snapshot",            post(proxmox::vm_snapshot))
+        .route("/api/proxmox/:host_id/vms/:vmid/rollback/:snapname",  post(proxmox::vm_rollback))
+        .route("/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",  delete(proxmox::vm_delete_snapshot))
+        .route("/api/proxmox/:host_id/vms/:vmid/snapshots",           get(proxmox::list_snapshots))
+        .route("/api/proxmox/:host_id/vms/:vmid/vncproxy",            post(proxmox::vm_vncproxy))
+        .route("/api/proxmox/:host_id/vms/:vmid/disk-passthrough",    post(proxmox::vm_disk_passthrough))
+        .route("/api/proxmox/:host_id/lxc/deploy",                    post(proxmox::deploy_app_to_lxc))
+        .route("/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
             get(proxmox::list_storage_content)
                 .post(proxmox::upload_storage_content)
-                .delete(proxmox::delete_storage_content),
-        )
-        .route(
-            "/api/proxmox/:host_id/nodes/:node/disks",
-            get(proxmox::list_node_disks),
-        )
-        .route(
-            "/api/proxmox/:host_id/nodes/:node/disks/smart",
-            get(proxmox::disk_smart),
-        )
-        .route(
-            "/api/proxmox/:host_id/nodes/:node/disks/wipe",
-            post(proxmox::wipe_disk),
-        )
-        .route(
-            "/api/proxmox/:host_id/nodes/:node/disks/init",
-            post(proxmox::init_disk_storage),
-        )
+                .delete(proxmox::delete_storage_content))
+        .route("/api/proxmox/:host_id/nodes/:node/disks",             get(proxmox::list_node_disks))
+        .route("/api/proxmox/:host_id/nodes/:node/disks/smart",       get(proxmox::disk_smart))
+        .route("/api/proxmox/:host_id/nodes/:node/disks/wipe",        post(proxmox::wipe_disk))
+        .route("/api/proxmox/:host_id/nodes/:node/disks/init",        post(proxmox::init_disk_storage))
         // Mods
-        .route("/api/mods", get(mods::get_status))
-        .route("/api/mods/config", post(mods::save_config))
-        .route("/api/mods/fetch", post(mods::fetch_mod))
-        .route("/api/mods/diff", get(mods::get_diff))
-        .route("/api/mods/apply", post(mods::apply_mod))
-        .route("/api/mods/rollback", post(mods::rollback_mod))
+        .route("/api/mods",              get(mods::get_status))
+        .route("/api/mods/config",       post(mods::save_config))
+        .route("/api/mods/fetch",        post(mods::fetch_mod))
+        .route("/api/mods/diff",         get(mods::get_diff))
+        .route("/api/mods/apply",        post(mods::apply_mod))
+        .route("/api/mods/rollback",     post(mods::rollback_mod))
         // MCP (Model Context Protocol) server
-        .route("/api/mcp", get(mcp::sse_handler))
+        .route("/api/mcp",         get(mcp::sse_handler))
         .route("/api/mcp/message", post(mcp::message_handler))
         // Disaster Recovery
-        .route("/api/disaster/export-config", post(disaster::export_config))
-        .route("/api/disaster/import-config", post(disaster::import_config))
-        .route(
-            "/api/disaster/emergency-reset-admin",
-            post(disaster::emergency_reset_admin),
-        )
-        .route(
-            "/api/disaster/emergency-disable",
-            post(disaster::emergency_disable),
-        )
+        .route("/api/disaster/export-config",          post(disaster::export_config))
+        .route("/api/disaster/import-config",          post(disaster::import_config))
+        .route("/api/disaster/emergency-reset-admin",  post(disaster::emergency_reset_admin))
+        .route("/api/disaster/emergency-disable",      post(disaster::emergency_disable))
         // Policy engine
-        .route(
-            "/api/policy/rules",
-            get(policy::list_rules).post(policy::create_rule),
-        )
-        .route(
-            "/api/policy/rules/:id",
-            patch(policy::update_rule).delete(policy::delete_rule),
-        )
-        .route("/api/policy/check", post(policy::check_policy))
+        .route("/api/policy/rules",      get(policy::list_rules).post(policy::create_rule))
+        .route("/api/policy/rules/:id",  patch(policy::update_rule).delete(policy::delete_rule))
+        .route("/api/policy/check",      post(policy::check_policy))
         // Plugins
-        .route("/api/plugins", get(plugins::list).post(plugins::install))
-        .route(
-            "/api/plugins/:id",
-            patch(plugins::update).delete(plugins::uninstall),
-        )
+        .route("/api/plugins",         get(plugins::list).post(plugins::install))
+        .route("/api/plugins/:id",     patch(plugins::update).delete(plugins::uninstall))
         // LXC (local pct management)
-        .route("/api/lxc", get(lxc::list))
-        .route("/api/lxc/:vmid/config", get(lxc::get_config))
-        .route("/api/lxc/:vmid/action", post(lxc::action))
+        .route("/api/lxc",                get(lxc::list))
+        .route("/api/lxc/:vmid/config",   get(lxc::get_config))
+        .route("/api/lxc/:vmid/action",   post(lxc::action))
         // Notification webhooks
-        .route("/api/webhooks", get(webhooks::list).post(webhooks::create))
-        .route(
-            "/api/webhooks/:id",
-            patch(webhooks::update).delete(webhooks::delete),
-        )
-        .route("/api/webhooks/:id/test", post(webhooks::test_webhook))
+        .route("/api/webhooks",           get(webhooks::list).post(webhooks::create))
+        .route("/api/webhooks/:id",       patch(webhooks::update).delete(webhooks::delete))
+        .route("/api/webhooks/:id/test",  post(webhooks::test_webhook))
         .layer(cors)
         .layer(middleware::from_fn(security_headers))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            demo_guard::middleware,
-        ))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), demo_guard::middleware))
         // Must sit between bearer_auth (which sets the TokenScopes extension
         // this reads) and the routes: `.layer()` calls wrap outside-in in the
         // order added, so the *last* `.layer()` call runs *first* on the way
         // in — scope_enforce is added here (before bearer_auth) so it runs
         // after it, once TokenScopes is actually present on the request.
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::auth::scope_enforce::middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            bearer_auth::middleware,
-        ))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::auth::scope_enforce::middleware))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), bearer_auth::middleware))
         .with_state(state);
 
-    Router::new().merge(main_router).merge(embed_router)
+    Router::new()
+        .merge(main_router)
+        .merge(embed_router)
 }

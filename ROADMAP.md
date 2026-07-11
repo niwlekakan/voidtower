@@ -54,7 +54,7 @@ From `future_plan.md` — 10 non-negotiable items for a credible first public re
 | 3 | **Doctor / diagnostics mode** | **Done** | `--doctor --json` CLI flag (per CLAUDE.md Phase-3 table) + UI at Settings → Diagnostics, 12 health checks |
 | 4 | **Disaster recovery mode** | **Done** | confirmed: `backend/src/api/disaster.rs` has `export_config`/`import_config`/`emergency_reset_admin`/`emergency_disable` plus CLI-only `cli_export`/`cli_import` that work without booting the web server |
 | 5 | **Dry-run / change planning** | **Done** | `ChangePlanModal` pattern wired into proxy create/edit, firewall rules, OS updates, container remove, backup delete, Proxmox stop/snapshot/rollback |
-| 6 | **Policy engine** | **Done** (`2901ec9`) | `backend/src/policy.rs` — actor/action/resource/tag matching, DB-backed rules, CRUD API + UI; gates webhook-triggered automations today. Not yet gating: direct MCP `tools/call` / Studio `mcp_invoke` (see Feature Backlog → AI/Odysseus depth) |
+| 6 | **Policy engine** | **Done**, hardened in P0 | `backend/src/policy.rs` + `backend/src/voidwatch/` — actor/action/resource/tag matching, DB-backed rules, CRUD API + UI. `voidwatch::evaluate()` is now the single choke point for MCP `tools/call`, Studio `mcp_invoke`, and automation/webhook actions (P0.1); `api_token`/`automation`/`ai` actors are default-deny with a migrated allowlist (P0.2); mode ladder + risk classes gate the AI/automation ingress path (P0.3 backend); a hardcoded irreversibility denylist blocks 9 action classes regardless of mode (P0.4); bearer tokens carry real enforced scopes, closing the god-token bypass (P0.6). Still open: making mode-ladder verdicts mandatory (not advisory) at the six UI-driven handlers — needs an approvals-queue mechanism, tracked as [issue #11](https://github.com/niwlekakan/voidtower/issues/11) |
 | 7 | **Secrets manager** | **Done**, with gaps | AES-256-GCM store, reveal-on-demand audit logging built; redaction on the AI context path shipped (P0.5: MCP tool-call output, Studio `mcp_invoke`, `get_context` bundle — `backend/src/api/redact.rs`); still missing: secret rotation, scoped per-token access |
 | 8 | **Resource tags** | **Done**, with gaps | covers services/containers/VMs/backups/apps/proxmox_vm today (`GET /api/tags/map?type=`); still missing: automations, alerts, API tokens; not yet wired into policy/alert routing |
 | 9 | **Global timeline** | **Done**, with gaps | global audit timeline with category chips/search/outcome filter; still missing: explicit Odysseus-action tagging, export selected range |
@@ -364,7 +364,7 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 
 ### AI / Odysseus depth
 
-- [~] Policy engine for Odysseus actions (see must-have #6 above) — the engine itself (`backend/src/policy.rs`) and webhook-triggered enforcement already exist; what's left is wiring `policy::check` into the live MCP `tools/call` and Studio `mcp_invoke` paths so a direct AI tool call is gated the same way a webhook-triggered automation already is.
+- [x] Policy engine for Odysseus actions (see must-have #6 above) — done in P0: `voidwatch::evaluate()` gates MCP `tools/call` and Studio `mcp_invoke` the same way webhook-triggered automations already were, plus default-deny, mode ladder, and the irreversibility denylist on top.
 - [x] "Send to Odysseus" buttons — Done, in copy-to-clipboard form: `frontend/src/components/ui/SendToOdysseus.tsx`, wired into Alerts/Services/Containers. Not done: full context packaging with secret redaction (Odysseus has no `?prompt=` param to receive it directly) and extending the button to VMs/backup failures/security findings/log selections.
 - [ ] AI approval queue UI — pending high-risk AI-requested actions; approve once / deny / approve with time limit / create policy from repeated safe action
 - [ ] Full event stream subscriptions — currently SSE endpoint exists; needs: webhook outbound push, MCP resource/event support for agents
@@ -441,7 +441,7 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 | "Send to Odysseus" buttons in UI | Implemented (copy-to-clipboard variant) — `SendToOdysseus.tsx`, wired into Alerts/Services/Containers; no full context-packaging-with-redaction yet |
 | AI approval queue / pending action UI | Not implemented |
 | Event stream webhook outbound push | Not implemented — SSE only |
-| Per-Odysseus-action policy enforcement | Partial — `policy::check` (`backend/src/policy.rs`) already gates webhook-triggered automation actions in `integrations.rs::webhook` (actor_type `"automation"`); also wired into `containers.rs`/`services.rs`. Not yet wired into the live SSE tool-invocation or MCP `tools/call` paths, so direct MCP/Studio tool calls bypass policy today. |
+| Per-Odysseus-action policy enforcement | Done (P0) — `voidwatch::evaluate()` is now the single choke point for MCP `tools/call`, Studio `mcp_invoke`, and webhook/automation actions; default-deny + mode ladder + irreversibility denylist all apply. Direct MCP/Studio tool calls no longer bypass policy. |
 | Odysseus integration events linked to timeline | Partial — audit log exists; no explicit Odysseus tagging |
 | Voidwatch toolpack definitions | Present in `voidwatch/toolpacks/` (20 packs) — see README |
 

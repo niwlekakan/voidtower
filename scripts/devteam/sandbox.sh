@@ -81,6 +81,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code
 RUN rustup component add rustfmt clippy
+# Installed here (default CARGO_HOME, before it's overridden below) so the binaries land in
+# the image layer at /usr/local/cargo/bin, not under /cargo — which is bind-mounted from
+# $CARGO_CACHE at runtime and would shadow anything baked in at that path. Same tools/versions
+# the P1 CI supply-chain job installs; baking them in just spares every task session that
+# needs them (e.g. cargo-deny/cargo-audit work) a multi-minute from-source compile.
+RUN cargo install --locked cargo-deny cargo-audit
 RUN useradd -m dev
 USER dev
 WORKDIR /work

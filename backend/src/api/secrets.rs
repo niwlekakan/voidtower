@@ -1,21 +1,36 @@
-use aes_gcm::{aead::{Aead, KeyInit, OsRng}, Aes256Gcm, Nonce};
 use aes_gcm::aead::rand_core::RngCore;
-use axum::{extract::{Path, State}, http::HeaderMap, Json};
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Nonce,
+};
+use axum::{
+    extract::{Path, State},
+    http::HeaderMap,
+    Json,
+};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 
-use crate::{audit, auth, error::{AppError, Result}, AppState};
+use crate::{
+    audit, auth,
+    error::{AppError, Result},
+    AppState,
+};
 
 pub(crate) fn encrypt(key: &[u8; 32], plaintext: &str) -> anyhow::Result<String> {
     let cipher = Aes256Gcm::new(key.into());
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_bytes())
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_bytes())
         .map_err(|_| anyhow::anyhow!("encryption failed"))?;
     let mut blob = nonce_bytes.to_vec();
     blob.extend_from_slice(&ciphertext);
-    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &blob))
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &blob,
+    ))
 }
 
 pub(crate) fn decrypt(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
@@ -25,7 +40,8 @@ pub(crate) fn decrypt(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
     let (nonce_bytes, ciphertext) = blob.split_at(12);
     let cipher = Aes256Gcm::new(key.into());
     let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher.decrypt(nonce, ciphertext)
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
         .map_err(|_| anyhow::anyhow!("decryption failed"))?;
     String::from_utf8(plaintext).map_err(Into::into)
 }
@@ -60,7 +76,11 @@ pub struct UpdateSecret {
     value: Option<String>,
 }
 
-pub async fn list(State(state): State<AppState>, jar: CookieJar, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
+pub async fn list(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>> {
     auth_user(&state, &jar, false).await?;
     let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, Option<i64>, i64)>(
         "SELECT id, name, description, created_at, updated_at, last_used_at, version FROM secrets ORDER BY name"
@@ -69,95 +89,251 @@ pub async fn list(State(state): State<AppState>, jar: CookieJar, headers: Header
     // Item #7B: if the Bearer token has secret_ids restrictions, filter the list
     let allowed = token_secret_ids(&state, &headers).await;
 
-    let secrets: Vec<SecretMeta> = rows.into_iter()
+    let secrets: Vec<SecretMeta> = rows
+        .into_iter()
         .filter(|(id, ..)| allowed.as_ref().map(|ids| ids.contains(id)).unwrap_or(true))
-        .map(|(id, name, description, created_at, updated_at, last_used_at, version)| {
-            SecretMeta { id, name, description, created_at, updated_at, last_used_at, version }
-        }).collect();
+        .map(
+            |(id, name, description, created_at, updated_at, last_used_at, version)| SecretMeta {
+                id,
+                name,
+                description,
+                created_at,
+                updated_at,
+                last_used_at,
+                version,
+            },
+        )
+        .collect();
     Ok(Json(serde_json::json!({ "secrets": secrets })))
 }
 
-pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(body): Json<CreateSecret>) -> Result<Json<serde_json::Value>> {
+pub async fn create(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(body): Json<CreateSecret>,
+) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
-    if body.name.trim().is_empty() { return Err(AppError::BadRequest("name required".into())); }
-    if body.value.is_empty() { return Err(AppError::BadRequest("value required".into())); }
-    let enc = encrypt(&state.secrets_key, &body.value)
-        .map_err(AppError::Internal)?;
+    if body.name.trim().is_empty() {
+        return Err(AppError::BadRequest("name required".into()));
+    }
+    if body.value.is_empty() {
+        return Err(AppError::BadRequest("value required".into()));
+    }
+    let enc = encrypt(&state.secrets_key, &body.value).map_err(AppError::Internal)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
     sqlx::query("INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) VALUES (?,?,?,?,?,?)")
         .bind(&id).bind(&body.name).bind(&body.description).bind(&enc).bind(now).bind(now)
         .execute(&state.db).await.map_err(AppError::Database)?;
-    audit::log(&state.db, Some(&user.id), "human", "create_secret", Some("secret"), Some(&id), "success", None, None).await;
+    audit::log(
+        &state.db,
+        Some(&user.id),
+        "human",
+        "create_secret",
+        Some("secret"),
+        Some(&id),
+        "success",
+        None,
+        None,
+    )
+    .await;
     Ok(Json(serde_json::json!({ "id": id })))
 }
 
-pub async fn update(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<UpdateSecret>) -> Result<Json<serde_json::Value>> {
+pub async fn update(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateSecret>,
+) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
     let now = now_ts();
     if let Some(v) = &body.value {
         let enc = encrypt(&state.secrets_key, v).map_err(AppError::Internal)?;
         sqlx::query("UPDATE secrets SET value_enc=?, updated_at=? WHERE id=?")
-            .bind(&enc).bind(now).bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
+            .bind(&enc)
+            .bind(now)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(n) = &body.name {
         sqlx::query("UPDATE secrets SET name=?, updated_at=? WHERE id=?")
-            .bind(n).bind(now).bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
+            .bind(n)
+            .bind(now)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
     }
     if body.description.is_some() {
         sqlx::query("UPDATE secrets SET description=?, updated_at=? WHERE id=?")
-            .bind(&body.description).bind(now).bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
+            .bind(&body.description)
+            .bind(now)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
     }
-    audit::log(&state.db, Some(&user.id), "human", "update_secret", Some("secret"), Some(&id), "success", None, None).await;
+    audit::log(
+        &state.db,
+        Some(&user.id),
+        "human",
+        "update_secret",
+        Some("secret"),
+        Some(&id),
+        "success",
+        None,
+        None,
+    )
+    .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn delete(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
-    sqlx::query("DELETE FROM secrets WHERE id=?").bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
-    audit::log(&state.db, Some(&user.id), "human", "delete_secret", Some("secret"), Some(&id), "success", None, None).await;
+    sqlx::query("DELETE FROM secrets WHERE id=?")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .map_err(AppError::Database)?;
+    audit::log(
+        &state.db,
+        Some(&user.id),
+        "human",
+        "delete_secret",
+        Some("secret"),
+        Some(&id),
+        "success",
+        None,
+        None,
+    )
+    .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn reveal(State(state): State<AppState>, jar: CookieJar, headers: HeaderMap, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn reveal(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
 
     // Item #7B: enforce scoped token restriction
     let allowed = token_secret_ids(&state, &headers).await;
     if let Some(ids) = &allowed {
         if !ids.contains(&id) {
-            audit::log(&state.db, Some(&user.id), "human", "reveal_secret", Some("secret"), Some(&id), "forbidden", None, Some("token not scoped to this secret")).await;
+            audit::log(
+                &state.db,
+                Some(&user.id),
+                "human",
+                "reveal_secret",
+                Some("secret"),
+                Some(&id),
+                "forbidden",
+                None,
+                Some("token not scoped to this secret"),
+            )
+            .await;
             return Err(AppError::Forbidden);
         }
     }
 
-    let row = sqlx::query_as::<_, (String, String)>("SELECT name, value_enc FROM secrets WHERE id=?")
-        .bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?;
+    let row =
+        sqlx::query_as::<_, (String, String)>("SELECT name, value_enc FROM secrets WHERE id=?")
+            .bind(&id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AppError::Database)?;
     let Some((name, value_enc)) = row else {
-        audit::log(&state.db, Some(&user.id), "human", "reveal_secret", Some("secret"), Some(&id), "not_found", None, None).await;
+        audit::log(
+            &state.db,
+            Some(&user.id),
+            "human",
+            "reveal_secret",
+            Some("secret"),
+            Some(&id),
+            "not_found",
+            None,
+            None,
+        )
+        .await;
         return Err(AppError::NotFound);
     };
     let value = match decrypt(&state.secrets_key, &value_enc) {
         Ok(v) => v,
         Err(e) => {
-            audit::log(&state.db, Some(&user.id), "human", "reveal_secret", Some("secret"), Some(&id), "internal_error", None, Some(&format!("name={name}, decrypt failed"))).await;
+            audit::log(
+                &state.db,
+                Some(&user.id),
+                "human",
+                "reveal_secret",
+                Some("secret"),
+                Some(&id),
+                "internal_error",
+                None,
+                Some(&format!("name={name}, decrypt failed")),
+            )
+            .await;
             return Err(AppError::Internal(e));
         }
     };
     let now = now_ts();
-    let _ = sqlx::query("UPDATE secrets SET last_used_at=? WHERE id=?").bind(now).bind(&id).execute(&state.db).await;
-    audit::log(&state.db, Some(&user.id), "human", "reveal_secret", Some("secret"), Some(&id), "success", None, Some(&format!("name={name}"))).await;
+    let _ = sqlx::query("UPDATE secrets SET last_used_at=? WHERE id=?")
+        .bind(now)
+        .bind(&id)
+        .execute(&state.db)
+        .await;
+    audit::log(
+        &state.db,
+        Some(&user.id),
+        "human",
+        "reveal_secret",
+        Some("secret"),
+        Some(&id),
+        "success",
+        None,
+        Some(&format!("name={name}")),
+    )
+    .await;
     Ok(Json(serde_json::json!({ "value": value })))
 }
 
-pub async fn rotate(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<RotateSecret>) -> Result<Json<serde_json::Value>> {
+pub async fn rotate(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    Json(body): Json<RotateSecret>,
+) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
 
     // Fetch name and existing value
-    let row = sqlx::query_as::<_, (String, String, i64)>("SELECT name, value_enc, version FROM secrets WHERE id=?")
-        .bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?;
+    let row = sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT name, value_enc, version FROM secrets WHERE id=?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?;
     let Some((name, existing_enc, current_version)) = row else {
-        audit::log(&state.db, Some(&user.id), "human", "secret_rotated", Some("secret"), Some(&id), "not_found", None, None).await;
+        audit::log(
+            &state.db,
+            Some(&user.id),
+            "human",
+            "secret_rotated",
+            Some("secret"),
+            Some(&id),
+            "not_found",
+            None,
+            None,
+        )
+        .await;
         return Err(AppError::NotFound);
     };
 
@@ -173,7 +349,18 @@ pub async fn rotate(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
 
     // Verify the existing ciphertext is still valid (key hasn't changed)
     if let Err(e) = decrypt(&state.secrets_key, &existing_enc) {
-        audit::log(&state.db, Some(&user.id), "human", "secret_rotated", Some("secret"), Some(&id), "internal_error", None, Some(&format!("name={name}, decrypt verification failed"))).await;
+        audit::log(
+            &state.db,
+            Some(&user.id),
+            "human",
+            "secret_rotated",
+            Some("secret"),
+            Some(&id),
+            "internal_error",
+            None,
+            Some(&format!("name={name}, decrypt verification failed")),
+        )
+        .await;
         return Err(AppError::Internal(e));
     }
 
@@ -182,17 +369,40 @@ pub async fn rotate(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
     let now = now_ts();
 
     sqlx::query("UPDATE secrets SET value_enc=?, version=?, updated_at=? WHERE id=?")
-        .bind(&enc).bind(new_version).bind(now).bind(&id)
-        .execute(&state.db).await.map_err(AppError::Database)?;
+        .bind(&enc)
+        .bind(new_version)
+        .bind(now)
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .map_err(AppError::Database)?;
 
-    audit::log(&state.db, Some(&user.id), "human", "secret_rotated", Some("secret"), Some(&id), "success", None, Some(&format!("name={},version={}", name, new_version))).await;
-    Ok(Json(serde_json::json!({ "rotated": true, "version": new_version })))
+    audit::log(
+        &state.db,
+        Some(&user.id),
+        "human",
+        "secret_rotated",
+        Some("secret"),
+        Some(&id),
+        "success",
+        None,
+        Some(&format!("name={},version={}", name, new_version)),
+    )
+    .await;
+    Ok(Json(
+        serde_json::json!({ "rotated": true, "version": new_version }),
+    ))
 }
 
 async fn auth_user(state: &AppState, jar: &CookieJar, require_admin: bool) -> Result<auth::User> {
-    let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
-    let user = auth::validate_session(&state.db, &session_id).await
-        .map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+    let session_id = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    let user = auth::validate_session(&state.db, &session_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
     if require_admin && user.role != "owner" && user.role != "admin" {
         return Err(AppError::Forbidden);
     }
@@ -202,11 +412,15 @@ async fn auth_user(state: &AppState, jar: &CookieJar, require_admin: bool) -> Re
 /// Item #7B: if the request carries a Bearer token that has `secret_ids` set,
 /// return Some(allowed_ids). Returns None when the token is unrestricted or
 /// the request is session-authenticated (no bearer token present).
-async fn token_secret_ids(state: &AppState, headers: &HeaderMap) -> Option<std::collections::HashSet<String>> {
+async fn token_secret_ids(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<std::collections::HashSet<String>> {
     use sha2::{Digest, Sha256};
     let raw_token = headers
         .get(axum::http::header::AUTHORIZATION)?
-        .to_str().ok()?
+        .to_str()
+        .ok()?
         .strip_prefix("Bearer ")?
         .trim();
 
@@ -215,13 +429,12 @@ async fn token_secret_ids(state: &AppState, headers: &HeaderMap) -> Option<std::
     let token_hash = hex::encode(h.finalize());
 
     // fetch_optional returns Option<Option<String>> — outer = row found, inner = column value
-    let row: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT secret_ids FROM api_tokens WHERE token_hash = ?"
-    )
-    .bind(&token_hash)
-    .fetch_optional(&state.db)
-    .await
-    .ok()?;
+    let row: Option<Option<String>> =
+        sqlx::query_scalar("SELECT secret_ids FROM api_tokens WHERE token_hash = ?")
+            .bind(&token_hash)
+            .fetch_optional(&state.db)
+            .await
+            .ok()?;
 
     // If no row found, or column is NULL, the token has no restriction
     let secret_ids_json = row??.to_string();
@@ -230,7 +443,10 @@ async fn token_secret_ids(state: &AppState, headers: &HeaderMap) -> Option<std::
 }
 
 fn now_ts() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 #[cfg(test)]
@@ -274,7 +490,8 @@ mod tests {
         // only assembled by `init_pool`, not the baseline-only
         // `run_migrations` — this suite needs all three. A unique temp file
         // per test avoids cross-test interference.
-        let path = std::env::temp_dir().join(format!("vt-p1-02-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("vt-p1-02-test-{}.sqlite", uuid::Uuid::new_v4()));
         crate::db::init_pool(&path).await.expect("init test db")
     }
 
@@ -306,14 +523,16 @@ mod tests {
     async fn insert_session(db: &SqlitePool, user_id: &str) -> String {
         let id = crate::auth::generate_session_token();
         let now = unix_now();
-        sqlx::query("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
-            .bind(&id)
-            .bind(user_id)
-            .bind(now + 3600)
-            .bind(now)
-            .execute(db)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(user_id)
+        .bind(now + 3600)
+        .bind(now)
+        .execute(db)
+        .await
+        .unwrap();
         id
     }
 
@@ -372,7 +591,8 @@ mod tests {
         let id = uuid::Uuid::new_v4().to_string();
         let now = unix_now();
         let name = format!("test-secret-bad-{id}");
-        let value_enc = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0xAAu8; 40]);
+        let value_enc =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0xAAu8; 40]);
         sqlx::query("INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
             .bind(&id)
             .bind(&name)
@@ -385,7 +605,11 @@ mod tests {
         id
     }
 
-    async fn audit_rows(db: &SqlitePool, action: &str, resource_id: &str) -> Vec<(String, Option<String>)> {
+    async fn audit_rows(
+        db: &SqlitePool,
+        action: &str,
+        resource_id: &str,
+    ) -> Vec<(String, Option<String>)> {
         sqlx::query_as::<_, (String, Option<String>)>(
             "SELECT outcome, details FROM audit_log WHERE action=? AND resource_id=? ORDER BY timestamp ASC",
         )
@@ -402,7 +626,12 @@ mod tests {
         req
     }
 
-    fn cookie_req(method: &str, uri: &str, session_id: &str, body: Option<serde_json::Value>) -> Request<Body> {
+    fn cookie_req(
+        method: &str,
+        uri: &str,
+        session_id: &str,
+        body: Option<serde_json::Value>,
+    ) -> Request<Body> {
         let b = body.map(|v| v.to_string()).unwrap_or_default();
         with_connect_info(
             Request::builder()
@@ -458,13 +687,22 @@ mod tests {
 
         let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
         let res = app
-            .oneshot(cookie_req("GET", &format!("/api/secrets/{secret_id}/reveal"), &session, None))
+            .oneshot(cookie_req(
+                "GET",
+                &format!("/api/secrets/{secret_id}/reveal"),
+                &session,
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
         let rows = audit_rows(&db, "reveal_secret", &secret_id).await;
-        assert_eq!(rows.len(), 1, "expected exactly one audit row, got {rows:?}");
+        assert_eq!(
+            rows.len(),
+            1,
+            "expected exactly one audit row, got {rows:?}"
+        );
         assert_eq!(rows[0].0, "success");
     }
 
@@ -481,13 +719,22 @@ mod tests {
 
         let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
         let res = app
-            .oneshot(cookie_req("GET", &format!("/api/secrets/{secret_id}/reveal"), &session, None))
+            .oneshot(cookie_req(
+                "GET",
+                &format!("/api/secrets/{secret_id}/reveal"),
+                &session,
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
         let rows = audit_rows(&db, "reveal_secret", &secret_id).await;
-        assert_eq!(rows.len(), 1, "expected exactly one audit row, got {rows:?}");
+        assert_eq!(
+            rows.len(),
+            1,
+            "expected exactly one audit row, got {rows:?}"
+        );
         assert_eq!(rows[0].0, "internal_error");
     }
 
@@ -521,7 +768,11 @@ mod tests {
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
         let rows = audit_rows(&db, "reveal_secret", &secret_id).await;
-        assert_eq!(rows.len(), 1, "expected exactly one audit row, got {rows:?}");
+        assert_eq!(
+            rows.len(),
+            1,
+            "expected exactly one audit row, got {rows:?}"
+        );
         assert_eq!(rows[0].0, "forbidden");
     }
 
@@ -547,7 +798,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(create_res.status(), StatusCode::OK);
-        let create_body = axum::body::to_bytes(create_res.into_body(), usize::MAX).await.unwrap();
+        let create_body = axum::body::to_bytes(create_res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let create_json: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
         let id = create_json["id"].as_str().unwrap().to_string();
         assert_eq!(audit_rows(&db, "create_secret", &id).await.len(), 1);
@@ -579,7 +832,12 @@ mod tests {
         assert_eq!(audit_rows(&db, "secret_rotated", &id).await.len(), 1);
 
         let delete_res = app
-            .oneshot(cookie_req("DELETE", &format!("/api/secrets/{id}"), &session, None))
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{id}"),
+                &session,
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(delete_res.status(), StatusCode::OK);
@@ -599,12 +857,22 @@ mod tests {
 
         let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
         app.clone()
-            .oneshot(cookie_req("GET", &format!("/api/secrets/{good_id}/reveal"), &session, None))
+            .oneshot(cookie_req(
+                "GET",
+                &format!("/api/secrets/{good_id}/reveal"),
+                &session,
+                None,
+            ))
             .await
             .unwrap();
-        app.oneshot(cookie_req("GET", &format!("/api/secrets/{bad_id}/reveal"), &session, None))
-            .await
-            .unwrap();
+        app.oneshot(cookie_req(
+            "GET",
+            &format!("/api/secrets/{bad_id}/reveal"),
+            &session,
+            None,
+        ))
+        .await
+        .unwrap();
 
         let good_rows = audit_rows(&db, "reveal_secret", &good_id).await;
         let bad_rows = audit_rows(&db, "reveal_secret", &bad_id).await;

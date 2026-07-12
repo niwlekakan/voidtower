@@ -93,6 +93,10 @@ pub mod wireguard;
 
 #[cfg(test)]
 mod scope_bypass_tests;
+#[cfg(test)]
+mod authz_matrix;
+#[cfg(test)]
+mod authz_matrix_tests;
 
 // The route table below (`router()`'s two `Router::new()` chains) predates
 // rustfmt adoption in this crate and is hand-aligned; `#[rustfmt::skip]`

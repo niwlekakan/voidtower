@@ -89,70 +89,331 @@ fn with_connect_info(mut req: Request<Body>) -> Request<Body> {
 /// object still can't satisfy generically (field names that collide across structs with
 /// genuinely incompatible types, and fixed-vocabulary enum fields).
 const NUMBER_FIELDS: &[&str] = &[
-    "port", "num", "priority", "max_apps", "quota_bytes", "size", "min", "max", "used_bytes",
-    "priority_order", "rate_limit_rpm", "timeout_secs", "interval_secs", "keep_alive_secs",
-    "batch_size", "threads", "ctx_size", "n_gpu_layers", "seed", "width", "height", "disk_gb",
-    "cores", "memory", "expires_days", "sort_order", "level", "count", "total", "total_bytes",
-    "downloaded_bytes", "pulled_bytes", "storage_free_bytes", "current_layer", "ahead",
-    "behind", "commits_ahead", "steps", "cfg_scale", "speed", "primary_port", "retention_days",
-    "limit", "offset", "tail", "vmid", "exported_at", "parallel",
+    "port",
+    "num",
+    "priority",
+    "max_apps",
+    "quota_bytes",
+    "size",
+    "min",
+    "max",
+    "used_bytes",
+    "priority_order",
+    "rate_limit_rpm",
+    "timeout_secs",
+    "interval_secs",
+    "keep_alive_secs",
+    "batch_size",
+    "threads",
+    "ctx_size",
+    "n_gpu_layers",
+    "seed",
+    "width",
+    "height",
+    "disk_gb",
+    "cores",
+    "memory",
+    "expires_days",
+    "sort_order",
+    "level",
+    "count",
+    "total",
+    "total_bytes",
+    "downloaded_bytes",
+    "pulled_bytes",
+    "storage_free_bytes",
+    "current_layer",
+    "ahead",
+    "behind",
+    "commits_ahead",
+    "steps",
+    "cfg_scale",
+    "speed",
+    "primary_port",
+    "retention_days",
+    "limit",
+    "offset",
+    "tail",
+    "vmid",
+    "exported_at",
+    "parallel",
 ];
 const BOOL_FIELDS: &[&str] = &[
-    "enabled", "allow_embed", "auto_provision", "available", "cont_batching",
-    "docker_available", "dry_run", "flash_attn", "has_client_secret", "is_git_install",
-    "libvirt_available", "mcp_enabled", "online", "ok", "password_set",
-    "regenerate_webhook_secret", "ssl", "sso_protect", "systemd_available", "truncated",
-    "verify_ssl", "websocket_extended", "emergency_disable", "emergency_disabled",
-    "can_deploy_custom", "ipv6", "keep_data", "force", "custom_deploy", "raw", "deployed",
+    "enabled",
+    "allow_embed",
+    "auto_provision",
+    "available",
+    "cont_batching",
+    "docker_available",
+    "dry_run",
+    "flash_attn",
+    "has_client_secret",
+    "is_git_install",
+    "libvirt_available",
+    "mcp_enabled",
+    "online",
+    "ok",
+    "password_set",
+    "regenerate_webhook_secret",
+    "ssl",
+    "sso_protect",
+    "systemd_available",
+    "truncated",
+    "verify_ssl",
+    "websocket_extended",
+    "emergency_disable",
+    "emergency_disabled",
+    "can_deploy_custom",
+    "ipv6",
+    "keep_data",
+    "force",
+    "custom_deploy",
+    "raw",
+    "deployed",
 ];
 const ARRAY_FIELDS: &[&str] = &[
-    "agents", "alert_rules", "alerts", "apps", "backups", "containers", "drives", "entries",
-    "events", "images", "items", "models", "nodes", "packages", "processes", "proxy_rules",
-    "rules", "services", "sessions", "tabs", "tags", "users", "vms", "warnings", "volumes",
-    "changed_files", "commits", "ids", "app_ids", "secret_ids", "required_roles", "scopes",
-    "nav_groups", "backup_tags", "ports", "devices",
+    "agents",
+    "alert_rules",
+    "alerts",
+    "apps",
+    "backups",
+    "containers",
+    "drives",
+    "entries",
+    "events",
+    "images",
+    "items",
+    "models",
+    "nodes",
+    "packages",
+    "processes",
+    "proxy_rules",
+    "rules",
+    "services",
+    "sessions",
+    "tabs",
+    "tags",
+    "users",
+    "vms",
+    "warnings",
+    "volumes",
+    "changed_files",
+    "commits",
+    "ids",
+    "app_ids",
+    "secret_ids",
+    "required_roles",
+    "scopes",
+    "nav_groups",
+    "backup_tags",
+    "ports",
+    "devices",
 ];
-const OBJECT_FIELDS: &[&str] = &["config", "params", "role_map", "env", "env_overrides", "arguments"];
+const OBJECT_FIELDS: &[&str] = &[
+    "config",
+    "params",
+    "role_map",
+    "env",
+    "env_overrides",
+    "arguments",
+];
 
 /// Every remaining field name (defaults to a generic string value).
 const STRING_FIELDS: &[&str] = &[
-    "action", "activity", "actor_type", "agent_capable", "agent_id", "api_key_ref",
-    "api_key_value", "app_id", "app_name", "applied_at", "appvault", "arch", "author",
-    "automation_id", "automation_jobs", "backend", "basic_auth_password", "basic_auth_user",
-    "battery", "branch", "bus", "button_label", "cache_static", "cache_type_k",
-    "cache_type_v", "category", "channel", "client_id", "client_secret", "code", "color",
-    "command", "comment", "compose_path", "compose_yaml", "content", "context",
-    "created_at", "current_commit", "current_image", "current_session_id", "custom_css",
-    "custom_headers", "default_role", "description", "device", "device_type",
-    "diff_preview", "direction", "discord_webhook", "disk", "disk_path", "display_name",
-    "domain", "dump", "effect", "email", "entry", "error", "error_description",
-    "fetch_error", "filename", "fingerprint", "from", "fstype", "gpu", "options", "query",
+    "action",
+    "activity",
+    "actor_type",
+    "agent_capable",
+    "agent_id",
+    "api_key_ref",
+    "api_key_value",
+    "app_id",
+    "app_name",
+    "applied_at",
+    "appvault",
+    "arch",
+    "author",
+    "automation_id",
+    "automation_jobs",
+    "backend",
+    "basic_auth_password",
+    "basic_auth_user",
+    "battery",
+    "branch",
+    "bus",
+    "button_label",
+    "cache_static",
+    "cache_type_k",
+    "cache_type_v",
+    "category",
+    "channel",
+    "client_id",
+    "client_secret",
+    "code",
+    "color",
+    "command",
+    "comment",
+    "compose_path",
+    "compose_yaml",
+    "content",
+    "context",
+    "created_at",
+    "current_commit",
+    "current_image",
+    "current_session_id",
+    "custom_css",
+    "custom_headers",
+    "default_role",
+    "description",
+    "device",
+    "device_type",
+    "diff_preview",
+    "direction",
+    "discord_webhook",
+    "disk",
+    "disk_path",
+    "display_name",
+    "domain",
+    "dump",
+    "effect",
+    "email",
+    "entry",
+    "error",
+    "error_description",
+    "fetch_error",
+    "filename",
+    "fingerprint",
+    "from",
+    "fstype",
+    "gpu",
+    "options",
+    "query",
     "type",
-    "heartbeat_token", "host", "host_path", "hostname", "icon", "id", "image",
-    "installed_at", "instance_logo", "instance_name", "interface", "issuer_url", "jsonrpc",
-    "key_path", "kind", "label", "last_checked_at", "last_latency_ms", "last_status",
-    "last_used", "login_bg_url", "login_tagline", "method", "mod_name", "mode", "model",
-    "mountpoint", "name", "nav_group", "negative_prompt", "node", "node_id", "ntfy_url",
-    "ostemplate", "package_manager", "pairing_code", "parent", "pass", "password", "path",
-    "project_name", "prompt", "proto", "provider_id", "quota_bytes", "reason",
-    "redirect_url", "remote_commit", "repo_path", "resource", "resource_id",
-    "resource_tag", "resource_type", "restore_test_schedule", "result", "rollback_ref",
-    "role", "rootfs", "roots", "schedule", "search", "secret", "server_endpoint",
-    "service", "session_id", "severity", "slack_webhook", "source", "source_path",
-    "sso_protect", "state", "status", "status_updated_at", "storage", "storage_drive_id",
-    "tag", "tag_id", "target", "target_node_id", "task_id", "text", "title", "to", "token",
-    "token_id", "token_secret", "totp_code", "update_detail", "update_status",
-    "updated_at", "upstream", "uri", "url", "user", "username", "value", "value_enc",
-    "verdict", "version", "voice", "voidtower_version", "volid", "warnings",
-    "webhook_secret_hint", "webhook_type", "wg_client_config", "arguments_json",
-    "http_method", "body", "basic_auth", "notify_url", "webhook_url", "api_key",
-    "drive_path", "user_id", "drive_id",
+    "heartbeat_token",
+    "host",
+    "host_path",
+    "hostname",
+    "icon",
+    "id",
+    "image",
+    "installed_at",
+    "instance_logo",
+    "instance_name",
+    "interface",
+    "issuer_url",
+    "jsonrpc",
+    "key_path",
+    "kind",
+    "label",
+    "last_checked_at",
+    "last_latency_ms",
+    "last_status",
+    "last_used",
+    "login_bg_url",
+    "login_tagline",
+    "method",
+    "mod_name",
+    "mode",
+    "model",
+    "mountpoint",
+    "name",
+    "nav_group",
+    "negative_prompt",
+    "node",
+    "node_id",
+    "ntfy_url",
+    "ostemplate",
+    "package_manager",
+    "pairing_code",
+    "parent",
+    "pass",
+    "password",
+    "path",
+    "project_name",
+    "prompt",
+    "proto",
+    "provider_id",
+    "quota_bytes",
+    "reason",
+    "redirect_url",
+    "remote_commit",
+    "repo_path",
+    "resource",
+    "resource_id",
+    "resource_tag",
+    "resource_type",
+    "restore_test_schedule",
+    "result",
+    "rollback_ref",
+    "role",
+    "rootfs",
+    "roots",
+    "schedule",
+    "search",
+    "secret",
+    "server_endpoint",
+    "service",
+    "session_id",
+    "severity",
+    "slack_webhook",
+    "source",
+    "source_path",
+    "sso_protect",
+    "state",
+    "status",
+    "status_updated_at",
+    "storage",
+    "storage_drive_id",
+    "tag",
+    "tag_id",
+    "target",
+    "target_node_id",
+    "task_id",
+    "text",
+    "title",
+    "to",
+    "token",
+    "token_id",
+    "token_secret",
+    "totp_code",
+    "update_detail",
+    "update_status",
+    "updated_at",
+    "upstream",
+    "uri",
+    "url",
+    "user",
+    "username",
+    "value",
+    "value_enc",
+    "verdict",
+    "version",
+    "voice",
+    "voidtower_version",
+    "volid",
+    "warnings",
+    "webhook_secret_hint",
+    "webhook_type",
+    "wg_client_config",
+    "arguments_json",
+    "http_method",
+    "body",
+    "basic_auth",
+    "notify_url",
+    "webhook_url",
+    "api_key",
+    "drive_path",
+    "user_id",
+    "drive_id",
 ];
 
 fn fat_probe_body() -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for f in STRING_FIELDS {
-        map.insert(f.to_string(), serde_json::Value::String("probe".to_string()));
+        map.insert(
+            f.to_string(),
+            serde_json::Value::String("probe".to_string()),
+        );
     }
     for f in NUMBER_FIELDS {
         map.insert(f.to_string(), serde_json::json!(1));
@@ -196,13 +457,20 @@ fn probe_query_string() -> String {
     // range filter) rather than the free-text `from`/`to` (IP/host) meaning used elsewhere as
     // JSON body fields — numeric here so that query still parses.
     let string_fields = [
-        "category", "code", "disk", "error", "error_description", "path", "search",
-        "session_id", "severity", "state", "token", "volid",
+        "category",
+        "code",
+        "disk",
+        "error",
+        "error_description",
+        "path",
+        "search",
+        "session_id",
+        "severity",
+        "state",
+        "token",
+        "volid",
     ];
-    let mut parts: Vec<String> = string_fields
-        .iter()
-        .map(|f| format!("{f}=probe"))
-        .collect();
+    let mut parts: Vec<String> = string_fields.iter().map(|f| format!("{f}=probe")).collect();
     parts.push("limit=1".to_string());
     parts.push("offset=0".to_string());
     parts.push("tail=1".to_string());
@@ -212,7 +480,11 @@ fn probe_query_string() -> String {
 }
 
 fn with_probe_query(uri: &str) -> String {
-    format!("{}?{}", substitute_numeric_path_params(uri), probe_query_string())
+    format!(
+        "{}?{}",
+        substitute_numeric_path_params(uri),
+        probe_query_string()
+    )
 }
 
 /// A few field names collide across structs with genuinely incompatible types (e.g.
@@ -277,7 +549,12 @@ fn unauth_req(method: &str, uri: &str) -> Request<Body> {
     )
 }
 
-fn cookie_req(method: &str, uri: &str, session_id: &str, body: Option<serde_json::Value>) -> Request<Body> {
+fn cookie_req(
+    method: &str,
+    uri: &str,
+    session_id: &str,
+    body: Option<serde_json::Value>,
+) -> Request<Body> {
     let b = body.unwrap_or_else(|| probe_body(method, uri)).to_string();
     with_connect_info(
         Request::builder()
@@ -331,13 +608,12 @@ async fn unauthenticated_request_is_rejected_for_every_non_public_route() {
         if !role.requires_unauthenticated_401() || is_probe_exempt(method, path) {
             continue;
         }
-        let res = app
-            .clone()
-            .oneshot(unauth_req(method, path))
-            .await
-            .unwrap();
+        let res = app.clone().oneshot(unauth_req(method, path)).await.unwrap();
         if res.status() != StatusCode::UNAUTHORIZED {
-            failures.push(format!("{method} {path}: expected 401, got {}", res.status()));
+            failures.push(format!(
+                "{method} {path}: expected 401, got {}",
+                res.status()
+            ));
         }
     }
     assert!(
@@ -376,8 +652,12 @@ async fn wrong_role_session_is_rejected_for_every_role_gated_route() {
         if is_probe_exempt(method, path) {
             continue;
         }
-        let Some(tier) = role.wrong_role_tier() else { continue };
-        let Some(probe_role) = tier.wrong_role_probe() else { continue };
+        let Some(tier) = role.wrong_role_tier() else {
+            continue;
+        };
+        let Some(probe_role) = tier.wrong_role_probe() else {
+            continue;
+        };
         let session_id = session_by_probe_role[probe_role];
 
         let res = app
@@ -470,7 +750,12 @@ async fn member_and_guest_and_demo_roles_are_represented_in_the_matrix() {
 
         let allow_res = app
             .clone()
-            .oneshot(cookie_req(ALLOW_WITNESS.0, ALLOW_WITNESS.1, &session_id, None))
+            .oneshot(cookie_req(
+                ALLOW_WITNESS.0,
+                ALLOW_WITNESS.1,
+                &session_id,
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(
@@ -484,7 +769,12 @@ async fn member_and_guest_and_demo_roles_are_represented_in_the_matrix() {
 
         let deny_res = app
             .clone()
-            .oneshot(cookie_req(DENY_WITNESS.0, DENY_WITNESS.1, &session_id, None))
+            .oneshot(cookie_req(
+                DENY_WITNESS.0,
+                DENY_WITNESS.1,
+                &session_id,
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(

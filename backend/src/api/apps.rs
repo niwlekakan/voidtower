@@ -363,7 +363,7 @@ async fn ensure_vt_proxy_network() {
     match inspect {
         // Network exists and is already IPv4-only — nothing to do.
         Ok(out) if out.status.success()
-            && String::from_utf8_lossy(&out.stdout).trim() != "true" => (),
+            && String::from_utf8_lossy(&out.stdout).trim() != "true" => {}
         // Network exists but has IPv6 enabled — recreate it IPv4-only.
         Ok(out) if out.status.success() => recreate_vt_proxy_network_ipv4().await,
         // Network doesn't exist (or docker errored) — create it fresh.
@@ -1784,9 +1784,9 @@ pub async fn open_ui(
     let embed_url: Option<String>;
     let proxy_created: bool;
 
-    let nginx_ok = tokio::task::spawn_blocking(|| {
-        crate::api::proxy::nginx_active_pub()
-    }).await.unwrap_or(false);
+    let nginx_ok = tokio::task::spawn_blocking(crate::api::proxy::nginx_active_pub)
+        .await
+        .unwrap_or(false);
 
     if nginx_ok {
         let embed_port = match &existing {

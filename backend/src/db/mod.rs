@@ -1060,9 +1060,7 @@ mod tests {
         // Tiered accounts (gap-analysis §1) added a column, not a new table.
         let user_columns = v0_9_0_columns(&pool, "users").await;
         assert!(
-            user_columns
-                .iter()
-                .any(|(name, _)| name == "expires_at"),
+            user_columns.iter().any(|(name, _)| name == "expires_at"),
             "tiered-accounts column users.expires_at missing after upgrading the v0.9.0 seed"
         );
 

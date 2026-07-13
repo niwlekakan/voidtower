@@ -789,13 +789,13 @@ async fn member_and_guest_and_demo_roles_are_represented_in_the_matrix() {
 }
 
 // ---------------------------------------------------------------------------
-// Denylist regression tests (operator decision, 2026-07-12) -- one per
-// originally-escalated route group, asserting the CURRENT (bad) behavior:
-// guest/demo/member sessions are wrongly admitted today. A future fix that
-// tightens these guards to a proper allowlist will fail these tests loudly
-// and must update them as a reviewed, intentional change -- see
-// `authz_matrix.rs`'s module doc comment for the full writeup and the wider
-// set of routes found to share this bug shape.
+// Denylist regression tests (operator decision, 2026-07-12, extended
+// 2026-07-13 to the full ~24-location scope) -- one per affected route,
+// asserting the CURRENT (bad) behavior: guest/demo/member sessions are
+// wrongly admitted today. A future fix that tightens these guards to a
+// proper allowlist will fail these tests loudly and must update them as a
+// reviewed, intentional change -- see `authz_matrix.rs`'s module doc comment
+// for the full writeup.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -927,4 +927,311 @@ async fn timeline_denylist_admits_guest_demo_member_today() {
             res.status()
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Denylist regression tests, 2026-07-13 scope extension -- the same bug
+// shape (`if user.role == "viewer" { Forbidden }` or
+// `role == "viewer" || role == "operator"`, instead of allowlisting the
+// standard ladder) found in 19 more locations across 7 files while building
+// this matrix. Every route below is a mutation (POST/DELETE/PATCH) except
+// `containers::exec_ws`, which is a WebSocket upgrade probed the same way
+// `terminal_ws_denylist_admits_guest_demo_member_today` above probes
+// `terminal::ws_handler`.
+//
+// `demo` is deliberately excluded from every mutation-route test here, same
+// rationale as `firewall_admin_denylist_admits_guest_demo_member_today`:
+// `demo_guard::middleware` blocks every non-GET `/api/*` request from a
+// `role == "demo"` session before the handler's own (buggy) check ever runs,
+// so a 403 for `demo` on a POST/DELETE/PATCH route would be `demo_guard`
+// working correctly, not evidence about the handler's denylist one way or
+// the other. `exec_ws` is a GET route (demo_guard only gates non-GET), so
+// its test covers all three roles, matching `terminal_ws`'s test above.
+//
+// Two of these are the highest-severity items in this whole scope extension
+// and get their own explicit tests rather than being folded into a loop:
+// `automation::run_now` lets an admitted guest/demo/member session execute
+// an arbitrary shell command server-side via `automation_jobs.command`, and
+// `containers::exec_ws` opens an interactive `docker exec -it ... sh` shell
+// in the container -- both the same risk class as the originally-escalated
+// `terminal.rs` shell-access bug.
+// ---------------------------------------------------------------------------
+
+/// Shared assertion for the mutation-route denylist regressions below: a `guest`/`member`
+/// session must currently (bug, not fixed by this task) NOT be rejected with 403. Whatever
+/// status the request gets *after* clearing the role check (200, 400, 404 -- the exact code
+/// depends on the route and this test's DB having no matching row for its probe path/body) is
+/// not this test's concern; only "not 403" is.
+async fn assert_mutation_denylist_admits_guest_and_member(
+    db: &SqlitePool,
+    method: &str,
+    path: &str,
+    route_label: &str,
+) {
+    let app = crate::api::router(test_support::build(db.clone()));
+    for role in ["guest", "member"] {
+        let session_id = session_for_role(db, role).await;
+        let res = app
+            .clone()
+            .oneshot(cookie_req(method, path, &session_id, None))
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
+             {method} {path} ({route_label}) but isn't -- denylist only rejects the standard \
+             owner/admin/operator/viewer ladder, got {}",
+            res.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn alerts_delete_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "DELETE",
+        "/api/alerts/:id",
+        "alerts::delete_alert",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apps_update_compose_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/apps/:project_name/compose",
+        "apps::update_compose",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apps_patch_app_env_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/apps/:project_name/env",
+        "apps::patch_app_env",
+    )
+    .await;
+}
+
+/// Also `RiskClass::Irreversible` (P0-04's denylist) -- this session-role bug is a second,
+/// independent way to reach the same irreversible action, not a duplicate finding.
+#[tokio::test]
+async fn apps_delete_app_volumes_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/apps/:project_name/delete-volumes",
+        "apps::delete_app_volumes",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn automation_create_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/automation",
+        "automation::create",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn automation_update_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "PATCH",
+        "/api/automation/:id",
+        "automation::update",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn automation_delete_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "DELETE",
+        "/api/automation/:id",
+        "automation::delete",
+    )
+    .await;
+}
+
+/// HIGH SEVERITY: `run_now` executes `automation_jobs.command` as a server-side shell command.
+/// A guest/demo/member session wrongly admitted here gets arbitrary shell execution, the same
+/// risk class as `terminal.rs`'s originally-escalated shell-access bug.
+#[tokio::test]
+async fn automation_run_now_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/automation/:id/run",
+        "automation::run_now -- arbitrary shell command execution",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn backups_create_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/backups",
+        "backups::create",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn backups_run_now_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/backups/:id/run",
+        "backups::run_now",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn backups_check_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/backups/:id/check",
+        "backups::check",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn backups_restore_test_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/backups/:id/restore-test",
+        "backups::restore_test",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn backups_delete_plan_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/backups/:id/delete-plan",
+        "backups::delete_plan",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn backups_delete_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "DELETE",
+        "/api/backups/:id",
+        "backups::delete",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn containers_action_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/containers/:id/action",
+        "containers::action",
+    )
+    .await;
+}
+
+/// HIGH SEVERITY: `exec_ws` opens an interactive `docker exec -it <container> sh` shell over
+/// the upgraded WebSocket, the same risk class as `terminal.rs`'s originally-escalated
+/// shell-access bug. GET route, so (unlike the mutation tests above) `demo_guard` doesn't
+/// gate it -- all three roles are probed, matching `terminal_ws_denylist_admits_guest_demo_member_today`.
+#[tokio::test]
+async fn containers_exec_ws_denylist_admits_guest_demo_member_today() {
+    let db = setup_db().await;
+    let app = crate::api::router(test_support::build(db.clone()));
+
+    for role in ["guest", "demo", "member"] {
+        let session_id = session_for_role(&db, role).await;
+        let res = app
+            .clone()
+            .oneshot(ws_cookie_req("/api/containers/:id/exec", &session_id))
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
+             GET /api/containers/:id/exec's role check but isn't -- containers.rs's exec_ws \
+             denylist only rejects literal \"viewer\" -- interactive container shell access, \
+             got {}",
+            res.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn services_action_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/services/:name/action",
+        "services::action",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn status_checks_create_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "POST",
+        "/api/status-checks",
+        "status::create",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn status_checks_delete_denylist_admits_guest_and_member_today() {
+    let db = setup_db().await;
+    assert_mutation_denylist_admits_guest_and_member(
+        &db,
+        "DELETE",
+        "/api/status-checks/:id",
+        "status::delete",
+    )
+    .await;
 }

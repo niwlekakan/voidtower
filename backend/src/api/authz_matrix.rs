@@ -33,7 +33,8 @@
 //!   matrix by construction — still given a table entry for exhaustiveness, but excluded from
 //!   this file's session-cookie-driven probes (`authz_matrix_tests.rs`).
 //!
-//! ## The denylist gap (operator decision, 2026-07-12, `.devteam/active/P1-01-authz-route-matrix.md`)
+//! ## The denylist gap (operator decisions, 2026-07-12 and 2026-07-13,
+//! `.devteam/active/P1-01-authz-route-matrix.md`)
 //!
 //! A prior worker session escalated from this task's read-only survey phase after finding
 //! that five route groups — `firewall.rs`'s three admin routes, `terminal.rs`'s WS-upgrade
@@ -46,33 +47,30 @@
 //! including `terminal.rs`'s interactive local/SSH shell routes, i.e. host shell access from
 //! a guest/demo/member session-cookie login.
 //!
-//! The operator's resolution: **ship this matrix now with the gap explicitly documented, not
-//! hidden or silently routed around.** `Role::SessionDenylist(min_intended_tier)` records
-//! *both* facts at once — the tier the guard's own literal checks correctly enforce against
-//! the `owner > admin > operator > viewer` ladder (so this file's standard wrong-role probes,
-//! which only ever mint `owner`/`admin`/`operator`/`viewer` sessions, still pass — a denylist
-//! that literally checks `role == "viewer"` does correctly reject a `viewer` probe) *and* the
-//! fact that `guest`/`demo`/`member` sessions are wrongly admitted today. `authz_matrix_tests.rs`
-//! adds one dedicated, clearly-labeled regression test per originally-escalated route group
-//! (`firewall`, `terminal` WS, `terminal` session-management, `audit`, `timeline`) asserting
-//! the *current* (bad) behavior, so a future fix that tightens these guards fails that test
-//! loudly and has to update it as a reviewed, intentional change.
+//! The operator's 2026-07-12 resolution: **ship this matrix now with the gap explicitly
+//! documented, not hidden or silently routed around.** `Role::SessionDenylist(min_intended_tier)`
+//! records *both* facts at once — the tier the guard's own literal checks correctly enforce
+//! against the `owner > admin > operator > viewer` ladder (so this file's standard wrong-role
+//! probes, which only ever mint `owner`/`admin`/`operator`/`viewer` sessions, still pass — a
+//! denylist that literally checks `role == "viewer"` does correctly reject a `viewer` probe)
+//! *and* the fact that `guest`/`demo`/`member` sessions are wrongly admitted today.
 //!
-//! **Scope note beyond the five originally-escalated route groups:** building this table
-//! surfaced the identical bug shape (a denylist checking only literal `"viewer"`, or
-//! `"viewer"|"operator"`, instead of allowlisting `"owner"|"admin"|"operator"`) in several
-//! more files — `apps.rs` (`update_compose`, `patch_app_env`, `delete_app_volumes`),
+//! A later worker session, building this table from source per this task's spec rather than
+//! trusting the first escalation's list, found the identical bug shape in **19 more locations**
+//! across 7 more files — `apps.rs` (`update_compose`, `patch_app_env`, `delete_app_volumes`),
 //! `automation.rs` (`create`/`update`/`delete`/`run_now`), `backups.rs` (six handlers),
 //! `status.rs` (`create`/`delete`), `alerts.rs` (`delete_alert`), `containers.rs`
-//! (`action`/`exec_ws`), and `services.rs` (`action`). Every one of these is tagged
-//! `Role::SessionDenylist` below for the same reason (accurate modeling — a wrong-role probe
-//! against these still passes today, since the ladder roles the denylist literally names are
-//! still correctly rejected; only guest/demo/member fall through), but per this task's scope
-//! (no ADR to edit any handler file, and the operator's resolution named five specific route
-//! groups for dedicated regression coverage) this file does **not** add a dedicated
-//! current-bad-behavior test for the additional routes found beyond those five — see the PR
-//! description for the full list and a recommendation that a follow-up task fix all of them
-//! (the four named files plus these) in one pass, since they're the same bug.
+//! (`action`/`exec_ws`), and `services.rs` (`action`) — escalated again, and the operator's
+//! **2026-07-13 resolution supersedes and extends** the 07-12 one: the exact same treatment
+//! (tag `Role::SessionDenylist` here, and a dedicated current-bad-behavior regression test per
+//! route, not just per file) now covers all ~24 locations in this one task/PR.
+//! `authz_matrix_tests.rs` adds one dedicated, clearly-labeled regression test per affected
+//! route — the original 5 groups plus the 19 found later — asserting the *current* (bad)
+//! behavior, so a future fix that tightens any of these guards fails that test loudly and has
+//! to update it as a reviewed, intentional change. `automation.rs`'s `run_now` (arbitrary
+//! shell command execution via `automation_jobs.command`) and `containers.rs`'s `exec_ws`
+//! (interactive `docker exec -it ... sh`) are the two highest-severity items among the 19,
+//! same risk class as `terminal.rs`'s originally-escalated shell-access bug.
 //!
 //! `apps.rs`'s `expose_app`/`purge_app` are a different, opposite-direction bug also found
 //! during this survey: `if user.role != "admin" { Forbidden }` is an *exact-match* allowlist

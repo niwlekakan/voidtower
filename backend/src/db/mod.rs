@@ -741,13 +741,15 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// ADR-002 constraint 3: every P0-added table's definition lives in
-    /// `tests/schema_golden.sql` (statements separated by a lone `;` line, since the
-    /// live `sqlite_master.sql` text itself never contains one), and this test asserts
-    /// the live schema (produced by the real `init_pool` path, not a hand-rolled test
-    /// fixture) still matches each one byte-for-byte — a P1 baseline-migration
-    /// prerequisite. Extended in P0-03 to also cover `voidwatch_mode_settings`
-    /// alongside P0-02's original `voidwatch_default_allowlist` entry.
+    /// ADR-002 constraint 3, generalized to the whole schema by P1-04/ADR-008:
+    /// `tests/schema_golden.sql` now carries every table `run_migrations()` +
+    /// `init_pool()` create (statements separated by a lone `;` line, since the live
+    /// `sqlite_master.sql` text itself never contains one), machine-generated from a
+    /// live `init_pool()` run rather than hand-typed (ADR-008 constraint 2). This test
+    /// asserts two things, catching drift in either direction: (1) the live table set
+    /// exactly equals the golden file's table set — a new undocumented table or a
+    /// stale fixture entry for a removed one both fail here; (2) each surviving
+    /// table's live `sqlite_master.sql` text matches its golden entry byte-for-byte.
     #[tokio::test]
     async fn schema_golden_file_matches_live_schema_after_migration() {
         let db_path = std::env::temp_dir().join(format!(
@@ -758,11 +760,42 @@ mod tests {
         let pool = init_pool(&db_path).await.unwrap();
 
         let golden = include_str!("../../tests/schema_golden.sql");
-        for golden_stmt in golden.split("\n;\n") {
-            let golden_stmt = golden_stmt.trim();
-            if golden_stmt.is_empty() {
-                continue;
-            }
+        let golden_statements: Vec<&str> = golden
+            .split("\n;\n")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let golden_tables: std::collections::BTreeSet<&str> = golden_statements
+            .iter()
+            .map(|stmt| {
+                stmt.strip_prefix("CREATE TABLE ")
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .unwrap_or_else(|| {
+                        panic!("couldn't parse table name from golden statement: {stmt}")
+                    })
+            })
+            .collect();
+
+        let live_tables: std::collections::BTreeSet<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect();
+
+        let live_table_refs: std::collections::BTreeSet<&str> =
+            live_tables.iter().map(String::as_str).collect();
+        assert_eq!(
+            live_table_refs, golden_tables,
+            "tests/schema_golden.sql's table set has drifted from the live schema — a table \
+             was added to db/mod.rs without a matching golden entry, or a golden entry is \
+             stale for a table that no longer exists"
+        );
+
+        for golden_stmt in golden_statements {
             let table_name = golden_stmt
                 .strip_prefix("CREATE TABLE ")
                 .and_then(|rest| rest.split_whitespace().next())
@@ -878,6 +911,160 @@ mod tests {
         }
         assert!(after_tables.contains(&"voidwatch_default_allowlist".to_string()));
         assert!(after_tables.contains(&"voidwatch_mode_settings".to_string()));
+
+        pool.close().await;
+        let _ = std::fs::remove_file(&db_path);
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", db_path.display()));
+        }
+    }
+
+    /// Seeds an on-disk database from `tests/schema_v0_9_0_seed.sql` (see that file's
+    /// header for the fixture's provenance) without running any real migration code —
+    /// mirroring how a genuinely old on-disk file would look before ever being opened
+    /// by today's binary.
+    async fn seed_v0_9_0_seed_db(db_path: &Path) {
+        let url = format!("sqlite://{}?mode=rwc", db_path.display());
+        let pool = SqlitePoolOptions::new().connect(&url).await.unwrap();
+        sqlx::query(include_str!("../../tests/schema_v0_9_0_seed.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+
+    async fn v0_9_0_table_names(pool: &SqlitePool) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn v0_9_0_columns(
+        pool: &SqlitePool,
+        table: &str,
+    ) -> std::collections::HashSet<(String, String)> {
+        sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(&format!(
+            "PRAGMA table_info({table})"
+        ))
+        .fetch_all(pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, name, ty, _, _, _)| (name, ty))
+        .collect()
+    }
+
+    /// ADR-008 (P1-04) — the general form of `pre_existing_tables_byte_identical_after_upgrade`
+    /// gap-analysis §3 asks P1 to deliver for the whole schema, not just P0's two
+    /// tables: every table/column present in the v0.9.0-era seed fixture must survive
+    /// today's `init_pool()` unchanged (superset check at the column level, same
+    /// rationale as the P0.2 upgrade test above — later `ALTER TABLE ... ADD COLUMN`
+    /// calls legitimately add columns on top; what must never happen is one of these
+    /// being dropped or retyped).
+    #[tokio::test]
+    async fn pre_existing_tables_byte_identical_after_upgrade_from_v0_9_0_seed() {
+        let db_path = std::env::temp_dir().join(format!(
+            "voidtower-v090-upgrade-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+
+        seed_v0_9_0_seed_db(&db_path).await;
+
+        let (before_tables, before_columns) = {
+            let url = format!("sqlite://{}?mode=rwc", db_path.display());
+            let pool = SqlitePoolOptions::new().connect(&url).await.unwrap();
+            let tables = v0_9_0_table_names(&pool).await;
+            let mut cols = std::collections::HashMap::new();
+            for t in &tables {
+                cols.insert(t.clone(), v0_9_0_columns(&pool, t).await);
+            }
+            pool.close().await;
+            (tables, cols)
+        };
+        assert_eq!(
+            before_tables.len(),
+            24,
+            "tests/schema_v0_9_0_seed.sql should define exactly its 24 v0.9.0-era tables \
+             (excluding sqlite_sequence) — update this count deliberately if the fixture changes"
+        );
+
+        // Upgrade: open the same on-disk database through the real init path.
+        let pool = init_pool(&db_path).await.unwrap();
+        let after_tables = v0_9_0_table_names(&pool).await;
+
+        for table in &before_tables {
+            assert!(
+                after_tables.contains(table),
+                "v0.9.0-era table {table:?} was dropped by today's init_pool() upgrade"
+            );
+            let after_cols = v0_9_0_columns(&pool, table).await;
+            for col in &before_columns[table] {
+                assert!(
+                    after_cols.contains(col),
+                    "v0.9.0-era column {col:?} on table {table:?} was dropped or retyped by \
+                     today's init_pool() upgrade"
+                );
+            }
+        }
+
+        pool.close().await;
+        let _ = std::fs::remove_file(&db_path);
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", db_path.display()));
+        }
+    }
+
+    /// ADR-008 (P1-04) — the inverse of the test above: every table gap-analysis §1
+    /// names as added since v0.9.0 (tiered accounts, fleet node enrollment, member
+    /// hub, voidwatch tables, plus the smaller additions that landed alongside them)
+    /// must exist after running today's `init_pool()` against the v0.9.0 seed.
+    #[tokio::test]
+    async fn post_v0_9_0_additions_present_after_upgrade_from_v0_9_0_seed() {
+        let db_path = std::env::temp_dir().join(format!(
+            "voidtower-v090-additions-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+
+        seed_v0_9_0_seed_db(&db_path).await;
+
+        let pool = init_pool(&db_path).await.unwrap();
+        let after_tables: std::collections::HashSet<String> =
+            v0_9_0_table_names(&pool).await.into_iter().collect();
+
+        for table in [
+            "oidc_config",
+            "ai_providers",
+            "node_pairing_codes",
+            "nodes",
+            "member_app_access",
+            "member_storage",
+            "member_drives",
+            "member_settings",
+            "voidwatch_default_allowlist",
+            "voidwatch_mode_settings",
+            "agent_registry",
+            "agent_status",
+            "custom_tabs",
+            "user_nav_config",
+        ] {
+            assert!(
+                after_tables.contains(table),
+                "post-v0.9.0 table {table:?} (gap-analysis §1) missing after upgrading the \
+                 v0.9.0 seed with today's init_pool()"
+            );
+        }
+
+        // Tiered accounts (gap-analysis §1) added a column, not a new table.
+        let user_columns = v0_9_0_columns(&pool, "users").await;
+        assert!(
+            user_columns
+                .iter()
+                .any(|(name, _)| name == "expires_at"),
+            "tiered-accounts column users.expires_at missing after upgrading the v0.9.0 seed"
+        );
 
         pool.close().await;
         let _ = std::fs::remove_file(&db_path);

@@ -838,6 +838,54 @@ pub(crate) mod tests {
         assert_eq!(audited, 1);
     }
 
+    /// P1-03 mutation-testing finding: every prior `evaluate()`-driven test only ever
+    /// configured `mode::GLOBAL_SCOPE` — `get_mode`'s global fallback meant
+    /// `mode::scope_for_resource`'s actual computed string was never the thing
+    /// distinguishing two different outcomes (any garbage key would still miss the
+    /// scope-specific row and fall through to the same global result). This sets the
+    /// global mode to Yolo (auto-approve) and overrides one specific resource's scope
+    /// to Observer (deny-all), proving `evaluate()` looks up the exact
+    /// `"{resource_type}:{resource_id}"` key `scope_for_resource` computes, not just
+    /// the global row.
+    #[tokio::test]
+    async fn evaluate_applies_per_resource_scope_override_not_just_global() {
+        let pool = setup_db().await;
+        set_mode_row(&pool, mode::GLOBAL_SCOPE, mode::Mode::Yolo).await;
+        set_mode_row(&pool, "container:c9", mode::Mode::Observer).await;
+
+        let overridden = evaluate(
+            &pool,
+            Actor {
+                kind: ActorKind::User,
+            },
+            ActionKind::Mutating,
+            "start",
+            Resource {
+                resource_type: "container",
+                resource_id: "c9",
+            },
+        )
+        .await;
+        assert!(matches!(overridden, Verdict::Deny(reason) if reason.contains("Observer")));
+
+        // A different, unconfigured resource of the same type still inherits the
+        // global Yolo mode.
+        let not_overridden = evaluate(
+            &pool,
+            Actor {
+                kind: ActorKind::User,
+            },
+            ActionKind::Mutating,
+            "start",
+            Resource {
+                resource_type: "container",
+                resource_id: "c10",
+            },
+        )
+        .await;
+        assert_eq!(not_overridden, Verdict::Allow);
+    }
+
     #[tokio::test]
     async fn exhaustive_mode_by_risk_class_matrix() {
         use mode::Mode::*;

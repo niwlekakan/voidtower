@@ -1,34 +1,28 @@
-CREATE TABLE agent_registry (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            source      TEXT NOT NULL,
-            icon        TEXT,
-            color       TEXT,
-            enabled     INTEGER NOT NULL DEFAULT 1,
-            created_at  INTEGER NOT NULL
-        )
-;
-CREATE TABLE agent_status (
-            agent_id    TEXT PRIMARY KEY REFERENCES agent_registry(id) ON DELETE CASCADE,
-            state       TEXT NOT NULL DEFAULT 'offline',
-            activity    TEXT,
-            task_id     TEXT,
-            updated_at  INTEGER NOT NULL
-        )
-;
-CREATE TABLE ai_providers (
-            id          TEXT PRIMARY KEY,
-            kind        TEXT NOT NULL,
-            name        TEXT NOT NULL,
-            enabled     INTEGER NOT NULL DEFAULT 1,
-            base_url    TEXT,
-            api_key_ref TEXT,
-            model       TEXT,
-            priority    INTEGER NOT NULL DEFAULT 50,
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL
-        )
-;
+-- Provenance (ADR-008 constraint 1): this is a machine-generated dump, not a
+-- hand-transcription — but it is NOT a dump of a tagged `v0.9.0` release, because
+-- no such tag exists. Verified directly: `git tag -l 'v0.9.0'` and
+-- `git ls-remote --tags origin` both return nothing, in this checkout or on the
+-- remote.
+--
+-- What does exist and is reachable from `main`: commit
+-- eb5526d0fd00b86610429062a0db972b3a207bd5 ("chore: version 0.9.0 — CHANGELOG,
+-- ROADMAP update, version bump", 2026-06-08), which is the commit that bumped
+-- `backend/Cargo.toml`'s `version` field from 0.1.0 to 0.9.0 — i.e. the exact
+-- point in history where the repo became "v0.9.0" per gap-analysis.md's own
+-- basis line ("main (v0.9.0, cloned 2026-07-08)"), which cites no separate
+-- commit hash of its own.
+--
+-- This fixture was produced by checking out eb5526d0 into a scratch git
+-- worktree (not this task's working tree), building its actual
+-- `backend/src/db/mod.rs` at that commit, running its real `init_pool()`
+-- against a fresh on-disk database, and dumping `sqlite_master` the same way
+-- `schema_golden.sql` is generated for HEAD (see that file's test for the
+-- method) — not by reading diffs and re-typing CREATE TABLE statements by
+-- hand. `sqlite_sequence` (SQLite's own internal autoincrement bookkeeping
+-- table) is excluded, same as the HEAD dump.
+--
+-- Net effect: every table/column below is a verified historical schema, just
+-- not verified against a git tag (none was ever created for this release).
 CREATE TABLE alerts (
             id          TEXT PRIMARY KEY,
             title       TEXT NOT NULL,
@@ -109,17 +103,6 @@ CREATE TABLE backup_configs (
             created_at      INTEGER NOT NULL
         , last_check_at INTEGER, last_check_status TEXT, last_restore_test_at INTEGER, last_restore_test_status TEXT, restore_test_schedule TEXT)
 ;
-CREATE TABLE custom_tabs (
-            id          TEXT PRIMARY KEY,
-            user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            title       TEXT NOT NULL,
-            icon        TEXT,
-            kind        TEXT NOT NULL,
-            config      TEXT NOT NULL DEFAULT '{}',
-            sort_order  INTEGER NOT NULL DEFAULT 0,
-            created_at  INTEGER NOT NULL
-        )
-;
 CREATE TABLE deployed_apps (
             id          TEXT PRIMARY KEY,
             app_id      TEXT NOT NULL,
@@ -128,7 +111,7 @@ CREATE TABLE deployed_apps (
             status      TEXT NOT NULL DEFAULT 'running',
             deployed_at INTEGER NOT NULL,
             compose_path TEXT NOT NULL
-        , primary_port INTEGER, origin TEXT NOT NULL DEFAULT 'voidtower', owner_user_id TEXT, storage_root TEXT, target_node_id TEXT)
+        , primary_port INTEGER, origin TEXT NOT NULL DEFAULT 'voidtower')
 ;
 CREATE TABLE local_sessions (
             id         TEXT PRIMARY KEY,
@@ -136,47 +119,6 @@ CREATE TABLE local_sessions (
             category   TEXT,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
             last_used  INTEGER
-        )
-;
-CREATE TABLE member_app_access (
-            user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            app_id      TEXT NOT NULL,
-            granted_at  INTEGER NOT NULL,
-            PRIMARY KEY (user_id, app_id)
-        )
-;
-CREATE TABLE member_drives (
-            id            TEXT PRIMARY KEY,
-            user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            label         TEXT NOT NULL,
-            host_path     TEXT NOT NULL,
-            total_bytes   INTEGER,
-            free_bytes    INTEGER,
-            last_check_at INTEGER,
-            created_at    INTEGER NOT NULL
-        )
-;
-CREATE TABLE member_settings (
-            user_id           TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            can_deploy_custom INTEGER NOT NULL DEFAULT 0,
-            updated_at        INTEGER NOT NULL
-        )
-;
-CREATE TABLE member_storage (
-            user_id       TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            quota_bytes   INTEGER NOT NULL DEFAULT 5368709120,
-            max_apps      INTEGER NOT NULL DEFAULT 5,
-            used_bytes    INTEGER NOT NULL DEFAULT 0,
-            last_check_at INTEGER
-        )
-;
-CREATE TABLE node_pairing_codes (
-            id          TEXT PRIMARY KEY,
-            token_hash  TEXT NOT NULL UNIQUE,
-            created_by  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            expires_at  INTEGER NOT NULL,
-            used_at     INTEGER,
-            created_at  INTEGER NOT NULL
         )
 ;
 CREATE TABLE node_registry (
@@ -189,36 +131,6 @@ CREATE TABLE node_registry (
             last_seen_at INTEGER,
             created_at  INTEGER NOT NULL
         )
-;
-CREATE TABLE nodes (
-            id              TEXT PRIMARY KEY,
-            display_name    TEXT NOT NULL,
-            device_type     TEXT NOT NULL DEFAULT 'other',
-            owner_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            wg_peer_id      TEXT,
-            wg_public_key   TEXT NOT NULL DEFAULT '',
-            token_hash      TEXT NOT NULL,
-            last_seen       INTEGER,
-            last_telemetry  TEXT,
-            agent_capable   INTEGER NOT NULL DEFAULT 0,
-            approved        INTEGER NOT NULL DEFAULT 1,
-            created_at      INTEGER NOT NULL
-        )
-;
-CREATE TABLE oidc_config (
-        id               TEXT PRIMARY KEY DEFAULT 'default',
-        enabled          INTEGER NOT NULL DEFAULT 0,
-        issuer_url       TEXT,
-        client_id        TEXT,
-        client_secret_id TEXT,
-        redirect_url     TEXT,
-        scopes           TEXT NOT NULL DEFAULT 'openid profile email groups',
-        role_claim       TEXT NOT NULL DEFAULT 'groups',
-        role_map         TEXT NOT NULL DEFAULT '{}',
-        default_role     TEXT NOT NULL DEFAULT 'viewer',
-        auto_provision   INTEGER NOT NULL DEFAULT 1,
-        updated_at       INTEGER NOT NULL DEFAULT 0
-    )
 ;
 CREATE TABLE plugins (
         id           TEXT PRIMARY KEY,
@@ -262,7 +174,7 @@ CREATE TABLE proxy_configs (
             ssl         INTEGER NOT NULL DEFAULT 0,
             enabled     INTEGER NOT NULL DEFAULT 1,
             created_at  INTEGER NOT NULL
-        , allow_embed INTEGER NOT NULL DEFAULT 0, embed_port INTEGER, sso_protect INTEGER NOT NULL DEFAULT 0, custom_headers TEXT, rate_limit_rpm INTEGER, basic_auth_user TEXT, basic_auth_pass_hash TEXT, websocket_extended INTEGER NOT NULL DEFAULT 0, cache_static INTEGER NOT NULL DEFAULT 0, health_status TEXT, health_checked_at INTEGER, health_latency_ms INTEGER)
+        , allow_embed INTEGER NOT NULL DEFAULT 0, embed_port INTEGER)
 ;
 CREATE TABLE resource_tags (
             resource_type TEXT NOT NULL,
@@ -337,13 +249,6 @@ CREATE TABLE themes (
             updated_at  INTEGER NOT NULL
         )
 ;
-CREATE TABLE user_nav_config (
-            user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            items       TEXT NOT NULL,
-            nav_groups  TEXT NOT NULL,
-            updated_at  INTEGER NOT NULL
-        )
-;
 CREATE TABLE users (
             id          TEXT PRIMARY KEY,
             username    TEXT NOT NULL UNIQUE,
@@ -352,22 +257,7 @@ CREATE TABLE users (
             force_password_change INTEGER NOT NULL DEFAULT 0,
             created_at  INTEGER NOT NULL,
             updated_at  INTEGER NOT NULL
-        , totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, auth_source TEXT NOT NULL DEFAULT 'local', oidc_subject TEXT, expires_at INTEGER)
-;
-CREATE TABLE voidwatch_default_allowlist (
-            id            TEXT PRIMARY KEY,
-            actor_type    TEXT NOT NULL,
-            action        TEXT NOT NULL,
-            resource_type TEXT NOT NULL,
-            created_at    INTEGER NOT NULL
-        )
-;
-CREATE TABLE voidwatch_mode_settings (
-            scope         TEXT PRIMARY KEY,
-            mode          TEXT NOT NULL DEFAULT 'observer',
-            updated_at    INTEGER NOT NULL,
-            updated_by    TEXT
-        )
+        , totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0)
 ;
 CREATE TABLE webhook_configs (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,

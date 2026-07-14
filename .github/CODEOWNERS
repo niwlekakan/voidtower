@@ -1,0 +1,35 @@
+# CODEOWNERS — forbidden-zone protection (ADR-005, CLAUDE.md "Forbidden zones",
+# docs/edd.md §15.4). Mirrors CLAUDE.md's forbidden-zone list exactly; if they
+# ever drift, CLAUDE.md is authoritative and this file should be corrected to
+# match, not the reverse.
+#
+# This file alone enforces nothing: GitHub only requires code-owner review on
+# a PR if branch protection is configured to require it, which is a repo
+# setting the operator applies by hand, not a file in this tree.
+
+# backend/src/policy.rs and Voidwatch semantics (mode ladder, risk classes, denylist)
+/backend/src/policy.rs      @niwlekakan
+/backend/src/voidwatch/     @niwlekakan
+
+# auth
+/backend/src/auth/          @niwlekakan
+/backend/src/api/auth.rs    @niwlekakan
+/backend/src/oidc.rs        @niwlekakan
+
+# secrets/crypto code
+/backend/src/api/secrets.rs @niwlekakan
+
+# db/mod.rs schema
+/backend/src/db/mod.rs      @niwlekakan
+
+# CI itself
+/.github/workflows/         @niwlekakan
+
+# the harness itself
+/scripts/devteam/           @niwlekakan
+
+# standing orders / target specs / plan / decision records
+/CLAUDE.md                  @niwlekakan
+/docs/edd.md                @niwlekakan
+/docs/gap-analysis.md       @niwlekakan
+/docs/adr/                  @niwlekakan

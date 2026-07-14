@@ -80,3 +80,27 @@ jobs:
             --ignore RUSTSEC-2026-0099 \
             --ignore RUSTSEC-2026-0104 \
             --ignore RUSTSEC-2024-0363
+
+  mutation-testing:
+    name: Mutation testing (policy + voidwatch)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --version 27.1.0 --locked
+      # Scoped to the security boundary only (ADR-005 constraint 3 / gap-analysis P1
+      # row 1) — not the whole crate, which would be prohibitively slow. Runs on
+      # every push/PR to main rather than path-filtering to just these files: with
+      # only 6 files and 63 mutants the fixed cost is minutes, not an amount worth
+      # the extra complexity/brittleness of a job-level paths-filter step (workflow-
+      # level `on.pull_request.paths` isn't an option here since it would gate the
+      # `frontend`/`backend` jobs too, which ADR-005 constraint 1 forbids touching).
+      - name: cargo mutants (policy.rs + voidwatch/**)
+        working-directory: backend
+        run: cargo mutants --no-shuffle --all-features --file src/policy.rs --file 'src/voidwatch/**/*.rs'

@@ -354,6 +354,70 @@ mod tests {
         }
     }
 
+    /// P1-03 audit finding: the mode-dimension combination this test's name describes
+    /// ("all twelve/eight IRREVERSIBILITY_DENYLIST items require non-Allow in every
+    /// mode, including YOLO") is **already exhaustively covered for the one item this
+    /// module can actually exercise through `voidwatch::evaluate()`** — the sibling
+    /// `voidwatch::tests::exhaustive_mode_by_risk_class_matrix` test drives the
+    /// `RiskClass::Irreversible` risk class (representative action
+    /// `"voidwatch.mode.set"`, this list's `policy_edit` item's paired mode-change
+    /// action) through all four modes and both allowlisted states, and
+    /// `denylist_applies_regardless_of_actor_class` above extends that to all four
+    /// `ActorKind`s in YOLO. The other seven items are `(method, path)` HTTP route
+    /// classifications with no ingress point that ever passes them into `evaluate()`
+    /// as an action-name string (see this module's own "Scope note" doc comment) —
+    /// wiring one would mean editing a non-test handler file this task's ADR-006
+    /// grant explicitly withholds, so there is no way to drive them through the mode
+    /// ladder without a fabricated call that proves nothing (the prior attempt at this
+    /// exact test did exactly that: it drove `evaluate()` with the item `id`s as
+    /// action strings against an actor/table setup where every mode's outcome was
+    /// already fixed by mode/allowlist logic alone, never actually reading
+    /// `IRREVERSIBILITY_DENYLIST`'s contents — rejected in review for being
+    /// unfalsifiable). What *is* still a genuine, closeable gap: nothing pinned that
+    /// none of these eight ids happen to collide with a `for_action` vocabulary entry
+    /// classified below `Irreversible` — the test below closes that.
+    #[test]
+    fn irreversibility_denylist_items_deny_or_require_approval_in_every_mode() {
+        use crate::voidwatch::risk_class::{self, RiskClass};
+
+        assert!(
+            !IRREVERSIBILITY_DENYLIST.is_empty(),
+            "the denylist must not be empty for this assertion to mean anything"
+        );
+        for item in IRREVERSIBILITY_DENYLIST {
+            assert_eq!(
+                risk_class::for_action(item.id),
+                RiskClass::Irreversible,
+                "denylist item {:?} shares its id with a for_action() vocabulary entry \
+                 classified below Irreversible — if this id is ever wired as an action \
+                 name into voidwatch::evaluate() (today none are), the mode ladder would \
+                 treat it as a lower risk class instead of Irreversible, silently \
+                 defeating the ADR-004 denylist in Observer/Assisted/Trusted and YOLO's \
+                 own irreversibility exception alike",
+                item.id
+            );
+        }
+    }
+
+    /// P1-03 mutation-testing finding: `is_route_denylisted` had no direct test at
+    /// all — it's not called from any production path yet (see its doc comment) and
+    /// no existing test invoked it either, so every mutant in its body survived.
+    /// Covers both true cases (pulled from two different denylist items) and three
+    /// false cases distinguishing each of method-only-match, path-only-match, and
+    /// neither-matches.
+    #[test]
+    fn is_route_denylisted_matches_exact_method_and_path_pairs_only() {
+        assert!(is_route_denylisted("POST", "/api/system/update"));
+        assert!(is_route_denylisted("GET", "/api/secrets/:id/reveal"));
+
+        // Same path as a real denylisted route, wrong method.
+        assert!(!is_route_denylisted("GET", "/api/system/update"));
+        // Same method as several denylisted routes, unrelated path.
+        assert!(!is_route_denylisted("POST", "/api/system/restart"));
+        // Neither matches anything on the list.
+        assert!(!is_route_denylisted("DELETE", "/api/nonexistent"));
+    }
+
     /// Item 6: no action verb may skip Voidwatch by dropping to the raw Docker API. Verified
     /// structurally (ADR-004: this is an invariant, not a route to gate) — walks every `.rs`
     /// file under `backend/src` and asserts the only call sites of

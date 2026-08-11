@@ -68,9 +68,7 @@ pub async fn create(
     Json(req): Json<CreateRequest>,
 ) -> Result<Json<StatusCheck>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" {
-        return Err(AppError::Forbidden);
-    }
+    super::role_guard::require_operator(&user)?;
     let id = Uuid::new_v4().to_string();
     let interval = req.interval_secs.unwrap_or(60).clamp(10, 3600);
     let ts = now();
@@ -93,9 +91,7 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" || user.role == "operator" {
-        return Err(AppError::Forbidden);
-    }
+    super::role_guard::require_admin(&user)?;
     sqlx::query("DELETE FROM status_checks WHERE id = ?")
         .bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
     Ok(Json(serde_json::json!({ "ok": true })))

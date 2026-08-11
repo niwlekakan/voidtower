@@ -88,7 +88,7 @@ fn parse_ufw_status(output: &str) -> (bool, Vec<FirewallRule>, Option<String>) {
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
-    if user.role == "viewer" || user.role == "operator" { return Err(AppError::Forbidden); }
+    super::role_guard::require_admin(&user)?;
     Ok(user)
 }
 

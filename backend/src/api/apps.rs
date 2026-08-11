@@ -1874,7 +1874,7 @@ pub async fn update_compose(
     Json(req): Json<UpdateComposeRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     let ip = addr.ip().to_string();
 
     let row = sqlx::query_as::<_, DeployedAppRow>(
@@ -2272,7 +2272,7 @@ pub async fn patch_app_env(
     Json(req): Json<PatchEnvRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     let ip = addr.ip().to_string();
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
@@ -2337,7 +2337,7 @@ pub async fn expose_app(
     Json(req): Json<ExposeAppRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role != "admin" { return Err(AppError::Forbidden); }
+    super::role_guard::require_admin(&user)?;
     let ip = addr.ip().to_string();
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
@@ -2362,7 +2362,7 @@ pub async fn delete_app_volumes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     let ip = addr.ip().to_string();
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
@@ -2385,7 +2385,7 @@ pub async fn purge_app(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role != "admin" { return Err(AppError::Forbidden); }
+    super::role_guard::require_admin(&user)?;
     let ip = addr.ip().to_string();
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))

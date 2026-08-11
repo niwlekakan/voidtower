@@ -42,4 +42,3 @@ Tests drive the real Axum router, retain exhaustive route/matrix/risk checks, an
 ## Scope
 
 No public-by-design route, risk class, Voidwatch policy, token inventory, response schema, model operation, or frontend behavior changes.
-

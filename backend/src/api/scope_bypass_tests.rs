@@ -165,6 +165,22 @@ fn cookie_req(
     )
 }
 
+async fn assert_insufficient_scope(res: axum::response::Response, context: &str) {
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "{context}: expected bearer scope enforcement to return 403"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"], "insufficient_scope",
+        "{context}: expected the structured insufficient_scope denial"
+    );
+}
+
 /// Reproduces the exact bug from docs/codebase-map.md §4: a token scoped to
 /// only `metrics:read`, owned by an admin user, must not be able to reach an
 /// admin-gated action just because the middleware upgraded it to a full
@@ -490,4 +506,76 @@ async fn unlisted_route_scope_behavior_is_deliberate_and_tested() {
         StatusCode::OK,
         "an unlisted route must still work normally for human session logins"
     );
+}
+
+/// ADR-009 grants diagnostic clients the same narrowly-scoped access to ordinary host
+/// metadata and detailed diagnostics that the session contract exposes to administrators.
+/// These requests drive the complete Bearer -> temporary session -> scope -> handler chain.
+#[tokio::test]
+async fn diagnostics_read_token_reaches_all_three_authorized_host_reads() {
+    let db = setup_db().await;
+    let admin = insert_user(&db, "admin").await;
+    let token = insert_token(&db, &admin, &["diagnostics:read"]).await;
+    let app = crate::api::router(test_support::build(db));
+
+    for path in [
+        "/api/capabilities",
+        "/api/diagnostics",
+        "/api/system/version",
+    ] {
+        let res = app
+            .clone()
+            .oneshot(bearer_req("GET", path, &token, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "diagnostics:read token must reach GET {path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unrelated_bearer_scope_cannot_reach_s0_02_host_reads() {
+    let db = setup_db().await;
+    let admin = insert_user(&db, "admin").await;
+    let token = insert_token(&db, &admin, &["metrics:read"]).await;
+    let app = crate::api::router(test_support::build(db));
+
+    for path in [
+        "/api/capabilities",
+        "/api/diagnostics",
+        "/api/system/version",
+    ] {
+        let res = app
+            .clone()
+            .oneshot(bearer_req("GET", path, &token, None))
+            .await
+            .unwrap();
+        assert_insufficient_scope(res, &format!("GET {path}")).await;
+    }
+}
+
+/// Model-job state is intentionally session-only. Even a token owned by an administrator and
+/// carrying the otherwise relevant diagnostics scope must fail at the bearer choke point.
+#[tokio::test]
+async fn model_job_status_routes_are_session_only_for_bearer_clients() {
+    let db = setup_db().await;
+    let admin = insert_user(&db, "admin").await;
+    let token = insert_token(&db, &admin, &["diagnostics:read"]).await;
+    let app = crate::api::router(test_support::build(db));
+
+    for path in [
+        "/api/models/download/missing",
+        "/api/models/ollama/create/missing",
+        "/api/models/ollama/pull/missing",
+    ] {
+        let res = app
+            .clone()
+            .oneshot(bearer_req("GET", path, &token, None))
+            .await
+            .unwrap();
+        assert_insufficient_scope(res, &format!("GET {path}")).await;
+    }
 }

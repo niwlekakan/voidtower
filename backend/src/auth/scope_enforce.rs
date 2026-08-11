@@ -18,11 +18,13 @@
 //! only needs to name routes that scopes actually cover — every
 //! admin/owner-gated route in the app that *isn't* named here is closed to
 //! tokens structurally, by construction, without having to enumerate it.
-//! `NO_SCOPE_REQUIRED` is the escape hatch for routes that were already
+//! `NoScopeRequired` is the escape hatch for routes that are
 //! fully public (no session/token check at all) before this middleware
 //! existed, so this change doesn't newly lock out a Bearer-token request
 //! that happens to reach them (e.g. the `/v1/*` OpenAI-compatible proxy is
 //! explicitly documented as "no auth" and must stay that way).
+//! `SessionOnly` explicitly records routes that must reject every Bearer
+//! token even though human sessions may reach them.
 //!
 //! # No-op for human sessions
 //!
@@ -44,6 +46,7 @@ use axum::{
 enum Requirement {
     Scope(&'static str),
     NoScopeRequired,
+    SessionOnly,
 }
 use Requirement::*;
 
@@ -57,7 +60,6 @@ const ROUTE_SCOPES: &[(&str, &str, Requirement)] = &[
     // with or without a Bearer token attached.
     ("GET", "/api/health", NoScopeRequired),
     ("GET", "/status", NoScopeRequired),
-    ("GET", "/api/capabilities", NoScopeRequired),
     ("GET", "/api/settings/public", NoScopeRequired),
     ("GET", "/v1/models", NoScopeRequired),
     ("POST", "/v1/chat/completions", NoScopeRequired),
@@ -141,8 +143,13 @@ const ROUTE_SCOPES: &[(&str, &str, Requirement)] = &[
     ("POST", "/api/proxy/:id/toggle", Scope("proxy:manage")),
     ("PUT", "/api/proxy/:id", Scope("proxy:manage")),
     ("DELETE", "/api/proxy/:id", Scope("proxy:manage")),
-    // diagnostics:read
+    // diagnostics:read / deliberately session-only diagnostic job state
+    ("GET", "/api/capabilities", Scope("diagnostics:read")),
     ("GET", "/api/diagnostics", Scope("diagnostics:read")),
+    ("GET", "/api/system/version", Scope("diagnostics:read")),
+    ("GET", "/api/models/download/:id", SessionOnly),
+    ("GET", "/api/models/ollama/create/:id", SessionOnly),
+    ("GET", "/api/models/ollama/pull/:id", SessionOnly),
     // secrets:list — deliberately excludes reveal/rotate/create/update/delete,
     // which is the exact bypass docs/codebase-map.md §4 calls out by name.
     ("GET", "/api/secrets", Scope("secrets:list")),
@@ -185,7 +192,7 @@ pub async fn middleware(State(_state): State<AppState>, req: Request, next: Next
     match required_for(&method, &matched_path) {
         Some(NoScopeRequired) => next.run(req).await,
         Some(Scope(scope)) if token_scopes.iter().any(|s| s == scope) => next.run(req).await,
-        Some(Scope(_)) => deny(),
+        Some(Scope(_) | SessionOnly) => deny(),
         // No table entry at all: default-deny for token-originated requests.
         None => deny(),
     }
@@ -202,4 +209,23 @@ fn deny() -> Response {
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{required_for, Requirement};
+
+    #[test]
+    fn model_job_status_routes_are_explicitly_session_only() {
+        for path in [
+            "/api/models/download/:id",
+            "/api/models/ollama/create/:id",
+            "/api/models/ollama/pull/:id",
+        ] {
+            assert!(
+                matches!(required_for("GET", path), Some(&Requirement::SessionOnly)),
+                "GET {path} must be explicitly classified SessionOnly"
+            );
+        }
+    }
 }

@@ -104,3 +104,33 @@ jobs:
       - name: cargo mutants (policy.rs + voidwatch/**)
         working-directory: backend
         run: cargo mutants --no-shuffle --all-features --file src/policy.rs --file 'src/voidwatch/**/*.rs'
+
+  golden-path:
+    name: Golden path (Docker + App Vault + restic)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RESTIC_PASSWORD: voidtower-golden-path-ci-only
+    steps:
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Install restic
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes restic
+      - name: Verify integration dependencies
+        run: |
+          docker info
+          docker compose version
+          restic version
+      - name: Build VoidTower
+        working-directory: backend
+        run: cargo build --bin voidtower
+      - name: Run real-infrastructure golden paths
+        working-directory: backend
+        run: cargo run --example golden_path

@@ -72,6 +72,7 @@ pub mod plugins;
 pub mod policy;
 pub mod proxmox;
 pub mod proxy;
+mod role_guard;
 pub mod secrets;
 pub mod security;
 pub mod services;

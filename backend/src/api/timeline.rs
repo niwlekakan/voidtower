@@ -116,7 +116,7 @@ pub async fn list(
     let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id)
         .await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
 
     let limit = q.limit.clamp(1, 200);
 

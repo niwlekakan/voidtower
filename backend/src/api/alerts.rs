@@ -199,9 +199,7 @@ pub async fn delete_alert(
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
 
-    if user.role == "viewer" || user.role == "operator" {
-        return Err(AppError::Forbidden);
-    }
+    super::role_guard::require_admin(&user)?;
 
     sqlx::query("DELETE FROM alerts WHERE id = ?")
         .bind(&id)

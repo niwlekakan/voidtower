@@ -22,68 +22,27 @@
 //!   note below, for six routes that turn out to have no auth guard at all** — a real gap,
 //!   not a public-by-design route; see the `NO-AUTH FINDING` comments inline in the table.
 //! - [`Role::Session`]`(tier)` — gated by a session cookie whose role is checked with a
-//!   correct **allowlist** (`matches!(user.role.as_str(), "owner" | "admin")` and friends).
-//! - [`Role::SessionDenylist`]`(tier)` — gated by a session cookie, but the actual guard code
-//!   is a **denylist** (`if user.role == "viewer" { Forbidden }`) instead of an allowlist. See
-//!   "The denylist gap" below — this is a real, currently-shipped authorization bug, not a
-//!   table-authoring choice.
+//!   positive allowlist. Infrastructure mutations use the shared `api::role_guard` helpers,
+//!   so unknown or future role strings fail closed.
 //! - [`Role::NonSessionCredential`] — gated by a credential that isn't the `vt_session`
 //!   cookie/role system at all (Bearer API token via `check_mcp_auth`, HMAC webhook secret,
 //!   single-use pairing code, per-node device token). Out of scope for a *session-role*
 //!   matrix by construction — still given a table entry for exhaustiveness, but excluded from
 //!   this file's session-cookie-driven probes (`authz_matrix_tests.rs`).
 //!
-//! ## The denylist gap (operator decisions, 2026-07-12 and 2026-07-13,
-//! `.devteam/active/P1-01-authz-route-matrix.md`)
+//! ## Positive-role remediation (S0-01, 2026-08-11)
 //!
-//! A prior worker session escalated from this task's read-only survey phase after finding
-//! that five route groups — `firewall.rs`'s three admin routes, `terminal.rs`'s WS-upgrade
-//! route and its `require_operator`-gated session-management routes, `audit.rs`, and
-//! `timeline.rs` — gate access with a **denylist** (`role == "viewer"`, or
-//! `role == "viewer" || role == "operator"`) instead of the **allowlist** pattern every other
-//! handler in this codebase uses. The role ladder grew after these guards were written
-//! (`guest`/`demo`/`member` added later, `docs/codebase-map.md` §3) and the denylists never
-//! learned about the new low-trust roles, so those three roles fall through as authorized —
-//! including `terminal.rs`'s interactive local/SSH shell routes, i.e. host shell access from
-//! a guest/demo/member session-cookie login.
-//!
-//! The operator's 2026-07-12 resolution: **ship this matrix now with the gap explicitly
-//! documented, not hidden or silently routed around.** `Role::SessionDenylist(min_intended_tier)`
-//! records *both* facts at once — the tier the guard's own literal checks correctly enforce
-//! against the `owner > admin > operator > viewer` ladder (so this file's standard wrong-role
-//! probes, which only ever mint `owner`/`admin`/`operator`/`viewer` sessions, still pass — a
-//! denylist that literally checks `role == "viewer"` does correctly reject a `viewer` probe)
-//! *and* the fact that `guest`/`demo`/`member` sessions are wrongly admitted today.
-//!
-//! A later worker session, building this table from source per this task's spec rather than
-//! trusting the first escalation's list, found the identical bug shape in **19 more locations**
-//! across 7 more files — `apps.rs` (`update_compose`, `patch_app_env`, `delete_app_volumes`),
-//! `automation.rs` (`create`/`update`/`delete`/`run_now`), `backups.rs` (six handlers),
-//! `status.rs` (`create`/`delete`), `alerts.rs` (`delete_alert`), `containers.rs`
-//! (`action`/`exec_ws`), and `services.rs` (`action`) — escalated again, and the operator's
-//! **2026-07-13 resolution supersedes and extends** the 07-12 one: the exact same treatment
-//! (tag `Role::SessionDenylist` here, and a dedicated current-bad-behavior regression test per
-//! route, not just per file) now covers all ~24 locations in this one task/PR.
-//! `authz_matrix_tests.rs` adds one dedicated, clearly-labeled regression test per affected
-//! route — the original 5 groups plus the 19 found later — asserting the *current* (bad)
-//! behavior, so a future fix that tightens any of these guards fails that test loudly and has
-//! to update it as a reviewed, intentional change. `automation.rs`'s `run_now` (arbitrary
-//! shell command execution via `automation_jobs.command`) and `containers.rs`'s `exec_ws`
-//! (interactive `docker exec -it ... sh`) are the two highest-severity items among the 19,
-//! same risk class as `terminal.rs`'s originally-escalated shell-access bug.
-//!
-//! `apps.rs`'s `expose_app`/`purge_app` are a different, opposite-direction bug also found
-//! during this survey: `if user.role != "admin" { Forbidden }` is an *exact-match* allowlist
-//! of literally just `"admin"`, excluding `owner` — the one role that should always pass.
-//! Not a privilege-escalation risk (it's more restrictive than intended, not less), so it's
-//! tagged plain `Role::Session(RoleTier::Admin)` here (accurate for every probe this file
-//! generates, since none of them assert that a *higher*-privileged role also succeeds) and
-//! just noted in the PR description.
+//! The original matrix exposed denylist guards across firewall, terminal, audit, timeline,
+//! App Vault, automation, backups, status checks, alerts, containers, and services. Roles
+//! added after those guards (`guest`, `demo`, and `member`) could pass checks that only denied
+//! literal `viewer`/`operator` strings. S0-01 replaced every affected check with shared
+//! positive operator/admin guards and added real HTTP/WebSocket regressions for the repaired
+//! routes. App Vault's expose and purge operations now also admit owner at their Admin tier.
 
 /// A minimum session-role tier, matching the `owner > admin > operator > viewer` allowlist
 /// checks used throughout `backend/src/api/*.rs` (`docs/codebase-map.md` §3's role ladder).
-/// `guest`/`demo`/`member` are not distinct tiers here — every allowlist in this codebase
-/// that isn't the flagged denylist bug treats them identically to (i.e. below) `viewer`.
+/// `guest`/`demo`/`member` are not infrastructure-control tiers here; positive operator and
+/// admin guards reject them alongside viewer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RoleTier {
     /// Any authenticated session, any role — `owner`/`admin`/`operator`/`viewer` and the
@@ -115,11 +74,6 @@ pub(crate) enum Role {
     Public,
     /// Session-cookie gated with a correct allowlist check.
     Session(RoleTier),
-    /// Session-cookie gated, but the actual guard is a denylist — see module doc comment's
-    /// "The denylist gap". `RoleTier` here is the tier the denylist's literal checks
-    /// correctly enforce against the standard ladder, not a claim that the route is fully
-    /// correctly gated.
-    SessionDenylist(RoleTier),
     /// Gated by a non-session credential (Bearer API token, webhook HMAC secret, pairing
     /// code, per-node device token) — not a session-role check in either direction.
     NonSessionCredential,
@@ -132,14 +86,13 @@ impl Role {
     /// run before the credential check, e.g. `mcp.rs`'s `check_mcp_auth` returning 403 when
     /// `odysseus.mcp_enabled` is off, independent of whether a token was supplied).
     pub(crate) fn requires_unauthenticated_401(self) -> bool {
-        matches!(self, Role::Session(_) | Role::SessionDenylist(_))
+        matches!(self, Role::Session(_))
     }
 
-    /// `Some(tier)` for both session-gated variants (the wrong-role probe is identical for
-    /// `Session` and `SessionDenylist` — see module doc comment), `None` otherwise.
+    /// `Some(tier)` for session-gated routes, `None` otherwise.
     pub(crate) fn wrong_role_tier(self) -> Option<RoleTier> {
         match self {
-            Role::Session(t) | Role::SessionDenylist(t) => Some(t),
+            Role::Session(t) => Some(t),
             Role::Public | Role::NonSessionCredential => None,
         }
     }
@@ -210,7 +163,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "DELETE",
         "/api/alerts/:id",
-        Role::SessionDenylist(RoleTier::Admin),
+        Role::Session(RoleTier::Admin),
     ),
     (
         "POST",
@@ -235,7 +188,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "POST",
         "/api/apps/:project_name/compose",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "POST",
@@ -245,12 +198,12 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "POST",
         "/api/apps/:project_name/delete-volumes",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "POST",
         "/api/apps/:project_name/env",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "POST",
@@ -338,7 +291,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "GET",
         "/api/audit",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     ("POST", "/api/auth/bootstrap", Role::Public),
     ("POST", "/api/auth/login", Role::Public),
@@ -366,22 +319,22 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "POST",
         "/api/automation",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "DELETE",
         "/api/automation/:id",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "PATCH",
         "/api/automation/:id",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "POST",
         "/api/automation/:id/run",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "GET",
@@ -392,39 +345,39 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "POST",
         "/api/backups",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "DELETE",
         "/api/backups/:id",
-        Role::SessionDenylist(RoleTier::Admin),
+        Role::Session(RoleTier::Admin),
     ),
     (
         "POST",
         "/api/backups/:id/check",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "POST",
         "/api/backups/:id/delete-plan",
-        Role::SessionDenylist(RoleTier::Admin),
+        Role::Session(RoleTier::Admin),
     ),
     (
         "POST",
         "/api/backups/:id/restore-test",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "POST",
         "/api/backups/:id/run",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     ("GET", "/api/capabilities", Role::Public),
     ("GET", "/api/containers", Role::Session(RoleTier::Session)),
     (
         "POST",
         "/api/containers/:id/action",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "GET",
@@ -444,7 +397,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "GET",
         "/api/containers/:id/exec",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "GET",
@@ -508,17 +461,17 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "POST",
         "/api/firewall/action",
-        Role::SessionDenylist(RoleTier::Admin),
+        Role::Session(RoleTier::Admin),
     ),
     (
         "POST",
         "/api/firewall/rules",
-        Role::SessionDenylist(RoleTier::Admin),
+        Role::Session(RoleTier::Admin),
     ),
     (
         "POST",
         "/api/firewall/rules/delete",
-        Role::SessionDenylist(RoleTier::Admin),
+        Role::Session(RoleTier::Admin),
     ),
     ("GET", "/api/health", Role::Public),
     (
@@ -955,7 +908,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "POST",
         "/api/services/:name/action",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "GET",
@@ -1016,12 +969,12 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "POST",
         "/api/status-checks",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "DELETE",
         "/api/status-checks/:id",
-        Role::SessionDenylist(RoleTier::Admin),
+        Role::Session(RoleTier::Admin),
     ),
     (
         "GET",
@@ -1145,57 +1098,57 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
     (
         "GET",
         "/api/terminal/local/sessions",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "POST",
         "/api/terminal/local/sessions",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "DELETE",
         "/api/terminal/local/sessions/:id",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "PUT",
         "/api/terminal/local/sessions/:id",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "GET",
         "/api/terminal/ssh/sessions",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "POST",
         "/api/terminal/ssh/sessions",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "DELETE",
         "/api/terminal/ssh/sessions/:id",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "PUT",
         "/api/terminal/ssh/sessions/:id",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "GET",
         "/api/terminal/ssh/ws",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "GET",
         "/api/terminal/ws",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     (
         "GET",
         "/api/timeline",
-        Role::SessionDenylist(RoleTier::Operator),
+        Role::Session(RoleTier::Operator),
     ),
     ("GET", "/api/updates/docker", Role::Session(RoleTier::Admin)),
     (

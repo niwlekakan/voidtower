@@ -1,8 +1,18 @@
-use crate::{auth, error::{AppError, Result}, AppState};
-use axum::{extract::{Path, State}, Json};
+use crate::{
+    auth,
+    error::{AppError, Result},
+    AppState,
+};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::{Mutex, OnceLock}};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 
 // ─── Download state ───────────────────────────────────────────────────────────
 
@@ -53,10 +63,14 @@ pub struct ModelFile {
 }
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let session_id = jar.get("vt_session").map(|c| c.value().to_string())
+    let session_id = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
         .ok_or(AppError::Unauthorized)?;
-    let user = auth::validate_session(&state.db, &session_id).await
-        .map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+    let user = auth::validate_session(&state.db, &session_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
     if !matches!(user.role.as_str(), "owner" | "admin") {
         return Err(AppError::Forbidden);
     }
@@ -64,8 +78,13 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
 }
 
 async fn models_dir(state: &AppState) -> std::path::PathBuf {
-    let setting = sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key = 'models_dir'")
-        .fetch_optional(&state.db).await.ok().flatten().map(|(v,)| v);
+    let setting =
+        sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key = 'models_dir'")
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .map(|(v,)| v);
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
     let default = std::path::PathBuf::from(home).join(".local/share/voidtower/models");
     let dir = setting.map(std::path::PathBuf::from).unwrap_or(default);
@@ -78,7 +97,8 @@ async fn models_dir(state: &AppState) -> std::path::PathBuf {
 async fn get_active_model_from_server() -> Option<String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
-        .build().ok()?;
+        .build()
+        .ok()?;
     for port in [8090u16, 8080] {
         let url = format!("http://127.0.0.1:{port}/v1/models");
         if let Ok(resp) = client.get(&url).send().await {
@@ -87,7 +107,9 @@ async fn get_active_model_from_server() -> Option<String> {
                     let model_id = body.get("data")?.as_array()?.first()?.get("id")?.as_str()?;
                     // Strip any leading path prefix, keep just the filename
                     let name = std::path::Path::new(model_id)
-                        .file_name()?.to_string_lossy().into_owned();
+                        .file_name()?
+                        .to_string_lossy()
+                        .into_owned();
                     return Some(name);
                 }
             }
@@ -101,43 +123,68 @@ async fn get_active_model_from_server() -> Option<String> {
 async fn fetch_ollama_models() -> std::result::Result<Vec<ModelFile>, ()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(800))
-        .build().map_err(|_| ())?;
+        .build()
+        .map_err(|_| ())?;
 
-    let resp = client.get("http://localhost:11434/api/tags")
-        .send().await.map_err(|_| ())?;
+    let resp = client
+        .get("http://localhost:11434/api/tags")
+        .send()
+        .await
+        .map_err(|_| ())?;
 
-    if !resp.status().is_success() { return Err(()); }
+    if !resp.status().is_success() {
+        return Err(());
+    }
 
     let body: serde_json::Value = resp.json().await.map_err(|_| ())?;
     let list = body.get("models").and_then(|v| v.as_array()).ok_or(())?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default().as_secs() as i64;
+        .unwrap_or_default()
+        .as_secs() as i64;
 
-    Ok(list.iter().filter_map(|m| {
-        let name = m.get("name")?.as_str()?.to_string();
-        let size_bytes = m.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-        // modified_at is RFC-3339; parse the leading Unix seconds portion
-        let modified = m.get("modified_at").and_then(|v| v.as_str())
-            .and_then(|s| s.split('T').next())
-            .and_then(|date| {
-                // "YYYY-MM-DD" → rough epoch seconds (good enough for sorting)
-                let parts: Vec<u32> = date.split('-').filter_map(|p| p.parse().ok()).collect();
-                if parts.len() == 3 {
-                    // days since epoch: very rough but sufficient for sort order
-                    let days = (parts[0] as i64 - 1970) * 365 + (parts[1] as i64) * 30 + parts[2] as i64;
-                    Some(days * 86400)
-                } else { None }
+    Ok(list
+        .iter()
+        .filter_map(|m| {
+            let name = m.get("name")?.as_str()?.to_string();
+            let size_bytes = m.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+            // modified_at is RFC-3339; parse the leading Unix seconds portion
+            let modified = m
+                .get("modified_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.split('T').next())
+                .and_then(|date| {
+                    // "YYYY-MM-DD" → rough epoch seconds (good enough for sorting)
+                    let parts: Vec<u32> = date.split('-').filter_map(|p| p.parse().ok()).collect();
+                    if parts.len() == 3 {
+                        // days since epoch: very rough but sufficient for sort order
+                        let days = (parts[0] as i64 - 1970) * 365
+                            + (parts[1] as i64) * 30
+                            + parts[2] as i64;
+                        Some(days * 86400)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(now);
+            Some(ModelFile {
+                filename: name,
+                size_bytes,
+                modified,
+                active: false,
+                source: "ollama".into(),
             })
-            .unwrap_or(now);
-        Some(ModelFile { filename: name, size_bytes, modified, active: false, source: "ollama".into() })
-    }).collect())
+        })
+        .collect())
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
-pub async fn list_models(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Vec<ModelFile>>> {
+pub async fn list_models(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<ModelFile>>> {
     require_admin(&state, &jar).await?;
     let dir = models_dir(&state).await;
 
@@ -150,16 +197,30 @@ pub async fn list_models(State(state): State<AppState>, jar: CookieJar) -> Resul
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("gguf") { continue; }
-            let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if path.extension().and_then(|e| e.to_str()) != Some("gguf") {
+                continue;
+            }
+            let filename = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let meta = std::fs::metadata(&path).ok();
             let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let modified = meta.as_ref()
+            let modified = meta
+                .as_ref()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64).unwrap_or(0);
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
             let is_active = active.as_deref() == Some(&filename);
-            models.push(ModelFile { filename, size_bytes, modified, active: is_active, source: "voidtower".into() });
+            models.push(ModelFile {
+                filename,
+                size_bytes,
+                modified,
+                active: is_active,
+                source: "voidtower".into(),
+            });
         }
     }
 
@@ -191,14 +252,16 @@ pub async fn start_download(
         return Err(AppError::BadRequest("URL must start with http".into()));
     }
 
-    let filename = req.filename
-        .filter(|f| !f.is_empty())
-        .unwrap_or_else(|| {
-            req.url.split('/').next_back()
-                .unwrap_or("model.gguf")
-                .split('?').next().unwrap_or("model.gguf")
-                .to_string()
-        });
+    let filename = req.filename.filter(|f| !f.is_empty()).unwrap_or_else(|| {
+        req.url
+            .split('/')
+            .next_back()
+            .unwrap_or("model.gguf")
+            .split('?')
+            .next()
+            .unwrap_or("model.gguf")
+            .to_string()
+    });
 
     if filename.contains('/') || filename.contains("..") {
         return Err(AppError::BadRequest("Invalid filename".into()));
@@ -209,11 +272,17 @@ pub async fn start_download(
 
     {
         let mut map = downloads().lock().unwrap();
-        map.insert(id.clone(), DownloadState {
-            id: id.clone(), filename: filename.clone(),
-            total_bytes: None, downloaded_bytes: 0,
-            status: "downloading".into(), error: None,
-        });
+        map.insert(
+            id.clone(),
+            DownloadState {
+                id: id.clone(),
+                filename: filename.clone(),
+                total_bytes: None,
+                downloaded_bytes: 0,
+                status: "downloading".into(),
+                error: None,
+            },
+        );
     }
 
     let id2 = id.clone();
@@ -223,8 +292,13 @@ pub async fn start_download(
         let mut map = downloads().lock().unwrap();
         if let Some(entry) = map.get_mut(&id2) {
             match result {
-                Ok(_) => { entry.status = "done".into(); }
-                Err(e) => { entry.status = "error".into(); entry.error = Some(e); }
+                Ok(_) => {
+                    entry.status = "done".into();
+                }
+                Err(e) => {
+                    entry.status = "error".into();
+                    entry.error = Some(e);
+                }
             }
         }
     });
@@ -232,44 +306,57 @@ pub async fn start_download(
     Ok(Json(serde_json::json!({ "id": id })))
 }
 
-async fn download_file(id: &str, url: &str, dir: &std::path::Path, filename: &str) -> std::result::Result<(), String> {
+async fn download_file(
+    id: &str,
+    url: &str,
+    dir: &std::path::Path,
+    filename: &str,
+) -> std::result::Result<(), String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
         .user_agent("Mozilla/5.0 (compatible; VoidTower/1.0; +https://github.com/voidtower)")
-        .build().map_err(|e| e.to_string())?;
+        .build()
+        .map_err(|e| e.to_string())?;
 
-    let resp = client.get(url)
+    let resp = client
+        .get(url)
         .header("Accept", "*/*")
-        .send().await.map_err(|e| e.to_string())?;
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
 
     // Reject HTML responses — user likely pasted a model page URL instead of a direct file link
-    let content_type = resp.headers()
+    let content_type = resp
+        .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_lowercase();
     if content_type.starts_with("text/html") {
-        return Err(
-            "Got an HTML page instead of a file. \
+        return Err("Got an HTML page instead of a file. \
              Use a direct download URL ending in .gguf — e.g. \
-             https://huggingface.co/{user}/{repo}/resolve/main/{file}.gguf".into()
-        );
+             https://huggingface.co/{user}/{repo}/resolve/main/{file}.gguf"
+            .into());
     }
 
     let total = resp.content_length();
     {
         let mut map = downloads().lock().unwrap();
-        if let Some(s) = map.get_mut(id) { s.total_bytes = total; }
+        if let Some(s) = map.get_mut(id) {
+            s.total_bytes = total;
+        }
     }
 
     let tmp_path = dir.join(format!("{filename}.tmp"));
     let final_path = dir.join(filename);
 
     use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::create(&tmp_path).await.map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::create(&tmp_path)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut stream = resp.bytes_stream();
     use futures_util::StreamExt;
     let mut downloaded = 0u64;
@@ -279,7 +366,9 @@ async fn download_file(id: &str, url: &str, dir: &std::path::Path, filename: &st
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
         let mut map = downloads().lock().unwrap();
-        if let Some(s) = map.get_mut(id) { s.downloaded_bytes = downloaded; }
+        if let Some(s) = map.get_mut(id) {
+            s.downloaded_bytes = downloaded;
+        }
     }
 
     file.flush().await.map_err(|e| e.to_string())?;
@@ -288,21 +377,26 @@ async fn download_file(id: &str, url: &str, dir: &std::path::Path, filename: &st
     // Verify GGUF magic bytes (0x47 0x47 0x55 0x46 = "GGUF") before keeping the file
     {
         use tokio::io::AsyncReadExt;
-        let mut f = tokio::fs::File::open(&tmp_path).await.map_err(|e| e.to_string())?;
+        let mut f = tokio::fs::File::open(&tmp_path)
+            .await
+            .map_err(|e| e.to_string())?;
         let mut magic = [0u8; 4];
-        f.read_exact(&mut magic).await.map_err(|_| {
-            "Downloaded file is too small to be a valid GGUF model".to_string()
-        })?;
+        f.read_exact(&mut magic)
+            .await
+            .map_err(|_| "Downloaded file is too small to be a valid GGUF model".to_string())?;
         if &magic != b"GGUF" {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(
                 "Downloaded file is not a valid GGUF model (wrong magic bytes). \
-                 Make sure the URL points directly to a .gguf file, not a model page.".into()
+                 Make sure the URL points directly to a .gguf file, not a model page."
+                    .into(),
             );
         }
     }
 
-    tokio::fs::rename(&tmp_path, &final_path).await.map_err(|e| e.to_string())?;
+    tokio::fs::rename(&tmp_path, &final_path)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -327,8 +421,12 @@ pub async fn delete_model(
     }
     let dir = models_dir(&state).await;
     let path = dir.join(&filename);
-    if !path.exists() { return Err(AppError::NotFound); }
-    tokio::fs::remove_file(&path).await.map_err(|e| AppError::Internal(e.into()))?;
+    if !path.exists() {
+        return Err(AppError::NotFound);
+    }
+    tokio::fs::remove_file(&path)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -342,7 +440,9 @@ pub async fn get_active(
 }
 
 #[derive(Deserialize)]
-pub struct LoadReq { pub filename: String }
+pub struct LoadReq {
+    pub filename: String,
+}
 
 fn llama_entrypoint_with_exec(server_args: &str) -> String {
     [
@@ -358,7 +458,8 @@ fn llama_entrypoint_with_exec(server_args: &str) -> String {
         "done",
         "echo \"[llama.cpp] Loading: $$MODEL\"",
         &format!("exec /app/llama-server --model \"$$MODEL\" {}", server_args),
-    ].join("\n")
+    ]
+    .join("\n")
 }
 
 fn llama_entrypoint_script() -> String {
@@ -369,21 +470,27 @@ fn llama_entrypoint_script() -> String {
 
 async fn switch_llama_model(state: &AppState, filename: &str) -> Result<()> {
     let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
-        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1"
-    ).fetch_optional(&state.db).await.map_err(AppError::Database)?
-     .ok_or_else(|| AppError::BadRequest("llama.cpp is not deployed".into()))?;
+        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::BadRequest("llama.cpp is not deployed".into()))?;
 
     let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content = std::fs::read_to_string(&compose_path)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value = serde_yaml::from_str(&content)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let content =
+        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
+    let mut val: serde_json::Value =
+        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
 
     if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
         for svc in services.values_mut() {
             if let Some(env) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
                 env.retain(|e| !matches!(e.as_str(), Some(s) if s.starts_with("MODEL_PATH=")));
-                env.push(serde_json::Value::String(format!("MODEL_PATH=/models/{}", filename)));
+                env.push(serde_json::Value::String(format!(
+                    "MODEL_PATH=/models/{}",
+                    filename
+                )));
             }
             if let Some(ep) = svc.get_mut("entrypoint").and_then(|e| e.as_array_mut()) {
                 if ep.len() >= 3 {
@@ -397,7 +504,8 @@ async fn switch_llama_model(state: &AppState, filename: &str) -> Result<()> {
     std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
 
     crate::containers::deploy_compose(&project_name, &compose_path)
-        .await.map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+        .await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
 
     Ok(())
 }
@@ -412,13 +520,17 @@ pub async fn load_model(
         return Err(AppError::BadRequest("Invalid filename".into()));
     }
     switch_llama_model(&state, &req.filename).await?;
-    Ok(Json(serde_json::json!({ "ok": true, "model": req.filename })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "model": req.filename }),
+    ))
 }
 
 // ─── Ollama pull ──────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
-pub struct OllamaPullReq { pub model: String }
+pub struct OllamaPullReq {
+    pub model: String,
+}
 
 pub async fn start_ollama_pull(
     State(state): State<AppState>,
@@ -428,19 +540,30 @@ pub async fn start_ollama_pull(
     require_admin(&state, &jar).await?;
 
     // Allow letters, digits, colons (tags), hyphens, dots, underscores, slashes (registry)
-    if req.model.is_empty() || !req.model.chars().all(|c| c.is_alphanumeric() || matches!(c, ':' | '-' | '.' | '_' | '/')) {
+    if req.model.is_empty()
+        || !req
+            .model
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, ':' | '-' | '.' | '_' | '/'))
+    {
         return Err(AppError::BadRequest("Invalid model name".into()));
     }
 
     let id = uuid::Uuid::new_v4().to_string();
     {
         let mut map = ollama_pulls().lock().unwrap();
-        map.insert(id.clone(), OllamaPullState {
-            id: id.clone(), model: req.model.clone(),
-            status: "pulling".into(),
-            current_layer: Some("Connecting to Ollama…".into()),
-            total_bytes: None, pulled_bytes: None, error: None,
-        });
+        map.insert(
+            id.clone(),
+            OllamaPullState {
+                id: id.clone(),
+                model: req.model.clone(),
+                status: "pulling".into(),
+                current_layer: Some("Connecting to Ollama…".into()),
+                total_bytes: None,
+                pulled_bytes: None,
+                error: None,
+            },
+        );
     }
 
     let id2 = id.clone();
@@ -450,8 +573,14 @@ pub async fn start_ollama_pull(
         let mut map = ollama_pulls().lock().unwrap();
         if let Some(entry) = map.get_mut(&id2) {
             match result {
-                Ok(_)  => { entry.status = "done".into();  entry.current_layer = Some("Complete".into()); }
-                Err(e) => { entry.status = "error".into(); entry.error = Some(e); }
+                Ok(_) => {
+                    entry.status = "done".into();
+                    entry.current_layer = Some("Complete".into());
+                }
+                Err(e) => {
+                    entry.status = "error".into();
+                    entry.error = Some(e);
+                }
             }
         }
     });
@@ -462,12 +591,14 @@ pub async fn start_ollama_pull(
 async fn do_ollama_pull(id: &str, model: &str) -> std::result::Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(7200))
-        .build().map_err(|e| e.to_string())?;
+        .build()
+        .map_err(|e| e.to_string())?;
 
     let resp = client
         .post("http://localhost:11434/api/pull")
         .json(&serde_json::json!({ "name": model, "stream": true }))
-        .send().await
+        .send()
+        .await
         .map_err(|e| format!("Cannot reach Ollama: {e}"))?;
 
     if !resp.status().is_success() {
@@ -485,11 +616,17 @@ async fn do_ollama_pull(id: &str, model: &str) -> std::result::Result<(), String
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim().to_string();
             buf = buf[nl + 1..].to_string();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                let status_msg = v.get("status").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                let total     = v.get("total").and_then(|n| n.as_u64());
+                let status_msg = v
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let total = v.get("total").and_then(|n| n.as_u64());
                 let completed = v.get("completed").and_then(|n| n.as_u64());
 
                 {
@@ -497,13 +634,15 @@ async fn do_ollama_pull(id: &str, model: &str) -> std::result::Result<(), String
                     if let Some(entry) = map.get_mut(id) {
                         entry.current_layer = Some(status_msg.clone());
                         if total.is_some() {
-                            entry.total_bytes  = total;
+                            entry.total_bytes = total;
                             entry.pulled_bytes = completed;
                         }
                     }
                 }
 
-                if status_msg == "success" { return Ok(()); }
+                if status_msg == "success" {
+                    return Ok(());
+                }
             }
         }
     }
@@ -537,7 +676,9 @@ fn gguf_to_ollama_name(filename: &str) -> String {
 }
 
 #[derive(Deserialize)]
-pub struct OllamaCreateReq { pub filename: String }
+pub struct OllamaCreateReq {
+    pub filename: String,
+}
 
 pub async fn start_ollama_create(
     State(state): State<AppState>,
@@ -546,7 +687,8 @@ pub async fn start_ollama_create(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    if req.filename.contains('/') || req.filename.contains("..") || !req.filename.ends_with(".gguf") {
+    if req.filename.contains('/') || req.filename.contains("..") || !req.filename.ends_with(".gguf")
+    {
         return Err(AppError::BadRequest("Invalid filename".into()));
     }
 
@@ -561,12 +703,18 @@ pub async fn start_ollama_create(
 
     {
         let mut map = ollama_creates().lock().unwrap();
-        map.insert(id.clone(), OllamaPullState {
-            id: id.clone(), model: model_name.clone(),
-            status: "pulling".into(),
-            current_layer: Some("Sending to Ollama…".into()),
-            total_bytes: None, pulled_bytes: None, error: None,
-        });
+        map.insert(
+            id.clone(),
+            OllamaPullState {
+                id: id.clone(),
+                model: model_name.clone(),
+                status: "pulling".into(),
+                current_layer: Some("Sending to Ollama…".into()),
+                total_bytes: None,
+                pulled_bytes: None,
+                error: None,
+            },
+        );
     }
 
     let id2 = id.clone();
@@ -577,25 +725,39 @@ pub async fn start_ollama_create(
         let mut map = ollama_creates().lock().unwrap();
         if let Some(entry) = map.get_mut(&id2) {
             match result {
-                Ok(_)  => { entry.status = "done".into();  entry.current_layer = Some("Complete".into()); }
-                Err(e) => { entry.status = "error".into(); entry.error = Some(e); }
+                Ok(_) => {
+                    entry.status = "done".into();
+                    entry.current_layer = Some("Complete".into());
+                }
+                Err(e) => {
+                    entry.status = "error".into();
+                    entry.error = Some(e);
+                }
             }
         }
     });
 
-    Ok(Json(serde_json::json!({ "id": id, "model_name": model_name })))
+    Ok(Json(
+        serde_json::json!({ "id": id, "model_name": model_name }),
+    ))
 }
 
-async fn do_ollama_create(id: &str, filename: &str, model_name: &str) -> std::result::Result<(), String> {
+async fn do_ollama_create(
+    id: &str,
+    filename: &str,
+    model_name: &str,
+) -> std::result::Result<(), String> {
     let modelfile = format!("FROM /vt-models/{filename}");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(7200))
-        .build().map_err(|e| e.to_string())?;
+        .build()
+        .map_err(|e| e.to_string())?;
 
     let resp = client
         .post("http://localhost:11434/api/create")
         .json(&serde_json::json!({ "name": model_name, "modelfile": modelfile, "stream": true }))
-        .send().await
+        .send()
+        .await
         .map_err(|e| format!("Cannot reach Ollama: {e}"))?;
 
     if !resp.status().is_success() {
@@ -614,14 +776,20 @@ async fn do_ollama_create(id: &str, filename: &str, model_name: &str) -> std::re
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim().to_string();
             buf = buf[nl + 1..].to_string();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
                 if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
                     return Err(err.to_string());
                 }
-                let status_msg = v.get("status").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                let total     = v.get("total").and_then(|n| n.as_u64());
+                let status_msg = v
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let total = v.get("total").and_then(|n| n.as_u64());
                 let completed = v.get("completed").and_then(|n| n.as_u64());
 
                 {
@@ -629,13 +797,15 @@ async fn do_ollama_create(id: &str, filename: &str, model_name: &str) -> std::re
                     if let Some(entry) = map.get_mut(id) {
                         entry.current_layer = Some(status_msg.clone());
                         if total.is_some() {
-                            entry.total_bytes  = total;
+                            entry.total_bytes = total;
                             entry.pulled_bytes = completed;
                         }
                     }
                 }
 
-                if status_msg == "success" { return Ok(()); }
+                if status_msg == "success" {
+                    return Ok(());
+                }
             }
         }
     }
@@ -679,34 +849,68 @@ pub async fn get_ollama_tags(
         .build()
     {
         Ok(c) => c,
-        Err(_) => return Ok(Json(OllamaTagsResponse { available: false, models: vec![] })),
+        Err(_) => {
+            return Ok(Json(OllamaTagsResponse {
+                available: false,
+                models: vec![],
+            }))
+        }
     };
 
     let resp = match client.get("http://127.0.0.1:11434/api/tags").send().await {
         Ok(r) => r,
-        Err(_) => return Ok(Json(OllamaTagsResponse { available: false, models: vec![] })),
+        Err(_) => {
+            return Ok(Json(OllamaTagsResponse {
+                available: false,
+                models: vec![],
+            }))
+        }
     };
 
     if !resp.status().is_success() {
-        return Ok(Json(OllamaTagsResponse { available: false, models: vec![] }));
+        return Ok(Json(OllamaTagsResponse {
+            available: false,
+            models: vec![],
+        }));
     }
 
     let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
-        Err(_) => return Ok(Json(OllamaTagsResponse { available: false, models: vec![] })),
+        Err(_) => {
+            return Ok(Json(OllamaTagsResponse {
+                available: false,
+                models: vec![],
+            }))
+        }
     };
 
-    let models = body.get("models")
+    let models = body
+        .get("models")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|m| {
-            let name = m.get("name")?.as_str()?.to_string();
-            let size = m.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-            let modified_at = m.get("modified_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            Some(OllamaModelInfo { name, size, modified_at })
-        }).collect::<Vec<_>>())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let name = m.get("name")?.as_str()?.to_string();
+                    let size = m.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let modified_at = m
+                        .get("modified_at")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(OllamaModelInfo {
+                        name,
+                        size,
+                        modified_at,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
 
-    Ok(Json(OllamaTagsResponse { available: true, models }))
+    Ok(Json(OllamaTagsResponse {
+        available: true,
+        models,
+    }))
 }
 
 // ─── Ollama config ────────────────────────────────────────────────────────────
@@ -731,13 +935,16 @@ pub async fn get_ollama_config(
     .map_err(AppError::Database)?;
 
     let Some((compose_path_str,)) = row else {
-        return Ok(Json(OllamaConfig { deployed: false, keep_alive_secs: 300 }));
+        return Ok(Json(OllamaConfig {
+            deployed: false,
+            keep_alive_secs: 300,
+        }));
     };
 
-    let content = std::fs::read_to_string(&compose_path_str)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let val: serde_json::Value = serde_yaml::from_str(&content)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let content =
+        std::fs::read_to_string(&compose_path_str).map_err(|e| AppError::Internal(e.into()))?;
+    let val: serde_json::Value =
+        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
 
     let keep_alive_secs = val["services"]
         .as_object()
@@ -752,7 +959,10 @@ pub async fn get_ollama_config(
         })
         .unwrap_or(300);
 
-    Ok(Json(OllamaConfig { deployed: true, keep_alive_secs }))
+    Ok(Json(OllamaConfig {
+        deployed: true,
+        keep_alive_secs,
+    }))
 }
 
 pub async fn save_ollama_config(
@@ -771,16 +981,21 @@ pub async fn save_ollama_config(
     .ok_or_else(|| AppError::BadRequest("Ollama is not deployed".into()))?;
 
     let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content = std::fs::read_to_string(&compose_path)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value = serde_yaml::from_str(&content)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let content =
+        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
+    let mut val: serde_json::Value =
+        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
 
     if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
         for svc in services.values_mut() {
             if let Some(env) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
-                env.retain(|e| !matches!(e.as_str(), Some(s) if s.starts_with("OLLAMA_KEEP_ALIVE=")));
-                env.push(serde_json::Value::String(format!("OLLAMA_KEEP_ALIVE={}", cfg.keep_alive_secs)));
+                env.retain(
+                    |e| !matches!(e.as_str(), Some(s) if s.starts_with("OLLAMA_KEEP_ALIVE=")),
+                );
+                env.push(serde_json::Value::String(format!(
+                    "OLLAMA_KEEP_ALIVE={}",
+                    cfg.keep_alive_secs
+                )));
             }
         }
     }
@@ -829,21 +1044,64 @@ impl Default for LlamaConfig {
 }
 
 fn parse_llama_exec_args(line: &str) -> LlamaConfig {
-    let mut cfg = LlamaConfig { deployed: true, cont_batching: false, ..Default::default() };
+    let mut cfg = LlamaConfig {
+        deployed: true,
+        cont_batching: false,
+        ..Default::default()
+    };
     let parts: Vec<&str> = line.split_whitespace().collect();
     let mut i = 0usize;
     while i < parts.len() {
         let next = |i: usize| parts.get(i + 1).and_then(|s| s.parse().ok());
         match parts[i] {
-            "--threads"       => { if let Some(v) = next(i) { cfg.threads       = v; } i += 1; }
-            "--ctx-size"      => { if let Some(v) = next(i) { cfg.ctx_size      = v; } i += 1; }
-            "--batch-size"    => { if let Some(v) = next(i) { cfg.batch_size    = v; } i += 1; }
-            "--parallel"      => { if let Some(v) = next(i) { cfg.parallel      = v; } i += 1; }
-            "--n-gpu-layers"  => { if let Some(v) = next(i) { cfg.n_gpu_layers  = v; } i += 1; }
-            "--flash-attn"    => { cfg.flash_attn    = true; }
-            "--cont-batching" => { cfg.cont_batching = true; }
-            "--cache-type-k"  => { if let Some(v) = parts.get(i + 1) { cfg.cache_type_k = v.to_string(); } i += 1; }
-            "--cache-type-v"  => { if let Some(v) = parts.get(i + 1) { cfg.cache_type_v = v.to_string(); } i += 1; }
+            "--threads" => {
+                if let Some(v) = next(i) {
+                    cfg.threads = v;
+                }
+                i += 1;
+            }
+            "--ctx-size" => {
+                if let Some(v) = next(i) {
+                    cfg.ctx_size = v;
+                }
+                i += 1;
+            }
+            "--batch-size" => {
+                if let Some(v) = next(i) {
+                    cfg.batch_size = v;
+                }
+                i += 1;
+            }
+            "--parallel" => {
+                if let Some(v) = next(i) {
+                    cfg.parallel = v;
+                }
+                i += 1;
+            }
+            "--n-gpu-layers" => {
+                if let Some(v) = next(i) {
+                    cfg.n_gpu_layers = v;
+                }
+                i += 1;
+            }
+            "--flash-attn" => {
+                cfg.flash_attn = true;
+            }
+            "--cont-batching" => {
+                cfg.cont_batching = true;
+            }
+            "--cache-type-k" => {
+                if let Some(v) = parts.get(i + 1) {
+                    cfg.cache_type_k = v.to_string();
+                }
+                i += 1;
+            }
+            "--cache-type-v" => {
+                if let Some(v) = parts.get(i + 1) {
+                    cfg.cache_type_v = v.to_string();
+                }
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
@@ -861,10 +1119,18 @@ fn build_llama_exec_line(cfg: &LlamaConfig) -> String {
         format!("--threads {}", cfg.threads),
         format!("--parallel {}", cfg.parallel),
     ];
-    if cfg.cont_batching { parts.push("--cont-batching".to_string()); }
-    if cfg.flash_attn    { parts.push("--flash-attn".to_string()); }
-    if cfg.cache_type_k != "f16" { parts.push(format!("--cache-type-k {}", cfg.cache_type_k)); }
-    if cfg.cache_type_v != "f16" { parts.push(format!("--cache-type-v {}", cfg.cache_type_v)); }
+    if cfg.cont_batching {
+        parts.push("--cont-batching".to_string());
+    }
+    if cfg.flash_attn {
+        parts.push("--flash-attn".to_string());
+    }
+    if cfg.cache_type_k != "f16" {
+        parts.push(format!("--cache-type-k {}", cfg.cache_type_k));
+    }
+    if cfg.cache_type_v != "f16" {
+        parts.push(format!("--cache-type-v {}", cfg.cache_type_v));
+    }
     parts.join(" ")
 }
 
@@ -885,10 +1151,10 @@ pub async fn get_llama_config(
         return Ok(Json(LlamaConfig::default()));
     };
 
-    let content = std::fs::read_to_string(&compose_path_str)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let val: serde_json::Value = serde_yaml::from_str(&content)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let content =
+        std::fs::read_to_string(&compose_path_str).map_err(|e| AppError::Internal(e.into()))?;
+    let val: serde_json::Value =
+        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
 
     let exec_line = val["services"]
         .as_object()
@@ -922,10 +1188,10 @@ pub async fn save_llama_config(
     .ok_or_else(|| AppError::BadRequest("llama.cpp is not deployed".into()))?;
 
     let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content = std::fs::read_to_string(&compose_path)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value = serde_yaml::from_str(&content)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let content =
+        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
+    let mut val: serde_json::Value =
+        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
 
     let new_script = llama_entrypoint_with_exec(&build_llama_exec_line(&cfg));
 
@@ -954,18 +1220,30 @@ pub async fn save_llama_config(
 /// GET /v1/models — lists every .gguf file in the models directory.
 pub async fn openai_list_models(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let dir = models_dir(&state).await;
-    let mut names: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten()
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
         .filter_map(|e| {
             let p = e.path();
             if p.extension().map(|x| x == "gguf").unwrap_or(false) {
-                p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
-            } else { None }
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
         })
         .collect();
     names.sort();
-    let data: Vec<serde_json::Value> = names.into_iter().map(|id| serde_json::json!({
-        "id": id, "object": "model", "created": 0, "owned_by": "local"
-    })).collect();
+    let data: Vec<serde_json::Value> = names
+        .into_iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id, "object": "model", "created": 0, "owned_by": "local"
+            })
+        })
+        .collect();
     Ok(Json(serde_json::json!({ "object": "list", "data": data })))
 }
 
@@ -974,7 +1252,11 @@ pub async fn openai_chat_completions(
     State(state): State<AppState>,
     Json(req_body): Json<serde_json::Value>,
 ) -> Result<axum::response::Response> {
-    if let Some(requested) = req_body.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    if let Some(requested) = req_body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         if get_active_model_from_server().await.as_deref() != Some(requested) {
             let dir = models_dir(&state).await;
             let gguf = format!("{}.gguf", requested);
@@ -982,12 +1264,20 @@ pub async fn openai_chat_completions(
                 switch_llama_model(&state, &gguf).await?;
                 let poll = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(2))
-                    .build().map_err(|e| AppError::Internal(e.into()))?;
+                    .build()
+                    .map_err(|e| AppError::Internal(e.into()))?;
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if poll.get("http://127.0.0.1:8090/v1/models").send().await
-                        .map(|r| r.status().is_success()).unwrap_or(false) { break; }
+                    if poll
+                        .get("http://127.0.0.1:8090/v1/models")
+                        .send()
+                        .await
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
                     if std::time::Instant::now() > deadline {
                         return Err(AppError::BadRequest("Model switch timed out".into()));
                     }
@@ -998,11 +1288,13 @@ pub async fn openai_chat_completions(
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
-        .build().map_err(|e| AppError::Internal(e.into()))?;
+        .build()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let upstream = client
         .post("http://127.0.0.1:8090/v1/chat/completions")
         .json(&req_body)
-        .send().await
+        .send()
+        .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let status = axum::http::StatusCode::from_u16(upstream.status().as_u16())
@@ -1013,7 +1305,8 @@ pub async fn openai_chat_completions(
     let mut resp = axum::response::Response::new(resp_body);
     *resp.status_mut() = status;
     if let Some(ct) = content_type {
-        resp.headers_mut().insert(axum::http::header::CONTENT_TYPE, ct);
+        resp.headers_mut()
+            .insert(axum::http::header::CONTENT_TYPE, ct);
     }
     Ok(resp)
 }

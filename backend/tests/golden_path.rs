@@ -5,11 +5,24 @@
 //! Cargo's auto-discovered test targets means ordinary `cargo test` runs stay
 //! hermetic without ignoring or silently skipping tests.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+fn ci_yml_path_from(manifest_dir: &Path, github_workspace: Option<&Path>) -> PathBuf {
+    let repository_root = github_workspace.unwrap_or_else(|| {
+        manifest_dir
+            .parent()
+            .expect("backend manifest directory has a repository parent")
+    });
+    repository_root.join(".github/workflows/ci.yml")
+}
 
 #[test]
 fn golden_path_job_runs_on_pull_request_and_push_to_main() {
-    let ci_yml_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.github/workflows/ci.yml");
+    let workspace = std::env::var_os("GITHUB_WORKSPACE");
+    let ci_yml_path = ci_yml_path_from(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        workspace.as_deref().map(Path::new),
+    );
     let content = std::fs::read_to_string(&ci_yml_path).expect("read ci.yml");
     let doc: serde_yaml::Value = serde_yaml::from_str(&content).expect("parse ci.yml");
     let mapping = doc.as_mapping().expect("ci.yml top level is a mapping");
@@ -69,5 +82,16 @@ fn golden_path_job_runs_on_pull_request_and_push_to_main() {
     assert!(
         run_commands.contains("cargo run --example golden_path"),
         "golden-path job must invoke the standalone real-infrastructure harness"
+    );
+}
+
+#[test]
+fn github_workspace_wins_over_a_crate_copy_manifest_path() {
+    let manifest_dir = Path::new("mutants-copy/backend");
+    let workspace = Path::new("checkout");
+
+    assert_eq!(
+        ci_yml_path_from(manifest_dir, Some(workspace)),
+        workspace.join(".github/workflows/ci.yml")
     );
 }

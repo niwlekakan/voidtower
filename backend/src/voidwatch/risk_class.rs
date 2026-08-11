@@ -747,6 +747,19 @@ mod tests {
         }
     }
 
+    /// `voidwatch.mode.set` deliberately shares the fail-safe fallback's `Irreversible`
+    /// result, so an output-only assertion cannot distinguish its explicit classification
+    /// from accidental fallthrough. Keep the reserved security action visible in the match
+    /// vocabulary until it becomes a live ingress action and joins the generated inventory.
+    #[test]
+    fn voidwatch_mode_set_has_an_explicit_risk_match_arm() {
+        let source = include_str!("risk_class.rs");
+        assert!(
+            source.contains("\"voidwatch.mode.set\" => RiskClass::Irreversible,"),
+            "voidwatch.mode.set must remain explicitly classified, not merely inherit the fallback"
+        );
+    }
+
     #[test]
     fn for_action_fails_safe_for_unknown_actions() {
         assert_eq!(

@@ -1,6 +1,6 @@
 # API Reference
 
-All endpoints require a valid `vt_session` cookie unless explicitly public. Public routes are the authentication entry/callback endpoints, `/api/health`, `/status`, `/api/settings/public`, `/api/integrations/scopes`, `/api/integrations/odysseus/manifest`, and the `/v1/*` OpenAI-compatible proxy.
+Session-authenticated endpoints require a valid `vt_session` cookie (a scoped Bearer token may be upgraded to a temporary session where its route policy permits). Pairing, webhook, and device routes use their documented non-session credentials. Public routes are the authentication entry/callback endpoints, `/api/health`, `/status`, `/api/settings/public`, `/api/integrations/scopes`, `/api/integrations/odysseus/manifest`, and the `/v1/*` OpenAI-compatible proxy.
 
 ---
 
@@ -60,14 +60,14 @@ DELETE /api/apps/:name
 ```
 GET  /api/models
 POST /api/models/download          { url, filename? }
-GET  /api/models/download/:id
+GET  /api/models/download/:id      Admin or owner
 GET  /api/models/active
 POST /api/models/load              { filename }
 DELETE /api/models/:filename
 POST /api/models/ollama/pull       { model }
-GET  /api/models/ollama/pull/:id
+GET  /api/models/ollama/pull/:id   Admin or owner
 POST /api/models/ollama/create     { filename }
-GET  /api/models/ollama/create/:id
+GET  /api/models/ollama/create/:id Admin or owner
 ```
 
 ## AI / GPU

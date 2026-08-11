@@ -73,8 +73,7 @@ impl RoleTier {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Role {
-    /// No credential required at all (see module doc comment — also used for the six
-    /// no-guard-at-all findings, per the operator resolution).
+    /// No credential required at all (see module doc comment).
     Public,
     /// Session-cookie gated with a correct allowlist check.
     Session(RoleTier),

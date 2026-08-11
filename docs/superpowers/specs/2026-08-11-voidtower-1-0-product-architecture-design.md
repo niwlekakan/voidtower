@@ -11,7 +11,7 @@
 VoidTower 1.0 is a public, self-hosted operating and management platform that must also run the owner's real infrastructure and household. It combines three equally required product pillars:
 
 1. A secure and dependable infrastructure control plane.
-2. A household HomeOS spanning mobile, media, devices, people, rooms, and family workflows.
+2. A branded household experience spanning mobile, media, devices, people, rooms, and family workflows.
 3. AI, plugin, automation, and multi-node operation across the entire platform.
 
 This specification replaces feature-count-driven prioritization with a foundation-first release design. All three pillars remain in 1.0, but they are delivered in dependency order so higher-level experiences do not rest on unsafe or temporary infrastructure.
@@ -27,7 +27,7 @@ This design is grounded in:
 
 ### 2.1 One platform, three pillars
 
-Infrastructure, HomeOS, and AI are not separate products. They share identity, resources, policy, jobs, events, audit history, and clients.
+Infrastructure, the household experience, and AI are not separate products. They share identity, resources, policy, jobs, events, audit history, and clients.
 
 ### 2.2 Local-first and self-hosted
 
@@ -62,7 +62,7 @@ Automatic placement, AI recommendations, approvals, and mutations expose their i
 - Isolated, capability-scoped plugins.
 - AI access to view, explain, report on, and safely manage every applicable domain.
 - First-class web, desktop, iOS, Android, and tablet experiences.
-- HomeOS resources and selected household workflows built on the same platform model.
+- Branded household resources and selected family workflows built on the same platform model.
 - Clean-install, upgrade, recovery, multi-node, provider, security, and mobile release evidence.
 
 ### 3.2 Explicit 1.0 non-goals
@@ -71,7 +71,7 @@ Automatic placement, AI recommendations, approvals, and mutations expose their i
 - Multiple active control planes or automatic control-plane failover.
 - Pretending that heterogeneous nodes provide identical capabilities.
 - Silent relocation of stateful workloads without compatible storage and recovery semantics.
-- A separate HomeOS database, permission model, or automation system.
+- A separate household database, permission model, or automation system.
 - AI bypasses, unrestricted plugin database access, or unreviewed remote `curl | shell` execution.
 - Automatic HA scheduling or live migration where the underlying provider cannot guarantee it.
 
@@ -112,7 +112,7 @@ The control plane may run on any release-supported host or container environment
 | Automation engine | Triggers, workflow state, typed steps, multi-node coordination | Unrestricted implicit authority |
 | Plugin host | Isolated child processes, capability-scoped versioned RPC | Direct database or unrestricted host access |
 | AI integration | Context, tools, reports, recommendations, action proposals, verified reporting | Separate privileged actions or invented state |
-| HomeOS | Household experiences using shared resources, policy, jobs, and events | A parallel control plane |
+| Household experience | Household workflows using shared resources, policy, jobs, and events | A parallel control plane |
 | Clients | Web, Tauri, Expo, API and CLI experiences | Authoritative state |
 
 ### 4.4 Control-plane availability model
@@ -308,7 +308,7 @@ Automations support:
 - Single-node and multi-node workflows.
 - Static targets and dynamic CMDB queries.
 - Conditions, branches, approvals, maintenance windows, and reusable templates.
-- Typed Docker, Proxmox, libvirt, storage, network, service, HomeOS, and plugin actions.
+- Typed Docker, Proxmox, libvirt, storage, network, service, household, and plugin actions.
 - Durable state, retries, timeouts, cancellation, and explicit compensation.
 - Per-step authorization, risk, progress, output, and audit.
 - Versioned workflow definitions and run history.
@@ -410,11 +410,20 @@ Odysseus is the deeply integrated local-first experience, while local and option
 
 Context is minimized and redacted. Secrets, precise location, finance, household members, files, and terminal output receive stricter domain policies. Switching providers does not change the user's underlying permissions.
 
-## 11. HomeOS
+## 11. Household experience layer and branding
 
-HomeOS is an experience over the common platform rather than a parallel implementation. Its people, rooms, devices, services, media systems, and manual household inventory are CMDB assets or relationships governed by shared identity, policy, jobs, events, and audit.
+The household experience is a layer over the common platform rather than a parallel implementation. Its people, rooms, devices, services, media systems, and manual household inventory are CMDB assets or relationships governed by shared identity, policy, jobs, events, and audit.
 
-The 1.0 HomeOS track includes:
+`HomeOS` is only a temporary planning label and must not ship as the public feature or product name. Before household UI and marketing copy are finalized, VoidTower requires a dedicated naming and identity exercise that:
+
+- Produces a distinctive name connected to the VoidTower universe without sounding like a generic operating-system category.
+- Balances the technical character of VoidTower with a warmer, calm, trusted household identity.
+- Defines how the name appears in navigation, onboarding, mobile, documentation, and voice interactions.
+- Establishes a compact visual and verbal identity that still belongs to the shared VoidTower design system.
+- Checks naming, domain, package, and relevant trademark conflicts before public adoption.
+- Tests the name with infrastructure-focused and household-focused users rather than selecting it only from internal preference.
+
+The 1.0 household track includes:
 
 - Household member profiles, roles/groups, onboarding, and per-user experiences.
 - Rooms, locations, devices, ownership, and manual inventory.
@@ -446,7 +455,7 @@ Advanced and infrequent settings use contextual screens. Primary actions remain 
 - Cluster, node, VM, container, App Vault, alert, incident, and job views.
 - Native approval and denial flows with change-plan details.
 - CMDB search, relationship history, and camera-based QR/barcode workflows.
-- HomeOS rooms, devices, media, and family controls.
+- Household rooms, devices, media, and family controls under the selected brand.
 - Automation monitoring and safe triggers.
 - AI questions, voice input, investigation, recommendations, and reports.
 - Deep links from notifications to the exact resource, job, or approval.
@@ -612,7 +621,7 @@ These milestones are internal dependency gates. All are part of the 1.0 target.
 - Odysseus and provider-independent AI orchestration.
 - Complete action audit, approval, and injection-evaluation coverage.
 
-### Milestone 5 — HomeOS and clients
+### Milestone 5 — Household experience and clients
 
 - Household identity, locations, devices, inventory, and selected integrations.
 - Web, Tauri, iOS, Android, and tablet feature contracts.
@@ -642,7 +651,7 @@ VoidTower 1.0 is ready only when all of the following are demonstrated:
 8. A multi-node automation can survive partial failure and expose exact progress, compensation, and audit evidence.
 9. A community workflow can be pinned, verified, planned, approved, executed, checked, and reconciled without an unbounded trust path.
 10. AI can view, explain, investigate, report on, and safely propose or execute applicable operations across every completed domain with evidence and redaction.
-11. HomeOS uses the same assets, identity, policy, jobs, events, and AI contracts as infrastructure management.
+11. The branded household experience uses the same assets, identity, policy, jobs, events, and AI contracts as infrastructure management.
 12. iOS and Android clients can pair securely, monitor the estate and household, receive notifications, approve actions, use AI, and handle offline/stale state safely.
 13. Clean-install, upgrade, provider, failure, security, mobile, and recovery gates pass for every production-supported claim.
 

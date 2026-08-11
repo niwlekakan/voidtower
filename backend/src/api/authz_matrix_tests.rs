@@ -744,6 +744,113 @@ async fn public_routes_remain_reachable_without_auth() {
     }
 }
 
+#[tokio::test]
+async fn host_detail_and_model_status_routes_require_authentication() {
+    let db = setup_db().await;
+    let app = crate::api::router(test_support::build(db));
+
+    for path in [
+        "/api/capabilities",
+        "/api/diagnostics",
+        "/api/models/download/missing",
+        "/api/models/ollama/create/missing",
+        "/api/models/ollama/pull/missing",
+        "/api/system/version",
+    ] {
+        let res = app.clone().oneshot(unauth_req("GET", path)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "credential-free GET {path} must be rejected, got {}",
+            res.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn diagnostics_and_model_status_require_admin_session_roles() {
+    let db = setup_db().await;
+    let app = crate::api::router(test_support::build(db.clone()));
+
+    for role in ["viewer", "guest", "demo", "member"] {
+        let session_id = session_for_role(&db, role).await;
+        for path in [
+            "/api/diagnostics",
+            "/api/models/download/missing",
+            "/api/models/ollama/create/missing",
+            "/api/models/ollama/pull/missing",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(cookie_req("GET", path, &session_id, None))
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::FORBIDDEN,
+                "a {role} session must be rejected by GET {path}'s admin guard, got {}",
+                res.status()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn capabilities_and_version_admit_all_valid_session_roles() {
+    let db = setup_db().await;
+    let app = crate::api::router(test_support::build(db.clone()));
+
+    for role in [
+        "owner", "admin", "operator", "viewer", "guest", "demo", "member",
+    ] {
+        let session_id = session_for_role(&db, role).await;
+        for path in ["/api/capabilities", "/api/system/version"] {
+            let res = app
+                .clone()
+                .oneshot(cookie_req("GET", path, &session_id, None))
+                .await
+                .unwrap();
+            assert_ne!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "a valid {role} session must reach GET {path}"
+            );
+            assert_ne!(
+                res.status(),
+                StatusCode::FORBIDDEN,
+                "a valid {role} session must reach GET {path}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn diagnostics_and_model_status_admit_admin_and_owner() {
+    let db = setup_db().await;
+    let app = crate::api::router(test_support::build(db.clone()));
+
+    for role in ["admin", "owner"] {
+        let session_id = session_for_role(&db, role).await;
+        for (path, expected) in [
+            ("/api/diagnostics", StatusCode::OK),
+            ("/api/models/download/missing", StatusCode::NOT_FOUND),
+            ("/api/models/ollama/create/missing", StatusCode::NOT_FOUND),
+            ("/api/models/ollama/pull/missing", StatusCode::NOT_FOUND),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(cookie_req("GET", path, &session_id, None))
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                expected,
+                "a valid {role} session must clear GET {path}'s admin guard"
+            );
+        }
+    }
+}
+
 /// Acceptance test: guest/demo/member can use any-session reads but cannot cross an admin
 /// positive-role boundary.
 #[tokio::test]
@@ -1103,13 +1210,8 @@ async fn automation_run_now_operator_guard_rejects_guest_and_member() {
 #[tokio::test]
 async fn backups_create_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_guard_rejects_guest_and_member(
-        &db,
-        "POST",
-        "/api/backups",
-        "backups::create",
-    )
-    .await;
+    assert_mutation_guard_rejects_guest_and_member(&db, "POST", "/api/backups", "backups::create")
+        .await;
 }
 
 #[tokio::test]

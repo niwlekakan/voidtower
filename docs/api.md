@@ -1,6 +1,6 @@
 # API Reference
 
-All endpoints require a valid `vt_session` cookie except `/api/auth/*`, `/api/status`, and `/api/system/version`.
+Session-authenticated endpoints require a valid `vt_session` cookie (a scoped Bearer token may be upgraded to a temporary session where its route policy permits). Pairing, webhook, and device routes use their documented non-session credentials. Public routes are the authentication entry/callback endpoints, `/api/health`, `/status`, `/api/settings/public`, `/api/integrations/scopes`, `/api/integrations/odysseus/manifest`, and the `/v1/*` OpenAI-compatible proxy.
 
 ---
 
@@ -60,14 +60,14 @@ DELETE /api/apps/:name
 ```
 GET  /api/models
 POST /api/models/download          { url, filename? }
-GET  /api/models/download/:id
+GET  /api/models/download/:id      Admin or owner session; Bearer denied
 GET  /api/models/active
 POST /api/models/load              { filename }
 DELETE /api/models/:filename
 POST /api/models/ollama/pull       { model }
-GET  /api/models/ollama/pull/:id
+GET  /api/models/ollama/pull/:id   Admin or owner session; Bearer denied
 POST /api/models/ollama/create     { filename }
-GET  /api/models/ollama/create/:id
+GET  /api/models/ollama/create/:id Admin or owner session; Bearer denied
 ```
 
 ## AI / GPU
@@ -253,7 +253,7 @@ DELETE /api/security/sessions/:id
 ## System
 
 ```
-GET  /api/system/version
+GET  /api/system/version       Authenticated session or diagnostics:read Bearer
 GET  /api/system/update-check
 POST /api/system/restart
 POST /api/system/update
@@ -290,6 +290,6 @@ POST /api/voidwatch/webhook
 ## Capabilities & diagnostics
 
 ```
-GET /api/capabilities
-GET /api/diagnostics
+GET /api/capabilities   Authenticated session or diagnostics:read Bearer
+GET /api/diagnostics    Admin/owner session or diagnostics:read Bearer
 ```

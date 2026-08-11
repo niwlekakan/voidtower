@@ -52,7 +52,7 @@ pub async fn ws_handler(
 ) -> Result<Response> {
     let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
 
     let user_id = user.id.clone();
     let db = state.db.clone();
@@ -199,7 +199,7 @@ pub struct CreateSshSession {
 async fn require_operator(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &sid).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
-    if matches!(user.role.as_str(), "viewer") { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     Ok(user)
 }
 

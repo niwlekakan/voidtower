@@ -64,7 +64,7 @@ pub struct CreateJob {
 
 pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(body): Json<CreateJob>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     if body.name.trim().is_empty() { return Err(AppError::BadRequest("name required".into())); }
     if body.command.trim().is_empty() { return Err(AppError::BadRequest("command required".into())); }
 
@@ -94,7 +94,7 @@ pub struct UpdateJob {
 
 pub async fn update(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<UpdateJob>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     let ts = now();
     if let Some(v) = &body.name    { sqlx::query("UPDATE automation_jobs SET name=?, updated_at=? WHERE id=?").bind(v).bind(ts).bind(&id).execute(&state.db).await.map_err(AppError::Database)?; }
     if let Some(v) = &body.description { sqlx::query("UPDATE automation_jobs SET description=?, updated_at=? WHERE id=?").bind(v).bind(ts).bind(&id).execute(&state.db).await.map_err(AppError::Database)?; }
@@ -107,7 +107,7 @@ pub async fn update(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
 
 pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     sqlx::query("DELETE FROM automation_jobs WHERE id=?").bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
     audit::log(&state.db, Some(&user.id), "human", "delete_automation_job", Some("automation_job"), Some(&id), "success", None, None).await;
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -115,7 +115,7 @@ pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
 
 pub async fn run_now(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
 
     let job = sqlx::query_as::<_, AutomationJob>(
         "SELECT id, name, description, command, schedule, enabled, timeout_secs,

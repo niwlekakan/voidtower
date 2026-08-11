@@ -1,6 +1,6 @@
 # ADR-009 — Bearer classification for S0-02 host routes
 
-**Status:** Proposed
+**Status:** Accepted (signed by operator niwlekakan on 2026-08-12)
 **Date:** 2026-08-11
 **Task:** `.devteam/active/S0-02-authenticated-host-routes.md`
 

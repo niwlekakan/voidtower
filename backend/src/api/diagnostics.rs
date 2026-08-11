@@ -1,7 +1,8 @@
 use axum::{extract::State, Json};
+use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
-use crate::AppState;
+use crate::{auth, error::{AppError, Result}, AppState};
 
 #[derive(Serialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -257,7 +258,16 @@ pub fn run_all_checks(cfg: &crate::config::Config) -> Vec<DiagCheck> {
     ]
 }
 
-pub async fn get_diagnostics(state: State<AppState>) -> Json<serde_json::Value> {
+pub async fn get_diagnostics(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
+    let session_id = jar.get("vt_session").map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    let user = auth::validate_session(&state.db, &session_id).await
+        .map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+    super::role_guard::require_admin(&user)?;
+
     let checks = run_all_checks(&state.config);
 
     let pass = checks.iter().filter(|c| c.status == CheckStatus::Pass).count();
@@ -266,8 +276,8 @@ pub async fn get_diagnostics(state: State<AppState>) -> Json<serde_json::Value> 
     let info = checks.iter().filter(|c| c.status == CheckStatus::Info).count();
     let overall = if fail > 0 { "fail" } else if warn > 0 { "warn" } else { "pass" };
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "checks": checks,
         "summary": { "pass": pass, "warn": warn, "fail": fail, "info": info, "overall": overall }
-    }))
+    })))
 }

@@ -13,6 +13,11 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
     Ok(user)
 }
 
+async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
+    let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
+    auth::validate_session(&state.db, &sid).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)
+}
+
 // Dev binary lives at <root>/backend/target/{profile}/voidtower.
 // Prod binary lives at /opt/voidtower/voidtower (no "target/" segment).
 fn is_dev_install() -> bool {
@@ -73,7 +78,8 @@ pub struct VersionInfo {
     dirty: bool,
 }
 
-pub async fn version() -> Result<Json<VersionInfo>> {
+pub async fn version(State(state): State<AppState>, jar: CookieJar) -> Result<Json<VersionInfo>> {
+    require_user(&state, &jar).await?;
     if is_dev_install() {
         let root = project_root().ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
         let commit      = git(&root, &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|_| "unknown".into());

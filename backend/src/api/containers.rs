@@ -87,9 +87,7 @@ pub async fn action(
     let user = require_user(&state, &jar).await?;
 
     // Require at least operator role for mutations
-    if user.role == "viewer" {
-        return Err(AppError::Forbidden);
-    }
+    super::role_guard::require_operator(&user)?;
 
     let ip = addr.ip().to_string();
 
@@ -241,9 +239,7 @@ pub async fn exec_ws(
     let user = require_user(&state, &jar).await?;
 
     // Require at least operator role — this opens an interactive shell in the container
-    if user.role == "viewer" {
-        return Err(AppError::Forbidden);
-    }
+    super::role_guard::require_operator(&user)?;
 
     // Sanitise: only hex chars (short id) or alphanumeric/dash (name)
     if !container_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {

@@ -13,6 +13,7 @@ use axum::{
 };
 use sqlx::SqlitePool;
 use std::{collections::HashMap, net::SocketAddr};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
 use crate::api::mcp::test_support;
@@ -567,27 +568,45 @@ fn cookie_req(
     )
 }
 
-/// A real WebSocket-upgrade handshake request (standard headers, no new crate dependency —
-/// just `http`/`axum` types already in the dependency tree) carrying a session cookie.
-/// `axum::extract::ws::WebSocketUpgrade` validates these headers at extraction time, before
-/// the handler body (and its role check) ever runs; a plain non-upgrade request would never
-/// reach the code this test exists to exercise. The callback passed to `.on_upgrade()` in the
-/// real handler only runs once the underlying connection actually completes the protocol
-/// switch, which never happens against a `oneshot` service call, so this cannot spawn a real
-/// PTY/shell even when the role check is (as this test proves) wrongly bypassed.
-fn ws_cookie_req(uri: &str, session_id: &str) -> Request<Body> {
-    with_connect_info(
-        Request::builder()
-            .method("GET")
-            .uri(uri)
-            .header(header::COOKIE, format!("vt_session={session_id}"))
-            .header(header::CONNECTION, "upgrade")
-            .header(header::UPGRADE, "websocket")
-            .header("sec-websocket-version", "13")
-            .header("sec-websocket-key", "REDACTED-WEBSOCKET-TEST-KEY")
-            .body(Body::empty())
-            .unwrap(),
+/// Sends a real WebSocket handshake through a loopback listener. `oneshot` requests do not
+/// contain Hyper's connection-upgrade state, so Axum rejects them before the handler body.
+async fn websocket_status(app: axum::Router, uri: &str, session_id: &str) -> StatusCode {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "GET {uri} HTTP/1.1\r\nHost: {addr}\r\nCookie: vt_session={session_id}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: REDACTED-WEBSOCKET-TEST-KEY\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut response = [0_u8; 1024];
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        stream.read(&mut response),
     )
+    .await
+    .expect("WebSocket probe timed out")
+    .unwrap();
+    server.abort();
+
+    let status = std::str::from_utf8(&response[..read])
+        .unwrap()
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .and_then(|code| StatusCode::from_u16(code).ok())
+        .expect("WebSocket probe returned no HTTP status");
+    status
 }
 
 fn is_probe_exempt(method: &str, path: &str) -> bool {
@@ -626,11 +645,8 @@ async fn unauthenticated_request_is_rejected_for_every_non_public_route() {
 
 /// Acceptance test: for each role tier above the lowest (`viewer` for Operator-tier routes,
 /// `operator` for Admin-tier routes, `admin` for Owner-tier routes), a real session minted at
-/// the next-lower standard-ladder role must be rejected with 403. Applies identically to
-/// `Role::Session` and `Role::SessionDenylist` entries -- a denylist that literally checks
-/// `role == "viewer"` does correctly reject a `viewer` probe (see `authz_matrix.rs`'s module
-/// doc comment); only guest/demo/member fall through, covered by the dedicated regression
-/// tests below, not here.
+/// the next-lower standard-ladder role must be rejected with 403. Guest/demo/member coverage
+/// lives in the dedicated positive-guard regressions below.
 #[tokio::test]
 async fn wrong_role_session_is_rejected_for_every_role_gated_route() {
     let db = setup_db().await;
@@ -728,11 +744,8 @@ async fn public_routes_remain_reachable_without_auth() {
     }
 }
 
-/// Acceptance test: guest/demo/member aren't accidentally treated as equivalent to `viewer`.
-/// Witnesses are deliberately *not* drawn from the `Role::SessionDenylist` routes (see
-/// `authz_matrix.rs`'s module doc comment) -- those get their own dedicated regression tests
-/// below, documenting their current (bad) behavior instead of standing in as if they were
-/// clean allowlist examples.
+/// Acceptance test: guest/demo/member can use any-session reads but cannot cross an admin
+/// positive-role boundary.
 #[tokio::test]
 async fn member_and_guest_and_demo_roles_are_represented_in_the_matrix() {
     let db = setup_db().await;
@@ -789,17 +802,13 @@ async fn member_and_guest_and_demo_roles_are_represented_in_the_matrix() {
 }
 
 // ---------------------------------------------------------------------------
-// Denylist regression tests (operator decision, 2026-07-12, extended
-// 2026-07-13 to the full ~24-location scope) -- one per affected route,
-// asserting the CURRENT (bad) behavior: guest/demo/member sessions are
-// wrongly admitted today. A future fix that tightens these guards to a
-// proper allowlist will fail these tests loudly and must update them as a
-// reviewed, intentional change -- see `authz_matrix.rs`'s module doc comment
-// for the full writeup.
+// Positive-role regression tests for routes that historically admitted roles
+// added later. These drive the real router and
+// require guest/demo/member sessions to fail at the handler's role boundary.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn firewall_admin_denylist_admits_guest_demo_member_today() {
+async fn firewall_admin_guard_rejects_guest_and_member() {
     let db = setup_db().await;
     let app = crate::api::router(test_support::build(db.clone()));
 
@@ -811,7 +820,7 @@ async fn firewall_admin_denylist_admits_guest_demo_member_today() {
     // which do cover it): `demo_guard::middleware` separately blocks every non-GET `/api/*`
     // request from a `role == "demo"` session regardless of the handler's own role check, so
     // a 403 for `demo` on this POST route would be `demo_guard` working correctly, not
-    // evidence about `firewall.rs`'s denylist bug one way or the other.
+    // evidence that `firewall.rs`'s own role boundary ran.
     for role in ["guest", "member"] {
         let session_id = session_for_role(&db, role).await;
         let res = app
@@ -824,42 +833,34 @@ async fn firewall_admin_denylist_admits_guest_demo_member_today() {
             ))
             .await
             .unwrap();
-        assert_ne!(
+        assert_eq!(
             res.status(),
             StatusCode::FORBIDDEN,
-            "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
-             POST /api/firewall/action's admin-only guard but isn't -- firewall.rs's \
-             require_admin denylist only rejects literal \"viewer\"/\"operator\", got {}",
+            "a {role} session must be rejected by POST /api/firewall/action's admin guard, got {}",
             res.status()
         );
     }
 }
 
 #[tokio::test]
-async fn terminal_ws_denylist_admits_guest_demo_member_today() {
+async fn terminal_ws_operator_guard_rejects_guest_demo_member() {
     let db = setup_db().await;
     let app = crate::api::router(test_support::build(db.clone()));
 
     for role in ["guest", "demo", "member"] {
         let session_id = session_for_role(&db, role).await;
-        let res = app
-            .clone()
-            .oneshot(ws_cookie_req("/api/terminal/ws", &session_id))
-            .await
-            .unwrap();
-        assert_ne!(
-            res.status(),
+        let status = websocket_status(app.clone(), "/api/terminal/ws", &session_id).await;
+        assert_eq!(
+            status,
             StatusCode::FORBIDDEN,
-            "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
-             GET /api/terminal/ws's role check but isn't -- terminal.rs's ws_handler denylist \
-             only rejects literal \"viewer\", got {}",
-            res.status()
+            "a {role} session must be rejected by GET /api/terminal/ws's operator guard, got {}",
+            status
         );
     }
 }
 
 #[tokio::test]
-async fn terminal_session_management_denylist_admits_guest_demo_member_today() {
+async fn terminal_session_management_operator_guard_rejects_guest_demo_member() {
     let db = setup_db().await;
     let app = crate::api::router(test_support::build(db.clone()));
 
@@ -873,10 +874,8 @@ async fn terminal_session_management_denylist_admits_guest_demo_member_today() {
                 .unwrap();
             assert_eq!(
                 res.status(),
-                StatusCode::OK,
-                "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
-                 GET {path}'s require_operator guard but isn't -- terminal.rs's denylist only \
-                 rejects literal \"viewer\", got {}",
+                StatusCode::FORBIDDEN,
+                "a {role} session must be rejected by GET {path}'s operator guard, got {}",
                 res.status()
             );
         }
@@ -884,7 +883,7 @@ async fn terminal_session_management_denylist_admits_guest_demo_member_today() {
 }
 
 #[tokio::test]
-async fn audit_denylist_admits_guest_demo_member_today() {
+async fn audit_operator_guard_rejects_guest_demo_member() {
     let db = setup_db().await;
     let app = crate::api::router(test_support::build(db.clone()));
 
@@ -897,17 +896,15 @@ async fn audit_denylist_admits_guest_demo_member_today() {
             .unwrap();
         assert_eq!(
             res.status(),
-            StatusCode::OK,
-            "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
-             GET /api/audit's role check but isn't -- audit.rs's denylist only rejects \
-             literal \"viewer\", got {}",
+            StatusCode::FORBIDDEN,
+            "a {role} session must be rejected by GET /api/audit's operator guard, got {}",
             res.status()
         );
     }
 }
 
 #[tokio::test]
-async fn timeline_denylist_admits_guest_demo_member_today() {
+async fn timeline_operator_guard_rejects_guest_demo_member() {
     let db = setup_db().await;
     let app = crate::api::router(test_support::build(db.clone()));
 
@@ -920,32 +917,25 @@ async fn timeline_denylist_admits_guest_demo_member_today() {
             .unwrap();
         assert_eq!(
             res.status(),
-            StatusCode::OK,
-            "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
-             GET /api/timeline's role check but isn't -- timeline.rs's denylist only rejects \
-             literal \"viewer\", got {}",
+            StatusCode::FORBIDDEN,
+            "a {role} session must be rejected by GET /api/timeline's operator guard, got {}",
             res.status()
         );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Denylist regression tests, 2026-07-13 scope extension -- the same bug
-// shape (`if user.role == "viewer" { Forbidden }` or
-// `role == "viewer" || role == "operator"`, instead of allowlisting the
-// standard ladder) found in 19 more locations across 7 files while building
-// this matrix. Every route below is a mutation (POST/DELETE/PATCH) except
-// `containers::exec_ws`, which is a WebSocket upgrade probed the same way
-// `terminal_ws_denylist_admits_guest_demo_member_today` above probes
-// `terminal::ws_handler`.
+// Positive-role regression tests for the 2026-07-13 scope extension. Every
+// route below is a mutation (POST/DELETE/PATCH) except `containers::exec_ws`,
+// which uses the same real WebSocket probe as `terminal::ws_handler` above.
 //
 // `demo` is deliberately excluded from every mutation-route test here, same
-// rationale as `firewall_admin_denylist_admits_guest_demo_member_today`:
+// rationale as `firewall_admin_guard_rejects_guest_and_member`:
 // `demo_guard::middleware` blocks every non-GET `/api/*` request from a
-// `role == "demo"` session before the handler's own (buggy) check ever runs,
+// `role == "demo"` session before the handler's own check ever runs,
 // so a 403 for `demo` on a POST/DELETE/PATCH route would be `demo_guard`
-// working correctly, not evidence about the handler's denylist one way or
-// the other. `exec_ws` is a GET route (demo_guard only gates non-GET), so
+// working correctly, not evidence about the handler guard. `exec_ws` is a GET route
+// (demo_guard only gates non-GET), so
 // its test covers all three roles, matching `terminal_ws`'s test above.
 //
 // Two of these are the highest-severity items in this whole scope extension
@@ -957,12 +947,9 @@ async fn timeline_denylist_admits_guest_demo_member_today() {
 // `terminal.rs` shell-access bug.
 // ---------------------------------------------------------------------------
 
-/// Shared assertion for the mutation-route denylist regressions below: a `guest`/`member`
-/// session must currently (bug, not fixed by this task) NOT be rejected with 403. Whatever
-/// status the request gets *after* clearing the role check (200, 400, 404 -- the exact code
-/// depends on the route and this test's DB having no matching row for its probe path/body) is
-/// not this test's concern; only "not 403" is.
-async fn assert_mutation_denylist_admits_guest_and_member(
+/// Shared assertion for mutation routes: guest/member must stop at the handler's role guard,
+/// before route-specific validation or side effects.
+async fn assert_mutation_guard_rejects_guest_and_member(
     db: &SqlitePool,
     method: &str,
     path: &str,
@@ -976,21 +963,19 @@ async fn assert_mutation_denylist_admits_guest_and_member(
             .oneshot(cookie_req(method, path, &session_id, None))
             .await
             .unwrap();
-        assert_ne!(
+        assert_eq!(
             res.status(),
             StatusCode::FORBIDDEN,
-            "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
-             {method} {path} ({route_label}) but isn't -- denylist only rejects the standard \
-             owner/admin/operator/viewer ladder, got {}",
+            "a {role} session must be rejected by {method} {path} ({route_label}), got {}",
             res.status()
         );
     }
 }
 
 #[tokio::test]
-async fn alerts_delete_denylist_admits_guest_and_member_today() {
+async fn alerts_delete_admin_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "DELETE",
         "/api/alerts/:id",
@@ -1000,9 +985,9 @@ async fn alerts_delete_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn apps_update_compose_denylist_admits_guest_and_member_today() {
+async fn apps_update_compose_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/apps/:project_name/compose",
@@ -1012,9 +997,9 @@ async fn apps_update_compose_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn apps_patch_app_env_denylist_admits_guest_and_member_today() {
+async fn apps_patch_app_env_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/apps/:project_name/env",
@@ -1026,9 +1011,9 @@ async fn apps_patch_app_env_denylist_admits_guest_and_member_today() {
 /// Also `RiskClass::Irreversible` (P0-04's denylist) -- this session-role bug is a second,
 /// independent way to reach the same irreversible action, not a duplicate finding.
 #[tokio::test]
-async fn apps_delete_app_volumes_denylist_admits_guest_and_member_today() {
+async fn apps_delete_app_volumes_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/apps/:project_name/delete-volumes",
@@ -1038,9 +1023,36 @@ async fn apps_delete_app_volumes_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn automation_create_denylist_admits_guest_and_member_today() {
+async fn app_vault_admin_guard_admits_owner_for_expose_and_purge() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    let owner_session = session_for_role(&db, "owner").await;
+    let app = crate::api::router(test_support::build(db));
+
+    for (path, body) in [
+        (
+            "/api/apps/missing-project/expose",
+            Some(serde_json::json!({ "domain": "missing.invalid" })),
+        ),
+        ("/api/apps/missing-project/purge", None),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(cookie_req("POST", path, &owner_session, body))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "an owner must clear {path}'s admin guard and reach the missing-app lookup, got {}",
+            res.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn automation_create_operator_guard_rejects_guest_and_member() {
+    let db = setup_db().await;
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/automation",
@@ -1050,9 +1062,9 @@ async fn automation_create_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn automation_update_denylist_admits_guest_and_member_today() {
+async fn automation_update_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "PATCH",
         "/api/automation/:id",
@@ -1062,9 +1074,9 @@ async fn automation_update_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn automation_delete_denylist_admits_guest_and_member_today() {
+async fn automation_delete_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "DELETE",
         "/api/automation/:id",
@@ -1077,9 +1089,9 @@ async fn automation_delete_denylist_admits_guest_and_member_today() {
 /// A guest/demo/member session wrongly admitted here gets arbitrary shell execution, the same
 /// risk class as `terminal.rs`'s originally-escalated shell-access bug.
 #[tokio::test]
-async fn automation_run_now_denylist_admits_guest_and_member_today() {
+async fn automation_run_now_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/automation/:id/run",
@@ -1089,9 +1101,9 @@ async fn automation_run_now_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn backups_create_denylist_admits_guest_and_member_today() {
+async fn backups_create_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/backups",
@@ -1101,9 +1113,9 @@ async fn backups_create_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn backups_run_now_denylist_admits_guest_and_member_today() {
+async fn backups_run_now_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/backups/:id/run",
@@ -1113,9 +1125,9 @@ async fn backups_run_now_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn backups_check_denylist_admits_guest_and_member_today() {
+async fn backups_check_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/backups/:id/check",
@@ -1125,9 +1137,9 @@ async fn backups_check_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn backups_restore_test_denylist_admits_guest_and_member_today() {
+async fn backups_restore_test_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/backups/:id/restore-test",
@@ -1137,9 +1149,9 @@ async fn backups_restore_test_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn backups_delete_plan_denylist_admits_guest_and_member_today() {
+async fn backups_delete_plan_admin_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/backups/:id/delete-plan",
@@ -1149,9 +1161,9 @@ async fn backups_delete_plan_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn backups_delete_denylist_admits_guest_and_member_today() {
+async fn backups_delete_admin_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "DELETE",
         "/api/backups/:id",
@@ -1161,9 +1173,9 @@ async fn backups_delete_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn containers_action_denylist_admits_guest_and_member_today() {
+async fn containers_action_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/containers/:id/action",
@@ -1175,35 +1187,28 @@ async fn containers_action_denylist_admits_guest_and_member_today() {
 /// HIGH SEVERITY: `exec_ws` opens an interactive `docker exec -it <container> sh` shell over
 /// the upgraded WebSocket, the same risk class as `terminal.rs`'s originally-escalated
 /// shell-access bug. GET route, so (unlike the mutation tests above) `demo_guard` doesn't
-/// gate it -- all three roles are probed, matching `terminal_ws_denylist_admits_guest_demo_member_today`.
+/// gate it -- all three roles are probed, matching `terminal_ws_operator_guard_rejects_guest_demo_member`.
 #[tokio::test]
-async fn containers_exec_ws_denylist_admits_guest_demo_member_today() {
+async fn containers_exec_ws_operator_guard_rejects_guest_demo_member() {
     let db = setup_db().await;
     let app = crate::api::router(test_support::build(db.clone()));
 
     for role in ["guest", "demo", "member"] {
         let session_id = session_for_role(&db, role).await;
-        let res = app
-            .clone()
-            .oneshot(ws_cookie_req("/api/containers/:id/exec", &session_id))
-            .await
-            .unwrap();
-        assert_ne!(
-            res.status(),
+        let status = websocket_status(app.clone(), "/api/containers/%21/exec", &session_id).await;
+        assert_eq!(
+            status,
             StatusCode::FORBIDDEN,
-            "KNOWN GAP (not fixed by this task): a {role} session should be rejected by \
-             GET /api/containers/:id/exec's role check but isn't -- containers.rs's exec_ws \
-             denylist only rejects literal \"viewer\" -- interactive container shell access, \
-             got {}",
-            res.status()
+            "a {role} session must be rejected by GET /api/containers/:id/exec's operator guard, got {}",
+            status
         );
     }
 }
 
 #[tokio::test]
-async fn services_action_denylist_admits_guest_and_member_today() {
+async fn services_action_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/services/:name/action",
@@ -1213,9 +1218,9 @@ async fn services_action_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn status_checks_create_denylist_admits_guest_and_member_today() {
+async fn status_checks_create_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "POST",
         "/api/status-checks",
@@ -1225,9 +1230,9 @@ async fn status_checks_create_denylist_admits_guest_and_member_today() {
 }
 
 #[tokio::test]
-async fn status_checks_delete_denylist_admits_guest_and_member_today() {
+async fn status_checks_delete_admin_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_denylist_admits_guest_and_member(
+    assert_mutation_guard_rejects_guest_and_member(
         &db,
         "DELETE",
         "/api/status-checks/:id",

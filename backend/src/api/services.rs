@@ -73,9 +73,7 @@ pub async fn action(
     let user = require_user(&state, &jar).await?;
 
     // Require at least operator role for mutations
-    if user.role == "viewer" {
-        return Err(AppError::Forbidden);
-    }
+    super::role_guard::require_operator(&user)?;
 
     let action_str = format!("{:?}", req.action).to_lowercase();
 

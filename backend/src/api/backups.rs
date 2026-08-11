@@ -61,7 +61,7 @@ pub struct CreateRequest {
 
 pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(req): Json<CreateRequest>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     let id = Uuid::new_v4().to_string();
     let retention = req.retention_days.unwrap_or(30);
     sqlx::query(
@@ -74,7 +74,7 @@ pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(req): Js
 
 pub async fn run_now(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     if !backups::is_restic_available() {
         return Err(AppError::FeatureUnavailable("restic is not installed".into()));
     }
@@ -96,7 +96,7 @@ pub async fn run_now(State(state): State<AppState>, jar: CookieJar, Path(id): Pa
 
 pub async fn check(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     if !backups::is_restic_available() {
         return Err(AppError::FeatureUnavailable("restic is not installed".into()));
     }
@@ -116,7 +116,7 @@ pub async fn check(State(state): State<AppState>, jar: CookieJar, Path(id): Path
 
 pub async fn restore_test(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" { return Err(AppError::Forbidden); }
+    super::role_guard::require_operator(&user)?;
     if !backups::is_restic_available() {
         return Err(AppError::FeatureUnavailable("restic is not installed".into()));
     }
@@ -136,7 +136,7 @@ pub async fn restore_test(State(state): State<AppState>, jar: CookieJar, Path(id
 
 pub async fn delete_plan(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" || user.role == "operator" { return Err(AppError::Forbidden); }
+    super::role_guard::require_admin(&user)?;
     let row = sqlx::query_as::<_, (String, String)>("SELECT name, source_path FROM backup_configs WHERE id = ?")
         .bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?
         .ok_or(AppError::NotFound)?;
@@ -158,7 +158,7 @@ pub async fn delete_plan(State(state): State<AppState>, jar: CookieJar, Path(id)
 
 pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    if user.role == "viewer" || user.role == "operator" { return Err(AppError::Forbidden); }
+    super::role_guard::require_admin(&user)?;
     sqlx::query("DELETE FROM backup_configs WHERE id = ?").bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

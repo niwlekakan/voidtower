@@ -42,9 +42,7 @@ pub async fn list(
         .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
 
-    if user.role == "viewer" {
-        return Err(AppError::Forbidden);
-    }
+    super::role_guard::require_operator(&user)?;
 
     let limit = query.limit.clamp(1, 500);
     let entries = audit::list(&state.db, limit, query.offset)

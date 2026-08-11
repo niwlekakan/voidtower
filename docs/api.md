@@ -60,14 +60,14 @@ DELETE /api/apps/:name
 ```
 GET  /api/models
 POST /api/models/download          { url, filename? }
-GET  /api/models/download/:id      Admin or owner
+GET  /api/models/download/:id      Admin or owner session; Bearer denied
 GET  /api/models/active
 POST /api/models/load              { filename }
 DELETE /api/models/:filename
 POST /api/models/ollama/pull       { model }
-GET  /api/models/ollama/pull/:id   Admin or owner
+GET  /api/models/ollama/pull/:id   Admin or owner session; Bearer denied
 POST /api/models/ollama/create     { filename }
-GET  /api/models/ollama/create/:id Admin or owner
+GET  /api/models/ollama/create/:id Admin or owner session; Bearer denied
 ```
 
 ## AI / GPU
@@ -253,7 +253,7 @@ DELETE /api/security/sessions/:id
 ## System
 
 ```
-GET  /api/system/version       Authenticated session
+GET  /api/system/version       Authenticated session or diagnostics:read Bearer
 GET  /api/system/update-check
 POST /api/system/restart
 POST /api/system/update
@@ -290,6 +290,6 @@ POST /api/voidwatch/webhook
 ## Capabilities & diagnostics
 
 ```
-GET /api/capabilities   Authenticated session
-GET /api/diagnostics    Admin or owner
+GET /api/capabilities   Authenticated session or diagnostics:read Bearer
+GET /api/diagnostics    Admin/owner session or diagnostics:read Bearer
 ```

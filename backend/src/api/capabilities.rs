@@ -1,7 +1,8 @@
 use axum::{extract::State, Json};
+use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
-use crate::AppState;
+use crate::{auth, error::{AppError, Result}, AppState};
 
 #[derive(Serialize, Clone)]
 pub struct Capability {
@@ -481,7 +482,15 @@ fn detect_ufw() -> Capability {
     }
 }
 
-pub async fn get_capabilities(_state: State<AppState>) -> Json<serde_json::Value> {
+pub async fn get_capabilities(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
+    let session_id = jar.get("vt_session").map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    auth::validate_session(&state.db, &session_id).await
+        .map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+
     let capabilities: Vec<Capability> = vec![
         detect_docker(),
         detect_docker_compose(),
@@ -509,12 +518,12 @@ pub async fn get_capabilities(_state: State<AppState>) -> Json<serde_json::Value
     let total = capabilities.len();
     let detected_count = capabilities.iter().filter(|c| c.detected).count();
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "capabilities": capabilities,
         "summary": {
             "total": total,
             "detected": detected_count,
             "missing": total - detected_count,
         }
-    }))
+    })))
 }

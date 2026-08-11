@@ -1,6 +1,6 @@
 # API Reference
 
-All endpoints require a valid `vt_session` cookie except `/api/auth/*`, `/api/status`, and `/api/system/version`.
+All endpoints require a valid `vt_session` cookie unless explicitly public. Public routes are the authentication entry/callback endpoints, `/api/health`, `/status`, `/api/settings/public`, `/api/integrations/scopes`, `/api/integrations/odysseus/manifest`, and the `/v1/*` OpenAI-compatible proxy.
 
 ---
 
@@ -253,7 +253,7 @@ DELETE /api/security/sessions/:id
 ## System
 
 ```
-GET  /api/system/version
+GET  /api/system/version       Authenticated session
 GET  /api/system/update-check
 POST /api/system/restart
 POST /api/system/update
@@ -290,6 +290,6 @@ POST /api/voidwatch/webhook
 ## Capabilities & diagnostics
 
 ```
-GET /api/capabilities
-GET /api/diagnostics
+GET /api/capabilities   Authenticated session
+GET /api/diagnostics    Admin or owner
 ```

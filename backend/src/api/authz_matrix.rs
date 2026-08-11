@@ -18,9 +18,7 @@
 //! - [`Role::Public`] — no credential of any kind required (`/api/health`, `/status`,
 //!   `/api/settings/public`, `/v1/*`, login/bootstrap/OIDC-entry routes, and a handful of
 //!   read-only informational routes that are open by *design*: `/api/integrations/scopes`,
-//!   `/api/integrations/odysseus/manifest`). **Also used, per this task's operator-resolution
-//!   note below, for six routes that turn out to have no auth guard at all** — a real gap,
-//!   not a public-by-design route; see the `NO-AUTH FINDING` comments inline in the table.
+//!   `/api/integrations/odysseus/manifest`).
 //! - [`Role::Session`]`(tier)` — gated by a session cookie whose role is checked with a
 //!   positive allowlist. Infrastructure mutations use the shared `api::role_guard` helpers,
 //!   so unknown or future role strings fail closed.
@@ -38,6 +36,12 @@
 //! literal `viewer`/`operator` strings. S0-01 replaced every affected check with shared
 //! positive operator/admin guards and added real HTTP/WebSocket regressions for the repaired
 //! routes. App Vault's expose and purge operations now also admit owner at their Admin tier.
+//!
+//! ## Unintended-public remediation (S0-02, 2026-08-11)
+//!
+//! Host capabilities and version metadata require any valid session. Detailed diagnostics
+//! and the three model-job status feeds require admin or owner. Real-router tests preserve
+//! the deliberately public routes while proving these six reject credential-free requests.
 
 /// A minimum session-role tier, matching the `owner > admin > operator > viewer` allowlist
 /// checks used throughout `backend/src/api/*.rs` (`docs/codebase-map.md` §3's role ladder).
@@ -372,7 +376,11 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         "/api/backups/:id/run",
         Role::Session(RoleTier::Operator),
     ),
-    ("GET", "/api/capabilities", Role::Public),
+    (
+        "GET",
+        "/api/capabilities",
+        Role::Session(RoleTier::Session),
+    ),
     ("GET", "/api/containers", Role::Session(RoleTier::Session)),
     (
         "POST",
@@ -414,7 +422,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         "/api/containers/images",
         Role::Session(RoleTier::Session),
     ),
-    ("GET", "/api/diagnostics", Role::Public),
+    ("GET", "/api/diagnostics", Role::Session(RoleTier::Admin)),
     (
         "POST",
         "/api/disaster/emergency-disable",
@@ -598,7 +606,11 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         "/api/models/download",
         Role::Session(RoleTier::Admin),
     ),
-    ("GET", "/api/models/download/:id", Role::Public),
+    (
+        "GET",
+        "/api/models/download/:id",
+        Role::Session(RoleTier::Admin),
+    ),
     (
         "GET",
         "/api/models/llama-config",
@@ -626,13 +638,21 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         "/api/models/ollama/create",
         Role::Session(RoleTier::Admin),
     ),
-    ("GET", "/api/models/ollama/create/:id", Role::Public),
+    (
+        "GET",
+        "/api/models/ollama/create/:id",
+        Role::Session(RoleTier::Admin),
+    ),
     (
         "POST",
         "/api/models/ollama/pull",
         Role::Session(RoleTier::Admin),
     ),
-    ("GET", "/api/models/ollama/pull/:id", Role::Public),
+    (
+        "GET",
+        "/api/models/ollama/pull/:id",
+        Role::Session(RoleTier::Admin),
+    ),
     ("GET", "/api/mods", Role::Session(RoleTier::Admin)),
     ("POST", "/api/mods/apply", Role::Session(RoleTier::Admin)),
     ("POST", "/api/mods/config", Role::Session(RoleTier::Admin)),
@@ -1079,7 +1099,11 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         "/api/system/update-check",
         Role::Session(RoleTier::Admin),
     ),
-    ("GET", "/api/system/version", Role::Public),
+    (
+        "GET",
+        "/api/system/version",
+        Role::Session(RoleTier::Session),
+    ),
     ("GET", "/api/tabs", Role::Session(RoleTier::Session)),
     ("POST", "/api/tabs", Role::Session(RoleTier::Session)),
     ("DELETE", "/api/tabs/:id", Role::Session(RoleTier::Session)),

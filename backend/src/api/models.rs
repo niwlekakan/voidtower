@@ -307,9 +307,11 @@ async fn download_file(id: &str, url: &str, dir: &std::path::Path, filename: &st
 }
 
 pub async fn download_status(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    jar: CookieJar,
     Path(id): Path<String>,
 ) -> Result<Json<DownloadState>> {
+    require_admin(&state, &jar).await?;
     let map = downloads().lock().unwrap();
     map.get(&id).cloned().map(Json).ok_or(AppError::NotFound)
 }
@@ -510,9 +512,11 @@ async fn do_ollama_pull(id: &str, model: &str) -> std::result::Result<(), String
 }
 
 pub async fn get_ollama_pull_status(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    jar: CookieJar,
     Path(id): Path<String>,
 ) -> Result<Json<OllamaPullState>> {
+    require_admin(&state, &jar).await?;
     let map = ollama_pulls().lock().unwrap();
     map.get(&id).cloned().map(Json).ok_or(AppError::NotFound)
 }
@@ -640,9 +644,11 @@ async fn do_ollama_create(id: &str, filename: &str, model_name: &str) -> std::re
 }
 
 pub async fn get_ollama_create_status(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    jar: CookieJar,
     Path(id): Path<String>,
 ) -> Result<Json<OllamaPullState>> {
+    require_admin(&state, &jar).await?;
     let map = ollama_creates().lock().unwrap();
     map.get(&id).cloned().map(Json).ok_or(AppError::NotFound)
 }

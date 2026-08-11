@@ -800,7 +800,9 @@ async fn capabilities_and_version_admit_all_valid_session_roles() {
     let db = setup_db().await;
     let app = crate::api::router(test_support::build(db.clone()));
 
-    for role in ["owner", "admin", "operator", "viewer", "guest", "demo", "member"] {
+    for role in [
+        "owner", "admin", "operator", "viewer", "guest", "demo", "member",
+    ] {
         let session_id = session_for_role(&db, role).await;
         for path in ["/api/capabilities", "/api/system/version"] {
             let res = app
@@ -1208,13 +1210,8 @@ async fn automation_run_now_operator_guard_rejects_guest_and_member() {
 #[tokio::test]
 async fn backups_create_operator_guard_rejects_guest_and_member() {
     let db = setup_db().await;
-    assert_mutation_guard_rejects_guest_and_member(
-        &db,
-        "POST",
-        "/api/backups",
-        "backups::create",
-    )
-    .await;
+    assert_mutation_guard_rejects_guest_and_member(&db, "POST", "/api/backups", "backups::create")
+        .await;
 }
 
 #[tokio::test]

@@ -164,11 +164,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         Role::Session(RoleTier::Admin),
     ),
     ("GET", "/api/alerts", Role::Session(RoleTier::Session)),
-    (
-        "DELETE",
-        "/api/alerts/:id",
-        Role::Session(RoleTier::Admin),
-    ),
+    ("DELETE", "/api/alerts/:id", Role::Session(RoleTier::Admin)),
     (
         "POST",
         "/api/alerts/:id/acknowledge",
@@ -292,11 +288,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         "/api/apps/open-ui",
         Role::Session(RoleTier::Session),
     ),
-    (
-        "GET",
-        "/api/audit",
-        Role::Session(RoleTier::Operator),
-    ),
+    ("GET", "/api/audit", Role::Session(RoleTier::Operator)),
     ("POST", "/api/auth/bootstrap", Role::Public),
     ("POST", "/api/auth/login", Role::Public),
     ("POST", "/api/auth/logout", Role::Public),
@@ -320,11 +312,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         Role::Session(RoleTier::Session),
     ),
     ("GET", "/api/automation", Role::Session(RoleTier::Session)),
-    (
-        "POST",
-        "/api/automation",
-        Role::Session(RoleTier::Operator),
-    ),
+    ("POST", "/api/automation", Role::Session(RoleTier::Operator)),
     (
         "DELETE",
         "/api/automation/:id",
@@ -346,16 +334,8 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         Role::Session(RoleTier::Session),
     ),
     ("GET", "/api/backups", Role::Session(RoleTier::Session)),
-    (
-        "POST",
-        "/api/backups",
-        Role::Session(RoleTier::Operator),
-    ),
-    (
-        "DELETE",
-        "/api/backups/:id",
-        Role::Session(RoleTier::Admin),
-    ),
+    ("POST", "/api/backups", Role::Session(RoleTier::Operator)),
+    ("DELETE", "/api/backups/:id", Role::Session(RoleTier::Admin)),
     (
         "POST",
         "/api/backups/:id/check",
@@ -376,11 +356,7 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         "/api/backups/:id/run",
         Role::Session(RoleTier::Operator),
     ),
-    (
-        "GET",
-        "/api/capabilities",
-        Role::Session(RoleTier::Session),
-    ),
+    ("GET", "/api/capabilities", Role::Session(RoleTier::Session)),
     ("GET", "/api/containers", Role::Session(RoleTier::Session)),
     (
         "POST",
@@ -1164,16 +1140,8 @@ pub(crate) const SESSION_ROLE_MATRIX: &[(&str, &str, Role)] = &[
         "/api/terminal/ssh/ws",
         Role::Session(RoleTier::Operator),
     ),
-    (
-        "GET",
-        "/api/terminal/ws",
-        Role::Session(RoleTier::Operator),
-    ),
-    (
-        "GET",
-        "/api/timeline",
-        Role::Session(RoleTier::Operator),
-    ),
+    ("GET", "/api/terminal/ws", Role::Session(RoleTier::Operator)),
+    ("GET", "/api/timeline", Role::Session(RoleTier::Operator)),
     ("GET", "/api/updates/docker", Role::Session(RoleTier::Admin)),
     (
         "POST",

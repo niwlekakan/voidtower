@@ -2,7 +2,11 @@ use axum::{extract::State, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
-use crate::{auth, error::{AppError, Result}, AppState};
+use crate::{
+    auth,
+    error::{AppError, Result},
+    AppState,
+};
 
 #[derive(Serialize, Clone)]
 pub struct Capability {
@@ -200,7 +204,8 @@ fn detect_libvirt() -> Capability {
         version,
         description: "Virtualisation management layer. Required for VM control via VoidTower.",
         required_dep: "libvirt-daemon + libvirt-clients",
-        how_to_enable: "apt install libvirt-daemon-system libvirt-clients && systemctl enable --now libvirtd",
+        how_to_enable:
+            "apt install libvirt-daemon-system libvirt-clients && systemctl enable --now libvirtd",
     }
 }
 
@@ -307,18 +312,18 @@ fn detect_nginx() -> Capability {
         || path_exists("/usr/bin/nginx")
         || path_exists("/usr/local/sbin/nginx");
     let version = if detected {
-        cmd_version("nginx", &["-v"])
-            .or_else(|| {
-                std::process::Command::new("nginx")
-                    .arg("-v")
-                    .stderr(std::process::Stdio::piped())
-                    .output()
-                    .ok()
-                    .and_then(|o| {
-                        String::from_utf8(o.stderr).ok()
-                            .map(|s| s.trim().to_string())
-                    })
-            })
+        cmd_version("nginx", &["-v"]).or_else(|| {
+            std::process::Command::new("nginx")
+                .arg("-v")
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .ok()
+                .and_then(|o| {
+                    String::from_utf8(o.stderr)
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                })
+        })
     } else {
         None
     };
@@ -346,7 +351,8 @@ fn detect_avahi() -> Capability {
         version: None,
         description: "mDNS/DNS-SD for zero-config local hostname resolution (e.g. hostname.local).",
         required_dep: "avahi-daemon + libnss-mdns",
-        how_to_enable: "apt install avahi-daemon libnss-mdns && systemctl enable --now avahi-daemon",
+        how_to_enable:
+            "apt install avahi-daemon libnss-mdns && systemctl enable --now avahi-daemon",
     }
 }
 
@@ -357,8 +363,11 @@ fn detect_nvidia() -> Capability {
             .map(|o| o.status.success())
             .unwrap_or(false);
     let version = if detected {
-        cmd_version("nvidia-smi", &["--query-gpu=driver_version", "--format=csv,noheader"])
-            .map(|v| format!("driver {v}"))
+        cmd_version(
+            "nvidia-smi",
+            &["--query-gpu=driver_version", "--format=csv,noheader"],
+        )
+        .map(|v| format!("driver {v}"))
     } else {
         None
     };
@@ -368,7 +377,8 @@ fn detect_nvidia() -> Capability {
         category: "GPU",
         detected,
         version,
-        description: "NVIDIA GPU with drivers installed. Enables GPU workloads in Docker/Ollama/Odysseus.",
+        description:
+            "NVIDIA GPU with drivers installed. Enables GPU workloads in Docker/Ollama/Odysseus.",
         required_dep: "nvidia-driver + nvidia-container-toolkit",
         how_to_enable: "Install NVIDIA driver: ubuntu-drivers install  or  nvidia-driver packages",
     }
@@ -448,13 +458,27 @@ fn detect_pacman() -> Capability {
 }
 
 fn detect_wireguard() -> Capability {
-    let detected = std::process::Command::new("which").arg("wg").output()
-        .map(|o| o.status.success()).unwrap_or(false);
+    let detected = std::process::Command::new("which")
+        .arg("wg")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
     let version = if detected {
-        std::process::Command::new("wg").arg("--version").output().ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().map(|l| l.to_string()).unwrap_or_default())
+        std::process::Command::new("wg")
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .next()
+                    .map(|l| l.to_string())
+                    .unwrap_or_default()
+            })
             .filter(|s| !s.is_empty())
-    } else { None };
+    } else {
+        None
+    };
     Capability {
         id: "wireguard",
         name: "WireGuard",
@@ -463,13 +487,17 @@ fn detect_wireguard() -> Capability {
         version,
         description: "WireGuard VPN kernel module and tools.",
         required_dep: "wireguard-tools",
-        how_to_enable: "Install wireguard-tools (apt/pacman/dnf) and ensure the kernel module is loaded.",
+        how_to_enable:
+            "Install wireguard-tools (apt/pacman/dnf) and ensure the kernel module is loaded.",
     }
 }
 
 fn detect_ufw() -> Capability {
-    let detected = std::process::Command::new("which").arg("ufw").output()
-        .map(|o| o.status.success()).unwrap_or(false);
+    let detected = std::process::Command::new("which")
+        .arg("ufw")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
     Capability {
         id: "ufw",
         name: "UFW Firewall",
@@ -486,10 +514,14 @@ pub async fn get_capabilities(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>> {
-    let session_id = jar.get("vt_session").map(|c| c.value().to_string())
+    let session_id = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
         .ok_or(AppError::Unauthorized)?;
-    auth::validate_session(&state.db, &session_id).await
-        .map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+    auth::validate_session(&state.db, &session_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
 
     let capabilities: Vec<Capability> = vec![
         detect_docker(),

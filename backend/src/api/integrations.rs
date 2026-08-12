@@ -69,7 +69,7 @@ pub const ALL_SCOPES: &[(&str, &str)] = &[
 /// convenience layered on top of the fine-grained scope enforcement in
 /// `auth::scope_enforce` — each tier is just a fixed subset of `ALL_SCOPES`.
 /// `admin-never` is a hard invariant enforced structurally: its scope set is
-/// empty, so it can never match any entry in `scope_enforce::ROUTE_SCOPES`,
+/// empty, so it can never satisfy a scoped route in `action_registry::ROUTES`,
 /// not because minting trusts a self-reported label
 /// (docs/adr/ADR-003-auth-scope-enforcement.md, Constraint 4).
 pub const CAPABILITY_TIERS: &[(&str, &[&str])] = &[

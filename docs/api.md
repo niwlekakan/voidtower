@@ -2,6 +2,15 @@
 
 Session-authenticated endpoints require a valid `vt_session` cookie (a scoped Bearer token may be upgraded to a temporary session where its route policy permits). Pairing, webhook, and device routes use their documented non-session credentials. Public routes are the authentication entry/callback endpoints, `/api/health`, `/status`, `/api/settings/public`, `/api/integrations/scopes`, `/api/integrations/odysseus/manifest`, and the `/v1/*` OpenAI-compatible proxy.
 
+`backend/src/action_registry.rs` is the authoritative security inventory for every registered
+route and structured AI/automation action. Each route explicitly declares its session policy,
+concrete credential mechanism, bearer policy, risk class, approval policy, and AI exposure.
+Unknown bearer routes remain denied. Handler checks remain defense in depth. MCP's handlers expect
+API-token bearer credentials, but the global bearer policy deliberately remains denied pending a
+separate audited correction; S0-03 does not broaden that access path. The two embed-router paths
+explicitly retain their existing unscoped bearer-to-session bridge because that sub-router does not
+mount scope enforcement.
+
 ---
 
 ## Auth

@@ -1,6 +1,6 @@
 #![cfg(test)]
-//! Generated probe tests for `authz_matrix.rs`'s `SESSION_ROLE_MATRIX` (gap-analysis P1 table
-//! row 2, task P1-01). Drives the real router end-to-end (`tower::ServiceExt::oneshot`),
+//! Generated session-role probes projected from `action_registry::ROUTES`. Drives the real router
+//! end-to-end (`tower::ServiceExt::oneshot`),
 //! following `scope_bypass_tests.rs`'s setup pattern — every request here either gets rejected
 //! by the auth layer before reaching handler logic (the overwhelming majority: unauthenticated
 //! and wrong-role probes) or targets a pure DB read with no side effects (the handful of
@@ -18,7 +18,7 @@ use tower::ServiceExt;
 
 use crate::api::mcp::test_support;
 
-use super::authz_matrix::{Role, SESSION_ROLE_MATRIX, WS_UPGRADE_ROUTES};
+use super::authz_matrix::{session_role_matrix, Role, WS_UPGRADE_ROUTES};
 
 async fn setup_db() -> SqlitePool {
     let path = std::env::temp_dir().join(format!("vt-p1-01-test-{}.sqlite", uuid::Uuid::new_v4()));
@@ -535,7 +535,7 @@ fn probe_body(method: &str, path: &str) -> serde_json::Value {
 /// `stt_transcribe` takes `axum::extract::Multipart`, not `Json<T>` — its extractor needs a
 /// real `multipart/form-data` boundary, which this file's JSON-body probes can't construct.
 /// Excluded from live probes for the same structural reason as `WS_UPGRADE_ROUTES` (still
-/// fully classified in `SESSION_ROLE_MATRIX` for exhaustiveness).
+/// fully classified in the shared registry for exhaustiveness).
 const NON_JSON_BODY_ROUTES: &[(&str, &str)] = &[("POST", "/api/studio/stt/transcribe")];
 
 /// A request with no cookie, no `Authorization` header — zero credentials of any kind.
@@ -623,7 +623,7 @@ async fn unauthenticated_request_is_rejected_for_every_non_public_route() {
     let app = crate::api::router(test_support::build(db));
 
     let mut failures = Vec::new();
-    for (method, path, role) in SESSION_ROLE_MATRIX {
+    for (method, path, role) in session_role_matrix() {
         if !role.requires_unauthenticated_401() || is_probe_exempt(method, path) {
             continue;
         }
@@ -664,7 +664,7 @@ async fn wrong_role_session_is_rejected_for_every_role_gated_route() {
     let app = crate::api::router(test_support::build(db));
 
     let mut failures = Vec::new();
-    for (method, path, role) in SESSION_ROLE_MATRIX {
+    for (method, path, role) in session_role_matrix() {
         if is_probe_exempt(method, path) {
             continue;
         }
@@ -719,11 +719,10 @@ async fn public_routes_remain_reachable_without_auth() {
     ];
 
     for path in SAFE_PUBLIC_GETS {
-        let table_role = SESSION_ROLE_MATRIX
-            .iter()
+        let table_role = session_role_matrix()
             .find(|(m, p, _)| *m == "GET" && p == path)
-            .map(|(_, _, r)| *r)
-            .unwrap_or_else(|| panic!("{path} missing from SESSION_ROLE_MATRIX"));
+            .map(|(_, _, role)| role)
+            .unwrap_or_else(|| panic!("{path} missing from the route registry"));
         assert_eq!(
             table_role,
             Role::Public,

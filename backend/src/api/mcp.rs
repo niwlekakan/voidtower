@@ -577,7 +577,7 @@ mod tests {
 
     async fn seed_alert_with_corpus(pool: &sqlx::SqlitePool) {
         let message = format!(
-            "Startup banner: api_key={} password: \"{}\" BEGIN-TEST-PRIVATE-KEY\nMIIBOGONOTAREALKEYBYTES\nEND-TEST-PRIVATE-KEY",
+            "Startup banner: api_key={} password: \"{}\" -----BEGIN TEST PRIVATE KEY-----\nMIIBOGONOTAREALKEYBYTES\n-----END TEST PRIVATE KEY-----",
             secret_corpus()[0],
             secret_corpus()[1],
         );

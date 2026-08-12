@@ -469,15 +469,11 @@ async fn voidtower_token_migration_splits_into_capability_tokens_without_breakin
     assert_eq!(blocked_res.status(), StatusCode::FORBIDDEN);
 }
 
-/// ADR-003's Decision requires the "route with no table entry" case to be a
-/// deliberate, tested default rather than a silent gap matching the original
-/// bug. `GET /api/webhooks` carries no `ROUTE_SCOPES` entry; a Bearer token
-/// must be denied there by the default-deny behavior even though it holds an
-/// unrelated real scope, while a human session-cookie login must still work
-/// normally, since the middleware is a no-op for non-token-originated
-/// requests.
+/// `GET /api/webhooks` is explicitly bearer-denied in the unified registry. A token must be
+/// rejected even when it holds an unrelated real scope, while a human session-cookie login still
+/// works because bearer enforcement is a no-op for non-token-originated requests.
 #[tokio::test]
-async fn unlisted_route_scope_behavior_is_deliberate_and_tested() {
+async fn explicitly_denied_bearer_route_preserves_human_session_access() {
     let db = setup_db().await;
     let admin = insert_user(&db, "admin").await;
     let admin_session = insert_session(&db, &admin).await;
@@ -493,8 +489,8 @@ async fn unlisted_route_scope_behavior_is_deliberate_and_tested() {
     assert_eq!(
         token_res.status(),
         StatusCode::FORBIDDEN,
-        "a Bearer token must be denied on a route with no ROUTE_SCOPES entry, \
-         even when it holds an unrelated real scope"
+        "a Bearer token must be denied by explicit route metadata even when it holds an \
+         unrelated real scope"
     );
 
     let human_res = app
@@ -504,8 +500,36 @@ async fn unlisted_route_scope_behavior_is_deliberate_and_tested() {
     assert_eq!(
         human_res.status(),
         StatusCode::OK,
-        "an unlisted route must still work normally for human session logins"
+        "an explicitly bearer-denied route must still work normally for human session logins"
     );
+}
+
+/// The embed router intentionally omits scope enforcement so iframe responses can keep their
+/// distinct security-header policy. Any valid API token is therefore upgraded to a session and
+/// reaches these handlers regardless of its scope set. Registry metadata must describe that
+/// shipped exception explicitly rather than claiming the routes are bearer-denied.
+#[tokio::test]
+async fn embed_router_preserves_unscoped_bearer_session_bridge() {
+    let db = setup_db().await;
+    let admin = insert_user(&db, "admin").await;
+    let token = insert_token(&db, &admin, &[]).await;
+    let app = crate::api::router(test_support::build(db));
+
+    for path in [
+        "/api/apps/embed/missing/index.html",
+        "/plugin-assets/missing/file.js",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(bearer_req("GET", path, &token, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "unscoped bearer token must reach embed handler for GET {path}"
+        );
+    }
 }
 
 /// ADR-009 grants diagnostic clients the same narrowly-scoped access to ordinary host

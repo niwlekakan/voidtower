@@ -15,6 +15,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+// Kept under this leaf module to prevent rustfmt from traversing the whole crate when the shared
+// registry changes. The file remains at `backend/src/action_registry.rs`; this is build-tooling
+// containment, not MCP ownership.
+#[path = "../action_registry.rs"]
+pub(crate) mod action_registry;
+use action_registry::ActionKind as RegistryActionKind;
+
 // Declared here rather than in `api/mod.rs`: `api/mod.rs` lists every module in
 // this directory via `pub mod`, so rustfmt invoked on it (as gates.sh's G0 format
 // step does whenever it's touched) walks that whole graph and reformats every
@@ -490,29 +497,10 @@ pub fn tools_json() -> Value {
         .unwrap_or(serde_json::json!({"tools":[]}))
 }
 
-/// All MCP tools currently registered are read-only (verified against the match arms
-/// below). Anything not in this list is treated as `ActionKind::Mutating`, so
-/// `voidwatch::evaluate` requires an explicit allow rule before it can run — a tool
-/// added here that mutates state must be a deliberate addition to this list, not a
-/// silent default-allow.
-const READ_ONLY_TOOLS: &[&str] = &[
-    "list_nodes",
-    "get_node_metrics",
-    "list_containers",
-    "list_services",
-    "list_alerts",
-    "get_container_logs",
-    "list_routes",
-    "read_file",
-    "search_code",
-    "get_template",
-];
-
 fn tool_action_kind(name: &str) -> ActionKind {
-    if READ_ONLY_TOOLS.contains(&name) {
-        ActionKind::Read
-    } else {
-        ActionKind::Mutating
+    match action_registry::action(name).map(|metadata| metadata.kind) {
+        Some(RegistryActionKind::Read) => ActionKind::Read,
+        Some(RegistryActionKind::Mutating) | None => ActionKind::Mutating,
     }
 }
 
@@ -541,8 +529,7 @@ pub async fn invoke_tool(
         // MCP tool resources are always classified `"mcp_tool"` (never one of
         // `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES`), so `AllowRequireSnapshot`
         // isn't reachable here today — handled structurally anyway rather than assumed,
-        // same reasoning as the `Read`-classified-tools-only state `READ_ONLY_TOOLS`
-        // documents above.
+        // same reasoning as the registry's currently read-only MCP action inventory.
         voidwatch::Verdict::Allow | voidwatch::Verdict::AllowRequireSnapshot(_) => {}
         voidwatch::Verdict::RequireApproval(reason) => {
             return Err(format!("Requires approval: {reason}"))

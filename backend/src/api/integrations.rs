@@ -65,13 +65,11 @@ pub const ALL_SCOPES: &[(&str, &str)] = &[
     ("tags:read", "List resource tags"),
 ];
 
-/// P0.6 part 2 (docs/gap-analysis.md §2): coarser, user-facing minting
-/// convenience layered on top of the fine-grained scope enforcement in
+/// Coarser, user-facing minting convenience layered on top of fine-grained scope enforcement in
 /// `auth::scope_enforce` — each tier is just a fixed subset of `ALL_SCOPES`.
 /// `admin-never` is a hard invariant enforced structurally: its scope set is
 /// empty, so it can never satisfy a scoped route in `action_registry::ROUTES`,
-/// not because minting trusts a self-reported label
-/// (docs/adr/ADR-003-auth-scope-enforcement.md, Constraint 4).
+/// not because minting trusts a self-reported label.
 pub const CAPABILITY_TIERS: &[(&str, &[&str])] = &[
     (
         "read",
@@ -1237,8 +1235,7 @@ mod tests {
         );
     }
 
-    /// Supersedes the P0-01 placeholder of the same name's old assertion: per
-    /// gap-analysis P0.2, an automation job with no matching policy rule and no
+    /// An automation job with no matching policy rule and no
     /// `voidwatch_default_allowlist` entry is now denied by default.
     #[tokio::test]
     async fn integrations_automation_id_path_denies_by_default_when_no_rule_or_allowlist_matches() {

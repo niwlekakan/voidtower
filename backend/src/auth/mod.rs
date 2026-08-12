@@ -362,8 +362,7 @@ pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Resul
 /// Looks up the declared scopes for a raw Bearer token, independent of
 /// whether the token owner's role would otherwise grant broader access.
 /// Used by `bearer_auth::middleware` to attach `TokenScopes` to the request
-/// so `scope_enforce::middleware` has something to check downstream — see
-/// docs/adr/ADR-003-auth-scope-enforcement.md.
+/// so `scope_enforce::middleware` has something to check downstream.
 pub async fn token_scopes(pool: &SqlitePool, raw_token: &str) -> Result<Vec<String>> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();

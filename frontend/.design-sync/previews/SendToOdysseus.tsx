@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react'
 import { SendToOdysseus } from 'voidtower-frontend'
 
 // Low-contrast accent tones assume the app's dark surface — see AiBadge's
-// preview for the same gotcha (NOTES.md).
+// preview for the same component-boundary gotcha.
 const surface: CSSProperties = { background: 'var(--bg-card)', padding: 12, borderRadius: 6, display: 'inline-block' }
 
 export function IconOnly() {

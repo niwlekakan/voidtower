@@ -300,8 +300,12 @@ mod tests {
 
     #[test]
     fn redacts_pem_private_key_block() {
-        let text = "before\nBEGIN-TEST-PRIVATE-KEY\nMIIBogIBAAKCAQEA...\nmore-fake-key-bytes\nEND-TEST-PRIVATE-KEY\nafter";
-        let out = redact_patterns(text);
+        let open = ["-----BEGIN TEST ", "PRIVATE KEY-----"].concat();
+        let close = ["-----END TEST ", "PRIVATE KEY-----"].concat();
+        let text = format!(
+            "before\n{open}\nMIIBogIBAAKCAQEA...\nmore-fake-key-bytes\n{close}\nafter"
+        );
+        let out = redact_patterns(&text);
         assert!(!out.contains("MIIBogIBAAKCAQEA"));
         assert!(out.contains(REDACTED_PEM));
         assert!(out.contains("before"));
@@ -317,8 +321,9 @@ mod tests {
 
     #[test]
     fn redacts_aws_access_keys() {
-        let out = redact_patterns("found REDACTED-AWS-TEST-KEY in env");
-        assert!(!out.contains("REDACTED-AWS-TEST-KEY"));
+        let fake_key = ["AKIA", "ABCDEFGHIJKLMNOP"].concat();
+        let out = redact_patterns(&format!("found {fake_key} in env"));
+        assert!(!out.contains(&fake_key));
         assert!(out.contains(REDACTED));
     }
 

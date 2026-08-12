@@ -14,7 +14,7 @@ export { default as ConfirmDialog } from '../src/components/ui/ConfirmDialog'
 export { default as LogViewer } from '../src/components/ui/LogViewer'
 
 // Store/API-coupled, verified to bundle cleanly (import.meta.env is a build
-// warning only — collapses to undefined, doesn't crash) — see NOTES.md
+// warning only — collapses to undefined and doesn't crash)
 export { default as AnimatedBackground } from '../src/components/ui/AnimatedBackground'
 export { default as AppEmbedOverlay } from '../src/components/ui/AppEmbedOverlay'
 export { default as CommandPalette } from '../src/components/ui/CommandPalette'

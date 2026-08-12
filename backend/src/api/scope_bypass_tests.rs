@@ -1,8 +1,8 @@
 #![cfg(test)]
 //! Acceptance tests for the P0-06 scope-bypass fix.
 //!
-//! Reproduces docs/codebase-map.md §4 "The scope-bypass gap": before this
-//! fix, `bearer_auth::middleware` upgrades any valid API token into a full
+//! Covers the historical scope-bypass regression: `bearer_auth::middleware` used to upgrade
+//! any valid API token into a full
 //! session carrying the token owner's role, and nothing downstream ever
 //! consults the token's declared scopes except two endpoints. These tests
 //! drive the real router end-to-end (`tower::ServiceExt::oneshot`) so they
@@ -181,7 +181,7 @@ async fn assert_insufficient_scope(res: axum::response::Response, context: &str)
     );
 }
 
-/// Reproduces the exact bug from docs/codebase-map.md §4: a token scoped to
+/// Reproduces the exact scope-bypass bug: a token scoped to
 /// only `metrics:read`, owned by an admin user, must not be able to reach an
 /// admin-gated action just because the middleware upgraded it to a full
 /// session. `GET /api/secrets/:id/reveal` is the literal example the map
@@ -532,8 +532,8 @@ async fn embed_router_preserves_unscoped_bearer_session_bridge() {
     }
 }
 
-/// ADR-009 grants diagnostic clients the same narrowly-scoped access to ordinary host
-/// metadata and detailed diagnostics that the session contract exposes to administrators.
+/// Diagnostic clients receive narrowly-scoped access to ordinary host metadata and detailed
+/// diagnostics that the session contract exposes to administrators.
 /// These requests drive the complete Bearer -> temporary session -> scope -> handler chain.
 #[tokio::test]
 async fn diagnostics_read_token_reaches_all_three_authorized_host_reads() {

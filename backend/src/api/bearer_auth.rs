@@ -10,8 +10,7 @@ use sha2::{Digest, Sha256};
 /// Marker extension carrying the *declared scopes* of the Bearer token that
 /// authenticated this request, inserted alongside `ApiTokenActor` so
 /// `auth::scope_enforce::middleware` (which runs right after this one, see
-/// `api/mod.rs`'s layer ordering) can check them against the route being
-/// hit — see docs/adr/ADR-003-auth-scope-enforcement.md.
+/// `api/mod.rs`'s layer ordering) can check them against the route being hit.
 #[derive(Clone)]
 pub struct TokenScopes(pub Vec<String>);
 

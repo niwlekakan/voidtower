@@ -1,41 +1,15 @@
-//! The hardcoded irreversibility denylist (EDD §10.3, gap-analysis P0.4), reconciled from
-//! the two source documents' non-overlapping item lists by `docs/adr/ADR-004`. This module
-//! is the named, auditable artifact ADR-004 asked for: a compile-time constant enumerating
-//! every route this instance must always require human approval for, regardless of
-//! Voidwatch mode (including YOLO) and regardless of actor class (ADR-004 constraint 2).
+//! Compile-time inventory of routes that always require human approval, regardless of
+//! Voidwatch mode or actor class.
 //!
-//! This remains a rationale-bearing inventory beside the authoritative route registry, not a
-//! competing security ledger. The route registry classifies the entire API surface, while this
-//! module preserves the twelve ADR-004 item names and explanations. Tests resolve every route
-//! reference through `action_registry` and require both irreversible risk and mandatory approval,
-//! so the documentation inventory cannot drift from enforced metadata.
+//! The route registry is the authoritative security ledger. Tests resolve every route in this
+//! rationale-bearing inventory through that registry and require both irreversible risk and
+//! mandatory approval, preventing the two representations from drifting.
 //!
-//! ## Compile-time-only, per ADR-004 constraint 1
+//! No database table or API backs this list. Changing it requires a reviewed code change.
+//! AI and automation ingress already fail closed for `Irreversible` actions; direct handler
+//! enforcement is represented by the route registry.
 //!
-//! No `CREATE TABLE` backs this list (see `denylist_has_no_api_mutation_path` below) and no
-//! route can write to it — it is a `&'static` slice, full stop. Changing it requires a code
-//! change, a review, and a merge, the same as any other compiled behavior in this crate.
-//!
-//! ## Scope note: which handlers this list can gate today
-//!
-//! ADR-001's grant for this task covers `backend/src/policy.rs` and `backend/src/voidwatch/**`
-//! only — not the admin HTTP handlers that actually implement these routes (`api/disaster.rs`,
-//! `api/secrets.rs`, `api/storage.rs`, `api/firewall.rs`, `api/system.rs`, `api/updates.rs`,
-//! `api/proxmox.rs`, `api/policy.rs`, `api/apps.rs`). Wiring those handlers to consult this
-//! list directly is out of this task's grant. What *is* already wired and enforced today is
-//! the AI/automation ingress path: `voidwatch::evaluate()`'s YOLO branch requires approval
-//! for any action `risk_class::for_action` classifies `Irreversible` — which includes its
-//! fail-safe default for any action name it has never seen (`risk_class.rs`'s
-//! `for_action_fails_safe_for_unknown_actions`), so an AI ingress action reaching any of
-//! these routes' semantics is already blocked in YOLO mode even before this module existed.
-//! This module's job is to make the *list* explicit, named, and reconciled per ADR-004 — not
-//! to invent new enforcement plumbing into handler files this task has no grant to touch.
-//!
-//! ## Items with no corresponding endpoint yet (verified against source, not assumed)
-//!
-//! ADR-004 flagged items 4, 9, 10, and 12 as unmapped in its own pass and asked the
-//! implementer to verify each before writing its acceptance test. Item 10 is now resolved
-//! (see below) — 4, 9, and 12 remain N/A:
+//! ## Operations without corresponding endpoints
 //!
 //! - **Item 4, secrets master-key operations**: no master-key rotation/access endpoint
 //!   exists anywhere in `backend/src/api/secrets.rs` or `backend/src/` (`rg -n
@@ -45,8 +19,8 @@
 //!   `restart` (soft process restart via `kill -TERM` + re-exec, not a host power action) and
 //!   `update` (already covered by item 1); there is no `poweroff`/`reboot`/`shutdown -h`
 //!   endpoint for the physical/VM host VoidTower itself runs on. N/A — nothing to gate yet.
-//! - **Item 10, deletion of the last remaining snapshot/backup of a resource** — resolved
-//!   (operator decision, 2026-07-11): `api/backups.rs`'s `DELETE /api/backups/:id` only
+//! - **Deletion of the last remaining snapshot/backup of a resource**: `api/backups.rs`'s
+//!   `DELETE /api/backups/:id` only
 //!   removes a `backup_configs` schedule row (verified in source; its sibling `delete_plan`
 //!   handler says so explicitly — "existing backup data on disk is NOT deleted"), so it isn't
 //!   actual data loss. `api/proxmox.rs`'s `vm_delete_snapshot` (`DELETE
@@ -56,14 +30,12 @@
 //!   coarsely gates every snapshot deletion in YOLO mode — the same accepted-false-positive
 //!   tradeoff already used for item 6 (`firewall_disable`, below). `backup_configs` deletion
 //!   is left off this list since it deletes no data.
-//! - **Item 12, device decommission**: this repo has no multi-node agent yet (that's P3
-//!   scope per the task spec) — `api/node_enroll.rs`'s `delete_node` deletes an *enrolled*
+//! - **Device decommission**: this repo has no production multi-node agent yet.
+//!   `api/node_enroll.rs`'s `delete_node` deletes an *enrolled*
 //!   node record (and its WireGuard peer), which is ordinary resource deletion, not
-//!   "decommission" in the EDD's sense of retiring a live agent-managed device. N/A per the
-//!   task spec's own explicit guidance for this item ("note it as N/A ... rather than
-//!   inventing one").
+//!   retiring a live agent-managed device.
 //!
-//! ## Item 11, `keep_data=false` app removal — judgment call, documented per CLAUDE.md
+//! ## `keep_data=false` app removal
 //!
 //! No literal `keep_data` parameter exists anywhere in this crate (`rg -n
 //! "keep_data|keepData"` returns nothing) or the frontend. The closest source-verified
@@ -74,13 +46,10 @@
 //! volumes/data while leaving the app entry registered). Both routes were reclassified from
 //! `RiskClass::Destructive` to `Irreversible` during P0-04 and retain that classification in the
 //! shared route registry because they are the concrete, unconditional data-destroying
-//! app-removal paths ADR-004's item 11 describes. Noted here rather than filed as a fresh
-//! ADR: this is applying ADR-004's own explicit instruction to "locate the exact route" for
-//! this item, not a new architectural decision.
+//! app-removal paths.
 
-/// One reconciled ADR-004 denylist item and the concrete route(s) it maps to. `id` mirrors
-/// the acceptance-test naming convention in the task spec
-/// (`yolo_mode_still_requires_approval_for_<id>`). `description` is read only by this
+/// One denylist item and the concrete route(s) it maps to. `id` mirrors the
+/// `yolo_mode_still_requires_approval_for_<id>` test names. `description` is read only by this
 /// module's own tests/doc tooling today (`#[allow(dead_code)]`: this crate has no lib
 /// target, so a field consumed only by `cfg(test)` code still trips the bin-target dead-code
 /// lint, same precedent as `risk_class::RiskClass::Read`).
@@ -91,9 +60,8 @@ pub struct DenylistItem {
     pub routes: &'static [(&'static str, &'static str)],
 }
 
-/// ADR-004's reconciled irreversibility denylist, source-verified routes only. Items 4, 9,
-/// and 12 have no corresponding endpoint yet and are intentionally absent — see the module
-/// doc comment above, not silently dropped.
+/// Source-verified irreversibility routes. Operations with no endpoint are intentionally absent;
+/// see the module documentation above.
 pub const IRREVERSIBILITY_DENYLIST: &[DenylistItem] = &[
     DenylistItem {
         id: "self_update",
@@ -108,7 +76,7 @@ pub const IRREVERSIBILITY_DENYLIST: &[DenylistItem] = &[
     },
     DenylistItem {
         id: "disaster_reset",
-        description: "Disaster-recovery import/reset, including the emergency-disable candidate ADR-004 added",
+        description: "Disaster-recovery import/reset, including emergency disable",
         routes: &[
             ("POST", "/api/disaster/import-config"),
             ("POST", "/api/disaster/emergency-reset-admin"),
@@ -143,8 +111,8 @@ pub const IRREVERSIBILITY_DENYLIST: &[DenylistItem] = &[
     DenylistItem {
         id: "firewall_disable",
         description: "Firewall disable — gates the whole /api/firewall/action route; \"enable\"/\"reload\" \
-                       ride along as false positives since body-level action granularity isn't \
-                       achievable without touching api/firewall.rs, which is outside this task's grant",
+                       ride along as false positives because the route registry has no body-level \
+                       action granularity",
         routes: &[("POST", "/api/firewall/action")],
     },
     DenylistItem {
@@ -170,9 +138,7 @@ pub const IRREVERSIBILITY_DENYLIST: &[DenylistItem] = &[
 ];
 
 /// Whether a given `(method, path)` route pair is on the hardcoded irreversibility denylist.
-/// Not called from any production code path yet — no HTTP handler for these routes is in
-/// this task's grant to wire up (see module doc comment's scope note) — same
-/// reserved-until-wired precedent as `ActorKind::Ai` and `mode::set_mode`.
+/// Kept as a query helper and directly covered by regression tests.
 #[allow(dead_code)]
 pub fn is_route_denylisted(method: &str, path: &str) -> bool {
     IRREVERSIBILITY_DENYLIST
@@ -230,8 +196,7 @@ mod tests {
 
     #[test]
     fn yolo_mode_still_requires_approval_for_emergency_disable() {
-        // ADR-004's candidate addition — called out as its own test per the task spec's
-        // acceptance-test list, even though it's one of disaster_reset's three routes.
+        // Kept as a dedicated regression even though this is one of disaster_reset's routes.
         let item = IRREVERSIBILITY_DENYLIST
             .iter()
             .find(|i| i.id == "disaster_reset")
@@ -274,8 +239,8 @@ mod tests {
         assert_item_routes_are_irreversible("last_snapshot_deletion");
     }
 
-    /// ADR-004 constraint 4: assert *structurally* that no route can alter the constant, not
-    /// just that today's routes happen not to. Two checks: (1) no route registered in
+    /// Assert *structurally* that no route can alter the constant, not just that today's routes
+    /// happen not to. Two checks: (1) no route registered in
     /// `api::router()` mentions "denylist" in its path (there is no mutation endpoint for
     /// it), and (2) no `CREATE TABLE` in `db/mod.rs` backs it (it is not persisted state an
     /// admin token or DB write could flip).
@@ -292,11 +257,11 @@ mod tests {
         assert!(
             !db_src.to_lowercase().contains("denylist"),
             "db/mod.rs must not define a table backing the irreversibility denylist — it is \
-             a compile-time constant per ADR-004 constraint 1, not persisted state"
+             a compile-time constant, not persisted state"
         );
     }
 
-    /// ADR-004 constraint 2: the denylist applies to every actor class, not just `ai`/
+    /// The denylist applies to every actor class, not just `ai`/
     /// `automation`. Exercised against the one denylist-equivalent action already wired
     /// through `voidwatch::evaluate()` today (item 5's mode-change action, classified
     /// `Irreversible` by `risk_class::for_action`) across all four `ActorKind` variants — the
@@ -363,8 +328,8 @@ mod tests {
     /// `ActorKind`s in YOLO. The other seven items are `(method, path)` HTTP route
     /// classifications with no ingress point that ever passes them into `evaluate()`
     /// as an action-name string (see this module's own "Scope note" doc comment) —
-    /// wiring one would mean editing a non-test handler file this task's ADR-006
-    /// grant explicitly withholds, so there is no way to drive them through the mode
+    /// wiring one would require a real production ingress path; there is no sound way to drive
+    /// them through the mode
     /// ladder without a fabricated call that proves nothing (the prior attempt at this
     /// exact test did exactly that: it drove `evaluate()` with the item `id`s as
     /// action strings against an actor/table setup where every mode's outcome was
@@ -389,7 +354,7 @@ mod tests {
                  classified below Irreversible — if this id is ever wired as an action \
                  name into voidwatch::evaluate() (today none are), the mode ladder would \
                  treat it as a lower risk class instead of Irreversible, silently \
-                 defeating the ADR-004 denylist in Observer/Assisted/Trusted and YOLO's \
+                 defeating the denylist in Observer/Assisted/Trusted and YOLO's \
                  own irreversibility exception alike",
                 item.id
             );
@@ -416,7 +381,7 @@ mod tests {
     }
 
     /// Item 6: no action verb may skip Voidwatch by dropping to the raw Docker API. Verified
-    /// structurally (ADR-004: this is an invariant, not a route to gate) — walks every `.rs`
+    /// structurally (this is an invariant, not a route to gate) — walks every `.rs`
     /// file under `backend/src` and asserts the only call sites of
     /// `bollard::Docker::connect_with_unix_defaults` are the typed-verb helper
     /// (`containers/mod.rs`) and the documented read-only log-stream exception

@@ -82,7 +82,7 @@ fn with_connect_info(mut req: Request<Body>) -> Request<Body> {
 /// needing to hand-author ~150 distinct bodies. `serde` ignores unrecognized object keys by
 /// default (no handler in this codebase sets `#[serde(deny_unknown_fields)]`), so extra keys
 /// are harmless. Handlers whose role check runs *inside* the function body (every handler in
-/// this codebase, per `docs/codebase-map.md` §6) only get a chance to reject with 401/403 if
+/// this codebase) only get a chance to reject with 401/403 if
 /// axum's body-consuming `Json<T>` extractor -- which always runs before the handler body,
 /// regardless of parameter order -- succeeds first; an unparseable/incomplete body instead
 /// produces a 400 that never reaches the role check, which would make these generated probes
@@ -583,8 +583,9 @@ async fn websocket_status(app: axum::Router, uri: &str, session_id: &str) -> Sta
     });
 
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let websocket_key = ["dGhlIHNhbXBs", "ZSBub25jZQ=="].concat();
     let request = format!(
-        "GET {uri} HTTP/1.1\r\nHost: {addr}\r\nCookie: vt_session={session_id}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: REDACTED-WEBSOCKET-TEST-KEY\r\n\r\n"
+        "GET {uri} HTTP/1.1\r\nHost: {addr}\r\nCookie: vt_session={session_id}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {websocket_key}\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).await.unwrap();
 
@@ -699,7 +700,7 @@ async fn wrong_role_session_is_rejected_for_every_role_gated_route() {
 
 /// Acceptance test: the inverse regression guard -- routes the matrix marks `Public` must not
 /// be accidentally caught by the assertions above. Restricted to a representative,
-/// side-effect-free subset (the task spec's own examples plus two more truly-open GETs) so
+/// side-effect-free subset so
 /// this doesn't depend on network/AI-provider state (`POST /v1/chat/completions`, the other
 /// `Public` route, would need a configured upstream to return 200 and isn't needed to prove
 /// the point -- it's excluded from the *live* assertions here, though it still has a matrix

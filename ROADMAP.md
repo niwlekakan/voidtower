@@ -6,8 +6,8 @@ VoidTower is a self-hosted infrastructure command tower — control plane, app c
 
 ## VoidTower 1.0 Delivery Status — 2026-08-12
 
-The approved 1.0 scope is larger than the legacy phase/backlog sections below. The authoritative
-product boundary is the [VoidTower 1.0 product and architecture design](docs/superpowers/specs/2026-08-11-voidtower-1-0-product-architecture-design.md), and its dependency-ordered work packages live in the [VoidTower 1.0 implementation plan](docs/superpowers/plans/2026-08-11-voidtower-1-0-implementation-plan.md).
+The current 1.0 scope is larger than the legacy phase/backlog sections below. This roadmap
+summarizes the public product boundary and its dependency-ordered work packages.
 
 VoidTower 1.0 requires all three product pillars together:
 
@@ -25,11 +25,11 @@ approved documents take precedence.
 
 | Work package | Status | Evidence / remaining work |
 |---|---|---|
-| **R0-01 — Reconcile audited worktree** | **Partial** | The real Docker/App Vault/restic golden-path harness and CI job landed. The historical reality audit, CMDB handoff, and `backend/vt_manual_test.sh` remain intentionally untracked and must be reviewed rather than absorbed implicitly. |
+| **R0-01 — Reconcile audited worktree** | **Partial** | The real Docker/App Vault/restic golden-path harness and CI job landed. Remaining architecture claims must be verified against source and executable checks. |
 | **S0-01 — Positive session-role authorization** | **Done** | Low-trust denylist-style guards were replaced with positive role checks and exhaustive real-router probes. |
-| **S0-02 — Authenticated host-detail routes** | **Done** | Previously unintended public host/model routes now have explicit session and bearer behavior; accepted ADR-009 records the policy. |
+| **S0-02 — Authenticated host-detail routes** | **Done** | Previously unintended public host/model routes now have explicit session and bearer behavior covered by regression tests. |
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
-| **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) made six checks mandatory on `main`: frontend, backend, supply chain, mutation testing, real Docker/App Vault/restic golden path, and multi-architecture image build. Administrators are covered; force-push and deletion are disabled. |
+| **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
 | **D0-01/D0-02 — Numbered migrations** | **Next** | Freeze the exact live schema, inventory the inline/best-effort alterations, then replace them with ordered, transactional, fail-fast migrations while preserving pre-1.0 data. |
 | **J0-01 — Shared resource/capability contract** | **Blocked on D0-02** | This becomes the common API/action/event/report contract for web, mobile, nodes, plugins, automation, and AI. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
@@ -90,13 +90,15 @@ Features confirmed present in the codebase (pages + API modules).
 
 ## Must-Have Before Public Release
 
-From `future_plan.md` — 10 non-negotiable items for a credible first public release. CLAUDE.md's own maintained snapshot marks all 10 **Done**; verified directly against source below rather than re-trusting that table blind. The "Size" column is now moot (all shipped) but kept for history.
+These 10 items are the non-negotiable baseline for a credible first public release. Their status
+is verified against source and executable checks. The "Size" column is now moot (all shipped)
+but kept for history.
 
 | # | Feature | Status | Remaining gaps |
 |---|---|---|---|
 | 1 | **Plugin system** | **Done** (`f38e640`) | zip install, iframe host, dynamic sidebar, `plugin.json` manifest — registers API routes/UI panels/automation actions |
 | 2 | **Capability detection page** | **Done** | per-capability detection with install hints; confirmed present at Settings → Capabilities |
-| 3 | **Doctor / diagnostics mode** | **Done** | `--doctor --json` CLI flag (per CLAUDE.md Phase-3 table) + UI at Settings → Diagnostics, 12 health checks |
+| 3 | **Doctor / diagnostics mode** | **Done** | `--doctor --json` CLI flag + UI at Settings → Diagnostics, 12 health checks |
 | 4 | **Disaster recovery mode** | **Done** | confirmed: `backend/src/api/disaster.rs` has `export_config`/`import_config`/`emergency_reset_admin`/`emergency_disable` plus CLI-only `cli_export`/`cli_import` that work without booting the web server |
 | 5 | **Dry-run / change planning** | **Done** | `ChangePlanModal` pattern wired into proxy create/edit, firewall rules, OS updates, container remove, backup delete, Proxmox stop/snapshot/rollback |
 | 6 | **Policy engine** | **Done**, hardened in P0 | `backend/src/policy.rs` + `backend/src/voidwatch/` — actor/action/resource/tag matching, DB-backed rules, CRUD API + UI. `voidwatch::evaluate()` is now the single choke point for MCP `tools/call`, Studio `mcp_invoke`, and automation/webhook actions (P0.1); `api_token`/`automation`/`ai` actors are default-deny with a migrated allowlist (P0.2); mode ladder + risk classes gate the AI/automation ingress path (P0.3 backend); a hardcoded irreversibility denylist blocks 9 action classes regardless of mode (P0.4); bearer tokens carry real enforced scopes, closing the god-token bypass (P0.6). Still open: making mode-ladder verdicts mandatory (not advisory) at the six UI-driven handlers — needs an approvals-queue mechanism, tracked as [issue #11](https://github.com/niwlekakan/voidtower/issues/11) |
@@ -307,7 +309,7 @@ Not started — nothing in `app-vault/apps/`, `backend/src/api/`, or the proxy s
 **App Vault deployment:**
 
 - [ ] **Mail server catalog entry** — new `app-vault/apps/` YAML following the existing pattern (see `nextcloud.yml`/`vaultwarden.yml` for the compose+env-var conventions). Candidates to evaluate: `docker-mailserver` (Postfix+Dovecot+Rspamd+ClamAV, most widely deployed, config-via-env-vars fits the YAML-catalog model well), Mailcow (heavier, full admin UI of its own — would partially duplicate VoidTower's own management page below), or Stalwart Mail Server (single Rust binary, JMAP-native, modern and a closer architectural fit to VoidTower's own stack, but younger/less battle-tested). Lean toward `docker-mailserver` first for the install-base and documentation depth; Stalwart as a phase-2 "modern option" once the integration patterns below are proven.
-- [ ] **Webmail UI** — Roundcube or SOGo as a second compose service, proxied through VoidTower's existing nginx proxy system exactly like any other App Vault app (`write_nginx_conf`, Docker-host upstream rewrite already required by `CLAUDE.md`'s nginx rule applies here too).
+- [ ] **Webmail UI** — Roundcube or SOGo as a second compose service, proxied through VoidTower's existing nginx proxy system exactly like any other App Vault app (`write_nginx_conf` and the existing Docker-host upstream rewrite apply here too).
 
 **VoidTower-native mail management page:**
 
@@ -420,7 +422,7 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 - [ ] Public API SDKs — generate TypeScript, Python, Go SDKs from the existing OpenAPI spec (note: no OpenAPI spec exists yet — this depends on the item below shipping first)
 - [ ] OpenAPI documentation UI — confirmed not started, no `openapi` references anywhere in the tree; expose `/api/openapi.json` with a browsable Swagger/Redoc UI
 - [ ] Demo / simulation mode — confirmed not started, no `--demo` flag in `main.rs`'s arg parser; `voidtower --demo` creates fake nodes/metrics/alerts/containers/VMs/backups/automation runs; does not touch real host
-- [ ] Expand native CLI beyond `user`/`backup` — `voidtower` already has `user list/create/reset-password/set-role/delete` and `backup list/create/run/check/restore-test/delete` (see CLAUDE.md "CLI management commands"); the same open-DB-and-exit pattern extends naturally to `voidtower proxy list/create/delete`, `voidtower app deploy/list`, and `voidtower policy list` for headless/scripted administration without booting the web server
+- [ ] Expand native CLI beyond `user`/`backup` — `voidtower` already has `user list/create/reset-password/set-role/delete` and `backup list/create/run/check/restore-test/delete`; the same open-DB-and-exit pattern extends naturally to `voidtower proxy list/create/delete`, `voidtower app deploy/list`, and `voidtower policy list` for headless/scripted administration without booting the web server
 
 ### App Vault expansion
 
@@ -444,7 +446,7 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 
 **Corrected count: 54 apps present** (`ls app-vault/apps/*.yml | wc -l`). The original "already in vault" list also self-contradicted the table below — it listed `jitsi` and `matrix-synapse` as already present while the planned-apps table *also* listed "Matrix / Synapse" and "Jitsi" as not-yet-added. Both are removed from the planned table below since they're confirmed present.
 
-Apps mentioned in `future_plan.md` section 21 that are **still not** in `app-vault/apps/`:
+Backlog apps that are **still not** in `app-vault/apps/`:
 
 | App | Category | Notes |
 |---|---|---|
@@ -514,4 +516,4 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 - **iPhone / iOS VM** — no legal option exists; Corellium is paid/enterprise only; not in scope
 - **macOS VM** — OSX-KVM is legal grey area; not in scope for mainline
 - **Cloud dependency / telemetry / license server** — never; out of scope by principle
-- **Kubernetes / etcd / external consensus** — plan.md explicitly excluded for MVP; not planned
+- **Kubernetes / etcd / external consensus** — explicitly excluded from the MVP; not planned

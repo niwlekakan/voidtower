@@ -1,6 +1,6 @@
 # VoidTower 1.0 Product and Architecture Design
 
-**Status:** Approved design, pending consolidated-document review
+**Status:** Approved by the operator; implementation in progress
 
 **Date:** 2026-08-11
 

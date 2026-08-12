@@ -4,6 +4,51 @@ VoidTower is a self-hosted infrastructure command tower — control plane, app c
 
 ---
 
+## VoidTower 1.0 Delivery Status — 2026-08-12
+
+The approved 1.0 scope is larger than the legacy phase/backlog sections below. The authoritative
+product boundary is the [VoidTower 1.0 product and architecture design](docs/superpowers/specs/2026-08-11-voidtower-1-0-product-architecture-design.md), and its dependency-ordered work packages live in the [VoidTower 1.0 implementation plan](docs/superpowers/plans/2026-08-11-voidtower-1-0-implementation-plan.md).
+
+VoidTower 1.0 requires all three product pillars together:
+
+1. A secure, recoverable infrastructure control plane and managed-node cluster.
+2. A distinct household experience across web, desktop, phone, and tablet.
+3. AI, automation, plugin, reporting, and explanation contracts across every applicable domain.
+
+The release is still **pre-1.0**. Existing feature presence is not considered release evidence until
+the relevant contract, integration, failure, provider/hardware, recovery, and client gates pass.
+The legacy sections below remain useful as feature inventory and backlog history; where they
+conflict with this dated status or the approved design and implementation plan, the dated and
+approved documents take precedence.
+
+### Foundation progress
+
+| Work package | Status | Evidence / remaining work |
+|---|---|---|
+| **R0-01 — Reconcile audited worktree** | **Partial** | The real Docker/App Vault/restic golden-path harness and CI job landed. The historical reality audit, CMDB handoff, and `backend/vt_manual_test.sh` remain intentionally untracked and must be reviewed rather than absorbed implicitly. |
+| **S0-01 — Positive session-role authorization** | **Done** | Low-trust denylist-style guards were replaced with positive role checks and exhaustive real-router probes. |
+| **S0-02 — Authenticated host-detail routes** | **Done** | Previously unintended public host/model routes now have explicit session and bearer behavior; accepted ADR-009 records the policy. |
+| **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
+| **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) made six checks mandatory on `main`: frontend, backend, supply chain, mutation testing, real Docker/App Vault/restic golden path, and multi-architecture image build. Administrators are covered; force-push and deletion are disabled. |
+| **D0-01/D0-02 — Numbered migrations** | **Next** | Freeze the exact live schema, inventory the inline/best-effort alterations, then replace them with ordered, transactional, fail-fast migrations while preserving pre-1.0 data. |
+| **J0-01 — Shared resource/capability contract** | **Blocked on D0-02** | This becomes the common API/action/event/report contract for web, mobile, nodes, plugins, automation, and AI. |
+| **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
+
+### Current execution order
+
+1. Complete **D0-01/D0-02** and establish numbered schema migrations.
+2. Build **J0-01/J0-03** shared capability, job, approval, and event foundations.
+3. Land the CMDB/Asset Registry on those contracts.
+4. Implement the local `vt-agent`, then secure remote enrollment and managed-cluster operation.
+5. Add placement-driven Docker/App Vault and VM/LXC workflows, including full Proxmox and managed community-script integration.
+6. Deliver household, AI, automation, plugin, and smartphone/tablet vertical slices on the same policy/job/resource model.
+7. Complete recovery, upgrade, security, hardware/provider, mobile, and release qualification before calling the product 1.0.
+
+No new remote-execution or AI-mutation path may bypass the typed action registry, policy/approval
+pipeline, durable jobs, audit history, or redaction rules.
+
+---
+
 ## Current State (what ships today)
 
 Features confirmed present in the codebase (pages + API modules).
@@ -33,13 +78,13 @@ Features confirmed present in the codebase (pages + API modules).
 | **Timeline** | Global audit timeline with category chips, search, outcome filter, paginated scroll |
 | **Capabilities** | Detect installed tools (Docker, libvirt, WireGuard, restic, nginx, GPU) with version strings and install hints |
 | **Diagnostics** | 12 system health checks — config/data dirs, DB, frontend assets, disk space, Docker daemon, nginx config, port bind |
-| **Security** | Session list for all users, revoke individual/all-other sessions, full audit log |
+| **Security** | Positive role guards; explicit route/session/bearer policy; one typed registry for all 327 routes and structured actions; fail-closed unknown metadata; scoped tokens; Voidwatch risk/approval metadata; session revocation; audit log |
 | **Integrations** | Scoped API tokens; Odysseus config (enable/disable, MCP toggle, webhook secret); SSE event stream; webhook trigger; tool manifest at `/api/integrations/odysseus/manifest` |
 | **Themes** | 23 built-in themes (`frontend/src/theme/themes.ts`) + live custom token editor (CSS variables), 14-param animation editor |
 | **Animated Backgrounds** | 8 canvas presets (Void, Grid, Aurora, Pulse, Noise, Hex, Hex Classic, Circuit) + 4 glass levels |
 | **Updates** | In-UI updater — Docker image check/apply; bare-metal pull/rebuild with rollback points; OS package updates (apt/pacman/dnf) |
 | **TOTP / SSO** | TOTP enrollment + login step (Security page); Authentik OIDC SSO login with group→role mapping and auto-create-on-login (Settings → Security); per-proxy Authentik forward-auth gating |
-| **Multi-user / RBAC** | Owner / Admin / Operator / Viewer roles |
+| **Multi-user / RBAC** | Owner / Admin / Operator / Viewer plus constrained Member / Guest / Demo roles; positive authorization is covered by exhaustive real-router tests |
 
 ---
 
@@ -72,7 +117,7 @@ From `future_plan.md` — 10 non-negotiable items for a credible first public re
 | Plugin system / SDK | **Done** (`f38e640`) — zip install, iframe host, dynamic sidebar, plugin.json manifest |
 | WireGuard manager | Partial — peer add/remove/list; missing peer stats, QR export |
 | LXC management page | **Done** (`418963f`) — list/start/stop/shutdown/restart via `pct`; capability-gated nav item |
-| Agent / multi-node mode | Not started — `--agent` flag parsed but mode not implemented |
+| Agent / multi-node mode | **Partial foundation** — pairing-code enrollment, node identities, heartbeat, inventory table, and node deletion routes exist. The `--agent` runtime, authenticated remote action protocol, local-adapter convergence, placement, and managed-cluster execution are not implemented. |
 
 ---
 
@@ -458,7 +503,7 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 - **TrueNAS AIO end-to-end test pending** — code-level gap is fixed: `deploy/truenas/custom-app.yml` already parameterizes `TRUENAS_POOL` (default `tank`) everywhere a host path is used, and `.env.example` documents setting it to `main`. What's left is a real deploy-and-verify pass, not a code fix.
 - **MCP server** — ~~stub~~ Done (`3a23ed3`) — full SSE+message MCP server with 13 tools
 - **LXC management** — ~~missing~~ Done (`418963f`) — `/lxc` page + `pct` backend
-- **Agent/multi-node mode missing** — still open. `backend/src/cluster/mod.rs` is only an `#[allow(dead_code)]` `is_agent_mode()` checking `--agent`, plus a comment block describing the unbuilt plan — no `/agent/metrics`/`/agent/actions` routes or join-token system exist.
+- **Managed-node runtime is incomplete** — pairing-code enrollment, node identity, heartbeat, and node inventory routes exist, so “no join-token system” is stale. `backend/src/cluster/mod.rs` still only detects `--agent`; there is no production `vt-agent` runtime, authenticated remote action protocol, local-adapter convergence, placement engine, or cluster-wide workload execution yet.
 - **TOTP** — ~~`totp.rs` exists but no UI~~ Done (`16b3a59`) — Security page + login step
 
 ---

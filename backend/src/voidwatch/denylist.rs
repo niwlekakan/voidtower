@@ -4,16 +4,11 @@
 //! every route this instance must always require human approval for, regardless of
 //! Voidwatch mode (including YOLO) and regardless of actor class (ADR-004 constraint 2).
 //!
-//! This is deliberately a *separate* ledger from [`super::risk_class::ROUTE_RISK_CLASSES`],
-//! not a duplicate of it: `ROUTE_RISK_CLASSES` classifies the entire API surface (including
-//! plain `Mutate`/`Destructive` routes with no relationship to irreversibility), while this
-//! module exists to give the twelve ADR-004 items an explicit, named, documented home with
-//! their own rationale — and a test (`denylist_routes_are_classified_irreversible`) that
-//! ties the two together so they can't silently drift apart. `ROUTE_RISK_CLASSES` is the
-//! table `voidwatch::mode_pre_pass`'s YOLO branch actually consults at runtime (via
-//! `risk_class::for_action` for the AI/automation ingress vocabulary); this module is the
-//! documentation-grade source of truth that table's `Irreversible` entries must satisfy for
-//! every item below.
+//! This remains a rationale-bearing inventory beside the authoritative route registry, not a
+//! competing security ledger. The route registry classifies the entire API surface, while this
+//! module preserves the twelve ADR-004 item names and explanations. Tests resolve every route
+//! reference through `action_registry` and require both irreversible risk and mandatory approval,
+//! so the documentation inventory cannot drift from enforced metadata.
 //!
 //! ## Compile-time-only, per ADR-004 constraint 1
 //!
@@ -76,9 +71,9 @@
 //! the compose project directory from disk *and* the `deployed_apps` row; there is no
 //! "keep data" alternative, i.e. it always operates in the `keep_data=false` sense) and
 //! `delete_app_volumes` (`POST /api/apps/:project_name/delete-volumes` — explicitly destroys
-//! volumes/data while leaving the app entry registered). Both routes were previously
-//! classified `RiskClass::Destructive` in `ROUTE_RISK_CLASSES`; this task reclassifies both
-//! to `Irreversible` to reflect that they are the concrete, unconditional data-destroying
+//! volumes/data while leaving the app entry registered). Both routes were reclassified from
+//! `RiskClass::Destructive` to `Irreversible` during P0-04 and retain that classification in the
+//! shared route registry because they are the concrete, unconditional data-destroying
 //! app-removal paths ADR-004's item 11 describes. Noted here rather than filed as a fresh
 //! ADR: this is applying ADR-004's own explicit instruction to "locate the exact route" for
 //! this item, not a new architectural decision.
@@ -188,12 +183,8 @@ pub fn is_route_denylisted(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voidwatch::risk_class::{RiskClass, ROUTE_RISK_CLASSES};
+    use crate::api::mcp::action_registry::{self, ApprovalPolicy, RiskClass};
 
-    /// Ties this module's named ADR-004 list to the exhaustive `ROUTE_RISK_CLASSES` ledger:
-    /// every route named here must be classified `Irreversible` there. Catches the two
-    /// ledgers drifting apart (e.g. someone reclassifying a route in `risk_class.rs` without
-    /// checking whether it's on this denylist).
     fn assert_item_routes_are_irreversible(item_id: &str) {
         let item = IRREVERSIBILITY_DENYLIST
             .iter()
@@ -204,20 +195,26 @@ mod tests {
             "denylist item {item_id:?} has no routes"
         );
         for (method, path) in item.routes {
-            let classified = ROUTE_RISK_CLASSES
-                .iter()
-                .find(|(m, p, _)| m == method && p == path);
-            match classified {
-                Some((_, _, RiskClass::Irreversible)) => {}
-                Some((_, _, other)) => panic!(
-                    "denylist item {item_id:?}'s route {method} {path} is classified \
-                     {other:?} in ROUTE_RISK_CLASSES, not Irreversible"
-                ),
-                None => panic!(
-                    "denylist item {item_id:?}'s route {method} {path} has no \
-                     ROUTE_RISK_CLASSES entry at all"
-                ),
-            }
+            let metadata = action_registry::route(method, path).unwrap_or_else(|| {
+                panic!("denylist item {item_id:?}'s route {method} {path} has no metadata")
+            });
+            assert_eq!(
+                metadata.risk,
+                RiskClass::Irreversible,
+                "denylist item {item_id:?}'s route {method} {path} must be irreversible"
+            );
+            assert_eq!(
+                metadata.approval,
+                ApprovalPolicy::Always,
+                "denylist item {item_id:?}'s route {method} {path} must always require approval"
+            );
+        }
+    }
+
+    #[test]
+    fn denylist_routes_are_irreversible_and_always_approved() {
+        for item in IRREVERSIBILITY_DENYLIST {
+            assert_item_routes_are_irreversible(item.id);
         }
     }
 

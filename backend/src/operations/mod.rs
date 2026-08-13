@@ -2,6 +2,7 @@
 //! their six domain adapters; keep them compiled and tested throughout that rollout.
 #![allow(dead_code)]
 
+pub mod adapters;
 pub mod approvals;
 pub mod canonical_json;
 pub mod contracts;
@@ -10,6 +11,7 @@ pub mod jobs;
 pub mod registry;
 pub mod resources;
 pub mod state;
+pub mod worker;
 
 pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()

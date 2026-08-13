@@ -197,6 +197,16 @@ pub async fn submit(pool: &SqlitePool, request: SubmitJob) -> Result<JobSummaryV
         &request.resource.id,
         &job_id,
         approval_id.as_deref(),
+        "job.submitted.v1",
+        serde_json::json!({"action": request.action, "state": state}),
+    )
+    .await?;
+    append_job_event(
+        &mut transaction,
+        &request.actor,
+        &request.resource.id,
+        &job_id,
+        approval_id.as_deref(),
         match state {
             JobState::AwaitingApproval => "job.awaiting_approval.v1",
             JobState::Queued => "job.queued.v1",
@@ -206,6 +216,25 @@ pub async fn submit(pool: &SqlitePool, request: SubmitJob) -> Result<JobSummaryV
         serde_json::json!({"action": request.action, "state": state}),
     )
     .await?;
+    if let Some(approval_id) = approval_id.as_deref() {
+        append_job_event(
+            &mut transaction,
+            &request.actor,
+            &request.resource.id,
+            &job_id,
+            Some(approval_id),
+            "approval.requested.v1",
+            serde_json::json!({
+                "action": request.action,
+                "job_state": state,
+                "requirement": match &request.policy {
+                    SubmissionPolicy::RequireApproval { requirement, .. } => requirement,
+                    _ => unreachable!(),
+                },
+            }),
+        )
+        .await?;
+    }
     insert_audit(
         &mut transaction,
         &request.actor,
@@ -604,6 +633,20 @@ mod tests {
         .unwrap();
         assert_eq!(job.state, JobState::AwaitingApproval);
         assert!(job.approval_id.is_some());
+        let events = events::list_after(&pool, 0, 20).await.unwrap();
+        let event_types: Vec<&str> = events
+            .iter()
+            .filter(|event| event.job_id.as_deref() == Some(&job.id))
+            .map(|event| event.event_type.as_str())
+            .collect();
+        assert_eq!(
+            event_types,
+            [
+                "job.submitted.v1",
+                "job.awaiting_approval.v1",
+                "approval.requested.v1",
+            ]
+        );
     }
 
     #[tokio::test]

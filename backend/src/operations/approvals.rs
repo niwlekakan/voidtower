@@ -52,6 +52,94 @@ pub async fn reject(
     decide(pool, approval_id, actor, comment, false).await
 }
 
+pub async fn expire_pending(pool: &SqlitePool, now: i64) -> Result<u64> {
+    let mut transaction = pool.begin().await?;
+    let expired: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT a.id, a.job_id, j.resource_id FROM approvals a \
+         JOIN jobs j ON j.id = a.job_id \
+         WHERE a.status = 'pending' AND a.expires_at <= ? AND j.state = 'awaiting_approval' \
+         ORDER BY a.expires_at, a.id",
+    )
+    .bind(now)
+    .fetch_all(&mut *transaction)
+    .await?;
+    let actor = ActorRef {
+        actor_type: ActorType::System,
+        id: None,
+        source: Some("approval_expiry".into()),
+    };
+    let mut count = 0u64;
+
+    for (approval_id, job_id, resource_id) in expired {
+        let updated = sqlx::query(
+            "UPDATE approvals SET status = 'expired', decided_at = ?, updated_at = ? \
+             WHERE id = ? AND status = 'pending' AND expires_at <= ?",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(&approval_id)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() == 0 {
+            continue;
+        }
+        sqlx::query(
+            "UPDATE jobs SET state = 'expired', finished_at = ?, updated_at = ? \
+             WHERE id = ? AND state = 'awaiting_approval'",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(&job_id)
+        .execute(&mut *transaction)
+        .await?;
+        for (event_type, payload) in [
+            (
+                "approval.expired.v1",
+                serde_json::json!({"status": "expired", "job_state": "expired"}),
+            ),
+            (
+                "job.expired.v1",
+                serde_json::json!({
+                    "previous_state": "awaiting_approval",
+                    "state": "expired",
+                }),
+            ),
+        ] {
+            events::append(
+                &mut transaction,
+                PendingEvent {
+                    event_type: event_type.into(),
+                    actor: Some(actor.clone()),
+                    resource_id: Some(resource_id.clone()),
+                    job_id: Some(job_id.clone()),
+                    approval_id: Some(approval_id.clone()),
+                    correlation_id: job_id.clone(),
+                    causation_id: None,
+                    payload,
+                },
+            )
+            .await?;
+        }
+        sqlx::query(
+            "INSERT INTO audit_log \
+             (id, timestamp, user_id, actor_type, action, resource_type, resource_id, outcome, request_id, details, source) \
+             VALUES (?, ?, NULL, 'system', 'approval.expire', 'approval', ?, 'expired', ?, NULL, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(now)
+        .bind(&approval_id)
+        .bind(&job_id)
+        .bind(actor.source.as_deref())
+        .execute(&mut *transaction)
+        .await?;
+        count += 1;
+    }
+
+    transaction.commit().await?;
+    Ok(count)
+}
+
 async fn decide(
     pool: &SqlitePool,
     approval_id: &str,
@@ -118,8 +206,8 @@ async fn decide(
         &mut transaction,
         PendingEvent {
             event_type: event_type.into(),
-            actor: Some(actor),
-            resource_id: Some(row.6),
+            actor: Some(actor.clone()),
+            resource_id: Some(row.6.clone()),
             job_id: Some(row.0.clone()),
             approval_id: Some(approval_id.into()),
             correlation_id: row.0.clone(),
@@ -127,6 +215,43 @@ async fn decide(
             payload: serde_json::json!({"status": approval_status, "job_state": job_state}),
         },
     )
+    .await?;
+    events::append(
+        &mut transaction,
+        PendingEvent {
+            event_type: format!("job.{job_state}.v1"),
+            actor: Some(actor.clone()),
+            resource_id: Some(row.6.clone()),
+            job_id: Some(row.0.clone()),
+            approval_id: Some(approval_id.into()),
+            correlation_id: row.0.clone(),
+            causation_id: None,
+            payload: serde_json::json!({
+                "previous_state": "awaiting_approval",
+                "state": job_state,
+            }),
+        },
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO audit_log \
+         (id, timestamp, user_id, actor_type, action, resource_type, resource_id, outcome, request_id, details, source) \
+         VALUES (?, ?, ?, ?, ?, 'approval', ?, ?, ?, NULL, ?)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(now)
+    .bind(actor.id.as_deref())
+    .bind(actor.actor_type.as_str())
+    .bind(if approved {
+        "approval.approve"
+    } else {
+        "approval.reject"
+    })
+    .bind(approval_id)
+    .bind(approval_status)
+    .bind(&row.0)
+    .bind(actor.source.as_deref())
+    .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
     jobs::get(pool, &row.0)
@@ -234,5 +359,24 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(approved.state, JobState::Queued);
+        let audit: (String, String, String) = sqlx::query_as(
+            "SELECT action, resource_id, outcome FROM audit_log \
+             WHERE request_id = ? AND action = 'approval.approve'",
+        )
+        .bind(&approved.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            audit,
+            ("approval.approve".into(), approval_id, "approved".into())
+        );
+        let events = events::list_after(&pool, 0, 20).await.unwrap();
+        let event_types: Vec<&str> = events
+            .iter()
+            .filter(|event| event.job_id.as_deref() == Some(&approved.id))
+            .map(|event| event.event_type.as_str())
+            .collect();
+        assert!(event_types.ends_with(&["approval.approved.v1", "job.queued.v1"]));
     }
 }

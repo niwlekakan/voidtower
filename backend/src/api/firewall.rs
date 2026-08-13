@@ -2,7 +2,12 @@ use axum::{extract::State, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 
-use crate::{auth, error::{AppError, Result}, AppState};
+use crate::{
+    auth,
+    error::{AppError, Result},
+    networking::firewall::{self as firewall_provider, FirewallMutation},
+    AppState,
+};
 
 #[derive(Serialize, Clone)]
 pub struct FirewallRule {
@@ -21,10 +26,6 @@ pub struct FirewallStatus {
     pub rules: Vec<FirewallRule>,
     pub logging: Option<String>,
     pub error: Option<String>,
-}
-
-fn run_ufw(args: &[&str]) -> std::io::Result<std::process::Output> {
-    std::process::Command::new("ufw").args(args).output()
 }
 
 fn parse_ufw_status(output: &str) -> (bool, Vec<FirewallRule>, Option<String>) {
@@ -98,7 +99,7 @@ async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
 }
 
 fn ufw_available() -> bool {
-    std::path::Path::new("/usr/sbin/ufw").exists() || std::path::Path::new("/usr/bin/ufw").exists()
+    firewall_provider::available()
 }
 
 pub async fn get_status(State(state): State<AppState>, jar: CookieJar) -> Result<Json<FirewallStatus>> {
@@ -114,25 +115,23 @@ pub async fn get_status(State(state): State<AppState>, jar: CookieJar) -> Result
         }));
     }
 
-    let out = match run_ufw(&["status", "numbered", "verbose"]) {
-        Ok(o) => o,
-        Err(e) => return Ok(Json(FirewallStatus {
+    let text = match firewall_provider::status_text().await {
+        Ok(text) => text,
+        Err(error) => {
+            let message = error.to_string();
+            let permission_error = ["permission", "sudo", "root"]
+                .iter()
+                .any(|needle| message.to_ascii_lowercase().contains(needle));
+            return Ok(Json(FirewallStatus {
             backend: "ufw".into(), enabled: false, rules: vec![], logging: None,
-            error: Some(format!("Failed to run ufw: {e}")),
-        })),
+                error: Some(if permission_error {
+                    "VoidTower needs elevated privileges to read firewall rules (run as root or add sudo permission for ufw)".into()
+                } else {
+                    message
+                }),
+            }));
+        }
     };
-
-    let text = String::from_utf8_lossy(&out.stdout).to_string()
-        + &String::from_utf8_lossy(&out.stderr);
-
-    let perm_error = !out.status.success() && (text.contains("permission") || text.contains("sudo") || text.contains("root"));
-
-    if perm_error {
-        return Ok(Json(FirewallStatus {
-            backend: "ufw".into(), enabled: false, rules: vec![], logging: None,
-            error: Some("VoidTower needs elevated privileges to read firewall rules (run as root or add sudo permission for ufw)".into()),
-        }));
-    }
 
     let (enabled, rules, logging) = parse_ufw_status(&text);
 
@@ -245,13 +244,9 @@ pub async fn add_rule(State(state): State<AppState>, jar: CookieJar, Json(req): 
         })));
     }
 
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let out = run_ufw(&arg_refs).map_err(|e| AppError::Internal(e.into()))?;
-
-    if !out.status.success() {
-        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(AppError::FeatureUnavailable(if msg.is_empty() { "ufw add rule failed".into() } else { msg }));
-    }
+    firewall_provider::execute(FirewallMutation::AddRule(args))
+        .await
+        .map_err(|error| AppError::FeatureUnavailable(error.to_string()))?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -264,14 +259,9 @@ pub struct DeleteRuleRequest {
 pub async fn delete_rule(State(state): State<AppState>, jar: CookieJar, Json(req): Json<DeleteRuleRequest>) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    // Pass --force to skip interactive confirmation
-    let num = req.num.to_string();
-    let out = run_ufw(&["--force", "delete", &num]).map_err(|e| AppError::Internal(e.into()))?;
-
-    if !out.status.success() {
-        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(AppError::FeatureUnavailable(if msg.is_empty() { "ufw delete failed".into() } else { msg }));
-    }
+    firewall_provider::execute(FirewallMutation::DeleteRule(req.num))
+        .await
+        .map_err(|error| AppError::FeatureUnavailable(error.to_string()))?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -284,21 +274,15 @@ pub struct FirewallActionRequest {
 pub async fn firewall_action(State(state): State<AppState>, jar: CookieJar, Json(req): Json<FirewallActionRequest>) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    let cmd = match req.action.as_str() {
-        "enable"  => vec!["--force", "enable"],
-        "disable" => vec!["--force", "disable"],
-        "reload"  => vec!["reload"],
-        "reset"   => vec!["--force", "reset"],
+    let mutation = match req.action.as_str() {
+        "enable" => FirewallMutation::Enable,
+        "disable" => FirewallMutation::Disable,
+        "reload" => FirewallMutation::Reload,
+        "reset" => FirewallMutation::Reset,
         _ => return Err(AppError::BadRequest("unknown action".into())),
     };
-
-    let out = run_ufw(&cmd).map_err(|e| AppError::Internal(e.into()))?;
-    let msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
-
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(AppError::FeatureUnavailable(if err.is_empty() { "ufw action failed".into() } else { err }));
-    }
-
-    Ok(Json(serde_json::json!({ "ok": true, "message": msg })))
+    let result = firewall_provider::execute(mutation)
+        .await
+        .map_err(|error| AppError::FeatureUnavailable(error.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true, "message": result.message })))
 }

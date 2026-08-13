@@ -13,6 +13,7 @@ use sqlx::SqlitePool;
 use std::{collections::HashMap, fmt, sync::Arc};
 
 pub mod containers;
+pub mod firewall;
 
 #[derive(Debug, Clone)]
 pub struct PlanRequest {
@@ -102,6 +103,7 @@ impl AdapterRegistry {
     pub fn staged(pool: SqlitePool) -> Result<Self> {
         let mut registry = Self::new();
         registry.register(Arc::new(containers::ContainerAdapter::new(pool)))?;
+        registry.register(Arc::new(firewall::FirewallAdapter::new()))?;
         Ok(registry)
     }
 
@@ -282,6 +284,19 @@ mod tests {
     #[test]
     fn complete_runtime_registry_converges_with_action_metadata() {
         complete_registry().validate_complete().unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_registry_exposes_only_completed_domain_actions() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let registry = AdapterRegistry::staged(pool).unwrap();
+        assert!(registry.for_action("container.start").is_ok());
+        assert!(registry.for_action("firewall.reset").is_ok());
+        assert!(registry.for_action("container.compose.apply").is_err());
+        assert!(registry.for_action("proxy.rule.create").is_err());
+        assert!(registry.validate_complete().is_err());
     }
 
     #[test]

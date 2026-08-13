@@ -1081,7 +1081,7 @@ mod tests {
                 ProxyMutation::Create { input, .. } => {
                     assert_eq!(
                         input.basic_auth_secret_id.as_deref(),
-                        Some("8af2045f-01f5-4765-b158-54ca917d59e3")
+                        Some("00000000-0000-4000-8000-000000000001")
                     );
                     "create"
                 }
@@ -1144,7 +1144,7 @@ mod tests {
             oidc_enabled: true,
             rules: vec![],
             secrets: vec![SecretReferenceSnapshot {
-                id: "8af2045f-01f5-4765-b158-54ca917d59e3".into(),
+                id: "00000000-0000-4000-8000-000000000001".into(),
                 version: 3,
             }],
         }
@@ -1166,7 +1166,7 @@ mod tests {
                 "domain": "app.example.test",
                 "upstream": "http://127.0.0.1:8080",
                 "basic_auth_user": "operator",
-                "basic_auth_secret_id": "8af2045f-01f5-4765-b158-54ca917d59e3"
+                "basic_auth_secret_id": "00000000-0000-4000-8000-000000000001"
             }),
         };
         let plan = adapter.plan(request.clone()).await.unwrap();
@@ -1205,7 +1205,7 @@ mod tests {
                 "domain": "app.example.test",
                 "upstream": "http://127.0.0.1:8080",
                 "basic_auth_user": "operator",
-                "basic_auth_secret_id": "8af2045f-01f5-4765-b158-54ca917d59e3"
+                "basic_auth_secret_id": "00000000-0000-4000-8000-000000000001"
             }),
         };
         let before = adapter.external_fingerprint(&request).await.unwrap();
@@ -1226,7 +1226,7 @@ mod tests {
         let pool = pool().await;
         let key = Arc::new([7u8; 32]);
         let encrypted = crate::api::secrets::encrypt(&key, "known-secret-value").unwrap();
-        let secret_id = "8af2045f-01f5-4765-b158-54ca917d59e3";
+        let secret_id = "00000000-0000-4000-8000-000000000001";
         sqlx::query(
             "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) \
              VALUES (?, 'proxy-basic-auth', ?, 0, 0)",

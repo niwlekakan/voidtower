@@ -309,6 +309,7 @@ async fn main() -> Result<()> {
 
     // Database
     let pool = db::init_pool(&cfg.db_path()).await?;
+    operations::registry::validate()?;
 
     // Re-log bootstrap token on every restart while setup is still pending.
     // Covers Docker deployments where the first-run log line was missed.

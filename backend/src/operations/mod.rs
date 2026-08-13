@@ -7,6 +7,7 @@ pub mod canonical_json;
 pub mod contracts;
 pub mod events;
 pub mod jobs;
+pub mod registry;
 pub mod resources;
 pub mod state;
 

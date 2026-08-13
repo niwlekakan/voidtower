@@ -5,7 +5,7 @@
 //! worker loop will use once the runtime adapter registry is complete.
 
 use super::{
-    adapters::{AdapterRegistry, PlanRequest, StepOutcome, StepRequest},
+    adapters::{AdapterRegistry, PlanRequest, ReconcileOutcome, StepOutcome, StepRequest},
     canonical_json,
     contracts::{ActorRef, ActorType, JobState, PlannedStepV1, ResourceRef},
     events::{self, PendingEvent},
@@ -34,6 +34,7 @@ pub struct ClaimedStep {
     pub position: i64,
     pub step: PlannedStepV1,
     pub attempt: u32,
+    pub external_operation_id: Option<String>,
     pub lease_expires_at: i64,
 }
 
@@ -67,6 +68,7 @@ struct StepRow {
     name: String,
     retry_class: String,
     recovery_class: String,
+    external_operation_id: Option<String>,
 }
 
 pub async fn claim_next(
@@ -88,7 +90,7 @@ pub async fn claim_next(
                        WHERE c.resource_id = j.resource_id AND c.action = j.action \
                          AND c.availability = 'available') \
            AND NOT EXISTS (SELECT 1 FROM jobs active \
-                           WHERE active.state = 'running' \
+                           WHERE active.state IN ('running', 'needs_attention') \
                              AND active.concurrency_key = j.concurrency_key) \
          ORDER BY j.queued_at, j.submitted_at, j.id LIMIT 1",
     )
@@ -107,7 +109,7 @@ pub async fn claim_next(
          started_at = COALESCE(started_at, ?), updated_at = ? \
          WHERE id = ? AND state = 'queued' \
            AND NOT EXISTS (SELECT 1 FROM jobs active \
-                           WHERE active.state = 'running' \
+                           WHERE active.state IN ('running', 'needs_attention') \
                              AND active.concurrency_key = jobs.concurrency_key)",
     )
     .bind(worker_id)
@@ -169,7 +171,8 @@ pub async fn claim_step(
         return Ok(None);
     }
     let step: Option<StepRow> = sqlx::query_as(
-        "SELECT id, job_id, position, kind, name, retry_class, recovery_class \
+        "SELECT id, job_id, position, kind, name, retry_class, recovery_class, \
+                external_operation_id \
          FROM job_steps WHERE job_id = ? AND state = 'pending' ORDER BY position LIMIT 1",
     )
     .bind(job_id)
@@ -230,6 +233,7 @@ pub async fn claim_step(
             recovery_class: step.recovery_class,
         },
         attempt: u32::try_from(attempt)?,
+        external_operation_id: step.external_operation_id,
         lease_expires_at,
     }))
 }
@@ -248,7 +252,8 @@ pub async fn renew_lease(
     let mut transaction = pool.begin().await?;
     let updated = sqlx::query(
         "UPDATE jobs SET lease_expires_at = ?, updated_at = ? \
-         WHERE id = ? AND state = 'running' AND lease_owner = ? AND lease_expires_at > ?",
+         WHERE id = ? AND state IN ('running', 'needs_attention') \
+           AND lease_owner = ? AND lease_expires_at > ?",
     )
     .bind(expires_at)
     .bind(now)
@@ -391,6 +396,7 @@ pub async fn execute_claimed_step(
         input: job.input.clone(),
         step: step.step.clone(),
         attempt: step.attempt,
+        external_operation_id: step.external_operation_id.clone(),
     };
     let outcome =
         adapter
@@ -689,6 +695,333 @@ pub async fn complete_step(
     Ok(state)
 }
 
+/// Claim one uncertain step for side-effect-free provider reconciliation. Reconciliation keeps
+/// the job in `needs_attention`; the lease only serializes verification attempts and never makes
+/// the original operation executable again.
+pub async fn claim_reconciliation(
+    pool: &SqlitePool,
+    adapters: &AdapterRegistry,
+    worker_id: &str,
+    now: i64,
+    lease_seconds: i64,
+) -> Result<Option<(ClaimedJob, ClaimedStep)>> {
+    ensure!(!worker_id.trim().is_empty(), "worker id is required");
+    ensure!(lease_seconds > 0, "lease duration must be positive");
+    let mut transaction = pool.begin().await?;
+    let candidate: Option<ClaimRow> = sqlx::query_as(
+        "SELECT j.id, j.action, j.resource_id, j.resource_revision, r.kind AS resource_kind, \
+                r.display_name AS resource_name, j.input_json, j.external_fingerprint \
+         FROM jobs j JOIN resources r ON r.id = j.resource_id \
+         WHERE j.state = 'needs_attention' \
+           AND EXISTS (SELECT 1 FROM job_steps s WHERE s.job_id = j.id \
+                       AND s.state = 'needs_attention' AND s.recovery_class = 'reconcile') \
+           AND (j.lease_expires_at IS NULL OR j.lease_expires_at <= ?) \
+         ORDER BY j.updated_at, j.id LIMIT 1",
+    )
+    .bind(now)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(candidate) = candidate else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+    adapters.for_action(&candidate.action)?;
+    let step: StepRow = sqlx::query_as(
+        "SELECT id, job_id, position, kind, name, retry_class, recovery_class, \
+                external_operation_id FROM job_steps \
+         WHERE job_id = ? AND state = 'needs_attention' ORDER BY position LIMIT 1",
+    )
+    .bind(&candidate.id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let lease_expires_at = now
+        .checked_add(lease_seconds)
+        .context("reconciliation lease expiry overflow")?;
+    let updated = sqlx::query(
+        "UPDATE jobs SET lease_owner = ?, lease_expires_at = ?, updated_at = ? \
+         WHERE id = ? AND state = 'needs_attention' \
+           AND (lease_expires_at IS NULL OR lease_expires_at <= ?)",
+    )
+    .bind(worker_id)
+    .bind(lease_expires_at)
+    .bind(now)
+    .bind(&candidate.id)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await?;
+    if updated.rows_affected() == 0 {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    sqlx::query(
+        "UPDATE job_attempts SET finished_at = ?, outcome = 'reconciliation_lease_expired' \
+         WHERE job_id = ? AND finished_at IS NULL",
+    )
+    .bind(now)
+    .bind(&candidate.id)
+    .execute(&mut *transaction)
+    .await?;
+    let attempt: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM job_attempts WHERE step_id = ?",
+    )
+    .bind(&step.id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO job_attempts \
+         (id, job_id, step_id, attempt_number, worker_id, lease_expires_at, started_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&candidate.id)
+    .bind(&step.id)
+    .bind(attempt)
+    .bind(worker_id)
+    .bind(lease_expires_at)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await?;
+    append_worker_event(
+        &mut transaction,
+        &candidate.id,
+        &candidate.resource_id,
+        "job.reconciliation_started.v1",
+        serde_json::json!({
+            "state": "needs_attention",
+            "step_id": step.id,
+            "attempt": attempt,
+        }),
+    )
+    .await?;
+    transaction.commit().await?;
+
+    Ok(Some((
+        ClaimedJob {
+            id: candidate.id,
+            action: candidate.action,
+            resource: ResourceRef {
+                id: candidate.resource_id,
+                kind: candidate.resource_kind,
+                display_name: candidate.resource_name,
+                revision: candidate.resource_revision,
+            },
+            input: serde_json::from_str(&candidate.input_json)?,
+            external_fingerprint: candidate.external_fingerprint,
+            lease_expires_at,
+        },
+        ClaimedStep {
+            id: step.id,
+            job_id: step.job_id,
+            position: step.position,
+            step: PlannedStepV1 {
+                kind: step.kind,
+                name: step.name,
+                retry_class: step.retry_class,
+                recovery_class: step.recovery_class,
+            },
+            attempt: u32::try_from(attempt)?,
+            external_operation_id: step.external_operation_id,
+            lease_expires_at,
+        },
+    )))
+}
+
+pub async fn reconcile_claimed_step(
+    pool: &SqlitePool,
+    adapters: &AdapterRegistry,
+    job: &ClaimedJob,
+    step: &ClaimedStep,
+    worker_id: &str,
+    now: i64,
+) -> Result<JobState> {
+    ensure!(job.id == step.job_id, "claimed step belongs to another job");
+    let adapter = adapters.for_action(&job.action)?;
+    let request = StepRequest {
+        job_id: job.id.clone(),
+        action: job.action.clone(),
+        resource: job.resource.clone(),
+        input: job.input.clone(),
+        step: step.step.clone(),
+        attempt: step.attempt,
+        external_operation_id: step.external_operation_id.clone(),
+    };
+    let outcome =
+        adapter
+            .reconcile(request)
+            .await
+            .unwrap_or_else(|error| ReconcileOutcome::StillUncertain {
+                message: safe_text(&format!("Provider reconciliation failed: {error}")),
+            });
+    complete_reconciliation(pool, step, worker_id, now, outcome).await
+}
+
+pub async fn complete_reconciliation(
+    pool: &SqlitePool,
+    step: &ClaimedStep,
+    worker_id: &str,
+    now: i64,
+    outcome: ReconcileOutcome,
+) -> Result<JobState> {
+    let outcome = sanitize_reconciliation(outcome);
+    let mut transaction = pool.begin().await?;
+    let row: CompletionRow = sqlx::query_as(
+        "SELECT j.action, j.resource_id, j.state AS job_state, s.state AS step_state, \
+                s.retry_class \
+         FROM jobs j JOIN job_steps s ON s.job_id = j.id \
+         JOIN job_attempts a ON a.job_id = j.id AND a.step_id = s.id \
+         WHERE j.id = ? AND s.id = ? AND a.attempt_number = ? \
+           AND a.finished_at IS NULL AND a.worker_id = ? \
+           AND j.lease_owner = ? AND j.lease_expires_at > ?",
+    )
+    .bind(&step.job_id)
+    .bind(&step.id)
+    .bind(i64::from(step.attempt))
+    .bind(worker_id)
+    .bind(worker_id)
+    .bind(now)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .context("reconciliation attempt is no longer owned by this worker")?;
+    ensure!(
+        row.job_state == "needs_attention",
+        "job does not need reconciliation"
+    );
+    ensure!(
+        row.step_state == "needs_attention",
+        "step does not need reconciliation"
+    );
+
+    let (state, event_type, audit_outcome) = match outcome {
+        ReconcileOutcome::Succeeded { result } => {
+            let result_json = canonical_json::to_canonical_string(&result)?;
+            finish_attempt(
+                &mut transaction,
+                step,
+                now,
+                "reconciliation_succeeded",
+                None,
+            )
+            .await?;
+            sqlx::query(
+                "UPDATE job_steps SET state = 'succeeded', progress_current = 1, \
+                 progress_total = MAX(progress_total, 1), result_json = ?, error_code = NULL, \
+                 error_message = NULL, finished_at = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(&result_json)
+            .bind(now)
+            .bind(now)
+            .bind(&step.id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "UPDATE jobs SET state = 'succeeded', \
+                 progress_current = (SELECT COUNT(*) FROM job_steps \
+                                     WHERE job_id = jobs.id AND state = 'succeeded'), \
+                 result_json = ?, error_code = NULL, error_message = NULL, finished_at = ?, \
+                 lease_owner = NULL, lease_expires_at = NULL, updated_at = ? \
+                 WHERE id = ? AND state = 'needs_attention'",
+            )
+            .bind(result_json)
+            .bind(now)
+            .bind(now)
+            .bind(&step.job_id)
+            .execute(&mut *transaction)
+            .await?;
+            (
+                JobState::Succeeded,
+                "job.succeeded.v1",
+                "reconciliation_succeeded",
+            )
+        }
+        ReconcileOutcome::Failed { code, message } => {
+            finish_attempt(&mut transaction, step, now, "reconciliation_failed", None).await?;
+            sqlx::query(
+                "UPDATE job_steps SET state = 'failed', error_code = ?, error_message = ?, \
+                 finished_at = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(&code)
+            .bind(&message)
+            .bind(now)
+            .bind(now)
+            .bind(&step.id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "UPDATE jobs SET state = 'failed', error_code = ?, error_message = ?, \
+                 finished_at = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ? \
+                 WHERE id = ? AND state = 'needs_attention'",
+            )
+            .bind(&code)
+            .bind(&message)
+            .bind(now)
+            .bind(now)
+            .bind(&step.job_id)
+            .execute(&mut *transaction)
+            .await?;
+            (JobState::Failed, "job.failed.v1", "reconciliation_failed")
+        }
+        ReconcileOutcome::StillUncertain { message } => {
+            finish_attempt(
+                &mut transaction,
+                step,
+                now,
+                "reconciliation_uncertain",
+                None,
+            )
+            .await?;
+            sqlx::query("UPDATE job_steps SET error_message = ?, updated_at = ? WHERE id = ?")
+                .bind(&message)
+                .bind(now)
+                .bind(&step.id)
+                .execute(&mut *transaction)
+                .await?;
+            sqlx::query(
+                "UPDATE jobs SET error_message = ?, lease_owner = NULL, lease_expires_at = NULL, \
+                 updated_at = ? WHERE id = ? AND state = 'needs_attention'",
+            )
+            .bind(&message)
+            .bind(now)
+            .bind(&step.job_id)
+            .execute(&mut *transaction)
+            .await?;
+            (
+                JobState::NeedsAttention,
+                "job.reconciliation_pending.v1",
+                "reconciliation_uncertain",
+            )
+        }
+    };
+    append_worker_event(
+        &mut transaction,
+        &step.job_id,
+        &row.resource_id,
+        event_type,
+        serde_json::json!({
+            "previous_state": "needs_attention",
+            "state": state,
+            "step_id": step.id,
+            "attempt": step.attempt,
+        }),
+    )
+    .await?;
+    let actor = ActorRef {
+        actor_type: ActorType::System,
+        id: None,
+        source: Some("operation_reconciler".into()),
+    };
+    insert_worker_audit(
+        &mut transaction,
+        now,
+        &actor,
+        &row.action,
+        &step.job_id,
+        audit_outcome,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(state)
+}
+
 async fn finish_attempt(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     step: &ClaimedStep,
@@ -784,6 +1117,21 @@ fn sanitize_outcome(outcome: StepOutcome) -> Result<StepOutcome> {
             diagnostic: diagnostic.map(safe_value),
         },
     })
+}
+
+fn sanitize_reconciliation(outcome: ReconcileOutcome) -> ReconcileOutcome {
+    match outcome {
+        ReconcileOutcome::Succeeded { result } => ReconcileOutcome::Succeeded {
+            result: safe_value(result),
+        },
+        ReconcileOutcome::Failed { code, message } => ReconcileOutcome::Failed {
+            code: safe_text(&code),
+            message: safe_text(&message),
+        },
+        ReconcileOutcome::StillUncertain { message } => ReconcileOutcome::StillUncertain {
+            message: safe_text(&message),
+        },
+    }
 }
 
 fn safe_value(value: Value) -> Value {
@@ -1315,10 +1663,109 @@ mod tests {
                 .await
                 .unwrap();
         assert!(!diagnostic.contains("must-not-persist"));
+        let blocked = submit_job(&pool, &resource, "blocked-by-uncertain", "never").await;
         assert!(claim_next(&pool, &adapters, "worker-b", 103, 20)
             .await
             .unwrap()
             .is_none());
+        assert_eq!(
+            jobs::get(&pool, &blocked).await.unwrap().unwrap().state,
+            JobState::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn reconciliation_records_a_new_attempt_without_replaying_execution() {
+        struct SuccessfulReconciler;
+
+        #[async_trait]
+        impl OperationAdapter for SuccessfulReconciler {
+            fn key(&self) -> &'static str {
+                "containers"
+            }
+
+            fn actions(&self) -> &[&'static str] {
+                &["container.start"]
+            }
+
+            async fn plan(&self, _request: PlanRequest) -> Result<OperationPlanV1> {
+                bail!("not used")
+            }
+
+            async fn external_fingerprint(&self, _request: &PlanRequest) -> Result<String> {
+                bail!("reconciliation does not run execution preflight")
+            }
+
+            async fn execute_step(&self, _request: StepRequest) -> Result<StepOutcome> {
+                panic!("reconciliation must never replay execution")
+            }
+
+            async fn reconcile(&self, request: StepRequest) -> Result<ReconcileOutcome> {
+                assert_eq!(request.external_operation_id.as_deref(), Some("task-9"));
+                Ok(ReconcileOutcome::Succeeded {
+                    result: serde_json::json!({
+                        "verified": true,
+                        "access_token": "must-not-persist",
+                    }),
+                })
+            }
+        }
+
+        let (pool, adapters, resource) = setup().await;
+        let (job, step) =
+            claim_job_and_step(&pool, &adapters, &resource, "reconcile-success").await;
+        complete_step(
+            &pool,
+            &step,
+            "worker-a",
+            102,
+            StepOutcome::Uncertain {
+                code: "provider_timeout".into(),
+                message: "Provider outcome could not be verified".into(),
+                external_operation_id: Some("task-9".into()),
+                diagnostic: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut reconcilers = AdapterRegistry::new();
+        reconcilers
+            .register(Arc::new(SuccessfulReconciler))
+            .unwrap();
+        let (claimed_job, claimed_step) =
+            claim_reconciliation(&pool, &reconcilers, "reconciler-a", 103, 20)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(claimed_step.attempt, 2);
+        assert_eq!(
+            reconcile_claimed_step(
+                &pool,
+                &reconcilers,
+                &claimed_job,
+                &claimed_step,
+                "reconciler-a",
+                104,
+            )
+            .await
+            .unwrap(),
+            JobState::Succeeded
+        );
+        let summary = jobs::get(&pool, &job.id).await.unwrap().unwrap();
+        assert_eq!(summary.state, JobState::Succeeded);
+        assert_eq!(summary.progress_current, 1);
+        let persisted = serde_json::to_string(&summary.result).unwrap();
+        assert!(persisted.contains("verified"));
+        assert!(!persisted.contains("must-not-persist"));
+        let outcomes: Vec<String> = sqlx::query_scalar(
+            "SELECT outcome FROM job_attempts WHERE job_id = ? ORDER BY attempt_number",
+        )
+        .bind(&job.id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(outcomes, vec!["uncertain", "reconciliation_succeeded"]);
     }
 
     #[tokio::test]

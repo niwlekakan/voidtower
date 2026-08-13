@@ -375,6 +375,7 @@ mod tests {
                 input: request.input,
                 step: plan.steps[0].clone(),
                 attempt: 1,
+                external_operation_id: None,
             })
             .await
             .unwrap();
@@ -401,6 +402,7 @@ mod tests {
                     recovery_class: "reconcile".into(),
                 },
                 attempt: 1,
+                external_operation_id: None,
             })
             .await
             .unwrap();

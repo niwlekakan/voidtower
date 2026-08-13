@@ -28,6 +28,9 @@ pub struct StepRequest {
     pub input: Value,
     pub step: PlannedStepV1,
     pub attempt: u32,
+    /// Provider task/operation identity persisted by an uncertain execution attempt. This is
+    /// absent during initial execution and present when the reconciler can verify provider state.
+    pub external_operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

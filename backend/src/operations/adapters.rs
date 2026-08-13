@@ -14,6 +14,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 
 pub mod containers;
 pub mod firewall;
+pub mod proxy;
 
 #[derive(Debug, Clone)]
 pub struct PlanRequest {
@@ -100,10 +101,11 @@ impl AdapterRegistry {
 
     /// Runtime implementations completed so far. This registry is safe for fail-closed planning
     /// and approval revalidation, but workers must not start until `validate_complete` succeeds.
-    pub fn staged(pool: SqlitePool) -> Result<Self> {
+    pub fn staged(pool: SqlitePool, secrets_key: Arc<[u8; 32]>) -> Result<Self> {
         let mut registry = Self::new();
-        registry.register(Arc::new(containers::ContainerAdapter::new(pool)))?;
+        registry.register(Arc::new(containers::ContainerAdapter::new(pool.clone())))?;
         registry.register(Arc::new(firewall::FirewallAdapter::new()))?;
+        registry.register(Arc::new(proxy::ProxyAdapter::new(pool, secrets_key)))?;
         Ok(registry)
     }
 
@@ -291,11 +293,12 @@ mod tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let registry = AdapterRegistry::staged(pool).unwrap();
+        let registry = AdapterRegistry::staged(pool, Arc::new([0u8; 32])).unwrap();
         assert!(registry.for_action("container.start").is_ok());
         assert!(registry.for_action("firewall.reset").is_ok());
+        assert!(registry.for_action("proxy.rule.create").is_ok());
         assert!(registry.for_action("container.compose.apply").is_err());
-        assert!(registry.for_action("proxy.rule.create").is_err());
+        assert!(registry.for_action("update.os.apply").is_err());
         assert!(registry.validate_complete().is_err());
     }
 

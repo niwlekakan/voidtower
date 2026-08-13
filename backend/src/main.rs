@@ -342,7 +342,10 @@ async fn main() -> Result<()> {
     // Agent status broadcaster
     let (agents_tx, _) = broadcast::channel::<api::agents::AgentStatusUpdate>(64);
 
-    let operation_adapters = Arc::new(operations::adapters::AdapterRegistry::staged(pool.clone())?);
+    let operation_adapters = Arc::new(operations::adapters::AdapterRegistry::staged(
+        pool.clone(),
+        secrets_key.clone(),
+    )?);
     let state = AppState {
         db: pool.clone(),
         config: Arc::new(cfg.clone()),

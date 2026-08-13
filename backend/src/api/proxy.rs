@@ -1,6 +1,7 @@
 use crate::{
     audit, auth,
     error::{AppError, Result},
+    networking::proxy::{self as proxy_provider, NginxAction},
     AppState,
 };
 use axum::{
@@ -66,22 +67,11 @@ fn validate_upstream(u: &str) -> Result<()> {
 
 /// Host-side bind-mount path for the Docker nginx-proxy container's conf.d.
 /// VoidTower writes proxy configs here; the container picks them up on reload.
-const DOCKER_NGINX_CONF_DIR: &str = "/var/lib/voidtower/nginx/conf.d";
+const DOCKER_NGINX_CONF_DIR: &str = proxy_provider::NGINX_CONF_DIR;
 
 /// Returns the container ID of the running vt-nginx-proxy container, or None.
 fn docker_nginx_container_id() -> Option<String> {
-    let out = std::process::Command::new("docker")
-        .args([
-            "ps",
-            "--filter", "label=com.docker.compose.project=vt-nginx-proxy",
-            "--filter", "status=running",
-            "--format", "{{.ID}}",
-            "--latest",
-        ])
-        .output()
-        .ok()?;
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if id.is_empty() { None } else { Some(id) }
+    proxy_provider::running_container_id()
 }
 
 fn effective_conf_dir() -> &'static str {
@@ -215,9 +205,7 @@ pub(crate) fn close_firewall_port(port: &str) {
 }
 
 fn conf_path(domain: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(effective_conf_dir())
-        .join(format!("voidtower-{domain}.conf"))
-
+    proxy_provider::conf_path(domain).expect("validated proxy domain")
 }
 
 fn parsed_custom_headers(cfg: &ProxyConfig) -> Vec<CustomHeader> {
@@ -268,7 +256,7 @@ fn rate_limit_use_line(cfg: &ProxyConfig) -> String {
 /// no extra Docker volume is needed; nginx's `auth_basic_user_file` can point at
 /// any readable path, not just `*.conf`.
 fn htpasswd_path(domain: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(effective_conf_dir()).join(format!("voidtower-{domain}.htpasswd"))
+    proxy_provider::htpasswd_path(domain).expect("validated proxy domain")
 }
 
 /// nginx's `ngx_http_auth_basic_module` special-cases the `{SHA}` prefix as
@@ -281,17 +269,13 @@ fn htpasswd_hash(password: &str) -> String {
 }
 
 fn write_htpasswd_file(domain: &str, user: &str, pass_hash: &str) -> Result<()> {
-    let path = htpasswd_path(domain);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    std::fs::write(&path, format!("{user}:{pass_hash}\n"))
-        .map_err(|e| AppError::BadRequest(format!("Cannot write htpasswd file: {e}")))?;
-    Ok(())
+    proxy_provider::write_htpasswd(domain, user, pass_hash)
+        .map_err(|error| AppError::BadRequest(error.to_string()))
 }
 
-fn remove_htpasswd_file(domain: &str) {
-    let _ = std::fs::remove_file(htpasswd_path(domain));
+fn remove_htpasswd_file_checked(domain: &str) -> Result<()> {
+    proxy_provider::remove_htpasswd(domain)
+        .map_err(|error| AppError::BadRequest(error.to_string()))
 }
 
 fn auth_basic_lines(cfg: &ProxyConfig) -> String {
@@ -399,10 +383,6 @@ fn sso_locations(allow_embed: bool) -> String {
 // port so any LAN client can reach it via http://<server-ip>:<embed_port>/
 // without requiring any DNS or /etc/hosts configuration.
 pub fn write_nginx_port_conf(slug: &str, upstream: &str, port: u16) -> Result<()> {
-    let path = conf_path(&format!("embed-port-{slug}"));
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     let upstream = rewrite_upstream_for_docker(upstream);
     let content = format!(
         r#"# Managed by VoidTower — do not edit manually
@@ -426,8 +406,8 @@ server {{
 }}
 "#
     );
-    std::fs::write(&path, content)
-        .map_err(|e| AppError::BadRequest(format!("Cannot write nginx config: {e}")))?;
+    proxy_provider::write_port_conf(slug, &content)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     Ok(())
 }
 
@@ -435,28 +415,29 @@ server {{
 /// derived entirely from `cfg`. `nginx_conf_content` builds the actual text —
 /// kept as a single source of truth so the dry-run preview can never drift
 /// from what's actually written to disk.
-fn write_nginx_conf(cfg: &ProxyConfig) -> Result<()> {
-    let path = conf_path(&cfg.domain);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
+pub(crate) fn write_nginx_conf(cfg: &ProxyConfig) -> Result<()> {
     if let (Some(user), Some(hash)) = (&cfg.basic_auth_user, &cfg.basic_auth_pass_hash) {
         write_htpasswd_file(&cfg.domain, user, hash)?;
     } else {
-        remove_htpasswd_file(&cfg.domain);
+        remove_htpasswd_file_checked(&cfg.domain)?;
     }
     let content = nginx_conf_content(cfg);
-    std::fs::write(&path, content)
-        .map_err(|e| AppError::BadRequest(format!("Cannot write nginx config: {e}")))?;
+    proxy_provider::write_conf(&cfg.domain, &content)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     Ok(())
 }
 
-fn remove_nginx_conf(domain: &str) {
-    let _ = std::fs::remove_file(conf_path(domain));
-    remove_htpasswd_file(domain);
+pub(crate) fn remove_nginx_conf(domain: &str) {
+    let _ = remove_nginx_conf_checked(domain);
 }
 
-fn nginx_conf_content(cfg: &ProxyConfig) -> String {
+pub(crate) fn remove_nginx_conf_checked(domain: &str) -> Result<()> {
+    proxy_provider::remove_conf(domain)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    remove_htpasswd_file_checked(domain)
+}
+
+pub(crate) fn nginx_conf_content(cfg: &ProxyConfig) -> String {
     let domain = &cfg.domain;
     let upstream = rewrite_upstream_for_docker(&cfg.upstream);
     let embed = if cfg.allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
@@ -508,24 +489,13 @@ server {{
 }
 
 fn nginx_active() -> bool {
-    docker_nginx_container_id().is_some()
+    proxy_provider::snapshot().is_ok_and(|snapshot| snapshot.active)
 }
 
-fn reload_nginx() -> std::result::Result<String, String> {
-    let id = docker_nginx_container_id()
-        .ok_or_else(|| "nginx-proxy container is not running — deploy it from App Vault".to_string())?;
-    let out = std::process::Command::new("docker")
-        .args(["exec", &id, "nginx", "-s", "reload"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok("nginx-proxy reloaded".into())
-    } else {
-        Err(format!(
-            "docker exec reload failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-    }
+pub(crate) fn reload_nginx() -> std::result::Result<String, String> {
+    proxy_provider::execute(NginxAction::Reload)
+        .map(|result| result.message)
+        .map_err(|error| error.to_string())
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -637,7 +607,7 @@ fn extra_change_rows(cfg: &ProxyConfig) -> Vec<serde_json::Value> {
 
 /// Builds the `ProxyConfig` that will be persisted and used to render the nginx
 /// conf, resolving basic auth against any pre-existing row (for updates).
-fn build_proxy_config(
+pub(crate) fn build_proxy_config(
     id: String,
     domain: String,
     req: &CreateRequest,
@@ -1219,19 +1189,14 @@ pub async fn nginx_action(
 
     match action {
         "test" => {
-            let out = tokio::task::spawn_blocking(|| {
-                let Some(id) = docker_nginx_container_id() else {
-                    return (false, "nginx-proxy container is not running — deploy it from App Vault".to_string());
-                };
-                match std::process::Command::new("docker").args(["exec", &id, "nginx", "-t"]).output() {
-                    Ok(o) => (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))),
-                    Err(e) => (false, format!("docker exec failed: {e}")),
-                }
-            })
+            let out = tokio::task::spawn_blocking(proxy_provider::test_configuration)
             .await
             .unwrap();
 
-            return Ok(Json(serde_json::json!({ "ok": out.0, "output": out.1 })));
+            return Ok(Json(match out {
+                Ok(output) => serde_json::json!({ "ok": true, "output": output }),
+                Err(error) => serde_json::json!({ "ok": false, "output": error.to_string() }),
+            }));
         }
         "start" | "stop" | "restart" | "reload" => {}
         _ => {
@@ -1241,36 +1206,20 @@ pub async fn nginx_action(
         }
     }
 
-    let action = action.to_string();
-    let result = tokio::task::spawn_blocking(move || {
-        // Docker mode: manage the nginx-proxy container directly
-        if let Some(id) = docker_nginx_container_id() {
-            let docker_action = match action.as_str() {
-                "reload"  => return reload_nginx(),
-                "restart" => "restart",
-                "stop"    => "stop",
-                "start"   => "start",
-                _         => return Err(format!("Unknown action: {action}")),
-            };
-            let out = std::process::Command::new("docker")
-                .args([docker_action, &id])
-                .output()
-                .map_err(|e| e.to_string())?;
-            return if out.status.success() {
-                Ok(format!("nginx-proxy container {action} succeeded"))
-            } else {
-                Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-            };
-        }
-
-        Err("nginx-proxy container is not running — deploy it from App Vault".to_string())
-    })
+    let mutation = match action {
+        "start" => NginxAction::Start,
+        "stop" => NginxAction::Stop,
+        "restart" => NginxAction::Restart,
+        "reload" => NginxAction::Reload,
+        _ => unreachable!("validated action"),
+    };
+    let result = tokio::task::spawn_blocking(move || proxy_provider::execute(mutation))
     .await
     .unwrap();
 
     match result {
-        Ok(msg) => Ok(Json(serde_json::json!({ "ok": true, "message": msg }))),
-        Err(e) => Ok(Json(serde_json::json!({ "ok": false, "message": e }))),
+        Ok(result) => Ok(Json(serde_json::json!({ "ok": true, "message": result.message }))),
+        Err(error) => Ok(Json(serde_json::json!({ "ok": false, "message": error.to_string() }))),
     }
 }
 

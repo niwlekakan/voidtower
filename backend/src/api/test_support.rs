@@ -10,8 +10,10 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
 
 pub(crate) fn build(db: SqlitePool) -> AppState {
+    let secrets_key = Arc::new([0u8; 32]);
     let operation_adapters = Arc::new(
-        crate::operations::adapters::AdapterRegistry::staged(db.clone()).unwrap(),
+        crate::operations::adapters::AdapterRegistry::staged(db.clone(), secrets_key.clone())
+            .unwrap(),
     );
     AppState {
         db,
@@ -19,7 +21,7 @@ pub(crate) fn build(db: SqlitePool) -> AppState {
         metrics_tx: broadcast::channel(1).0,
         latest_metrics: Arc::new(RwLock::new(None)),
         agents_tx: broadcast::channel(1).0,
-        secrets_key: Arc::new([0u8; 32]),
+        secrets_key,
         token_sessions: Arc::new(RwLock::new(HashMap::new())),
         login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
         deploy_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),

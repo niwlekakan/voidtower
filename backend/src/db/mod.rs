@@ -113,7 +113,33 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![(1, true)]);
+        assert_eq!(versions, vec![(1, true), (2, true)]);
+    }
+
+    #[tokio::test]
+    async fn operation_resource_backfill_is_idempotent_and_stable() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+        seeds::run(&pool).await.unwrap();
+
+        let before: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT r.id, a.namespace, a.value FROM resources r \
+             JOIN resource_aliases a ON a.resource_id = r.id ORDER BY a.namespace, a.value",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(before.len(), 7);
+
+        seeds::run(&pool).await.unwrap();
+        let after: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT r.id, a.namespace, a.value FROM resources r \
+             JOIN resource_aliases a ON a.resource_id = r.id ORDER BY a.namespace, a.value",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(after, before);
     }
 
     #[tokio::test]
@@ -122,10 +148,17 @@ mod tests {
         run_migrations(&pool).await.unwrap();
 
         let golden = include_str!("../../tests/schema_golden.sql");
-        let golden_statements: Vec<&str> = golden
+        let golden_statements: std::collections::BTreeMap<&str, &str> = golden
             .split("\n;\n")
             .map(str::trim)
             .filter(|statement| !statement.is_empty())
+            .map(|statement| {
+                let name = statement
+                    .strip_prefix("CREATE TABLE ")
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .expect("golden schema statement must be CREATE TABLE");
+                (name, statement)
+            })
             .collect();
         let live_tables: Vec<(String, String)> = sqlx::query_as(
             "SELECT name, sql FROM sqlite_master \
@@ -137,13 +170,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(live_tables.len(), golden_statements.len());
-        for ((name, live_sql), golden_sql) in live_tables.iter().zip(golden_statements) {
-            let expected_name = golden_sql
-                .strip_prefix("CREATE TABLE ")
-                .and_then(|rest| rest.split_whitespace().next())
-                .unwrap();
-            assert_eq!(name, expected_name);
-            assert_eq!(live_sql.trim(), golden_sql);
+        for (name, live_sql) in &live_tables {
+            let golden_sql = golden_statements
+                .get(name.as_str())
+                .unwrap_or_else(|| panic!("missing golden schema for {name}"));
+            assert_eq!(live_sql.trim(), *golden_sql);
         }
     }
 
@@ -360,7 +391,7 @@ mod tests {
                 .fetch_one(&first)
                 .await
                 .unwrap();
-        assert_eq!(versions, 1);
+        assert_eq!(versions, 2);
         first.close().await;
         second.close().await;
     }

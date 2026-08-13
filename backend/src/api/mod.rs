@@ -44,6 +44,7 @@ pub mod ai_ask;
 pub mod ai_context;
 pub mod ai_providers;
 pub mod alerts;
+pub mod approvals;
 pub mod apps;
 pub mod audit;
 pub mod auth;
@@ -59,6 +60,7 @@ pub mod events;
 pub mod files;
 pub mod firewall;
 pub mod integrations;
+pub mod jobs;
 pub mod lxc;
 pub mod mcp;
 pub mod members;
@@ -72,6 +74,7 @@ pub mod plugins;
 pub mod policy;
 pub mod proxmox;
 pub mod proxy;
+pub mod resources;
 mod role_guard;
 pub mod secrets;
 pub mod security;
@@ -143,7 +146,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/metrics/current", get(metrics::get_current))
         .route("/api/metrics/ws", get(metrics::ws_handler))
         // Infrastructure event stream (SSE)
+        .route("/api/events", get(events::history_handler))
         .route("/api/events/stream", get(events::stream_handler))
+        // Shared operational contracts
+        .route("/api/resources", get(resources::list))
+        .route("/api/resources/:id", get(resources::get))
+        .route("/api/resources/:id/capabilities", get(resources::capabilities))
+        .route("/api/jobs", get(jobs::list))
+        .route("/api/jobs/:id", get(jobs::get))
+        .route("/api/approvals", get(approvals::list))
+        .route("/api/approvals/:id", get(approvals::get))
+        .route("/api/approvals/:id/approve", post(approvals::approve))
+        .route("/api/approvals/:id/reject", post(approvals::reject))
         // Services
         .route("/api/services", get(services::list))
         .route("/api/services/:name", get(services::get))

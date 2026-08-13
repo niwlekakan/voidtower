@@ -13,6 +13,7 @@ mod error;
 mod monitoring;
 mod networking;
 mod oidc;
+mod operations;
 mod policy;
 mod security;
 mod services;

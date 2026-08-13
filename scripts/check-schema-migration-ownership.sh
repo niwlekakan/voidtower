@@ -26,4 +26,9 @@ if [[ ! -f backend/migrations/0001_current_baseline.sql ]]; then
   exit 1
 fi
 
+if [[ ! -f backend/migrations/0002_operation_contracts.sql ]]; then
+  printf 'Schema migration ownership check failed; operation-contract migration is missing.\n' >&2
+  exit 1
+fi
+
 printf 'Schema migration ownership check passed.\n'

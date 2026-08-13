@@ -3,6 +3,8 @@ use sqlx::{Connection, Row, SqliteConnection};
 use std::collections::BTreeMap;
 
 pub(crate) const BASELINE_SQL: &str = include_str!("../../migrations/0001_current_baseline.sql");
+pub(crate) const OPERATIONS_SQL: &str =
+    include_str!("../../migrations/0002_operation_contracts.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColumnShape {
@@ -147,7 +149,7 @@ async fn inspect_schema(connection: &mut SqliteConnection) -> Result<SchemaShape
     Ok(SchemaShape { tables, indexes })
 }
 
-async fn canonical_schema() -> Result<SchemaShape> {
+async fn canonical_baseline_schema() -> Result<SchemaShape> {
     let mut connection = SqliteConnection::connect("sqlite::memory:")
         .await
         .context("failed to open canonical in-memory schema")?;
@@ -158,8 +160,32 @@ async fn canonical_schema() -> Result<SchemaShape> {
     inspect_schema(&mut connection).await
 }
 
+async fn canonical_schema() -> Result<SchemaShape> {
+    let mut connection = SqliteConnection::connect("sqlite::memory:")
+        .await
+        .context("failed to open canonical in-memory schema")?;
+    sqlx::query(BASELINE_SQL)
+        .execute(&mut connection)
+        .await
+        .context("failed to construct canonical schema from baseline migration")?;
+    sqlx::query(OPERATIONS_SQL)
+        .execute(&mut connection)
+        .await
+        .context("failed to construct canonical schema from operation-contract migration")?;
+    inspect_schema(&mut connection).await
+}
+
 pub(crate) async fn validate_connection(connection: &mut SqliteConnection) -> Result<()> {
     let expected = canonical_schema().await?;
+    validate_shape(connection, expected).await
+}
+
+pub(crate) async fn validate_baseline_connection(connection: &mut SqliteConnection) -> Result<()> {
+    let expected = canonical_baseline_schema().await?;
+    validate_shape(connection, expected).await
+}
+
+async fn validate_shape(connection: &mut SqliteConnection, expected: SchemaShape) -> Result<()> {
     let actual = inspect_schema(connection).await?;
 
     for (table, expected_shape) in expected.tables {

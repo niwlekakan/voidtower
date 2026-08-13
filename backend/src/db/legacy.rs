@@ -160,7 +160,7 @@ async fn normalize(transaction: &mut Transaction<'_, Sqlite>) -> Result<()> {
         .await
         .context("failed to create canonical indexes after legacy normalization")?;
 
-    schema::validate_connection(transaction).await?;
+    schema::validate_baseline_connection(transaction).await?;
     schema::validate_integrity(transaction).await?;
     Ok(())
 }

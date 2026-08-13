@@ -1,8 +1,7 @@
 use crate::{
     auth,
     error::{AppError, Result},
-    services,
-    AppState,
+    services, AppState,
 };
 use axum::{
     extract::{Query, State},
@@ -18,6 +17,45 @@ use tokio_stream::wrappers::ReceiverStream;
 #[derive(Deserialize)]
 pub struct StreamQuery {
     pub token: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct HistoryQuery {
+    #[serde(default)]
+    pub after: i64,
+    #[serde(default = "default_history_limit")]
+    pub limit: i64,
+}
+
+fn default_history_limit() -> i64 {
+    100
+}
+
+pub async fn history_handler(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<HistoryQuery>,
+) -> Result<axum::Json<serde_json::Value>> {
+    let session_id = jar
+        .get("vt_session")
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or(AppError::Unauthorized)?;
+    let user = auth::validate_session(&state.db, &session_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
+    super::role_guard::require_operator(&user)?;
+    let events = crate::operations::events::list_after(&state.db, query.after, query.limit)
+        .await
+        .map_err(AppError::Internal)?;
+    let next_cursor = events
+        .last()
+        .map(|event| event.sequence)
+        .unwrap_or(query.after);
+    Ok(axum::Json(serde_json::json!({
+        "events": events,
+        "next_cursor": next_cursor,
+    })))
 }
 
 /// `GET /api/events/stream`
@@ -100,7 +138,11 @@ pub async fn stream_handler(
                 // CPU > 90 %
                 if snap.cpu_usage > 90.0 {
                     let data = serde_json::json!({ "cpu_percent": snap.cpu_usage }).to_string();
-                    if tx.send(Event::default().event("high_cpu").data(data)).await.is_err() {
+                    if tx
+                        .send(Event::default().event("high_cpu").data(data))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -109,9 +151,12 @@ pub async fn stream_handler(
                 if snap.ram_total > 0 {
                     let mem_pct = (snap.ram_used as f64 / snap.ram_total as f64) * 100.0;
                     if mem_pct > 90.0 {
-                        let data =
-                            serde_json::json!({ "memory_percent": mem_pct }).to_string();
-                        if tx.send(Event::default().event("high_memory").data(data)).await.is_err() {
+                        let data = serde_json::json!({ "memory_percent": mem_pct }).to_string();
+                        if tx
+                            .send(Event::default().event("high_memory").data(data))
+                            .await
+                            .is_err()
+                        {
                             return;
                         }
                     }

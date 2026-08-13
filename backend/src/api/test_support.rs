@@ -23,23 +23,10 @@ pub(crate) fn build(db: SqlitePool) -> AppState {
     }
 }
 
-/// `db::run_migrations` only creates the baseline schema; several columns
-/// `auth::validate_session` selects (`totp_secret`, `totp_enabled`,
-/// `expires_at`) are added later via `db::init_pool`'s `ALTER TABLE`
-/// statements, which tests don't otherwise run. Any test that logs a session
-/// in needs this instead of calling `run_migrations` directly.
+/// Creates the same complete numbered schema used by production startup.
 pub(crate) async fn setup_db() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     crate::db::run_migrations(&pool).await.unwrap();
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_secret TEXT")
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN expires_at INTEGER")
-        .execute(&pool)
-        .await;
     pool
 }
 

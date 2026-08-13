@@ -252,66 +252,12 @@ pub(crate) mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// `db::run_migrations` doesn't create `policy_rules`/`voidwatch_default_allowlist`/
-    /// `voidwatch_mode_settings` (those live in `db::init_pool`, outside the migration
-    /// path tests use elsewhere in this crate — see `api/agents.rs`'s `setup_db`), so
-    /// tests create them directly. `pub(crate)` so `voidwatch::mode`'s own test module
-    /// can reuse it rather than duplicating the same three `CREATE TABLE` statements.
-    pub(crate) async fn create_policy_tables(pool: &SqlitePool) {
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS policy_rules (
-                id            TEXT PRIMARY KEY,
-                name          TEXT NOT NULL,
-                actor_type    TEXT NOT NULL DEFAULT 'api_token',
-                action        TEXT NOT NULL DEFAULT '*',
-                resource_type TEXT NOT NULL DEFAULT '*',
-                resource_tag  TEXT,
-                effect        TEXT NOT NULL DEFAULT 'deny',
-                priority      INTEGER NOT NULL DEFAULT 100,
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-        // P0.2: `policy::check`'s default-deny path for non-`user` actors consults
-        // this table (see `policy.rs::check`, `db::seed_default_allowlist_if_empty`).
-        // P0.3: Trusted mode's per-resource/per-action allowlist also reuses it (see
-        // `trusted_mode_verdict`'s doc comment).
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
-                id            TEXT PRIMARY KEY,
-                actor_type    TEXT NOT NULL,
-                action        TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-        // P0.3: per-scope mode storage (`mode::get_mode`/`mode::set_mode`).
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_mode_settings (
-                scope         TEXT PRIMARY KEY,
-                mode          TEXT NOT NULL DEFAULT 'observer',
-                updated_at    INTEGER NOT NULL,
-                updated_by    TEXT
-            )"#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
     async fn setup_db() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        create_policy_tables(&pool).await;
         pool
     }
 

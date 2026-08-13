@@ -271,10 +271,7 @@ mod tests {
     /// just for the one action name available to test today.
     #[tokio::test]
     async fn denylist_applies_regardless_of_actor_class() {
-        use crate::voidwatch::{
-            self, mode, tests::create_policy_tables, ActionKind, Actor, ActorKind, Resource,
-            Verdict,
-        };
+        use crate::voidwatch::{self, mode, ActionKind, Actor, ActorKind, Resource, Verdict};
         use sqlx::sqlite::SqlitePoolOptions;
 
         let pool = SqlitePoolOptions::new()
@@ -282,7 +279,6 @@ mod tests {
             .await
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        create_policy_tables(&pool).await;
         sqlx::query(
             "INSERT INTO voidwatch_mode_settings (scope, mode, updated_at) VALUES (?, 'yolo', 0)",
         )

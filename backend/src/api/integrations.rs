@@ -1150,58 +1150,12 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// `db::run_migrations` doesn't create `policy_rules` — see the same note in
-    /// `voidwatch::tests::setup_db`.
     async fn setup_db() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS policy_rules (
-                id            TEXT PRIMARY KEY,
-                name          TEXT NOT NULL,
-                actor_type    TEXT NOT NULL DEFAULT 'api_token',
-                action        TEXT NOT NULL DEFAULT '*',
-                resource_type TEXT NOT NULL DEFAULT '*',
-                resource_tag  TEXT,
-                effect        TEXT NOT NULL DEFAULT 'deny',
-                priority      INTEGER NOT NULL DEFAULT 100,
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        // P0.2: `policy::check`'s default-deny path for non-`user` actors consults
-        // this table (see `policy.rs::check`, `db::seed_default_allowlist_if_empty`).
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
-                id            TEXT PRIMARY KEY,
-                actor_type    TEXT NOT NULL,
-                action        TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        // Needed for the P0-03 mode-ladder pre-pass (`voidwatch::mode::get_mode`) —
-        // see the identical table in `voidwatch::mode::tests::setup_db`.
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_mode_settings (
-                scope         TEXT PRIMARY KEY,
-                mode          TEXT NOT NULL DEFAULT 'observer',
-                updated_at    INTEGER NOT NULL,
-                updated_by    TEXT
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
         pool
     }
 

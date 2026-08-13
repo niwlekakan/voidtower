@@ -1,18 +1,12 @@
-//! One-shot backfill for `voidwatch_default_allowlist` (gap-analysis P0.2,
-//! ADR-001 constraint 5: "A generated allowlist preserving currently-observed
-//! automation behavior ships with the default-deny flip").
+//! One-shot backfill for `voidwatch_default_allowlist`.
 //!
-//! Deliberately kept out of `backend/src/db/mod.rs`: that file's ADR-002 grant
-//! covers additive `CREATE TABLE` calls only and explicitly excludes "data
-//! migration or backfill logic" as its own category. This submodule is the
-//! standalone home the P0-02 task spec's "Files to touch" section calls for —
-//! `db::init_pool` calls out to [`seed_default_allowlist_if_empty`] rather than
-//! inlining the derivation there. It lives under `voidwatch/` (not `db/`) because
-//! both ADR-001 and ADR-002 explicitly pre-authorize `backend/src/voidwatch/**`,
-//! and generating the policy-engine's default allowlist is squarely voidwatch's
-//! own concern, not the schema layer's.
+//! The database initializer invokes this through the transactional seed stage.
+//! It remains in `voidwatch` because deriving the policy engine's compatibility
+//! allowlist is domain logic, not schema-migration logic.
 
+#[cfg(test)]
 use sqlx::SqlitePool;
+use sqlx::{Sqlite, Transaction};
 
 /// Backfills `voidwatch_default_allowlist` from pre-existing usage so the P0.2
 /// default-deny flip for `api_token` / `automation` / `ai` actors doesn't break
@@ -38,13 +32,22 @@ use sqlx::SqlitePool;
 ///   version, so there is no pre-existing usage to grandfather — it starts with an
 ///   empty allowlist. That's correct: default-deny for a brand-new actor class
 ///   doesn't break anything that wasn't already happening.
-pub(crate) async fn seed_default_allowlist_if_empty(pool: &SqlitePool) {
+#[cfg(test)]
+pub(crate) async fn seed_default_allowlist_if_empty(pool: &SqlitePool) -> anyhow::Result<()> {
+    let mut transaction = pool.begin().await?;
+    seed_default_allowlist_if_empty_on(&mut transaction).await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn seed_default_allowlist_if_empty_on(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> anyhow::Result<()> {
     let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voidwatch_default_allowlist")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+        .fetch_one(&mut **transaction)
+        .await?;
     if existing != 0 {
-        return;
+        return Ok(());
     }
 
     let now = std::time::SystemTime::now()
@@ -72,9 +75,8 @@ pub(crate) async fn seed_default_allowlist_if_empty(pool: &SqlitePool) {
 
     let odysseus_rows: Vec<(String, Option<String>)> =
         sqlx::query_as("SELECT action, resource_type FROM audit_log WHERE source = 'odysseus'")
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
+            .fetch_all(&mut **transaction)
+            .await?;
 
     for (action, resource_type) in odysseus_rows {
         let resource_type = resource_type.unwrap_or_default();
@@ -89,7 +91,7 @@ pub(crate) async fn seed_default_allowlist_if_empty(pool: &SqlitePool) {
     }
 
     for (actor_type, action, resource_type) in entries {
-        let _ = sqlx::query(
+        sqlx::query(
             "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at)
              VALUES (?,?,?,?,?)",
         )
@@ -98,9 +100,11 @@ pub(crate) async fn seed_default_allowlist_if_empty(pool: &SqlitePool) {
         .bind(action)
         .bind(resource_type)
         .bind(now)
-        .execute(pool)
-        .await;
+        .execute(&mut **transaction)
+        .await?;
     }
+
+    Ok(())
 }
 
 /// Reverses `api/integrations.rs`'s webhook audit-log action naming
@@ -128,24 +132,6 @@ mod tests {
             .await
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        // `run_migrations` predates the `source` column (added later via `ALTER` in
-        // `init_pool`, mirrored here for this v0.9.0-shaped fixture).
-        sqlx::query("ALTER TABLE audit_log ADD COLUMN source TEXT")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
-                id            TEXT PRIMARY KEY,
-                actor_type    TEXT NOT NULL,
-                action        TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
         pool
     }
 
@@ -179,7 +165,7 @@ mod tests {
         )
         .await;
 
-        seed_default_allowlist_if_empty(&pool).await;
+        seed_default_allowlist_if_empty(&pool).await.unwrap();
 
         // Previously-observed automation-sourced usage must still resolve to Allow.
         assert!(matches!(
@@ -225,7 +211,7 @@ mod tests {
         insert_odysseus_audit_row(&pool, "integrations.webhook.container.restart", "container")
             .await;
 
-        seed_default_allowlist_if_empty(&pool).await;
+        seed_default_allowlist_if_empty(&pool).await.unwrap();
         let count_after_first: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM voidwatch_default_allowlist")
                 .fetch_one(&pool)
@@ -233,7 +219,7 @@ mod tests {
                 .unwrap();
 
         // Re-running (e.g. a restart of init_pool) must not duplicate or reset rows.
-        seed_default_allowlist_if_empty(&pool).await;
+        seed_default_allowlist_if_empty(&pool).await.unwrap();
         let count_after_second: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM voidwatch_default_allowlist")
                 .fetch_one(&pool)

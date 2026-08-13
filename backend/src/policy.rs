@@ -154,45 +154,12 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// Mirrors `voidwatch::tests::setup_db` — `db::run_migrations` doesn't create
-    /// `policy_rules` or `voidwatch_default_allowlist` (those live in `db::init_pool`
-    /// / `db::seed_default_allowlist_if_empty`, outside the migration path tests use
-    /// elsewhere in this crate), so tests here create them directly.
     async fn setup_db() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS policy_rules (
-                id            TEXT PRIMARY KEY,
-                name          TEXT NOT NULL,
-                actor_type    TEXT NOT NULL DEFAULT 'api_token',
-                action        TEXT NOT NULL DEFAULT '*',
-                resource_type TEXT NOT NULL DEFAULT '*',
-                resource_tag  TEXT,
-                effect        TEXT NOT NULL DEFAULT 'deny',
-                priority      INTEGER NOT NULL DEFAULT 100,
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
-                id            TEXT PRIMARY KEY,
-                actor_type    TEXT NOT NULL,
-                action        TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
         pool
     }
 

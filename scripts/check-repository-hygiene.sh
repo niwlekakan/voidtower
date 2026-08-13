@@ -22,7 +22,7 @@ while IFS= read -r path; do
         .env.example|*/.env.example) continue ;;
       esac
       ;;
-    *.db|*.db-shm|*.db-wal|*.sqlite|*.sqlite3|*.pem|*.key|*.p12|*.pfx|*.jks) ;;
+    *.db|*.db-shm|*.db-wal|*.sqlite|*.sqlite3|*.migration.lock|*.pem|*.key|*.p12|*.pfx|*.jks) ;;
     credentials.json|*/credentials.json|*-credentials.json|*/\*-credentials.json) ;;
     secrets.json|*/secrets.json|*-secrets.json|*/\*-secrets.json) ;;
     bootstrap-token|*/bootstrap-token|.npmrc|*/.npmrc|.pypirc|*/.pypirc) ;;
@@ -37,5 +37,7 @@ if ((${#violations[@]})); then
   printf '  %s\n' "${violations[@]}" >&2
   exit 1
 fi
+
+bash scripts/check-schema-migration-ownership.sh
 
 printf 'Repository hygiene check passed (%s tracked files checked).\n' "$(git ls-files | wc -l)"

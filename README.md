@@ -278,6 +278,18 @@ sudo bash scripts/install.sh --update --version v1.2.3
 - **Option A:** TrueNAS shows an update banner when a newer image is available — click **Update** in **Apps → voidtower**.
 - **Option B:** `docker pull ghcr.io/niwlekakan/voidtower:aio-latest && docker compose ... up -d`
 
+### Database migrations
+
+VoidTower applies ordered, checksum-verified SQLite migrations at startup. The first
+startup of a database created before numbered migrations writes a protected backup
+next to the database as `voidtower.db.pre-migration-v1-<timestamp>.bak` before making
+any schema changes. On Unix, that backup is mode `0600`.
+
+Migration, schema, or integrity failures stop startup and report the affected schema
+object without printing row contents. Legacy normalization is transactional, so a
+failed adoption leaves the original database unchanged; keep the generated backup
+until the upgraded instance has been verified.
+
 ---
 
 ## Admin CLI

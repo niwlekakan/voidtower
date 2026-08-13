@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   repository-hygiene:
@@ -55,6 +55,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
+      - name: Numbered migration foundation
+        working-directory: backend
+        run: cargo test db::tests
       - name: Clippy
         working-directory: backend
         run: cargo clippy --all-targets --all-features -- -D warnings

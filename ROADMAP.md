@@ -30,13 +30,13 @@ approved documents take precedence.
 | **S0-02 — Authenticated host-detail routes** | **Done** | Previously unintended public host/model routes now have explicit session and bearer behavior covered by regression tests. |
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
 | **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
-| **D0-01/D0-02 — Numbered migrations** | **Next** | Freeze the exact live schema, inventory the inline/best-effort alterations, then replace them with ordered, transactional, fail-fast migrations while preserving pre-1.0 data. |
-| **J0-01 — Shared resource/capability contract** | **Blocked on D0-02** | This becomes the common API/action/event/report contract for web, mobile, nodes, plugins, automation, and AI. |
+| **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
+| **J0-01 — Shared resource/capability contract** | **Next** | This becomes the common API/action/event/report contract for web, mobile, nodes, plugins, automation, and AI. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
 
 ### Current execution order
 
-1. Complete **D0-01/D0-02** and establish numbered schema migrations.
+1. **Completed:** **D0-01/D0-02** established numbered, fail-fast schema migrations.
 2. Build **J0-01/J0-03** shared capability, job, approval, and event foundations.
 3. Land the CMDB/Asset Registry on those contracts.
 4. Implement the local `vt-agent`, then secure remote enrollment and managed-cluster operation.

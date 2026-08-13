@@ -5,13 +5,17 @@
 //! worker loop will use once the runtime adapter registry is complete.
 
 use super::{
-    adapters::AdapterRegistry,
+    adapters::{AdapterRegistry, PlanRequest, StepOutcome, StepRequest},
+    canonical_json,
     contracts::{ActorRef, ActorType, JobState, PlannedStepV1, ResourceRef},
     events::{self, PendingEvent},
 };
+use crate::api::mcp::action_registry::{self, RetryClass};
 use anyhow::{ensure, Context, Result};
 use serde_json::Value;
 use sqlx::{FromRow, SqlitePool};
+
+const MAX_PERSISTED_TEXT_CHARS: usize = 4 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ClaimedJob {
@@ -31,6 +35,15 @@ pub struct ClaimedStep {
     pub step: PlannedStepV1,
     pub attempt: u32,
     pub lease_expires_at: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct CompletionRow {
+    action: String,
+    resource_id: String,
+    job_state: String,
+    step_state: String,
+    retry_class: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -257,6 +270,555 @@ pub async fn renew_lease(
     }
     transaction.commit().await?;
     Ok(updated.rows_affected() == 1)
+}
+
+/// Revalidate a claimed job at its safe pre-execution checkpoint, dispatch one immutable step,
+/// and persist the attempt, step, job, audit, and event outcome atomically. If the lease expires
+/// after the external call, completion deliberately fails and lease recovery reconciles the
+/// uncertain attempt instead of replaying it.
+pub async fn execute_claimed_step(
+    pool: &SqlitePool,
+    adapters: &AdapterRegistry,
+    job: &ClaimedJob,
+    step: &ClaimedStep,
+    worker_id: &str,
+    now: i64,
+) -> Result<JobState> {
+    ensure!(job.id == step.job_id, "claimed step belongs to another job");
+    let adapter = adapters.for_action(&job.action)?;
+    let preflight: Option<(i64, String, String, i64)> = sqlx::query_as(
+        "SELECT r.revision, r.lifecycle_state, COALESCE(c.availability, 'missing'), \
+                j.cancel_requested FROM jobs j \
+         JOIN resources r ON r.id = j.resource_id \
+         LEFT JOIN resource_capabilities c ON c.resource_id = j.resource_id AND c.action = j.action \
+         WHERE j.id = ? AND j.state = 'running' AND j.lease_owner = ? \
+           AND j.lease_expires_at > ?",
+    )
+    .bind(&job.id)
+    .bind(worker_id)
+    .bind(now)
+    .fetch_optional(pool)
+    .await?;
+    let Some((resource_revision, lifecycle_state, capability, cancel_requested)) = preflight else {
+        anyhow::bail!("job lease is not valid for execution");
+    };
+    if cancel_requested != 0 {
+        return complete_step(
+            pool,
+            step,
+            worker_id,
+            now,
+            StepOutcome::Cancelled {
+                message: "Cancellation accepted at the pre-execution checkpoint".into(),
+            },
+        )
+        .await;
+    }
+    if resource_revision != job.resource.revision {
+        return complete_step(
+            pool,
+            step,
+            worker_id,
+            now,
+            StepOutcome::Failed {
+                code: "stale_resource_revision".into(),
+                message: "Resource changed after this operation was planned".into(),
+                retryable: false,
+                diagnostic: None,
+            },
+        )
+        .await;
+    }
+    if lifecycle_state != "active" || capability != "available" {
+        return complete_step(
+            pool,
+            step,
+            worker_id,
+            now,
+            StepOutcome::Failed {
+                code: "capability_unavailable".into(),
+                message: "Resource capability is no longer available".into(),
+                retryable: false,
+                diagnostic: None,
+            },
+        )
+        .await;
+    }
+
+    let plan_request = PlanRequest {
+        action: job.action.clone(),
+        resource: job.resource.clone(),
+        input: job.input.clone(),
+    };
+    let fingerprint = match adapter.external_fingerprint(&plan_request).await {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            return complete_step(
+                pool,
+                step,
+                worker_id,
+                now,
+                StepOutcome::Failed {
+                    code: "preflight_failed".into(),
+                    message: safe_text(&format!("Unable to verify provider state: {error}")),
+                    retryable: false,
+                    diagnostic: None,
+                },
+            )
+            .await;
+        }
+    };
+    if fingerprint != job.external_fingerprint {
+        return complete_step(
+            pool,
+            step,
+            worker_id,
+            now,
+            StepOutcome::Failed {
+                code: "stale_external_state".into(),
+                message: "Provider state changed after this operation was planned".into(),
+                retryable: false,
+                diagnostic: None,
+            },
+        )
+        .await;
+    }
+
+    let request = StepRequest {
+        job_id: job.id.clone(),
+        action: job.action.clone(),
+        resource: job.resource.clone(),
+        input: job.input.clone(),
+        step: step.step.clone(),
+        attempt: step.attempt,
+    };
+    let outcome =
+        adapter
+            .execute_step(request)
+            .await
+            .unwrap_or_else(|error| StepOutcome::Uncertain {
+                code: "adapter_execution_uncertain".into(),
+                message: safe_text(&format!(
+                    "Adapter execution did not report an outcome: {error}"
+                )),
+                external_operation_id: None,
+                diagnostic: None,
+            });
+    complete_step(pool, step, worker_id, now, outcome).await
+}
+
+/// Finish the current append-only attempt and atomically derive the step and job state. This is
+/// public so long-running adapters can persist an outcome after managing their own lease renewal.
+pub async fn complete_step(
+    pool: &SqlitePool,
+    step: &ClaimedStep,
+    worker_id: &str,
+    now: i64,
+    outcome: StepOutcome,
+) -> Result<JobState> {
+    let outcome = sanitize_outcome(outcome)?;
+    let mut transaction = pool.begin().await?;
+    let row: CompletionRow = sqlx::query_as(
+        "SELECT j.action, j.resource_id, j.state AS job_state, s.state AS step_state, \
+                s.retry_class \
+         FROM jobs j JOIN job_steps s ON s.job_id = j.id \
+         JOIN job_attempts a ON a.job_id = j.id AND a.step_id = s.id \
+         WHERE j.id = ? AND s.id = ? AND a.attempt_number = ? \
+           AND a.finished_at IS NULL AND a.worker_id = ? \
+           AND j.lease_owner = ? AND j.lease_expires_at > ?",
+    )
+    .bind(&step.job_id)
+    .bind(&step.id)
+    .bind(i64::from(step.attempt))
+    .bind(worker_id)
+    .bind(worker_id)
+    .bind(now)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .context("claimed attempt is no longer owned by this worker")?;
+    ensure!(row.job_state == "running", "job is not running");
+    ensure!(row.step_state == "running", "step is not running");
+
+    let action = action_registry::action(&row.action)
+        .ok_or_else(|| anyhow::anyhow!("unknown operation action: {}", row.action))?;
+    let retry = action
+        .retry
+        .context("durable action has no retry metadata")?;
+
+    let (state, event_type, audit_outcome) = match outcome {
+        StepOutcome::Succeeded {
+            result,
+            external_operation_id,
+        } => {
+            let result_json = canonical_json::to_canonical_string(&result)?;
+            finish_attempt(&mut transaction, step, now, "succeeded", None).await?;
+            sqlx::query(
+                "UPDATE job_steps SET state = 'succeeded', progress_current = 1, \
+                 progress_total = MAX(progress_total, 1), external_operation_id = ?, result_json = ?, \
+                 error_code = NULL, error_message = NULL, finished_at = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(external_operation_id)
+            .bind(&result_json)
+            .bind(now)
+            .bind(now)
+            .bind(&step.id)
+            .execute(&mut *transaction)
+            .await?;
+            let succeeded: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM job_steps WHERE job_id = ? AND state = 'succeeded'",
+            )
+            .bind(&step.job_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_steps WHERE job_id = ?")
+                .bind(&step.job_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+            let state = if succeeded == total {
+                sqlx::query(
+                    "UPDATE jobs SET state = 'succeeded', progress_current = ?, result_json = ?, \
+                     error_code = NULL, error_message = NULL, finished_at = ?, lease_owner = NULL, \
+                     lease_expires_at = NULL, updated_at = ? \
+                     WHERE id = ? AND state = 'running'",
+                )
+                .bind(succeeded)
+                .bind(result_json)
+                .bind(now)
+                .bind(now)
+                .bind(&step.job_id)
+                .execute(&mut *transaction)
+                .await?;
+                JobState::Succeeded
+            } else {
+                sqlx::query(
+                    "UPDATE jobs SET progress_current = ?, progress_message = ?, updated_at = ? \
+                     WHERE id = ? AND state = 'running'",
+                )
+                .bind(succeeded)
+                .bind(format!("Completed step {} of {total}", step.position + 1))
+                .bind(now)
+                .bind(&step.job_id)
+                .execute(&mut *transaction)
+                .await?;
+                JobState::Running
+            };
+            let event_type = if state == JobState::Succeeded {
+                "job.succeeded.v1"
+            } else {
+                "job.progress.v1"
+            };
+            (state, event_type, "succeeded")
+        }
+        StepOutcome::Failed {
+            code,
+            message,
+            retryable,
+            diagnostic,
+        } => {
+            let diagnostic_json = diagnostic
+                .as_ref()
+                .map(canonical_json::to_canonical_string)
+                .transpose()?;
+            let may_retry = retryable
+                && retry.class == RetryClass::Transient
+                && row.retry_class == RetryClass::Transient.as_str()
+                && step.attempt < u32::from(retry.max_attempts);
+            finish_attempt(
+                &mut transaction,
+                step,
+                now,
+                if may_retry {
+                    "retryable_failure"
+                } else {
+                    "failed"
+                },
+                diagnostic_json.as_deref(),
+            )
+            .await?;
+            if may_retry {
+                sqlx::query(
+                    "UPDATE job_steps SET state = 'pending', error_code = ?, error_message = ?, \
+                     finished_at = NULL, updated_at = ? WHERE id = ?",
+                )
+                .bind(&code)
+                .bind(&message)
+                .bind(now)
+                .bind(&step.id)
+                .execute(&mut *transaction)
+                .await?;
+                sqlx::query(
+                    "UPDATE jobs SET state = 'queued', queued_at = ?, lease_owner = NULL, \
+                     lease_expires_at = NULL, error_code = ?, error_message = ?, updated_at = ? \
+                     WHERE id = ? AND state = 'running'",
+                )
+                .bind(now)
+                .bind(&code)
+                .bind(&message)
+                .bind(now)
+                .bind(&step.job_id)
+                .execute(&mut *transaction)
+                .await?;
+                (
+                    JobState::Queued,
+                    "job.retry_scheduled.v1",
+                    "retry_scheduled",
+                )
+            } else {
+                sqlx::query(
+                    "UPDATE job_steps SET state = 'failed', error_code = ?, error_message = ?, \
+                     finished_at = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(&code)
+                .bind(&message)
+                .bind(now)
+                .bind(now)
+                .bind(&step.id)
+                .execute(&mut *transaction)
+                .await?;
+                finish_job_with_error(
+                    &mut transaction,
+                    step,
+                    now,
+                    JobState::Failed,
+                    &code,
+                    &message,
+                )
+                .await?;
+                (JobState::Failed, "job.failed.v1", "failed")
+            }
+        }
+        StepOutcome::Cancelled { message } => {
+            finish_attempt(&mut transaction, step, now, "cancelled", None).await?;
+            sqlx::query(
+                "UPDATE job_steps SET state = 'cancelled', error_code = 'cancelled', \
+                 error_message = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(&message)
+            .bind(now)
+            .bind(now)
+            .bind(&step.id)
+            .execute(&mut *transaction)
+            .await?;
+            finish_job_with_error(
+                &mut transaction,
+                step,
+                now,
+                JobState::Cancelled,
+                "cancelled",
+                &message,
+            )
+            .await?;
+            (JobState::Cancelled, "job.cancelled.v1", "cancelled")
+        }
+        StepOutcome::Uncertain {
+            code,
+            message,
+            external_operation_id,
+            diagnostic,
+        } => {
+            let diagnostic_json = diagnostic
+                .as_ref()
+                .map(canonical_json::to_canonical_string)
+                .transpose()?;
+            finish_attempt(
+                &mut transaction,
+                step,
+                now,
+                "uncertain",
+                diagnostic_json.as_deref(),
+            )
+            .await?;
+            sqlx::query(
+                "UPDATE job_steps SET state = 'needs_attention', external_operation_id = ?, \
+                 error_code = ?, error_message = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(external_operation_id)
+            .bind(&code)
+            .bind(&message)
+            .bind(now)
+            .bind(now)
+            .bind(&step.id)
+            .execute(&mut *transaction)
+            .await?;
+            finish_job_with_error(
+                &mut transaction,
+                step,
+                now,
+                JobState::NeedsAttention,
+                &code,
+                &message,
+            )
+            .await?;
+            (
+                JobState::NeedsAttention,
+                "job.needs_attention.v1",
+                "needs_attention",
+            )
+        }
+    };
+
+    append_worker_event(
+        &mut transaction,
+        &step.job_id,
+        &row.resource_id,
+        event_type,
+        serde_json::json!({
+            "previous_state": "running",
+            "state": state,
+            "step_id": step.id,
+            "step_position": step.position,
+            "attempt": step.attempt,
+        }),
+    )
+    .await?;
+    let actor = ActorRef {
+        actor_type: ActorType::System,
+        id: None,
+        source: Some("operation_worker".into()),
+    };
+    insert_worker_audit(
+        &mut transaction,
+        now,
+        &actor,
+        &row.action,
+        &step.job_id,
+        audit_outcome,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(state)
+}
+
+async fn finish_attempt(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    step: &ClaimedStep,
+    now: i64,
+    outcome: &str,
+    diagnostic_json: Option<&str>,
+) -> Result<()> {
+    let updated = sqlx::query(
+        "UPDATE job_attempts SET finished_at = ?, outcome = ?, diagnostic_json = ? \
+         WHERE job_id = ? AND step_id = ? AND attempt_number = ? AND finished_at IS NULL",
+    )
+    .bind(now)
+    .bind(outcome)
+    .bind(diagnostic_json)
+    .bind(&step.job_id)
+    .bind(&step.id)
+    .bind(i64::from(step.attempt))
+    .execute(&mut **transaction)
+    .await?;
+    ensure!(
+        updated.rows_affected() == 1,
+        "attempt was already completed"
+    );
+    Ok(())
+}
+
+async fn finish_job_with_error(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    step: &ClaimedStep,
+    now: i64,
+    state: JobState,
+    code: &str,
+    message: &str,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE job_steps SET state = 'cancelled', error_code = 'dependency_not_run', \
+         error_message = 'A previous step did not complete', finished_at = ?, updated_at = ? \
+         WHERE job_id = ? AND state = 'pending'",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(&step.job_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE jobs SET state = ?, error_code = ?, error_message = ?, finished_at = ?, \
+         lease_owner = NULL, lease_expires_at = NULL, updated_at = ? \
+         WHERE id = ? AND state = 'running'",
+    )
+    .bind(state.as_str())
+    .bind(code)
+    .bind(message)
+    .bind(state.is_terminal().then_some(now))
+    .bind(now)
+    .bind(&step.job_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+fn sanitize_outcome(outcome: StepOutcome) -> Result<StepOutcome> {
+    Ok(match outcome {
+        StepOutcome::Succeeded {
+            result,
+            external_operation_id,
+        } => StepOutcome::Succeeded {
+            result: safe_value(result),
+            external_operation_id: external_operation_id.map(|value| safe_text(&value)),
+        },
+        StepOutcome::Failed {
+            code,
+            message,
+            retryable,
+            diagnostic,
+        } => StepOutcome::Failed {
+            code: safe_text(&code),
+            message: safe_text(&message),
+            retryable,
+            diagnostic: diagnostic.map(safe_value),
+        },
+        StepOutcome::Cancelled { message } => StepOutcome::Cancelled {
+            message: safe_text(&message),
+        },
+        StepOutcome::Uncertain {
+            code,
+            message,
+            external_operation_id,
+            diagnostic,
+        } => StepOutcome::Uncertain {
+            code: safe_text(&code),
+            message: safe_text(&message),
+            external_operation_id: external_operation_id.map(|value| safe_text(&value)),
+            diagnostic: diagnostic.map(safe_value),
+        },
+    })
+}
+
+fn safe_value(value: Value) -> Value {
+    match value {
+        Value::String(value) => Value::String(safe_text(&value)),
+        Value::Array(values) => Value::Array(values.into_iter().map(safe_value).collect()),
+        Value::Object(values) => Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    let normalized = key.to_ascii_lowercase();
+                    let value = if ["password", "passwd", "token", "secret", "credential"]
+                        .iter()
+                        .any(|needle| normalized.contains(needle))
+                    {
+                        Value::String("[REDACTED]".into())
+                    } else {
+                        safe_value(value)
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        scalar => scalar,
+    }
+}
+
+fn safe_text(value: &str) -> String {
+    let redacted = crate::api::mcp::redact::redact_patterns(value);
+    let mut chars = redacted.chars();
+    let mut bounded: String = chars.by_ref().take(MAX_PERSISTED_TEXT_CHARS).collect();
+    if chars.next().is_some() {
+        bounded.push_str("…[truncated]");
+    }
+    bounded
 }
 
 pub async fn request_cancellation(
@@ -612,6 +1174,25 @@ mod tests {
         .id
     }
 
+    async fn claim_job_and_step(
+        pool: &SqlitePool,
+        adapters: &AdapterRegistry,
+        resource: &ResourceRef,
+        idempotency_key: &str,
+    ) -> (ClaimedJob, ClaimedStep) {
+        let job_id = submit_job(pool, resource, idempotency_key, "never").await;
+        let job = claim_next(pool, adapters, "worker-a", 100, 20)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.id, job_id);
+        let step = claim_step(pool, &job.id, "worker-a", 101, 20)
+            .await
+            .unwrap()
+            .unwrap();
+        (job, step)
+    }
+
     #[tokio::test]
     async fn lease_claim_serializes_resource_and_records_attempt() {
         let (pool, adapters, resource) = setup().await;
@@ -635,6 +1216,155 @@ mod tests {
         assert!(renew_lease(&pool, &claimed.id, "worker-a", 102, 10)
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn successful_completion_is_atomic_bounded_and_redacted() {
+        let (pool, adapters, resource) = setup().await;
+        let (job, step) = claim_job_and_step(&pool, &adapters, &resource, "complete-success").await;
+        let secret = "known-super-secret-value";
+        assert_eq!(
+            complete_step(
+                &pool,
+                &step,
+                "worker-a",
+                102,
+                StepOutcome::Succeeded {
+                    result: serde_json::json!({
+                        "password": secret,
+                        "message": format!("api_key={secret}"),
+                        "bounded": "x".repeat(MAX_PERSISTED_TEXT_CHARS + 100),
+                        "safe": "completed",
+                    }),
+                    external_operation_id: None,
+                },
+            )
+            .await
+            .unwrap(),
+            JobState::Succeeded
+        );
+
+        let summary = jobs::get(&pool, &job.id).await.unwrap().unwrap();
+        assert_eq!(summary.state, JobState::Succeeded);
+        let persisted = serde_json::to_string(&summary.result).unwrap();
+        assert!(!persisted.contains(secret));
+        assert!(persisted.contains("completed"));
+        assert!(persisted.contains("[truncated]"));
+        let attempt: (String, i64) =
+            sqlx::query_as("SELECT outcome, finished_at FROM job_attempts WHERE job_id = ?")
+                .bind(&job.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(attempt, ("succeeded".into(), 102));
+        let final_event: String = sqlx::query_scalar(
+            "SELECT event_type FROM events WHERE job_id = ? ORDER BY sequence DESC LIMIT 1",
+        )
+        .bind(&job.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(final_event, "job.succeeded.v1");
+        let audit: (String, String) = sqlx::query_as(
+            "SELECT action, outcome FROM audit_log WHERE request_id = ? ORDER BY rowid DESC LIMIT 1",
+        )
+        .bind(&job.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit, ("container.start".into(), "succeeded".into()));
+    }
+
+    #[tokio::test]
+    async fn uncertain_completion_needs_attention_and_cannot_be_replayed() {
+        let (pool, adapters, resource) = setup().await;
+        let (job, step) =
+            claim_job_and_step(&pool, &adapters, &resource, "complete-uncertain").await;
+        assert_eq!(
+            complete_step(
+                &pool,
+                &step,
+                "worker-a",
+                102,
+                StepOutcome::Uncertain {
+                    code: "provider_timeout".into(),
+                    message: "Provider outcome could not be verified".into(),
+                    external_operation_id: Some("task-7".into()),
+                    diagnostic: Some(serde_json::json!({"token": "must-not-persist"})),
+                },
+            )
+            .await
+            .unwrap(),
+            JobState::NeedsAttention
+        );
+        assert_eq!(
+            jobs::get(&pool, &job.id).await.unwrap().unwrap().state,
+            JobState::NeedsAttention
+        );
+        let step_row: (String, Option<String>) =
+            sqlx::query_as("SELECT state, external_operation_id FROM job_steps WHERE id = ?")
+                .bind(&step.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(step_row, ("needs_attention".into(), Some("task-7".into())));
+        let diagnostic: String =
+            sqlx::query_scalar("SELECT diagnostic_json FROM job_attempts WHERE job_id = ?")
+                .bind(&job.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!diagnostic.contains("must-not-persist"));
+        assert!(claim_next(&pool, &adapters, "worker-b", 103, 20)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn execution_rejects_stale_external_fingerprint_before_adapter_call() {
+        struct StaleAdapter;
+
+        #[async_trait]
+        impl OperationAdapter for StaleAdapter {
+            fn key(&self) -> &'static str {
+                "containers"
+            }
+
+            fn actions(&self) -> &[&'static str] {
+                &["container.start"]
+            }
+
+            async fn plan(&self, _request: PlanRequest) -> Result<OperationPlanV1> {
+                bail!("not used")
+            }
+
+            async fn external_fingerprint(&self, _request: &PlanRequest) -> Result<String> {
+                Ok("changed-state".into())
+            }
+
+            async fn execute_step(&self, _request: StepRequest) -> Result<StepOutcome> {
+                panic!("stale execution must stop before the provider call")
+            }
+
+            async fn reconcile(&self, _request: StepRequest) -> Result<ReconcileOutcome> {
+                bail!("not used")
+            }
+        }
+
+        let (pool, _, resource) = setup().await;
+        let mut adapters = AdapterRegistry::new();
+        adapters.register(Arc::new(StaleAdapter)).unwrap();
+        let (job, step) =
+            claim_job_and_step(&pool, &adapters, &resource, "stale-fingerprint").await;
+        assert_eq!(
+            execute_claimed_step(&pool, &adapters, &job, &step, "worker-a", 102)
+                .await
+                .unwrap(),
+            JobState::Failed
+        );
+        let summary = jobs::get(&pool, &job.id).await.unwrap().unwrap();
+        assert_eq!(summary.error.unwrap().code, "stale_external_state");
     }
 
     #[tokio::test]

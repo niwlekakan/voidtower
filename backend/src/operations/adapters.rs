@@ -9,7 +9,8 @@ use crate::api::mcp::action_registry::{self, ActionExecution, ACTIONS};
 use anyhow::{bail, ensure, Result};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use sqlx::SqlitePool;
+use std::{collections::HashMap, fmt, sync::Arc};
 
 pub mod containers;
 
@@ -94,6 +95,14 @@ pub struct AdapterRegistry {
 impl AdapterRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Runtime implementations completed so far. This registry is safe for fail-closed planning
+    /// and approval revalidation, but workers must not start until `validate_complete` succeeds.
+    pub fn staged(pool: SqlitePool) -> Result<Self> {
+        let mut registry = Self::new();
+        registry.register(Arc::new(containers::ContainerAdapter::new(pool)))?;
+        Ok(registry)
     }
 
     pub fn register(&mut self, adapter: Arc<dyn OperationAdapter>) -> Result<()> {
@@ -199,6 +208,17 @@ impl AdapterRegistry {
             );
         }
         Ok(())
+    }
+}
+
+impl fmt::Debug for AdapterRegistry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut keys: Vec<_> = self.adapters.keys().copied().collect();
+        keys.sort_unstable();
+        formatter
+            .debug_struct("AdapterRegistry")
+            .field("adapter_keys", &keys)
+            .finish()
     }
 }
 

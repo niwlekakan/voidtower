@@ -53,6 +53,7 @@ pub struct AppState {
     pub token_sessions: Arc<RwLock<TokenSessionCache>>,
     pub login_limiter: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, LoginAttempts>>>,
     pub deploy_registry: containers::DeployRegistry,
+    pub operation_adapters: Arc<operations::adapters::AdapterRegistry>,
 }
 
 #[derive(Parser, Debug)]
@@ -341,6 +342,7 @@ async fn main() -> Result<()> {
     // Agent status broadcaster
     let (agents_tx, _) = broadcast::channel::<api::agents::AgentStatusUpdate>(64);
 
+    let operation_adapters = Arc::new(operations::adapters::AdapterRegistry::staged(pool.clone())?);
     let state = AppState {
         db: pool.clone(),
         config: Arc::new(cfg.clone()),
@@ -351,6 +353,7 @@ async fn main() -> Result<()> {
         token_sessions: Arc::new(RwLock::new(HashMap::new())),
         login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
         deploy_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        operation_adapters,
     };
 
     // Spawn agent status heartbeat loop (marks stale agents offline)

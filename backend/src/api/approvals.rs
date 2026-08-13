@@ -84,9 +84,15 @@ pub async fn approve(
     Json(request): Json<DecisionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
-    let job = approvals::approve(&state.db, &id, actor(user), request.comment.as_deref())
-        .await
-        .map_err(|error| AppError::Conflict(error.to_string()))?;
+    let job = approvals::approve(
+        &state.db,
+        &state.operation_adapters,
+        &id,
+        actor(user),
+        request.comment.as_deref(),
+    )
+    .await
+    .map_err(|error| AppError::Conflict(error.to_string()))?;
     Ok(Json(serde_json::json!({"job": job})))
 }
 

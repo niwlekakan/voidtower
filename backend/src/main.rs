@@ -19,6 +19,7 @@ mod security;
 mod services;
 mod storage;
 mod terminal;
+mod updates;
 mod vms;
 mod voidwatch;
 

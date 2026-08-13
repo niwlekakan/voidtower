@@ -15,6 +15,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 pub mod containers;
 pub mod firewall;
 pub mod proxy;
+pub mod updates;
 
 #[derive(Debug, Clone)]
 pub struct PlanRequest {
@@ -105,7 +106,11 @@ impl AdapterRegistry {
         let mut registry = Self::new();
         registry.register(Arc::new(containers::ContainerAdapter::new(pool.clone())))?;
         registry.register(Arc::new(firewall::FirewallAdapter::new()))?;
-        registry.register(Arc::new(proxy::ProxyAdapter::new(pool, secrets_key)))?;
+        registry.register(Arc::new(proxy::ProxyAdapter::new(
+            pool.clone(),
+            secrets_key,
+        )))?;
+        registry.register(Arc::new(updates::UpdatesAdapter::new(pool)))?;
         Ok(registry)
     }
 
@@ -297,8 +302,8 @@ mod tests {
         assert!(registry.for_action("container.start").is_ok());
         assert!(registry.for_action("firewall.reset").is_ok());
         assert!(registry.for_action("proxy.rule.create").is_ok());
+        assert!(registry.for_action("update.os.apply").is_ok());
         assert!(registry.for_action("container.compose.apply").is_err());
-        assert!(registry.for_action("update.os.apply").is_err());
         assert!(registry.validate_complete().is_err());
     }
 

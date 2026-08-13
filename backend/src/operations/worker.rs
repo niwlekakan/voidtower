@@ -891,6 +891,26 @@ pub async fn complete_reconciliation(
         "step does not need reconciliation"
     );
 
+    let outcome = if matches!(&outcome, ReconcileOutcome::Succeeded { .. }) {
+        let incomplete_other_steps: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM job_steps WHERE job_id = ? AND id != ? AND state != 'succeeded'",
+        )
+        .bind(&step.job_id)
+        .bind(&step.id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if incomplete_other_steps == 0 {
+            outcome
+        } else {
+            ReconcileOutcome::Failed {
+                code: "incomplete_ordered_plan".into(),
+                message: "An intermediate step was reconciled, but later ordered steps did not run; submit a new operation".into(),
+            }
+        }
+    } else {
+        outcome
+    };
+
     let (state, event_type, audit_outcome) = match outcome {
         ReconcileOutcome::Succeeded { result } => {
             let result_json = canonical_json::to_canonical_string(&result)?;
@@ -944,6 +964,16 @@ pub async fn complete_reconciliation(
             .bind(now)
             .bind(now)
             .bind(&step.id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "UPDATE job_steps SET state = 'cancelled', error_code = 'dependency_not_run', \
+                 error_message = 'A previous step did not complete', finished_at = ?, updated_at = ? \
+                 WHERE job_id = ? AND state = 'pending'",
+            )
+            .bind(now)
+            .bind(now)
+            .bind(&step.job_id)
             .execute(&mut *transaction)
             .await?;
             sqlx::query(
@@ -1766,6 +1796,72 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(outcomes, vec!["uncertain", "reconciliation_succeeded"]);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_cannot_claim_success_when_later_ordered_steps_did_not_run() {
+        let (pool, adapters, resource) = setup().await;
+        let job_id = submit_job(&pool, &resource, "reconcile-intermediate", "never").await;
+        sqlx::query(
+            "INSERT INTO job_steps \
+             (id, job_id, position, kind, name, state, retry_class, recovery_class, updated_at) \
+             VALUES (?, ?, 1, 'execute', 'later step', 'pending', 'never', 'reconcile', 99)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&job_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE jobs SET progress_total = 2 WHERE id = ?")
+            .bind(&job_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let job = claim_next(&pool, &adapters, "worker-a", 100, 20)
+            .await
+            .unwrap()
+            .unwrap();
+        let first = claim_step(&pool, &job.id, "worker-a", 101, 20)
+            .await
+            .unwrap()
+            .unwrap();
+        complete_step(
+            &pool,
+            &first,
+            "worker-a",
+            102,
+            StepOutcome::Uncertain {
+                code: "provider_timeout".into(),
+                message: "Intermediate outcome could not be verified".into(),
+                external_operation_id: Some("task-intermediate".into()),
+                diagnostic: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let (_, reconciliation) = claim_reconciliation(&pool, &adapters, "reconciler-a", 103, 20)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            complete_reconciliation(
+                &pool,
+                &reconciliation,
+                "reconciler-a",
+                104,
+                ReconcileOutcome::Succeeded {
+                    result: serde_json::json!({"verified": true}),
+                },
+            )
+            .await
+            .unwrap(),
+            JobState::Failed
+        );
+        let summary = jobs::get(&pool, &job_id).await.unwrap().unwrap();
+        assert_eq!(summary.state, JobState::Failed);
+        assert_eq!(summary.error.unwrap().code, "incomplete_ordered_plan");
     }
 
     #[tokio::test]

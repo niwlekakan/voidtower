@@ -112,6 +112,7 @@ const PX_PORT_KEY: &str = "proxmox_port";
 const PX_TOKEN_KEY: &str = "proxmox_token";
 const PX_NODE_KEY: &str = "proxmox_node";
 const PX_VERIFY_KEY: &str = "proxmox_verify_ssl";
+const PX_TOKEN_SECRET_NAME: &str = "proxmox_legacy_token";
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ProxmoxConfig {
@@ -129,8 +130,13 @@ async fn load_proxmox_config(state: &AppState) -> Option<ProxmoxConfig> {
     let port: u16 = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
         .bind(PX_PORT_KEY).fetch_optional(&state.db).await.ok().flatten()
         .and_then(|v| v.parse().ok()).unwrap_or(8006);
-    let token: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-        .bind(PX_TOKEN_KEY).fetch_optional(&state.db).await.ok().flatten();
+    let token = match sqlx::query_scalar::<_, String>("SELECT value_enc FROM secrets WHERE name = ?")
+        .bind(PX_TOKEN_SECRET_NAME).fetch_optional(&state.db).await.ok().flatten()
+    {
+        Some(value_enc) => crate::api::secrets::decrypt(&state.secrets_key, &value_enc).ok(),
+        None => sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(PX_TOKEN_KEY).fetch_optional(&state.db).await.ok().flatten(),
+    };
     let node: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
         .bind(PX_NODE_KEY).fetch_optional(&state.db).await.ok().flatten();
     let verify_ssl: bool = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
@@ -157,7 +163,11 @@ async fn save_setting(state: &AppState, key: &str, value: &str) -> Result<()> {
 
 pub async fn get_proxmox_config(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Option<ProxmoxConfig>>> {
     require_admin(&state, &jar).await?;
-    Ok(Json(load_proxmox_config(&state).await))
+    let mut config = load_proxmox_config(&state).await;
+    if let Some(value) = &mut config {
+        value.token.clear();
+    }
+    Ok(Json(config))
 }
 
 #[derive(Deserialize)]
@@ -177,7 +187,28 @@ pub async fn set_proxmox_config(
     require_admin(&state, &jar).await?;
     save_setting(&state, PX_HOST_KEY, &req.host).await?;
     save_setting(&state, PX_PORT_KEY, &req.port.unwrap_or(8006).to_string()).await?;
-    save_setting(&state, PX_TOKEN_KEY, &req.token).await?;
+    if !req.token.is_empty() {
+        let value_enc = crate::api::secrets::encrypt(&state.secrets_key, &req.token)
+            .map_err(AppError::Internal)?;
+        let now = crate::operations::unix_now();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+             VALUES (?, ?, 'Legacy Proxmox API token', ?, ?, ?) \
+             ON CONFLICT(name) DO UPDATE SET value_enc = excluded.value_enc, \
+             updated_at = excluded.updated_at, version = secrets.version + 1",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(PX_TOKEN_SECRET_NAME)
+        .bind(value_enc)
+        .bind(now)
+        .bind(now)
+        .execute(&state.db)
+        .await?;
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(PX_TOKEN_KEY)
+            .execute(&state.db)
+            .await?;
+    }
     save_setting(&state, PX_NODE_KEY, &req.node).await?;
     save_setting(&state, PX_VERIFY_KEY, if req.verify_ssl { "true" } else { "false" }).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -371,5 +402,56 @@ pub async fn test_proxmox(State(state): State<AppState>, jar: CookieJar) -> Resu
             Ok(Json(serde_json::json!({ "ok": false, "message": format!("HTTP {status}: {body}") })))
         }
         Err(e) => Ok(Json(serde_json::json!({ "ok": false, "message": e.to_string() }))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum_extra::extract::cookie::Cookie;
+
+    #[tokio::test]
+    async fn compatibility_config_encrypts_token_and_never_returns_it() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let state = crate::api::mcp::test_support::build(pool.clone());
+        let jar = CookieJar::new().add(Cookie::new("vt_session", session));
+
+        let _ = set_proxmox_config(
+            State(state.clone()),
+            jar.clone(),
+            Json(SaveProxmoxConfig {
+                host: "pve.internal".into(),
+                port: Some(8006),
+                token: "root@pam!voidtower=supersecret".into(),
+                node: "pve".into(),
+                verify_ssl: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let plaintext: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'proxmox_token'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert!(plaintext.is_none());
+        let encrypted: String = sqlx::query_scalar(
+            "SELECT value_enc FROM secrets WHERE name = 'proxmox_legacy_token'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::api::secrets::decrypt(&state.secrets_key, &encrypted).unwrap(),
+            "root@pam!voidtower=supersecret"
+        );
+
+        let Json(Some(config)) = get_proxmox_config(State(state), jar).await.unwrap() else {
+            panic!("saved Proxmox configuration is missing");
+        };
+        assert!(config.token.is_empty());
     }
 }

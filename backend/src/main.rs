@@ -346,6 +346,7 @@ async fn main() -> Result<()> {
     let operation_adapters = Arc::new(operations::adapters::AdapterRegistry::staged(
         pool.clone(),
         secrets_key.clone(),
+        cfg.data_dir.clone(),
     )?);
     let state = AppState {
         db: pool.clone(),

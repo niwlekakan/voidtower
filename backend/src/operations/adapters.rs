@@ -15,6 +15,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 pub mod backups;
 pub mod containers;
 pub mod firewall;
+pub mod proxmox;
 pub mod proxy;
 pub mod updates;
 
@@ -103,11 +104,20 @@ impl AdapterRegistry {
 
     /// Runtime implementations completed so far. This registry is safe for fail-closed planning
     /// and approval revalidation, but workers must not start until `validate_complete` succeeds.
-    pub fn staged(pool: SqlitePool, secrets_key: Arc<[u8; 32]>) -> Result<Self> {
+    pub fn staged(
+        pool: SqlitePool,
+        secrets_key: Arc<[u8; 32]>,
+        data_dir: std::path::PathBuf,
+    ) -> Result<Self> {
         let mut registry = Self::new();
         registry.register(Arc::new(backups::BackupsAdapter::new(pool.clone())))?;
         registry.register(Arc::new(containers::ContainerAdapter::new(pool.clone())))?;
         registry.register(Arc::new(firewall::FirewallAdapter::new()))?;
+        registry.register(Arc::new(proxmox::ProxmoxAdapter::new(
+            pool.clone(),
+            secrets_key.clone(),
+            data_dir,
+        )))?;
         registry.register(Arc::new(proxy::ProxyAdapter::new(
             pool.clone(),
             secrets_key,
@@ -300,12 +310,18 @@ mod tests {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let registry = AdapterRegistry::staged(pool, Arc::new([0u8; 32])).unwrap();
+        let registry = AdapterRegistry::staged(
+            pool,
+            Arc::new([0u8; 32]),
+            std::path::PathBuf::from("/tmp/voidtower-test"),
+        )
+        .unwrap();
         assert!(registry.for_action("container.start").is_ok());
         assert!(registry.for_action("firewall.reset").is_ok());
         assert!(registry.for_action("proxy.rule.create").is_ok());
         assert!(registry.for_action("update.os.apply").is_ok());
         assert!(registry.for_action("backup.restore_test").is_ok());
+        assert!(registry.for_action("proxmox.snapshot.delete").is_ok());
         assert!(registry.for_action("container.compose.apply").is_err());
         assert!(registry.validate_complete().is_err());
     }

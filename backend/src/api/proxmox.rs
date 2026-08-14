@@ -255,7 +255,7 @@ pub async fn create_host(
 ) -> Result<Json<serde_json::Value>> {
     use aes_gcm::aead::{OsRng, rand_core::RngCore};
 
-    require_admin(&state, &jar).await?;
+    let user = require_admin(&state, &jar).await?;
     let id = uuid::Uuid::new_v4().to_string();
     let node = req.node.as_deref().unwrap_or("pve").to_string();
 
@@ -304,6 +304,27 @@ pub async fn create_host(
     .execute(&state.db)
     .await
     .map_err(AppError::Database)?;
+
+    crate::operations::resources::observe(
+        &state.db,
+        crate::operations::resources::ObserveResource {
+            kind: "proxmox_host",
+            display_name: &req.name,
+            node_id: None,
+            provider: Some("proxmox"),
+            namespace: "voidtower.proxmox_host",
+            scope_key: "local",
+            alias: &id,
+        },
+        Some(crate::operations::contracts::ActorRef {
+            actor_type: crate::operations::contracts::ActorType::Human,
+            id: Some(user.id),
+            source: Some("compatibility_api".into()),
+        }),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .await
+    .map_err(AppError::Internal)?;
 
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
@@ -395,7 +416,7 @@ pub async fn list_vms(
     jar: CookieJar,
     Path(host_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
+    let user = require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
@@ -422,6 +443,31 @@ pub async fn list_vms(
         }
     }
     all.sort_by_key(|v| v["vmid"].as_u64().unwrap_or(0));
+    let actor = Some(crate::operations::contracts::ActorRef {
+        actor_type: crate::operations::contracts::ActorType::Human,
+        id: Some(user.id),
+        source: Some("proxmox_inventory".into()),
+    });
+    let correlation_id = uuid::Uuid::new_v4().to_string();
+    for vm in &all {
+        let Some(vmid) = vm["vmid"].as_u64() else { continue };
+        let node = vm["node"].as_str().unwrap_or(&host.node);
+        let kind = vm["type"].as_str().unwrap_or("qemu");
+        let name = vm["name"].as_str().map(str::to_owned)
+            .unwrap_or_else(|| format!("{kind} {vmid}"));
+        let scope = format!("{host_id}/{node}");
+        let alias = format!("{kind}:{vmid}");
+        crate::operations::resources::observe(
+            &state.db,
+            crate::operations::resources::ObserveResource {
+                kind: "proxmox_guest", display_name: &name, node_id: None,
+                provider: Some("proxmox"), namespace: "proxmox.guest",
+                scope_key: &scope, alias: &alias,
+            },
+            actor.clone(),
+            &correlation_id,
+        ).await.map_err(AppError::Internal)?;
+    }
     Ok(Json(serde_json::json!(all)))
 }
 
@@ -430,7 +476,7 @@ pub async fn list_storage(
     jar: CookieJar,
     Path(host_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
+    let user = require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
@@ -448,6 +494,22 @@ pub async fn list_storage(
             if let Some(arr) = data.as_array() {
                 for s in arr {
                     let key = s["storage"].as_str().unwrap_or("").to_string();
+                    if !key.is_empty() {
+                        let scope = format!("{host_id}/{node}");
+                        crate::operations::resources::observe(
+                            &state.db,
+                            crate::operations::resources::ObserveResource {
+                                kind: "proxmox_storage", display_name: &key, node_id: None,
+                                provider: Some("proxmox"), namespace: "proxmox.storage",
+                                scope_key: &scope, alias: &key,
+                            },
+                            Some(crate::operations::contracts::ActorRef {
+                                actor_type: crate::operations::contracts::ActorType::Human,
+                                id: Some(user.id.clone()), source: Some("proxmox_inventory".into()),
+                            }),
+                            &uuid::Uuid::new_v4().to_string(),
+                        ).await.map_err(AppError::Internal)?;
+                    }
                     if seen.insert(key) {
                         let mut entry = s.clone();
                         entry["node"] = serde_json::json!(node);
@@ -980,7 +1042,7 @@ pub async fn vm_vncproxy(
     jar: CookieJar,
     Path((host_id, vmid)): Path<(String, u64)>,
 ) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
+    let user = require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
@@ -1008,6 +1070,13 @@ pub async fn vm_vncproxy(
     let data = &body["data"];
     let ticket = data["ticket"].as_str().unwrap_or("").to_string();
     let port   = data["port"].as_u64().unwrap_or(5900);
+
+    audit::log(
+        &state.db, Some(&user.id), &user.username,
+        "proxmox.vnc.ticket.issue", Some("proxmox_guest"), Some(&vmid.to_string()),
+        "success", None,
+        Some(&format!("host={} node={} kind={}", host_id, host.node, kind.as_str())),
+    ).await;
 
     // Strip scheme so the frontend can build wss:// from it
     let proxmox_host = host.url
@@ -1298,13 +1367,37 @@ pub async fn list_node_disks(
     jar: CookieJar,
     Path((host_id, node)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
+    let user = require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&host.url);
     let auth = format!("PVEAPIToken={}", host.token);
     let url = format!("{}/nodes/{}/disks/list", base, node);
     let data = pve_get(&client, &url, &auth).await?;
+    if let Some(disks) = data.as_array() {
+        let correlation_id = uuid::Uuid::new_v4().to_string();
+        let scope = format!("{host_id}/{node}");
+        for disk in disks {
+            let path = disk["devpath"].as_str()
+                .or_else(|| disk["device"].as_str()).unwrap_or("");
+            if path.is_empty() { continue; }
+            let display_name = disk["model"].as_str()
+                .filter(|value| !value.is_empty()).unwrap_or(path);
+            crate::operations::resources::observe(
+                &state.db,
+                crate::operations::resources::ObserveResource {
+                    kind: "proxmox_disk", display_name, node_id: None,
+                    provider: Some("proxmox"), namespace: "proxmox.disk",
+                    scope_key: &scope, alias: path,
+                },
+                Some(crate::operations::contracts::ActorRef {
+                    actor_type: crate::operations::contracts::ActorType::Human,
+                    id: Some(user.id.clone()), source: Some("proxmox_inventory".into()),
+                }),
+                &correlation_id,
+            ).await.map_err(AppError::Internal)?;
+        }
+    }
     Ok(Json(data))
 }
 

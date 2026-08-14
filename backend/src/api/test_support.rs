@@ -11,13 +11,18 @@ use tokio::sync::{broadcast, RwLock};
 
 pub(crate) fn build(db: SqlitePool) -> AppState {
     let secrets_key = Arc::new([0u8; 32]);
+    let config = Arc::new(crate::config::Config::default());
     let operation_adapters = Arc::new(
-        crate::operations::adapters::AdapterRegistry::staged(db.clone(), secrets_key.clone())
-            .unwrap(),
+        crate::operations::adapters::AdapterRegistry::staged(
+            db.clone(),
+            secrets_key.clone(),
+            config.data_dir.clone(),
+        )
+        .unwrap(),
     );
     AppState {
         db,
-        config: Arc::new(crate::config::Config::default()),
+        config,
         metrics_tx: broadcast::channel(1).0,
         latest_metrics: Arc::new(RwLock::new(None)),
         agents_tx: broadcast::channel(1).0,

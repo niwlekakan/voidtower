@@ -130,10 +130,16 @@ async fn docker_inspect(container: &str, template: &str) -> Result<Option<String
     if !output.status.success() {
         return Ok(None);
     }
-    Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
 }
 
-async fn wait_for_container_status(container: &str, expected: &str, timeout: Duration) -> Result<()> {
+async fn wait_for_container_status(
+    container: &str,
+    expected: &str,
+    timeout: Duration,
+) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let status = docker_inspect(container, "{{.State.Status}}").await?;
@@ -252,7 +258,13 @@ impl TestServer {
             .context("login response omitted vt_session")?
             .to_string();
 
-        Ok(Self { child, client, base_url, session_cookie, data_dir })
+        Ok(Self {
+            child,
+            client,
+            base_url,
+            session_cookie,
+            data_dir,
+        })
     }
 
     fn url(&self, path: &str) -> String {
@@ -270,7 +282,10 @@ impl TestServer {
     }
 
     fn compose_path(&self, project: &str) -> PathBuf {
-        self.data_dir.join("apps").join(project).join("docker-compose.yml")
+        self.data_dir
+            .join("apps")
+            .join(project)
+            .join("docker-compose.yml")
     }
 }
 
@@ -352,7 +367,12 @@ async fn deploy_vaultwarden(server: &TestServer) -> Result<VaultwardenDeployment
         bail!("Vaultwarden named volume was not created");
     }
 
-    Ok(VaultwardenDeployment { project, container, volume, _cleanup: cleanup })
+    Ok(VaultwardenDeployment {
+        project,
+        container,
+        volume,
+        _cleanup: cleanup,
+    })
 }
 
 async fn wait_for_docker_health_if_configured(container: &str, timeout: Duration) -> Result<()> {
@@ -388,7 +408,10 @@ async fn app_vault_teardown_removes_containers_and_optionally_volumes(
     let deployment = deploy_vaultwarden(server).await?;
 
     let response = server
-        .request(Method::POST, &format!("/api/apps/{}/stop", deployment.project))
+        .request(
+            Method::POST,
+            &format!("/api/apps/{}/stop", deployment.project),
+        )
         .send()
         .await
         .context("send App Vault stop request")?;
@@ -399,7 +422,10 @@ async fn app_vault_teardown_removes_containers_and_optionally_volumes(
     }
 
     let response = server
-        .request(Method::POST, &format!("/api/apps/{}/purge", deployment.project))
+        .request(
+            Method::POST,
+            &format!("/api/apps/{}/purge", deployment.project),
+        )
         .send()
         .await
         .context("send App Vault purge request")?;
@@ -430,8 +456,13 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send backup creation request")?;
-    let created: Value = expect_success(response, "backup creation").await?.json().await?;
-    let id = created["id"].as_str().context("backup creation omitted id")?;
+    let created: Value = expect_success(response, "backup creation")
+        .await?
+        .json()
+        .await?;
+    let id = created["id"]
+        .as_str()
+        .context("backup creation omitted id")?;
 
     let response = server
         .request(Method::POST, &format!("/api/backups/{id}/run"))
@@ -448,7 +479,10 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send restic check request")?;
-    let check: Value = expect_success(response, "restic check").await?.json().await?;
+    let check: Value = expect_success(response, "restic check")
+        .await?
+        .json()
+        .await?;
     if check["status"] != "ok" {
         bail!("restic check did not succeed: {check}");
     }
@@ -458,7 +492,10 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send restore-test request")?;
-    let restore: Value = expect_success(response, "restore-test").await?.json().await?;
+    let restore: Value = expect_success(response, "restore-test")
+        .await?
+        .json()
+        .await?;
     if restore["status"] != "ok" {
         bail!("restore-test did not succeed: {restore}");
     }
@@ -468,7 +505,10 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send backup list request")?;
-    let list: Value = expect_success(response, "backup list").await?.json().await?;
+    let list: Value = expect_success(response, "backup list")
+        .await?
+        .json()
+        .await?;
     let config = list["configs"]
         .as_array()
         .context("backup list omitted configs")?
@@ -482,6 +522,45 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         || config["confidence"] != "high"
     {
         bail!("backup confidence fields are incomplete: {config}");
+    }
+
+    let response = server
+        .request(Method::DELETE, &format!("/api/backups/{id}"))
+        .send()
+        .await
+        .context("send backup configuration deletion request")?;
+    expect_success(response, "backup configuration deletion").await?;
+
+    let response = server
+        .request(Method::GET, "/api/backups")
+        .send()
+        .await
+        .context("list backups after configuration deletion")?;
+    let list: Value = expect_success(response, "backup list after deletion")
+        .await?
+        .json()
+        .await?;
+    if list["configs"]
+        .as_array()
+        .context("backup list omitted configs")?
+        .iter()
+        .any(|config| config["id"].as_str() == Some(id))
+    {
+        bail!("deleted backup configuration remained visible");
+    }
+
+    let snapshots = Command::new("restic")
+        .args(["-r"])
+        .arg(&repo_path)
+        .args(["snapshots", "--json"])
+        .output()
+        .context("inspect restic repository after config deletion")?;
+    if !snapshots.status.success()
+        || serde_json::from_slice::<Vec<Value>>(&snapshots.stdout)
+            .map(|values| values.is_empty())
+            .unwrap_or(true)
+    {
+        bail!("deleting backup configuration removed or damaged repository data");
     }
 
     Ok(())

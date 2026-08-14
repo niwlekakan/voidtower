@@ -549,22 +549,21 @@ async fn main() -> Result<()> {
 
                 let pool2 = rt_pool.clone();
                 let cfg2 = cfg.clone();
-                let password =
-                    std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into());
                 tokio::spawn(async move {
-                    let (status, _) =
-                        match backups::run_restore_test(&cfg2.repo_path, &password).await {
-                            Ok(s) => (s, None::<String>),
-                            Err(e) => ("failed".to_string(), Some(e.to_string())),
-                        };
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
-                    let _ = sqlx::query(
-                        "UPDATE backup_configs SET last_restore_test_at = ?, last_restore_test_status = ? WHERE id = ?"
-                    ).bind(ts).bind(&status).bind(&cfg2.id).execute(&pool2).await;
-                    tracing::info!("Scheduled restore test for '{}': {}", cfg2.name, status);
+                    match backups::restore_test_config(&pool2, &cfg2, &backups::restic_password())
+                        .await
+                    {
+                        Ok(probe) => tracing::info!(
+                            "Scheduled restore test for '{}': {}",
+                            cfg2.name,
+                            probe.status
+                        ),
+                        Err(error) => tracing::warn!(
+                            "Scheduled restore test for '{}' could not record its result: {}",
+                            cfg2.name,
+                            error
+                        ),
+                    }
                 });
             }
         }
@@ -914,18 +913,19 @@ async fn run_backup_command(pool: &SqlitePool, action: BackupCommand) -> Result<
             retention_days,
         } => {
             let id = Uuid::new_v4().to_string();
-            let retention = retention_days.unwrap_or(30);
-            sqlx::query(
-                "INSERT INTO backup_configs (id, name, source_path, repo_path, retention_days, enabled, created_at) \
-                 VALUES (?, ?, ?, ?, ?, 1, ?)",
+            backups::create_config(
+                pool,
+                &id,
+                &backups::BackupConfigInput {
+                    name: name.clone(),
+                    source_path: source,
+                    repo_path: repo,
+                    schedule: None,
+                    retention_days: retention_days.unwrap_or(30),
+                    restore_test_schedule: None,
+                },
+                &id,
             )
-            .bind(&id)
-            .bind(&name)
-            .bind(&source)
-            .bind(&repo)
-            .bind(retention)
-            .bind(unix_now())
-            .execute(pool)
             .await?;
             println!("Created backup job '{name}' ({id})");
         }
@@ -934,15 +934,9 @@ async fn run_backup_command(pool: &SqlitePool, action: BackupCommand) -> Result<
                 anyhow::bail!("restic is not installed");
             }
             let cfg = find_backup_by_name(pool, &name).await?;
-            let password = std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into());
-            backups::init_repo(&cfg.repo_path, &password).await?;
-            let run = backups::run_backup(&cfg, &password).await?;
-            sqlx::query("UPDATE backup_configs SET last_run_at = ?, last_status = ? WHERE id = ?")
-                .bind(run.finished_at.unwrap_or_else(unix_now))
-                .bind(&run.status)
-                .bind(&cfg.id)
-                .execute(pool)
-                .await?;
+            let password = backups::restic_password();
+            backups::prepare_config_repository(&cfg, &password).await?;
+            let run = backups::run_config_backup(pool, &cfg, &password, None).await?;
             println!("Backup '{name}': {}", run.status);
             if let Some(snap) = run.snapshot_id {
                 println!("Snapshot: {snap}");
@@ -953,21 +947,9 @@ async fn run_backup_command(pool: &SqlitePool, action: BackupCommand) -> Result<
                 anyhow::bail!("restic is not installed");
             }
             let cfg = find_backup_by_name(pool, &name).await?;
-            let password = std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into());
-            let (status, message) = match backups::run_check(&cfg.repo_path, &password).await {
-                Ok(s) => (s, None),
-                Err(e) => ("failed".to_string(), Some(e.to_string())),
-            };
-            sqlx::query(
-                "UPDATE backup_configs SET last_check_at = ?, last_check_status = ? WHERE id = ?",
-            )
-            .bind(unix_now())
-            .bind(&status)
-            .bind(&cfg.id)
-            .execute(pool)
-            .await?;
-            println!("Check '{name}': {status}");
-            if let Some(m) = message {
+            let probe = backups::check_config(pool, &cfg, &backups::restic_password()).await?;
+            println!("Check '{name}': {}", probe.status);
+            if let Some(m) = probe.message {
                 println!("{m}");
             }
         }
@@ -976,29 +958,16 @@ async fn run_backup_command(pool: &SqlitePool, action: BackupCommand) -> Result<
                 anyhow::bail!("restic is not installed");
             }
             let cfg = find_backup_by_name(pool, &name).await?;
-            let password = std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into());
-            let (status, message) = match backups::run_restore_test(&cfg.repo_path, &password).await
-            {
-                Ok(s) => (s, None),
-                Err(e) => ("failed".to_string(), Some(e.to_string())),
-            };
-            sqlx::query("UPDATE backup_configs SET last_restore_test_at = ?, last_restore_test_status = ? WHERE id = ?")
-                .bind(unix_now())
-                .bind(&status)
-                .bind(&cfg.id)
-                .execute(pool)
-                .await?;
-            println!("Restore test '{name}': {status}");
-            if let Some(m) = message {
+            let probe =
+                backups::restore_test_config(pool, &cfg, &backups::restic_password()).await?;
+            println!("Restore test '{name}': {}", probe.status);
+            if let Some(m) = probe.message {
                 println!("{m}");
             }
         }
         BackupCommand::Delete { name } => {
             let cfg = find_backup_by_name(pool, &name).await?;
-            sqlx::query("DELETE FROM backup_configs WHERE id = ?")
-                .bind(&cfg.id)
-                .execute(pool)
-                .await?;
+            backups::delete_config(pool, &cfg.id).await?;
             println!("Deleted backup job '{name}' (config only — data on disk is untouched)");
         }
     }

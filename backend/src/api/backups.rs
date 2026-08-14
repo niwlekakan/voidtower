@@ -1,6 +1,6 @@
 use crate::{
     auth,
-    backups::{self, BackupConfig},
+    backups::{self, BackupConfigInput},
     error::{AppError, Result},
     AppState,
 };
@@ -12,36 +12,34 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
-const SELECT_COLS: &str =
-    "id, name, source_path, repo_path, schedule, retention_days, enabled,
-     last_run_at, last_status, created_at,
-     last_check_at, last_check_status, last_restore_test_at, last_restore_test_status,
-     restore_test_schedule";
-
 async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
-    auth::validate_session(&state.db, &session_id).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)
+    let session_id = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    auth::validate_session(&state.db, &session_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)
 }
 
-fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
-}
-
-fn restic_password() -> String {
-    std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| "changeme".into())
-}
-
-pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+pub async fn list(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
     require_user(&state, &jar).await?;
-    let configs = sqlx::query_as::<_, BackupConfig>(
-        &format!("SELECT {SELECT_COLS} FROM backup_configs ORDER BY created_at DESC")
-    ).fetch_all(&state.db).await.map_err(AppError::Database)?;
+    let configs = backups::list_configs(&state.db)
+        .await
+        .map_err(AppError::Internal)?;
 
-    let configs_with_confidence: Vec<serde_json::Value> = configs.iter().map(|c| {
-        let mut v = serde_json::to_value(c).unwrap_or_default();
-        v["confidence"] = serde_json::Value::String(backups::confidence(c).to_string());
-        v
-    }).collect();
+    let configs_with_confidence: Vec<serde_json::Value> = configs
+        .iter()
+        .map(|c| {
+            let mut v = serde_json::to_value(c).unwrap_or_default();
+            v["confidence"] = serde_json::Value::String(backups::confidence(c).to_string());
+            v
+        })
+        .collect();
 
     Ok(Json(serde_json::json!({
         "configs": configs_with_confidence,
@@ -59,34 +57,54 @@ pub struct CreateRequest {
     pub restore_test_schedule: Option<String>,
 }
 
-pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(req): Json<CreateRequest>) -> Result<Json<serde_json::Value>> {
+pub async fn create(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<CreateRequest>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
     let id = Uuid::new_v4().to_string();
-    let retention = req.retention_days.unwrap_or(30);
-    sqlx::query(
-        "INSERT INTO backup_configs (id, name, source_path, repo_path, schedule, retention_days, enabled, created_at, restore_test_schedule) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)"
-    ).bind(&id).bind(&req.name).bind(&req.source_path).bind(&req.repo_path)
-     .bind(&req.schedule).bind(retention).bind(now()).bind(&req.restore_test_schedule)
-    .execute(&state.db).await.map_err(AppError::Database)?;
+    let input = BackupConfigInput {
+        name: req.name,
+        source_path: req.source_path,
+        repo_path: req.repo_path,
+        schedule: req.schedule,
+        retention_days: req.retention_days.unwrap_or(30),
+        restore_test_schedule: req.restore_test_schedule,
+    };
+    input
+        .validate()
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    backups::create_config(&state.db, &id, &input, &id)
+        .await
+        .map_err(AppError::Internal)?;
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
 
-pub async fn run_now(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn run_now(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
     if !backups::is_restic_available() {
-        return Err(AppError::FeatureUnavailable("restic is not installed".into()));
+        return Err(AppError::FeatureUnavailable(
+            "restic is not installed".into(),
+        ));
     }
-    let cfg = sqlx::query_as::<_, BackupConfig>(
-        &format!("SELECT {SELECT_COLS} FROM backup_configs WHERE id = ?")
-    ).bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
-    let password = restic_password();
-    backups::init_repo(&cfg.repo_path, &password).await.map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-    let run = backups::run_backup(&cfg, &password).await.map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-    sqlx::query("UPDATE backup_configs SET last_run_at = ?, last_status = ? WHERE id = ?")
-        .bind(run.finished_at.unwrap_or_else(now)).bind(&run.status).bind(&id)
-        .execute(&state.db).await.map_err(AppError::Database)?;
+    let cfg = backups::get_config(&state.db, &id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::NotFound)?;
+    let password = backups::restic_password();
+    backups::prepare_config_repository(&cfg, &password)
+        .await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
+    let run = backups::run_config_backup(&state.db, &cfg, &password, None)
+        .await
+        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
     Ok(Json(serde_json::json!({
         "status": run.status,
         "snapshot_id": run.snapshot_id,
@@ -94,52 +112,69 @@ pub async fn run_now(State(state): State<AppState>, jar: CookieJar, Path(id): Pa
     })))
 }
 
-pub async fn check(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn check(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
     if !backups::is_restic_available() {
-        return Err(AppError::FeatureUnavailable("restic is not installed".into()));
+        return Err(AppError::FeatureUnavailable(
+            "restic is not installed".into(),
+        ));
     }
-    let cfg = sqlx::query_as::<_, BackupConfig>(
-        &format!("SELECT {SELECT_COLS} FROM backup_configs WHERE id = ?")
-    ).bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
-    let password = restic_password();
-    let (status, message) = match backups::run_check(&cfg.repo_path, &password).await {
-        Ok(s) => (s, None),
-        Err(e) => ("failed".to_string(), Some(e.to_string())),
-    };
-    sqlx::query("UPDATE backup_configs SET last_check_at = ?, last_check_status = ? WHERE id = ?")
-        .bind(now()).bind(&status).bind(&id)
-        .execute(&state.db).await.map_err(AppError::Database)?;
-    Ok(Json(serde_json::json!({ "status": status, "message": message })))
+    let cfg = backups::get_config(&state.db, &id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::NotFound)?;
+    let probe = backups::check_config(&state.db, &cfg, &backups::restic_password())
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(
+        serde_json::json!({ "status": probe.status, "message": probe.message }),
+    ))
 }
 
-pub async fn restore_test(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn restore_test(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
     if !backups::is_restic_available() {
-        return Err(AppError::FeatureUnavailable("restic is not installed".into()));
+        return Err(AppError::FeatureUnavailable(
+            "restic is not installed".into(),
+        ));
     }
-    let cfg = sqlx::query_as::<_, BackupConfig>(
-        &format!("SELECT {SELECT_COLS} FROM backup_configs WHERE id = ?")
-    ).bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
-    let password = restic_password();
-    let (status, message) = match backups::run_restore_test(&cfg.repo_path, &password).await {
-        Ok(s) => (s, None),
-        Err(e) => ("failed".to_string(), Some(e.to_string())),
-    };
-    sqlx::query("UPDATE backup_configs SET last_restore_test_at = ?, last_restore_test_status = ? WHERE id = ?")
-        .bind(now()).bind(&status).bind(&id)
-        .execute(&state.db).await.map_err(AppError::Database)?;
-    Ok(Json(serde_json::json!({ "status": status, "message": message })))
+    let cfg = backups::get_config(&state.db, &id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::NotFound)?;
+    let probe = backups::restore_test_config(&state.db, &cfg, &backups::restic_password())
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(
+        serde_json::json!({ "status": probe.status, "message": probe.message }),
+    ))
 }
 
-pub async fn delete_plan(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn delete_plan(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_admin(&user)?;
-    let row = sqlx::query_as::<_, (String, String)>("SELECT name, source_path FROM backup_configs WHERE id = ?")
-        .bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?
-        .ok_or(AppError::NotFound)?;
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT name, source_path FROM backup_configs WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or(AppError::NotFound)?;
     Ok(Json(serde_json::json!({
         "dry_run": true,
         "plan": {
@@ -156,9 +191,15 @@ pub async fn delete_plan(State(state): State<AppState>, jar: CookieJar, Path(id)
     })))
 }
 
-pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn delete(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_admin(&user)?;
-    sqlx::query("DELETE FROM backup_configs WHERE id = ?").bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
+    backups::delete_config(&state.db, &id)
+        .await
+        .map_err(AppError::Internal)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

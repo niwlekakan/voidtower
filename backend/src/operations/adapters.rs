@@ -12,6 +12,7 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use std::{collections::HashMap, fmt, sync::Arc};
 
+pub mod backups;
 pub mod containers;
 pub mod firewall;
 pub mod proxy;
@@ -104,6 +105,7 @@ impl AdapterRegistry {
     /// and approval revalidation, but workers must not start until `validate_complete` succeeds.
     pub fn staged(pool: SqlitePool, secrets_key: Arc<[u8; 32]>) -> Result<Self> {
         let mut registry = Self::new();
+        registry.register(Arc::new(backups::BackupsAdapter::new(pool.clone())))?;
         registry.register(Arc::new(containers::ContainerAdapter::new(pool.clone())))?;
         registry.register(Arc::new(firewall::FirewallAdapter::new()))?;
         registry.register(Arc::new(proxy::ProxyAdapter::new(
@@ -303,6 +305,7 @@ mod tests {
         assert!(registry.for_action("firewall.reset").is_ok());
         assert!(registry.for_action("proxy.rule.create").is_ok());
         assert!(registry.for_action("update.os.apply").is_ok());
+        assert!(registry.for_action("backup.restore_test").is_ok());
         assert!(registry.for_action("container.compose.apply").is_err());
         assert!(registry.validate_complete().is_err());
     }

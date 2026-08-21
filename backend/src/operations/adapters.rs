@@ -102,8 +102,8 @@ impl AdapterRegistry {
         Self::default()
     }
 
-    /// Runtime implementations completed so far. This registry is safe for fail-closed planning
-    /// and approval revalidation, but workers must not start until `validate_complete` succeeds.
+    /// Complete runtime implementations. Startup still validates this inventory before production
+    /// workers are enabled so metadata drift fails closed.
     pub fn staged(
         pool: SqlitePool,
         secrets_key: Arc<[u8; 32]>,
@@ -111,7 +111,11 @@ impl AdapterRegistry {
     ) -> Result<Self> {
         let mut registry = Self::new();
         registry.register(Arc::new(backups::BackupsAdapter::new(pool.clone())))?;
-        registry.register(Arc::new(containers::ContainerAdapter::new(pool.clone())))?;
+        registry.register(Arc::new(containers::ContainerAdapter::new(
+            pool.clone(),
+            secrets_key.clone(),
+            data_dir.clone(),
+        )))?;
         registry.register(Arc::new(firewall::FirewallAdapter::new()))?;
         registry.register(Arc::new(proxmox::ProxmoxAdapter::new(
             pool.clone(),
@@ -306,7 +310,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn staged_registry_exposes_only_completed_domain_actions() {
+    async fn staged_registry_is_complete() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect_lazy("sqlite::memory:")
             .unwrap();
@@ -322,8 +326,8 @@ mod tests {
         assert!(registry.for_action("update.os.apply").is_ok());
         assert!(registry.for_action("backup.restore_test").is_ok());
         assert!(registry.for_action("proxmox.snapshot.delete").is_ok());
-        assert!(registry.for_action("container.compose.apply").is_err());
-        assert!(registry.validate_complete().is_err());
+        assert!(registry.for_action("container.compose.apply").is_ok());
+        registry.validate_complete().unwrap();
     }
 
     #[test]

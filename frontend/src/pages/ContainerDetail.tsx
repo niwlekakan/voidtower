@@ -135,8 +135,7 @@ function ComposeTab({ containerId }: { containerId: string }) {
   const [edited, setEdited]     = useState('')
   const [dirty, setDirty]       = useState(false)
   const [proposing, setProposing] = useState(false)
-  const [diff, setDiff] = useState<{ proposed_path: string; added: number; removed: number } | null>(null)
-  const [applying, setApplying] = useState(false)
+  const [diff, setDiff] = useState<{ added: number; removed: number; current_lines: number; proposed_lines: number } | null>(null)
 
   useEffect(() => {
     fetch(`/api/containers/${containerId}/compose`, { credentials: 'include' })
@@ -154,34 +153,16 @@ function ComposeTab({ containerId }: { containerId: string }) {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: data.path, content: edited }),
-      }).then((r) => r.json())
+      }).then((r) => {
+        if (!r.ok) throw new Error('Preview failed')
+        return r.json()
+      })
       setDiff(r)
-      notify.success(`Staged: +${r.added} -${r.removed} lines`)
+      notify.success(`Preview ready: +${r.added} -${r.removed} lines`)
     } catch {
-      notify.error('Failed to stage changes')
+      notify.error('Failed to preview changes')
     } finally {
       setProposing(false)
-    }
-  }
-
-  const apply = async () => {
-    if (!diff) return
-    setApplying(true)
-    try {
-      const r = await fetch(`/api/containers/${containerId}/compose/apply`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proposed_path: diff.proposed_path }),
-      }).then((r) => r.json())
-      if (r.ok) {
-        notify.success('Applied — stack restarting')
-        setDiff(null); setDirty(false)
-      } else {
-        notify.error(r.stderr || 'Apply failed')
-      }
-    } finally {
-      setApplying(false)
     }
   }
 
@@ -197,18 +178,15 @@ function ComposeTab({ containerId }: { containerId: string }) {
         <div className="flex gap-2">
           {dirty && !diff && (
             <Button size="sm" variant="ghost" loading={proposing} onClick={propose}>
-              Stage changes
+              Preview changes
             </Button>
           )}
           {diff && (
             <>
               <span className="text-xs self-center" style={{ color: 'var(--accent-warning)' }}>
-                +{diff.added} −{diff.removed} staged
+                +{diff.added} −{diff.removed} previewed
               </span>
-              <Button size="sm" variant="primary" loading={applying} onClick={apply}>
-                Apply &amp; restart
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setDiff(null)}>Discard</Button>
+              <Button size="sm" variant="ghost" onClick={() => setDiff(null)}>Clear preview</Button>
             </>
           )}
         </div>
@@ -217,7 +195,7 @@ function ComposeTab({ containerId }: { containerId: string }) {
       {diff && (
         <div className="rounded p-3 text-xs" style={{ background: 'var(--accent-warning-subtle)', border: '1px solid var(--accent-warning)', color: 'var(--accent-warning)' }}>
           <AlertTriangle size={12} className="inline mr-1.5" />
-          Staged changes will restart the container stack. Confirm before applying.
+          This is a read-only preview. Durable Compose apply will become available with job submission.
         </div>
       )}
 

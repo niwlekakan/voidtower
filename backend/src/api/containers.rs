@@ -270,7 +270,7 @@ pub async fn get_compose(
     async fn inspect_label(id: &str, label: &str) -> String {
         let fmt = format!("{{{{index .Config.Labels \"{label}\"}}}}");
         tokio::process::Command::new("docker")
-            .args(["inspect", "--format", &fmt, id])
+            .args(["inspect", "--format", &fmt, "--", id])
             .output().await
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default()
@@ -325,7 +325,7 @@ pub async fn get_compose(
     })))
 }
 
-/// Write (stage) a compose file change — writes to a .proposed file, returns diff
+/// Validate and preview a Compose file change without mutating host state.
 pub async fn propose_compose(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -337,91 +337,54 @@ pub async fn propose_compose(
         return Err(AppError::Forbidden);
     }
 
-    let compose_path = body["path"].as_str()
+    let compose_path = body["path"]
+        .as_str()
         .ok_or_else(|| AppError::BadRequest("path required".into()))?;
-    let new_content = body["content"].as_str()
+    let new_content = body["content"]
+        .as_str()
         .ok_or_else(|| AppError::BadRequest("content required".into()))?;
 
-    // Basic path guard
-    if !compose_path.ends_with(".yml") && !compose_path.ends_with(".yaml") {
-        return Err(AppError::BadRequest("Path must be a YAML file".into()));
-    }
-
-    let current = tokio::fs::read_to_string(compose_path).await
-        .unwrap_or_default();
-
-    // Write proposed version alongside original
-    let proposed_path = format!("{compose_path}.proposed");
-    tokio::fs::write(&proposed_path, new_content).await
-        .map_err(|e| AppError::BadRequest(format!("Write failed: {e}")))?;
-
-    // Generate simple unified diff summary (line counts)
-    let old_lines: Vec<&str> = current.lines().collect();
-    let new_lines: Vec<&str> = new_content.lines().collect();
-    let added   = new_lines.iter().filter(|l| !old_lines.contains(l)).count();
-    let removed = old_lines.iter().filter(|l| !new_lines.contains(l)).count();
+    let preview = crate::operations::adapters::containers::preview_compose_change(
+        &state.config.data_dir,
+        &container_id,
+        std::path::Path::new(compose_path),
+        new_content.as_bytes(),
+    )
+    .await
+    .map_err(|error| {
+        AppError::BadRequest(crate::api::mcp::redact::redact_patterns(&error.to_string()))
+    })?;
 
     audit::log(
-        &state.db, Some(&user.id), "human", "containers.propose_compose",
-        Some("container"), Some(&container_id), "success", None,
-        Some(&format!("path={compose_path} +{added} -{removed}")),
-    ).await;
+        &state.db,
+        Some(&user.id),
+        "human",
+        "containers.propose_compose",
+        Some("container"),
+        Some(&container_id),
+        "success",
+        None,
+        Some(&format!("preview +{} -{}", preview.added, preview.removed)),
+    )
+    .await;
 
-    Ok(Json(serde_json::json!({
-        "proposed_path": proposed_path,
-        "added": added,
-        "removed": removed,
-        "current_lines": old_lines.len(),
-        "new_lines": new_lines.len(),
-    })))
+    Ok(Json(
+        serde_json::to_value(preview).map_err(|error| AppError::Internal(error.into()))?,
+    ))
 }
 
-/// Apply a proposed compose change — moves .proposed → original, restarts stack
+/// Legacy direct Compose apply is gated until canonical durable submission and workers are live.
 pub async fn apply_compose(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path(container_id): Path<String>,
-    Json(body): Json<serde_json::Value>,
+    Path(_container_id): Path<String>,
+    Json(_body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     if !matches!(user.role.as_str(), "owner" | "admin") {
         return Err(AppError::Forbidden);
     }
-
-    let proposed_path = body["proposed_path"].as_str()
-        .ok_or_else(|| AppError::BadRequest("proposed_path required".into()))?;
-
-    if !proposed_path.ends_with(".proposed") {
-        return Err(AppError::BadRequest("Not a proposed file".into()));
-    }
-
-    let original = &proposed_path[..proposed_path.len() - ".proposed".len()];
-
-    tokio::fs::rename(proposed_path, original).await
-        .map_err(|e| AppError::BadRequest(format!("Rename failed: {e}")))?;
-
-    // Restart via docker compose up -d in the working dir
-    let working_dir = std::path::Path::new(original)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".into());
-
-    let out = tokio::process::Command::new("docker")
-        .args(["compose", "up", "-d", "--remove-orphans"])
-        .current_dir(&working_dir)
-        .output()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "containers.apply_compose",
-        Some("container"), Some(&container_id), "success", None,
-        Some(&format!("path={original}")),
-    ).await;
-
-    Ok(Json(serde_json::json!({
-        "ok": out.status.success(),
-        "stdout": String::from_utf8_lossy(&out.stdout),
-        "stderr": String::from_utf8_lossy(&out.stderr),
-    })))
+    Err(AppError::FeatureUnavailable(
+        "Durable Compose submission is not enabled yet; preview remains available".into(),
+    ))
 }

@@ -156,13 +156,9 @@ export const api = {
     images: () => request<{ images: import('./types').ImageInfo[] }>('/api/containers/images'),
     getCompose: (id: string) =>
       request<{ compose_path: string; content: string; diff?: string }>(`/api/containers/${id}/compose`),
-    proposeCompose: (id: string, content: string) =>
-      request<{ ok: boolean; diff: string; services: string[] }>(`/api/containers/${id}/compose/propose`, {
-        method: 'POST', body: JSON.stringify({ content }),
-      }),
-    applyCompose: (id: string, content: string) =>
-      request<{ ok: boolean }>(`/api/containers/${id}/compose/apply`, {
-        method: 'POST', body: JSON.stringify({ content }),
+    previewCompose: (id: string, path: string, content: string) =>
+      request<{ added: number; removed: number; current_lines: number; proposed_lines: number }>(`/api/containers/${id}/compose/propose`, {
+        method: 'POST', body: JSON.stringify({ path, content }),
       }),
   },
 

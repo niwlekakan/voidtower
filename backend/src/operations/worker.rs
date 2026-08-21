@@ -18,6 +18,16 @@ use sqlx::{FromRow, SqlitePool};
 
 const MAX_PERSISTED_TEXT_CHARS: usize = 4 * 1024;
 
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+pub enum CancellationError {
+    #[error("job not found")]
+    NotFound,
+    #[error("job cannot be cancelled in its current state")]
+    InvalidState,
+    #[error("cancellation persistence failed")]
+    Internal,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClaimedJob {
     pub id: String,
@@ -1439,15 +1449,21 @@ pub async fn request_cancellation(
     job_id: &str,
     actor: ActorRef,
     now: i64,
-) -> Result<JobState> {
-    let mut transaction = pool.begin().await?;
-    acquire_write_intent(&mut transaction).await?;
-    let (state, resource_id): (String, String) =
+) -> std::result::Result<JobState, CancellationError> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|_| CancellationError::Internal)?;
+    acquire_write_intent(&mut transaction)
+        .await
+        .map_err(|_| CancellationError::Internal)?;
+    let row: Option<(String, String)> =
         sqlx::query_as("SELECT state, resource_id FROM jobs WHERE id = ?")
             .bind(job_id)
             .fetch_optional(&mut *transaction)
-            .await?
-            .context("job not found")?;
+            .await
+            .map_err(|_| CancellationError::Internal)?;
+    let (state, resource_id) = row.ok_or(CancellationError::NotFound)?;
     let target = match state.as_str() {
         "queued" => {
             sqlx::query(
@@ -1458,7 +1474,8 @@ pub async fn request_cancellation(
             .bind(now)
             .bind(job_id)
             .execute(&mut *transaction)
-            .await?;
+            .await
+            .map_err(|_| CancellationError::Internal)?;
             sqlx::query(
                 "UPDATE job_steps SET state = 'cancelled', finished_at = ?, updated_at = ? \
                  WHERE job_id = ? AND state = 'pending'",
@@ -1467,7 +1484,8 @@ pub async fn request_cancellation(
             .bind(now)
             .bind(job_id)
             .execute(&mut *transaction)
-            .await?;
+            .await
+            .map_err(|_| CancellationError::Internal)?;
             JobState::Cancelled
         }
         "running" => {
@@ -1478,10 +1496,11 @@ pub async fn request_cancellation(
             .bind(now)
             .bind(job_id)
             .execute(&mut *transaction)
-            .await?;
+            .await
+            .map_err(|_| CancellationError::Internal)?;
             JobState::Running
         }
-        _ => anyhow::bail!("job cannot be cancelled from state {state}"),
+        _ => return Err(CancellationError::InvalidState),
     };
     events::append(
         &mut transaction,
@@ -1500,7 +1519,8 @@ pub async fn request_cancellation(
             payload: serde_json::json!({"previous_state": state, "state": target}),
         },
     )
-    .await?;
+    .await
+    .map_err(|_| CancellationError::Internal)?;
     insert_worker_audit(
         &mut transaction,
         now,
@@ -1513,8 +1533,12 @@ pub async fn request_cancellation(
             "cancellation_pending"
         },
     )
-    .await?;
-    transaction.commit().await?;
+    .await
+    .map_err(|_| CancellationError::Internal)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| CancellationError::Internal)?;
     Ok(target)
 }
 
@@ -2336,6 +2360,23 @@ mod tests {
                 .unwrap(),
             JobState::Cancelled
         );
+        let queued_event: String = sqlx::query_scalar(
+            "SELECT event_type FROM events WHERE job_id = ? ORDER BY sequence DESC LIMIT 1",
+        )
+        .bind(&queued)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queued_event, "job.cancelled.v1");
+        let queued_audit: String = sqlx::query_scalar(
+            "SELECT outcome FROM audit_log WHERE action = 'job.cancel' AND resource_id = ? \
+             ORDER BY timestamp DESC LIMIT 1",
+        )
+        .bind(&queued)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queued_audit, "cancelled");
 
         let running = submit_job(&pool, &resource, "running-cancel", "never").await;
         claim_next(&pool, &adapters, "worker-a", 101, 10)
@@ -2348,6 +2389,23 @@ mod tests {
                 .unwrap(),
             JobState::Running
         );
+        let running_event: String = sqlx::query_scalar(
+            "SELECT event_type FROM events WHERE job_id = ? ORDER BY sequence DESC LIMIT 1",
+        )
+        .bind(&running)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(running_event, "job.cancellation_requested.v1");
+        let running_audit: String = sqlx::query_scalar(
+            "SELECT outcome FROM audit_log WHERE action = 'job.cancel' AND resource_id = ? \
+             ORDER BY timestamp DESC LIMIT 1",
+        )
+        .bind(&running)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(running_audit, "cancellation_pending");
         let claimed_job = jobs::get(&pool, &running).await.unwrap().unwrap();
         assert_eq!(claimed_job.state, JobState::Running);
         let step = claim_step(&pool, &running, "worker-a", 103, 10)

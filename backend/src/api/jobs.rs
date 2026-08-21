@@ -1,5 +1,7 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -8,9 +10,15 @@ use serde::Deserialize;
 use crate::{
     auth,
     error::{AppError, Result},
-    operations::jobs,
+    operations::{
+        contracts::{ActorType, JobState},
+        invocation::{self, CredentialContext},
+        jobs, worker,
+    },
     AppState,
 };
+
+use super::{actions::CanonicalApiError, bearer_auth::AuthenticatedApiToken};
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -58,4 +66,50 @@ pub async fn get(
         .map_err(AppError::Internal)?
         .ok_or(AppError::NotFound)?;
     Ok(Json(serde_json::json!({"job": job})))
+}
+
+pub async fn cancel(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    token: Option<Extension<AuthenticatedApiToken>>,
+    Path(id): Path<String>,
+) -> std::result::Result<Response, CanonicalApiError> {
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
+    let job = jobs::get(&state.db, &id)
+        .await
+        .map_err(|_| CanonicalApiError::internal())?
+        .ok_or_else(CanonicalApiError::job_not_found)?;
+    let action = crate::api::mcp::action_registry::action(&job.action)
+        .ok_or_else(CanonicalApiError::forbidden)?;
+    invocation::authorize_action(action, &credential)?;
+
+    if let CredentialContext::Bearer { token_id, .. } = &credential {
+        if job.actor.actor_type != ActorType::ApiToken
+            || job.actor.id.as_deref() != Some(token_id.as_str())
+        {
+            return Err(CanonicalApiError::forbidden());
+        }
+    }
+    if !matches!(job.state, JobState::Queued | JobState::Running) {
+        return Err(CanonicalApiError::invalid_job_state());
+    }
+
+    worker::request_cancellation(
+        &state.db,
+        &id,
+        credential.actor(),
+        crate::operations::unix_now(),
+    )
+    .await
+    .map_err(|error| match error {
+        worker::CancellationError::NotFound => CanonicalApiError::job_not_found(),
+        worker::CancellationError::InvalidState => CanonicalApiError::invalid_job_state(),
+        worker::CancellationError::Internal => CanonicalApiError::internal(),
+    })?;
+    let job = jobs::get(&state.db, &id)
+        .await
+        .map_err(|_| CanonicalApiError::internal())?
+        .ok_or_else(CanonicalApiError::job_not_found)?;
+    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"job": job}))).into_response())
 }

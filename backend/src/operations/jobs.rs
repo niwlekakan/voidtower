@@ -10,7 +10,19 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, thiserror::Error)]
+pub enum SubmitError {
+    #[error("idempotency key already belongs to a different request")]
+    IdempotencyConflict,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
+    #[error(transparent)]
+    Integer(#[from] std::num::TryFromIntError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmissionPolicy {
     Allow,
     RequireApproval {
@@ -37,6 +49,48 @@ pub struct SubmitJob {
     pub retry_class: String,
     pub recovery_class: String,
     pub policy: SubmissionPolicy,
+}
+
+pub fn intent_digest(action: &str, resource_id: &str, input: &Value) -> Result<String> {
+    canonical_json::digest(&serde_json::json!({
+        "schema_version": 1,
+        "action": action,
+        "resource_id": resource_id,
+        "input": input,
+    }))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IdempotencyLookup {
+    Missing,
+    Existing(Box<JobSummaryV1>),
+    Conflict,
+}
+
+pub async fn lookup_idempotency(
+    pool: &SqlitePool,
+    scope: &str,
+    key: &str,
+    request_digest: &str,
+) -> Result<IdempotencyLookup> {
+    let existing = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, request_digest FROM jobs WHERE idempotency_scope = ? AND idempotency_key = ?",
+    )
+    .bind(scope)
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
+    let Some((job_id, existing_digest)) = existing else {
+        return Ok(IdempotencyLookup::Missing);
+    };
+    if existing_digest != request_digest {
+        return Ok(IdempotencyLookup::Conflict);
+    }
+    Ok(IdempotencyLookup::Existing(Box::new(
+        get(pool, &job_id)
+            .await?
+            .context("idempotent job disappeared")?,
+    )))
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -66,14 +120,23 @@ struct JobRow {
     updated_at: i64,
 }
 
-pub async fn submit(pool: &SqlitePool, request: SubmitJob) -> Result<JobSummaryV1> {
+pub async fn submit(
+    pool: &SqlitePool,
+    request: SubmitJob,
+) -> std::result::Result<JobSummaryV1, SubmitError> {
     validate_submission(&request)?;
     let input_json = canonical_json::to_canonical_string(&request.input)?;
-    let request_digest = canonical_json::digest(&request.input)?;
+    let request_digest = intent_digest(&request.action, &request.resource.id, &request.input)?;
     let plan_json = canonical_json::to_canonical_string(&request.plan)?;
     let plan_digest = canonical_json::digest(&request.plan)?;
     let now = unix_now();
     let mut transaction = pool.begin().await?;
+    // Acquire SQLite write intent before the idempotency read. Concurrent first submissions can
+    // then serialize on the unique scope/key boundary instead of racing a deferred transaction
+    // upgrade after both observed an empty key.
+    sqlx::query("UPDATE jobs SET updated_at = updated_at WHERE 0")
+        .execute(&mut *transaction)
+        .await?;
 
     if let Some((existing_id, existing_digest)) = sqlx::query_as::<_, (String, String)>(
         "SELECT id, request_digest FROM jobs WHERE idempotency_scope = ? AND idempotency_key = ?",
@@ -84,12 +147,13 @@ pub async fn submit(pool: &SqlitePool, request: SubmitJob) -> Result<JobSummaryV
     .await?
     {
         if existing_digest != request_digest {
-            bail!("idempotency key already belongs to a different request");
+            return Err(SubmitError::IdempotencyConflict);
         }
         transaction.rollback().await?;
         return get(pool, &existing_id)
             .await?
-            .context("idempotent job disappeared");
+            .context("idempotent job disappeared")
+            .map_err(SubmitError::from);
     }
 
     let (state, queued_at, policy_reason, approval) = match &request.policy {
@@ -251,7 +315,10 @@ pub async fn submit(pool: &SqlitePool, request: SubmitJob) -> Result<JobSummaryV
     )
     .await?;
     transaction.commit().await?;
-    get(pool, &job_id).await?.context("created job disappeared")
+    get(pool, &job_id)
+        .await?
+        .context("created job disappeared")
+        .map_err(SubmitError::from)
 }
 
 pub async fn get(pool: &SqlitePool, job_id: &str) -> Result<Option<JobSummaryV1>> {
@@ -611,7 +678,170 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("different request"));
+        assert!(matches!(error, SubmitError::IdempotencyConflict));
+    }
+
+    #[tokio::test]
+    async fn reused_idempotency_key_cannot_alias_another_action_or_resource() {
+        let (pool, resource) = setup().await;
+        submit(
+            &pool,
+            request(
+                resource.clone(),
+                serde_json::json!({"force": true}),
+                SubmissionPolicy::Allow,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let mut different_action = request(
+            resource.clone(),
+            serde_json::json!({"force": true}),
+            SubmissionPolicy::Allow,
+        );
+        different_action.action = "container.restart".into();
+        assert!(matches!(
+            submit(&pool, different_action).await.unwrap_err(),
+            SubmitError::IdempotencyConflict
+        ));
+
+        let second_resource = resources::observe(
+            &pool,
+            resources::ObserveResource {
+                kind: "container",
+                display_name: "other",
+                node_id: None,
+                provider: Some("docker"),
+                namespace: "test.container",
+                scope_key: "local",
+                alias: "two",
+            },
+            None,
+            "setup-two",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            submit(
+                &pool,
+                request(
+                    second_resource,
+                    serde_json::json!({"force": true}),
+                    SubmissionPolicy::Allow,
+                ),
+            )
+            .await
+            .unwrap_err(),
+            SubmitError::IdempotencyConflict
+        ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_identical_submissions_create_one_durable_job() {
+        let path = std::env::temp_dir().join(format!(
+            "voidtower-idempotency-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = crate::db::init_pool(&path).await.unwrap();
+        let resource = resources::observe(
+            &pool,
+            resources::ObserveResource {
+                kind: "container",
+                display_name: "concurrent",
+                node_id: None,
+                provider: Some("docker"),
+                namespace: "test.container",
+                scope_key: "local",
+                alias: "concurrent",
+            },
+            None,
+            "setup",
+        )
+        .await
+        .unwrap();
+        let left = request(
+            resource.clone(),
+            serde_json::json!({"force": true}),
+            SubmissionPolicy::Allow,
+        );
+        let right = request(
+            resource,
+            serde_json::json!({"force": true}),
+            SubmissionPolicy::Allow,
+        );
+
+        let (left, right) = tokio::join!(submit(&pool, left), submit(&pool, right));
+        let left = left.unwrap();
+        let right = right.unwrap();
+        assert_eq!(left.id, right.id);
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE idempotency_scope = 'human:user-1' \
+             AND idempotency_key = 'request-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn concurrent_conflicting_submissions_create_one_job_and_one_conflict() {
+        let path = std::env::temp_dir().join(format!(
+            "voidtower-idempotency-conflict-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = crate::db::init_pool(&path).await.unwrap();
+        let resource = resources::observe(
+            &pool,
+            resources::ObserveResource {
+                kind: "container",
+                display_name: "conflicting",
+                node_id: None,
+                provider: Some("docker"),
+                namespace: "test.container",
+                scope_key: "local",
+                alias: "conflicting",
+            },
+            None,
+            "setup",
+        )
+        .await
+        .unwrap();
+        let left = request(
+            resource.clone(),
+            serde_json::json!({"force": true}),
+            SubmissionPolicy::Allow,
+        );
+        let right = request(
+            resource,
+            serde_json::json!({"force": false}),
+            SubmissionPolicy::Allow,
+        );
+
+        let (left, right) = tokio::join!(submit(&pool, left), submit(&pool, right));
+        let mut created = 0;
+        let mut conflicts = 0;
+        for result in [left, right] {
+            match result {
+                Ok(_) => created += 1,
+                Err(SubmitError::IdempotencyConflict) => conflicts += 1,
+                Err(error) => panic!("unexpected submission error: {error}"),
+            }
+        }
+        assert_eq!((created, conflicts), (1, 1));
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE idempotency_scope = 'human:user-1' \
+             AND idempotency_key = 'request-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

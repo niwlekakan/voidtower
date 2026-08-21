@@ -709,6 +709,13 @@ impl OperationAdapter for ContainerAdapter {
         if request.action == COMPOSE_ACTION {
             return self.plan_compose(request).await;
         }
+        ensure!(
+            request
+                .input
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty),
+            "container lifecycle input must be an empty object"
+        );
         let (_, snapshot) = self.snapshot(&request).await?;
         let metadata = action_registry::action(&request.action)
             .context("container action is absent from the action registry")?;
@@ -1438,6 +1445,20 @@ mod tests {
             provider.actions.lock().unwrap().as_slice(),
             &[ContainerAction::Start]
         );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_planning_rejects_nonempty_input() {
+        let (adapter, _, resource) = setup().await;
+        let result = adapter
+            .plan(PlanRequest {
+                action: "container.start".into(),
+                resource,
+                input: serde_json::json!({"password": "must-not-persist"}),
+            })
+            .await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

@@ -32,7 +32,9 @@ fn decision_for(method: &str, matched_path: &str, token_scopes: &[String]) -> Be
     };
 
     match metadata.bearer {
-        BearerPolicy::Public | BearerPolicy::Unscoped => BearerDecision::Allow,
+        BearerPolicy::Public | BearerPolicy::Unscoped | BearerPolicy::ActionScoped => {
+            BearerDecision::Allow
+        }
         BearerPolicy::Scope(scope) if token_scopes.iter().any(|candidate| candidate == scope) => {
             BearerDecision::Allow
         }

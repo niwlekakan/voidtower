@@ -7,8 +7,8 @@
 //! unmounted until that runtime registry has a real adapter.
 
 use crate::api::mcp::action_registry::{
-    self, ActionExecution, ActionIngress, ActionKind, ApprovalPolicy, HttpMethod, RecoveryClass,
-    RetryClass, RiskClass, ACTIONS, ROUTES,
+    self, ActionExecution, ActionIngress, ActionKind, AiExposure, ApprovalPolicy, BearerPolicy,
+    HttpMethod, RecoveryClass, RetryClass, RiskClass, RoleTier, SessionPolicy, ACTIONS, ROUTES,
 };
 use anyhow::{bail, ensure, Result};
 use std::collections::HashSet;
@@ -143,7 +143,9 @@ fn validate_durable_actions() -> Result<()> {
                 && action.result_schema_id.is_none()
                 && action.concurrency.is_none()
                 && action.retry.is_none()
-                && action.recovery.is_none(),
+                && action.recovery.is_none()
+                && action.canonical_session_role.is_none()
+                && action.canonical_bearer == BearerPolicy::Denied,
             "direct action {} has partial durable metadata",
             action.name
         );
@@ -236,6 +238,31 @@ fn validate_durable_actions() -> Result<()> {
             "durable action {} is not reachable from HTTP",
             action.name
         );
+        required_role(action.canonical_session_role, action.name)?;
+        match action.canonical_bearer {
+            BearerPolicy::Scope(scope) => {
+                ensure!(
+                    !scope.is_empty(),
+                    "durable action {} has an empty bearer scope",
+                    action.name
+                );
+                ensure!(
+                    action.ai_exposure == AiExposure::Callable,
+                    "bearer-scoped durable action {} is not AI-callable",
+                    action.name
+                );
+            }
+            BearerPolicy::Denied => ensure!(
+                action.ai_exposure == AiExposure::None,
+                "bearer-denied durable action {} is AI-exposed",
+                action.name
+            ),
+            BearerPolicy::Public | BearerPolicy::Unscoped | BearerPolicy::ActionScoped => bail!(
+                "durable action {} has unsafe bearer policy {:?}",
+                action.name,
+                action.canonical_bearer
+            ),
+        }
 
         match action.kind {
             ActionKind::Read => {
@@ -335,6 +362,30 @@ fn validate_route_mappings() -> Result<()> {
                     action_name
                 );
             }
+            let route_role = match route.session {
+                SessionPolicy::Required(role) => role,
+                other => bail!(
+                    "mapped route {} {} has unsupported session policy {:?}",
+                    route.method.as_str(),
+                    route.path,
+                    other
+                ),
+            };
+            let action_role = required_role(action.canonical_session_role, action.name)?;
+            ensure!(
+                role_rank(route_role) >= role_rank(action_role),
+                "route {} {} weakens action {} session role",
+                route.method.as_str(),
+                route.path,
+                action.name
+            );
+            ensure!(
+                bearer_at_least_as_restrictive(route.bearer, action.canonical_bearer),
+                "route {} {} weakens action {} bearer policy",
+                route.method.as_str(),
+                route.path,
+                action.name
+            );
         }
     }
     Ok(())
@@ -344,6 +395,27 @@ fn required<'a>(value: Option<&'a str>, action: &str, field: &str) -> Result<&'a
     match value {
         Some(value) if !value.is_empty() => Ok(value),
         _ => bail!("action {} has no {}", action, field),
+    }
+}
+
+fn required_role(value: Option<RoleTier>, action: &str) -> Result<RoleTier> {
+    value.ok_or_else(|| anyhow::anyhow!("action {action} has no canonical session role"))
+}
+
+const fn role_rank(role: RoleTier) -> u8 {
+    match role {
+        RoleTier::Session => 0,
+        RoleTier::Operator => 1,
+        RoleTier::Admin => 2,
+        RoleTier::Owner => 3,
+    }
+}
+
+fn bearer_at_least_as_restrictive(route: BearerPolicy, action: BearerPolicy) -> bool {
+    match (route, action) {
+        (BearerPolicy::Denied, _) => true,
+        (BearerPolicy::Scope(route), BearerPolicy::Scope(action)) => route == action,
+        _ => false,
     }
 }
 
@@ -363,6 +435,41 @@ mod tests {
     #[test]
     fn operation_registry_is_complete_and_consistent() {
         validate().expect("operation registry should be valid");
+    }
+
+    #[test]
+    fn every_durable_action_has_explicit_canonical_access() {
+        let durable: Vec<_> = ACTIONS
+            .iter()
+            .filter(|action| action.execution == ActionExecution::DurableJob)
+            .collect();
+        assert_eq!(durable.len(), 51, "the J0 durable action inventory drifted");
+
+        for action in durable {
+            assert!(
+                action.canonical_session_role.is_some(),
+                "durable action {} has no canonical session role",
+                action.name
+            );
+            match action.canonical_bearer {
+                crate::api::mcp::action_registry::BearerPolicy::Scope(_) => assert_eq!(
+                    action.ai_exposure,
+                    crate::api::mcp::action_registry::AiExposure::Callable,
+                    "bearer-scoped durable action {} must be AI-callable",
+                    action.name
+                ),
+                crate::api::mcp::action_registry::BearerPolicy::Denied => assert_eq!(
+                    action.ai_exposure,
+                    crate::api::mcp::action_registry::AiExposure::None,
+                    "bearer-denied durable action {} must not be AI-callable",
+                    action.name
+                ),
+                other => panic!(
+                    "durable action {} has unsafe canonical bearer policy {other:?}",
+                    action.name
+                ),
+            }
+        }
     }
 
     #[test]

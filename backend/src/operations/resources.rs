@@ -188,6 +188,31 @@ pub async fn get(pool: &SqlitePool, resource_id: &str) -> Result<Option<Resource
     )
 }
 
+pub async fn get_active(pool: &SqlitePool, resource_id: &str) -> Result<Option<ResourceRef>> {
+    Ok(sqlx::query_as(
+        "SELECT id, kind, display_name, revision FROM resources \
+         WHERE id = ? AND lifecycle_state = 'active'",
+    )
+    .bind(resource_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+pub async fn capability(
+    pool: &SqlitePool,
+    resource_id: &str,
+    action: &str,
+) -> Result<Option<ResourceCapability>> {
+    Ok(sqlx::query_as(
+        "SELECT resource_id, action, availability, reason_code, detail, schema_version, observed_at \
+         FROM resource_capabilities WHERE resource_id = ? AND action = ?",
+    )
+    .bind(resource_id)
+    .bind(action)
+    .fetch_optional(pool)
+    .await?)
+}
+
 pub async fn aliases(pool: &SqlitePool, resource_id: &str) -> Result<Vec<ResourceAlias>> {
     Ok(sqlx::query_as(
         "SELECT resource_id, namespace, scope_key, value FROM resource_aliases \

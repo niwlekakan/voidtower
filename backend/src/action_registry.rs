@@ -67,6 +67,9 @@ pub enum BearerPolicy {
     Public,
     Unscoped,
     Scope(&'static str),
+    /// The route selects a typed action or job at runtime and enforces that action's exact bearer
+    /// policy in the handler before planning or mutation.
+    ActionScoped,
     Denied,
 }
 
@@ -187,6 +190,11 @@ pub struct ActionMetadata {
     pub concurrency: Option<ConcurrencyPolicy>,
     pub retry: Option<RetryMetadata>,
     pub recovery: Option<RecoveryClass>,
+    /// Minimum current user role for the canonical HTTP plan/submit/cancel boundary. Direct
+    /// actions have no canonical access; every durable HTTP action declares one explicitly.
+    pub canonical_session_role: Option<RoleTier>,
+    /// Bearer policy applied after the generic action-scoped route selects this action.
+    pub canonical_bearer: BearerPolicy,
 }
 
 macro_rules! route_metadata {
@@ -241,6 +249,36 @@ macro_rules! operation_route_metadata {
 }
 
 pub const ROUTES: &[RouteMetadata] = &[
+    route_metadata!(
+        Post,
+        "/api/resources/:id/actions/:action",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::ActionScoped,
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always,
+        AiExposure::Callable
+    ),
+    route_metadata!(
+        Post,
+        "/api/resources/:id/actions/:action/plan",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::ActionScoped,
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always,
+        AiExposure::Callable
+    ),
+    route_metadata!(
+        Post,
+        "/api/jobs/:id/cancel",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::ActionScoped,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::Callable
+    ),
     route_metadata!(
         Get,
         "/api/events",
@@ -3697,6 +3735,8 @@ macro_rules! action_metadata {
             concurrency: None,
             retry: None,
             recovery: None,
+            canonical_session_role: None,
+            canonical_bearer: BearerPolicy::Denied,
         }
     };
 }
@@ -3718,6 +3758,8 @@ macro_rules! internal_action_metadata {
             concurrency: None,
             retry: None,
             recovery: None,
+            canonical_session_role: None,
+            canonical_bearer: BearerPolicy::Denied,
         }
     };
 }
@@ -3734,7 +3776,10 @@ macro_rules! durable_action_metadata {
         $result_schema_id:expr,
         $retry_class:expr,
         $max_attempts:literal,
-        $recovery:expr
+        $recovery:expr,
+        $session_role:expr,
+        $bearer:expr,
+        $ai_exposure:expr
     ) => {
         ActionMetadata {
             name: $name,
@@ -3742,7 +3787,7 @@ macro_rules! durable_action_metadata {
             kind: $kind,
             risk: $risk,
             approval: $approval,
-            ai_exposure: AiExposure::None,
+            ai_exposure: $ai_exposure,
             execution: ActionExecution::DurableJob,
             resource_kind: Some($resource_kind),
             adapter_key: Some($adapter_key),
@@ -3754,6 +3799,8 @@ macro_rules! durable_action_metadata {
                 max_attempts: $max_attempts,
             }),
             recovery: Some($recovery),
+            canonical_session_role: Some($session_role),
+            canonical_bearer: $bearer,
         }
     };
 }
@@ -3771,7 +3818,60 @@ macro_rules! durable_mutation {
             concat!($name, ".result.v1"),
             RetryClass::Never,
             1,
-            RecoveryClass::Reconcile
+            RecoveryClass::Reconcile,
+            RoleTier::Admin,
+            BearerPolicy::Denied,
+            AiExposure::None
+        )
+    };
+}
+
+macro_rules! durable_operator_mutation {
+    ($name:literal, $resource_kind:literal, $adapter_key:literal, $risk:expr, $approval:expr) => {
+        durable_action_metadata!(
+            $name,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Mutating,
+            $risk,
+            $approval,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Never,
+            1,
+            RecoveryClass::Reconcile,
+            RoleTier::Operator,
+            BearerPolicy::Denied,
+            AiExposure::None
+        )
+    };
+}
+
+macro_rules! durable_scoped_mutation {
+    (
+        $name:literal,
+        $resource_kind:literal,
+        $adapter_key:literal,
+        $risk:expr,
+        $approval:expr,
+        $session_role:expr,
+        $scope:literal
+    ) => {
+        durable_action_metadata!(
+            $name,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Mutating,
+            $risk,
+            $approval,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Never,
+            1,
+            RecoveryClass::Reconcile,
+            $session_role,
+            BearerPolicy::Scope($scope),
+            AiExposure::Callable
         )
     };
 }
@@ -3789,7 +3889,31 @@ macro_rules! durable_read_job {
             concat!($name, ".result.v1"),
             RetryClass::Transient,
             3,
-            RecoveryClass::Reconcile
+            RecoveryClass::Reconcile,
+            RoleTier::Admin,
+            BearerPolicy::Denied,
+            AiExposure::None
+        )
+    };
+}
+
+macro_rules! durable_operator_read_job {
+    ($name:literal, $resource_kind:literal, $adapter_key:literal) => {
+        durable_action_metadata!(
+            $name,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Read,
+            RiskClass::Read,
+            ApprovalPolicy::NotApplicable,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Transient,
+            3,
+            RecoveryClass::Reconcile,
+            RoleTier::Operator,
+            BearerPolicy::Denied,
+            AiExposure::None
         )
     };
 }
@@ -3920,33 +4044,41 @@ pub const ACTIONS: &[ActionMetadata] = &[
     // Durable HTTP operations. These names are resource-qualified so jobs, capabilities, audit
     // records, and events never need the compatibility route or request shape to disambiguate an
     // action.
-    durable_mutation!(
+    durable_scoped_mutation!(
         "container.start",
         "container",
         "containers",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "containers:restart"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "container.stop",
         "container",
         "containers",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "containers:restart"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "container.restart",
         "container",
         "containers",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "containers:restart"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "container.remove",
         "container",
         "containers",
         RiskClass::Destructive,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "containers:restart"
     ),
     durable_mutation!(
         "container.compose.apply",
@@ -3997,63 +4129,79 @@ pub const ACTIONS: &[ActionMetadata] = &[
         RiskClass::Irreversible,
         ApprovalPolicy::Always
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxy.rule.create",
         "reverse_proxy_service",
         "proxy",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxy.rule.update",
         "proxy_rule",
         "proxy",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxy.rule.delete",
         "proxy_rule",
         "proxy",
         RiskClass::Destructive,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxy.rule.toggle",
         "proxy_rule",
         "proxy",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxy.nginx.start",
         "reverse_proxy_service",
         "proxy",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxy.nginx.stop",
         "reverse_proxy_service",
         "proxy",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxy.nginx.restart",
         "reverse_proxy_service",
         "proxy",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxy.nginx.reload",
         "reverse_proxy_service",
         "proxy",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
     ),
-    durable_mutation!(
+    durable_operator_mutation!(
         "backup.config.create",
         "system",
         "backups",
@@ -4067,15 +4215,17 @@ pub const ACTIONS: &[ActionMetadata] = &[
         RiskClass::Destructive,
         ApprovalPolicy::RiskLadder
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "backup.run",
         "backup_config",
         "backups",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "backups:run"
     ),
-    durable_read_job!("backup.check", "backup_config", "backups"),
-    durable_read_job!("backup.restore_test", "backup_config", "backups"),
+    durable_operator_read_job!("backup.check", "backup_config", "backups"),
+    durable_operator_read_job!("backup.restore_test", "backup_config", "backups"),
     durable_read_job!("update.voidtower.check", "update_target", "updates"),
     durable_mutation!(
         "update.voidtower.apply",
@@ -4362,6 +4512,24 @@ mod tests {
                 ("GET", "/plugin-assets/:id/*path"),
             ]),
             "only routes that bypass scope_enforce may declare unscoped bearer access"
+        );
+    }
+
+    #[test]
+    fn action_scoped_bearer_routes_are_limited_to_the_canonical_boundary() {
+        let action_scoped: HashSet<(&str, &str)> = ROUTES
+            .iter()
+            .filter(|metadata| metadata.bearer == BearerPolicy::ActionScoped)
+            .map(|metadata| (metadata.method.as_str(), metadata.path))
+            .collect();
+        assert_eq!(
+            action_scoped,
+            HashSet::from([
+                ("POST", "/api/resources/:id/actions/:action"),
+                ("POST", "/api/resources/:id/actions/:action/plan"),
+                ("POST", "/api/jobs/:id/cancel"),
+            ]),
+            "only canonical handlers that enforce selected-action metadata may bypass static scope enforcement"
         );
     }
 

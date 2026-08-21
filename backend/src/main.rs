@@ -39,9 +39,9 @@ pub struct LoginAttempts {
 }
 use tower_http::services::{ServeDir, ServeFile};
 
-/// token_hash -> (session_id, expires_at_unix, token_scopes) — avoids a DB
-/// write (and a scopes lookup) on every Bearer request.
-pub type TokenSessionCache = HashMap<String, (String, i64, Vec<String>)>;
+/// token_hash -> stable non-secret token/session context — avoids a DB write and scopes lookup on
+/// every Bearer request without collapsing token identity into its compatibility session.
+pub type TokenSessionCache = HashMap<String, api::bearer_auth::CachedTokenSession>;
 
 #[derive(Debug, Clone)]
 pub struct AppState {

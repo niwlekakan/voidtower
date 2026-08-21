@@ -31,13 +31,13 @@ approved documents take precedence.
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
 | **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
 | **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
-| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, and all 51 six-domain runtime adapter actions are implemented. Canonical submission/cancellation, compatibility-route and CLI adoption, durable SSE, shared frontend UX, and final bypass closure remain. |
+| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. Compatibility-route and CLI adoption, durable SSE, shared frontend UX, and final bypass closure remain. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
 
 ### Current execution order
 
 1. **Completed:** **D0-01/D0-02** established numbered, fail-fast schema migrations.
-2. Finish **J0-01/J0-03**: expose the canonical mutation API, convert the six compatibility domains and CLI callers, then land durable SSE/frontend UX and close direct-execution bypasses.
+2. Finish **J0-01/J0-03**: convert the six compatibility domains and CLI callers to the canonical mutation API, then land durable SSE/frontend UX and close direct-execution bypasses.
 3. Land the CMDB/Asset Registry on those contracts.
 4. Implement the local `vt-agent`, then secure remote enrollment and managed-cluster operation.
 5. Add placement-driven Docker/App Vault and VM/LXC workflows, including full Proxmox and managed community-script integration.
@@ -59,16 +59,16 @@ therefore does not mean “J0 complete.”
 | Resource/capability contracts and persistence | **Done** | Stable resource UUIDs, scoped aliases, revisions, capability availability, immutable jobs/steps/attempts, approvals, and versioned durable events are owned by numbered migration `0002`. |
 | Worker and recovery lifecycle | **Done (production)** | Startup validates bounded operator settings and all runtime adapters, expires approvals, and recovers leases before claims. Fixed workers and a separate reconciler renew leases, periodically recover later-expiring orphan work, serialize SQLite transition writes, preserve safe cancellation checkpoints, and stop new claims while graceful shutdown joins in-flight persistence within a configured bound. |
 | Six-domain runtime adapters | **Done (staged)** | Containers, Firewall, Proxy, Updates, Backups, and Proxmox cover all 51 declared durable actions. The staged adapter registry now validates as complete. |
-| Docker Compose safety boundary | **Done (staged)** | Compose planning uses controlled immutable artifacts, rollback preparation, bounded/redacted provider output, and no-replay reconciliation. The compatibility proposal is read-only and direct apply fails closed until canonical submission is live. Pause/unpause were explicitly removed from J0 scope because no registered or legacy action existed. |
-| Canonical mutation API | **Missing** | Job list/detail and approval read/decision routes exist. Typed plan/submit, job cancellation, idempotency-key handling at the HTTP boundary, stable error envelopes, route authorization, capability checks, and Voidwatch-derived submission policy are not exposed. |
+| Docker Compose safety boundary | **Done (staged)** | Compose planning uses controlled immutable artifacts, rollback preparation, bounded/redacted provider output, and no-replay reconciliation. The compatibility proposal is read-only and direct apply remains fail-closed pending compatibility-route adoption. Pause/unpause were explicitly removed from J0 scope because no registered or legacy action existed. |
+| Canonical mutation API | **Done** | All 51 durable actions are available through strict typed advisory-plan and durable-submit routes with server-derived actor, ingress, plan, risk, retry/recovery, concurrency, capability/resource validation, Voidwatch policy, scoped full-intent idempotency, stable bearer identity, bounded/redacted errors, and fail-closed role/scope/AI exposure. Authenticated job cancellation delegates only to the durable worker cancellation transaction. |
 | Compatibility routes and CLI | **Missing** | The adopted compatibility routes still call domain/provider mutation functions directly, except legacy Compose apply now fails closed. Backup CLI mutations also execute directly. Each must submit a durable job and return or follow its job ID. |
 | Durable event delivery | **Partial** | Durable event history and ordered cursors exist. `/api/events/stream` still polls metrics and systemd rather than streaming the durable log with `Last-Event-ID`; `/api/integrations/events` is not yet a cursor-compatible alias; deduplicated alert/service transitions are not fully converged. |
 | Shared frontend Jobs/Approvals UX | **Missing** | No shared Jobs or Approvals pages, job progress/detail flow, cursor recovery, or six-domain submit/follow conversion exists. `ChangePlanModal` still represents the legacy dry-run/direct-execute pattern. |
 | Bypass closure and public contract | **Missing** | Add source-inventory enforcement for every adopted route, remove obsolete direct/dry-run branches and duplicate transient state, document the public asynchronous contract, and pass the complete release verification matrix. |
 
-The next publishable J0 checkpoint is the canonical mutation API: typed planning/submission and
-job cancellation with stable errors, authorization, capability checks, idempotency, and
-Voidwatch-derived policy. Compatibility routes remain unchanged until that boundary is proven.
+The next publishable J0 checkpoint converts the six compatibility domains and CLI callers to the
+proven canonical mutation boundary. Existing compatibility routes remain unchanged in this
+checkpoint and still require explicit adoption before J0 can be called complete.
 
 ---
 

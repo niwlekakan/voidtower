@@ -38,6 +38,7 @@ async fn security_headers(req: Request, next: Next) -> Response {
     res
 }
 
+pub mod actions;
 pub mod agents;
 pub mod ai;
 pub mod ai_ask;
@@ -152,8 +153,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/resources", get(resources::list))
         .route("/api/resources/:id", get(resources::get))
         .route("/api/resources/:id/capabilities", get(resources::capabilities))
+        .route("/api/resources/:id/actions/:action/plan", post(actions::plan).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
+        .route("/api/resources/:id/actions/:action", post(actions::submit).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         .route("/api/jobs", get(jobs::list))
         .route("/api/jobs/:id", get(jobs::get))
+        .route("/api/jobs/:id/cancel", post(jobs::cancel))
         .route("/api/approvals", get(approvals::list))
         .route("/api/approvals/:id", get(approvals::get))
         .route("/api/approvals/:id/approve", post(approvals::approve))

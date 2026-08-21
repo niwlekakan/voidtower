@@ -33,6 +33,7 @@ ignore = [
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 1.0.4 unmaintained (transitive); superseded by rustls-pki-types upstream, tracked as a future dependency-bump task" },
     { id = "RUSTSEC-2017-0008", reason = "serial 0.4.0 unmaintained, transitive via portable-pty; no safe upgrade available upstream" },
     { id = "RUSTSEC-2026-0190", reason = "anyhow 1.0.102 unsoundness in Error::downcast_mut(), a method not used by this crate; tracked for a future bump" },
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3.27, transitive via openidconnect 3 -> reqwest 0.11; the fix is only available on h2 0.4 and requires a dedicated authentication dependency upgrade" },
 ]
 
 # This section is considered when running `cargo deny check licenses`.

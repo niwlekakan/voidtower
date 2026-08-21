@@ -4,7 +4,7 @@ VoidTower is a self-hosted infrastructure command tower — control plane, app c
 
 ---
 
-## VoidTower 1.0 Delivery Status — 2026-08-12
+## VoidTower 1.0 Delivery Status — 2026-08-21
 
 The current 1.0 scope is larger than the legacy phase/backlog sections below. This roadmap
 summarizes the public product boundary and its dependency-ordered work packages.
@@ -31,13 +31,13 @@ approved documents take precedence.
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
 | **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
 | **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
-| **J0-01 — Shared resource/capability contract** | **Next** | This becomes the common API/action/event/report contract for web, mobile, nodes, plugins, automation, and AI. |
+| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, worker/recovery primitives, approvals, durable history, and all 51 six-domain runtime adapter actions are implemented. Production worker lifecycle, canonical submission/cancellation, compatibility-route and CLI adoption, durable SSE, shared frontend UX, and final bypass closure remain. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
 
 ### Current execution order
 
 1. **Completed:** **D0-01/D0-02** established numbered, fail-fast schema migrations.
-2. Build **J0-01/J0-03** shared capability, job, approval, and event foundations.
+2. Finish **J0-01/J0-03**: wire the production worker/reconciler lifecycle, expose the canonical mutation API, convert the six compatibility domains and CLI callers, then land durable SSE/frontend UX and close direct-execution bypasses.
 3. Land the CMDB/Asset Registry on those contracts.
 4. Implement the local `vt-agent`, then secure remote enrollment and managed-cluster operation.
 5. Add placement-driven Docker/App Vault and VM/LXC workflows, including full Proxmox and managed community-script integration.
@@ -46,6 +46,30 @@ approved documents take precedence.
 
 No new remote-execution or AI-mutation path may bypass the typed action registry, policy/approval
 pipeline, durable jobs, audit history, or redaction rules.
+
+### J0 durable-operation adoption
+
+J0 has a complete staged execution kernel, but it is not yet the production mutation path. The
+HTTP compatibility handlers and CLI callers remain authoritative until each is converted to
+plan and submit through the durable boundary. “Adapter complete” therefore does not mean “J0
+complete.”
+
+| Workstream | Status | Evidence / remaining work |
+|---|---|---|
+| Resource/capability contracts and persistence | **Done** | Stable resource UUIDs, scoped aliases, revisions, capability availability, immutable jobs/steps/attempts, approvals, and versioned durable events are owned by numbered migration `0002`. |
+| Worker and recovery kernel | **Kernel done; production wiring missing** | Lease/concurrency claiming, retries, cancellation checkpoints, uncertain outcomes, reconciliation, and expired-lease recovery are tested. Startup does not yet validate the runtime registry, recover leases/approvals, or run bounded worker/reconciler loops; graceful shutdown does not stop claims and join worker handles. |
+| Six-domain runtime adapters | **Done (staged)** | Containers, Firewall, Proxy, Updates, Backups, and Proxmox cover all 51 declared durable actions. The staged adapter registry now validates as complete. |
+| Docker Compose safety boundary | **Done (staged)** | Compose planning uses controlled immutable artifacts, rollback preparation, bounded/redacted provider output, and no-replay reconciliation. The compatibility proposal is read-only and direct apply fails closed until canonical submission is live. Pause/unpause were explicitly removed from J0 scope because no registered or legacy action existed. |
+| Canonical mutation API | **Missing** | Job list/detail and approval read/decision routes exist. Typed plan/submit, job cancellation, idempotency-key handling at the HTTP boundary, stable error envelopes, route authorization, capability checks, and Voidwatch-derived submission policy are not exposed. |
+| Compatibility routes and CLI | **Missing** | The adopted compatibility routes still call domain/provider mutation functions directly, except legacy Compose apply now fails closed. Backup/update CLI mutations also execute directly. Each must submit a durable job and return or follow its job ID. |
+| Durable event delivery | **Partial** | Durable event history and ordered cursors exist. `/api/events/stream` still polls metrics and systemd rather than streaming the durable log with `Last-Event-ID`; `/api/integrations/events` is not yet a cursor-compatible alias; deduplicated alert/service transitions are not fully converged. |
+| Shared frontend Jobs/Approvals UX | **Missing** | No shared Jobs or Approvals pages, job progress/detail flow, cursor recovery, or six-domain submit/follow conversion exists. `ChangePlanModal` still represents the legacy dry-run/direct-execute pattern. |
+| Bypass closure and public contract | **Missing** | Add source-inventory enforcement for every adopted route, remove obsolete direct/dry-run branches and duplicate transient state, document the public asynchronous contract, and pass the complete release verification matrix. |
+
+The next publishable J0 checkpoint is production lifecycle wiring only: fail startup on an
+incomplete runtime registry, recover expired work before serving, run bounded worker and
+reconciliation loops, and stop new claims during graceful shutdown. Canonical mutation routes
+follow once that lifecycle is proven.
 
 ---
 
@@ -57,7 +81,7 @@ Features confirmed present in the codebase (pages + API modules).
 |---|---|
 | **Dashboard** | Customizable widgets — CPU/RAM/disk/network charts, container summary, alert count, clock, drag-to-reorder |
 | **Services** | List systemd units, start/stop/restart/enable/disable, view logs, tag filtering |
-| **Containers** | Docker list, start/stop/restart/remove, log viewer, exec shell, compose file editor with staged diff |
+| **Containers** | Docker list, start/stop/restart/remove, log viewer, exec shell, and read-only Compose validation/diff preview. Durable Compose apply is implemented in the staged runtime adapter but is not exposed until canonical job submission and production workers are live. |
 | **App Vault** | 52 one-click deployments (see full list below), management panel with Containers/Compose/Logs tabs, custom-deploy form for arbitrary images |
 | **Media Automation** | Full Servarr stack in App Vault — Sonarr, Radarr, Lidarr, Readarr, Prowlarr, Bazarr, Seerr, qBittorrent, Gluetun, Recyclarr, FlareSolverr |
 | **AI / Models** | Download GGUFs, pull Ollama models, import into llama.cpp; AI workspace iframe embed; AI-based app recommendations |
@@ -79,7 +103,7 @@ Features confirmed present in the codebase (pages + API modules).
 | **Capabilities** | Detect installed tools (Docker, libvirt, WireGuard, restic, nginx, GPU) with version strings and install hints |
 | **Diagnostics** | 12 system health checks — config/data dirs, DB, frontend assets, disk space, Docker daemon, nginx config, port bind |
 | **Security** | Positive role guards; explicit route/session/bearer policy; one typed registry for all 327 routes and structured actions; fail-closed unknown metadata; scoped tokens; Voidwatch risk/approval metadata; session revocation; audit log |
-| **Integrations** | Scoped API tokens; Odysseus config (enable/disable, MCP toggle, webhook secret); SSE event stream; webhook trigger; tool manifest at `/api/integrations/odysseus/manifest` |
+| **Integrations** | Scoped API tokens; Odysseus config (enable/disable, MCP toggle, webhook secret); legacy polling SSE plus durable event-history reads; webhook trigger; tool manifest at `/api/integrations/odysseus/manifest`. Cursor-resumable durable SSE remains in J0. |
 | **Themes** | 23 built-in themes (`frontend/src/theme/themes.ts`) + live custom token editor (CSS variables), 14-param animation editor |
 | **Animated Backgrounds** | 8 canvas presets (Void, Grid, Aurora, Pulse, Noise, Hex, Hex Classic, Circuit) + 4 glass levels |
 | **Updates** | In-UI updater — Docker image check/apply; bare-metal pull/rebuild with rollback points; OS package updates (apt/pacman/dnf) |
@@ -91,8 +115,8 @@ Features confirmed present in the codebase (pages + API modules).
 ## Must-Have Before Public Release
 
 These 10 items are the non-negotiable baseline for a credible first public release. Their status
-is verified against source and executable checks. The "Size" column is now moot (all shipped)
-but kept for history.
+is verified against source and executable checks. Several legacy implementations ship today but
+are still being hardened onto the shared J0 contracts.
 
 | # | Feature | Status | Remaining gaps |
 |---|---|---|---|
@@ -100,7 +124,7 @@ but kept for history.
 | 2 | **Capability detection page** | **Done** | per-capability detection with install hints; confirmed present at Settings → Capabilities |
 | 3 | **Doctor / diagnostics mode** | **Done** | `--doctor --json` CLI flag + UI at Settings → Diagnostics, 12 health checks |
 | 4 | **Disaster recovery mode** | **Done** | confirmed: `backend/src/api/disaster.rs` has `export_config`/`import_config`/`emergency_reset_admin`/`emergency_disable` plus CLI-only `cli_export`/`cli_import` that work without booting the web server |
-| 5 | **Dry-run / change planning** | **Done** | `ChangePlanModal` pattern wired into proxy create/edit, firewall rules, OS updates, container remove, backup delete, Proxmox stop/snapshot/rollback |
+| 5 | **Dry-run / change planning** | **Legacy shipped; durable replacement in progress** | `ChangePlanModal` is wired into proxy create/edit, firewall rules, OS updates, container remove, backup delete, and Proxmox operations. J0 must replace dry-run followed by direct execution with immutable job planning, approval decisions bound to that plan, and submit/follow progress. |
 | 6 | **Policy engine** | **Done**, hardened in P0 | `backend/src/policy.rs` + `backend/src/voidwatch/` — actor/action/resource/tag matching, DB-backed rules, CRUD API + UI. `voidwatch::evaluate()` is now the single choke point for MCP `tools/call`, Studio `mcp_invoke`, and automation/webhook actions (P0.1); `api_token`/`automation`/`ai` actors are default-deny with a migrated allowlist (P0.2); mode ladder + risk classes gate the AI/automation ingress path (P0.3 backend); a hardcoded irreversibility denylist blocks 9 action classes regardless of mode (P0.4); bearer tokens carry real enforced scopes, closing the god-token bypass (P0.6). Still open: making mode-ladder verdicts mandatory (not advisory) at the six UI-driven handlers — needs an approvals-queue mechanism, tracked as [issue #11](https://github.com/niwlekakan/voidtower/issues/11) |
 | 7 | **Secrets manager** | **Done**, with gaps | AES-256-GCM store, reveal-on-demand audit logging built; redaction on the AI context path shipped (P0.5: MCP tool-call output, Studio `mcp_invoke`, `get_context` bundle — `backend/src/api/redact.rs`); still missing: secret rotation, scoped per-token access |
 | 8 | **Resource tags** | **Done**, with gaps | covers services/containers/VMs/backups/apps/proxmox_vm today (`GET /api/tags/map?type=`); still missing: automations, alerts, API tokens; not yet wired into policy/alert routing |
@@ -413,8 +437,8 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 
 - [x] Policy engine for Odysseus actions (see must-have #6 above) — done in P0: `voidwatch::evaluate()` gates MCP `tools/call` and Studio `mcp_invoke` the same way webhook-triggered automations already were, plus default-deny, mode ladder, and the irreversibility denylist on top.
 - [x] "Send to Odysseus" buttons — Done, in copy-to-clipboard form: `frontend/src/components/ui/SendToOdysseus.tsx`, wired into Alerts/Services/Containers. Not done: full context packaging with secret redaction (Odysseus has no `?prompt=` param to receive it directly) and extending the button to VMs/backup failures/security findings/log selections.
-- [ ] AI approval queue UI — pending high-risk AI-requested actions; approve once / deny / approve with time limit / create policy from repeated safe action
-- [ ] Full event stream subscriptions — currently SSE endpoint exists; needs: webhook outbound push, MCP resource/event support for agents
+- [ ] AI approval queue UI — the durable approval store and authenticated read/approve/reject APIs now exist, but AI ingress still needs canonical job submission and the frontend needs pending-action, immutable-plan, stale-plan, and decision UX. Time-limited approval and policy-authoring shortcuts remain later enhancements.
+- [ ] Full event stream subscriptions — durable history exists, while the current SSE path still polls legacy metrics/systemd state. J0 must add cursor-resumable durable SSE and the integrations compatibility alias; webhook outbound push and MCP resource/event support for agents follow.
 - [ ] MCP tool-call audit trail — every `mcp::invoke_tool` call (direct MCP, or via Studio's `mcp_invoke`) should write an `audit::log` entry the same way `proxmox.vm.stop`/`proxmox.vm.snapshot` etc. already do, so "what did the AI actually run" is answerable from the Timeline without cross-referencing Odysseus's own logs.
 
 ### Developer experience
@@ -480,13 +504,13 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 | Scoped API token creation | Implemented |
 | Odysseus config UI (enable/disable, MCP toggle, webhook secret) | Implemented |
 | Tool manifest at `/api/integrations/odysseus/manifest` | Implemented |
-| SSE event stream (`/api/integrations/events`) | Implemented |
+| SSE event stream (`/api/integrations/events`) | **Partial** — a legacy SSE endpoint exists and durable event history is queryable, but cursor-resumable durable-log streaming, `Last-Event-ID`, and compatibility-alias convergence remain in J0. |
 | Webhook bridge (inbound, HMAC-signed, triggers automations) | Implemented |
 | Emergency disable all AI access | Implemented |
 | MCP server (built-in, tool-serving) | **Implemented** — `backend/src/api/mcp.rs` (commit `3a23ed3`), real JSON-RPC SSE+message server at `/api/mcp` + `/api/mcp/message` with 13 tools (`list_nodes`, `get_node_metrics`, `list_containers`, `list_services`, `list_alerts`, `get_container_logs`, `list_routes`, `read_file`, `search_code`, `get_template`, `list_secrets`, `get_policy_rules`, `get_audit_log`). Studio's MCP tool panel (`studio::mcp_tools`/`mcp_invoke`) reuses the same tool set. |
 | App-specific MCP servers (standalone) | **Implemented** (`11bade2`) — `odysseus-mcp-servers/voidtower_server.py` expanded to 38 tools (proxy, firewall, VM lifecycle, App Vault deploy/undeploy, service logs, tags, status checks). 39 new per-app standalone Python MCP servers ship alongside it, one per App Vault catalog app, ~413 tools total. Each registers independently in Odysseus or any MCP client; see `docs/integrations/mcp-server.md`. |
 | "Send to Odysseus" buttons in UI | Implemented (copy-to-clipboard variant) — `SendToOdysseus.tsx`, wired into Alerts/Services/Containers; no full context-packaging-with-redaction yet |
-| AI approval queue / pending action UI | Not implemented |
+| AI approval queue / pending action UI | **Partial** — durable approval persistence and authenticated read/approve/reject APIs exist; canonical AI job submission and the shared frontend queue are not implemented. |
 | Event stream webhook outbound push | Not implemented — SSE only |
 | Per-Odysseus-action policy enforcement | Done (P0) — `voidwatch::evaluate()` is now the single choke point for MCP `tools/call`, Studio `mcp_invoke`, and webhook/automation actions; default-deny + mode ladder + irreversibility denylist all apply. Direct MCP/Studio tool calls no longer bypass policy. |
 | Odysseus integration events linked to timeline | Partial — audit log exists; no explicit Odysseus tagging |

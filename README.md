@@ -125,6 +125,29 @@ Copy `.env.example` to `.env` before starting. Key variables:
 | `PUID` / `PGID` | File ownership for Odysseus data mounts (match your host user) |
 | `VOIDTOWER_IMAGE` | Pin a specific VoidTower image tag (e.g. `ghcr.io/niwlekakan/voidtower:aio-v1.2.3`). Leave unset to use `aio-latest`. |
 
+### Durable operation runtime
+
+VoidTower validates and starts its durable operation workers before serving API requests. Invalid
+values fail startup; setting the worker count to zero is not supported. Bare-metal installations
+can set the defaults in `/etc/voidtower/config.toml`:
+
+```toml
+[operations]
+worker_count = 2
+lease_seconds = 30
+idle_poll_millis = 500
+reconciliation_poll_seconds = 30
+error_backoff_max_seconds = 5
+shutdown_timeout_seconds = 60
+```
+
+Each setting also has an environment override:
+`VOIDTOWER_OPERATIONS_WORKER_COUNT`, `VOIDTOWER_OPERATIONS_LEASE_SECONDS`,
+`VOIDTOWER_OPERATIONS_IDLE_POLL_MILLIS`,
+`VOIDTOWER_OPERATIONS_RECONCILIATION_POLL_SECONDS`,
+`VOIDTOWER_OPERATIONS_ERROR_BACKOFF_MAX_SECONDS`, and
+`VOIDTOWER_OPERATIONS_SHUTDOWN_TIMEOUT_SECONDS`.
+
 ---
 
 ## Voidwatch — AI ops integration

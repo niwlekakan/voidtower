@@ -55,6 +55,7 @@ pub struct AppState {
     pub login_limiter: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, LoginAttempts>>>,
     pub deploy_registry: containers::DeployRegistry,
     pub operation_adapters: Arc<operations::adapters::AdapterRegistry>,
+    pub operation_runtime: operations::runtime::RuntimeControl,
 }
 
 #[derive(Parser, Debug)]
@@ -348,6 +349,12 @@ async fn main() -> Result<()> {
         secrets_key.clone(),
         cfg.data_dir.clone(),
     )?);
+    let prepared_operation_runtime = operations::runtime::prepare(
+        pool.clone(),
+        operation_adapters.clone(),
+        cfg.operations.clone(),
+    )
+    .await?;
     let state = AppState {
         db: pool.clone(),
         config: Arc::new(cfg.clone()),
@@ -359,6 +366,7 @@ async fn main() -> Result<()> {
         login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
         deploy_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         operation_adapters,
+        operation_runtime: prepared_operation_runtime.control(),
     };
 
     // Spawn agent status heartbeat loop (marks stale agents offline)
@@ -646,16 +654,56 @@ async fn main() -> Result<()> {
     };
 
     let addr: SocketAddr = format!("{}:{}", cfg.bind, cfg.port).parse()?;
+    let (listener, operation_runtime) =
+        bind_then_start(addr, || prepared_operation_runtime.start()).await?;
     tracing::info!("VoidTower listening on http://{}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(
+    let serve_result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await?;
+    .with_graceful_shutdown(shutdown_signal(operation_runtime.control()))
+    .await;
+    let clean_operation_shutdown = operation_runtime.shutdown().await;
+    if !clean_operation_shutdown {
+        tracing::warn!(error_code = "operation_runtime_unclean_shutdown");
+    }
+    serve_result?;
 
     Ok(())
+}
+
+async fn bind_then_start<T>(
+    addr: SocketAddr,
+    start: impl FnOnce() -> T,
+) -> std::io::Result<(tokio::net::TcpListener, T)> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    Ok((listener, start()))
+}
+
+async fn shutdown_signal(operation_runtime: operations::runtime::RuntimeControl) {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(signal) => signal,
+                Err(_) => {
+                    tracing::warn!(error_code = "sigterm_handler_registration_failed");
+                    let _ = tokio::signal::ctrl_c().await;
+                    operation_runtime.cancel();
+                    return;
+                }
+            };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    operation_runtime.cancel();
+    tracing::info!(event_code = "operation_runtime_shutdown_requested");
 }
 
 fn run_doctor(cfg: &config::Config, as_json: bool) {
@@ -973,4 +1021,29 @@ async fn run_backup_command(pool: &SqlitePool, action: BackupCommand) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    #[tokio::test]
+    async fn listener_binding_failure_does_not_start_operation_runtime() {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = occupied.local_addr().unwrap();
+        let started = Arc::new(AtomicBool::new(false));
+        let started_by_closure = started.clone();
+
+        let result = bind_then_start(addr, move || {
+            started_by_closure.store(true, Ordering::SeqCst);
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(!started.load(Ordering::SeqCst));
+    }
 }

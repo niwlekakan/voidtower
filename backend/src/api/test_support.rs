@@ -31,6 +31,7 @@ pub(crate) fn build(db: SqlitePool) -> AppState {
         login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
         deploy_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         operation_adapters,
+        operation_runtime: crate::operations::runtime::RuntimeControl::new(),
     }
 }
 

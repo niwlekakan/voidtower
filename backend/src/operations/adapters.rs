@@ -346,6 +346,25 @@ mod tests {
     }
 
     #[test]
+    fn extra_and_misbound_adapters_fail_closed() {
+        let mut registry = complete_registry();
+        registry
+            .register(Arc::new(ContractAdapter {
+                key: "unexpected",
+                actions: vec!["container.start"],
+            }))
+            .unwrap();
+        assert!(registry.validate_complete().is_err());
+
+        let mut registry = complete_registry();
+        *registry.adapters.get_mut("containers").unwrap() = Arc::new(ContractAdapter {
+            key: "containers",
+            actions: vec!["firewall.enable"],
+        });
+        assert!(registry.validate_complete().is_err());
+    }
+
+    #[test]
     fn dispatch_rejects_unknown_and_direct_actions() {
         let registry = complete_registry();
         assert!(registry.for_action("does.not.exist").is_err());

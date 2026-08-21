@@ -7,6 +7,7 @@
 use super::{
     adapters::{AdapterRegistry, PlanRequest, ReconcileOutcome, StepOutcome, StepRequest},
     canonical_json,
+    clock::Clock,
     contracts::{ActorRef, ActorType, JobState, PlannedStepV1, ResourceRef},
     events::{self, PendingEvent},
 };
@@ -81,6 +82,7 @@ pub async fn claim_next(
     ensure!(!worker_id.trim().is_empty(), "worker id is required");
     ensure!(lease_seconds > 0, "lease duration must be positive");
     let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
     let candidate: Option<ClaimRow> = sqlx::query_as(
         "SELECT j.id, j.action, j.resource_id, j.resource_revision, r.kind AS resource_kind, \
                 r.display_name AS resource_name, j.input_json, j.external_fingerprint \
@@ -157,9 +159,10 @@ pub async fn claim_step(
 ) -> Result<Option<ClaimedStep>> {
     ensure!(lease_seconds > 0, "lease duration must be positive");
     let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
     let owns_job: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM jobs WHERE id = ? AND state = 'running' \
-         AND lease_owner = ? AND lease_expires_at > ? AND cancel_requested = 0",
+         AND lease_owner = ? AND lease_expires_at > ?",
     )
     .bind(job_id)
     .bind(worker_id)
@@ -287,9 +290,10 @@ pub async fn execute_claimed_step(
     job: &ClaimedJob,
     step: &ClaimedStep,
     worker_id: &str,
-    now: i64,
+    clock: &dyn Clock,
 ) -> Result<JobState> {
     ensure!(job.id == step.job_id, "claimed step belongs to another job");
+    let now = clock.now();
     let adapter = adapters.for_action(&job.action)?;
     let preflight: Option<(i64, String, String, i64)> = sqlx::query_as(
         "SELECT r.revision, r.lifecycle_state, COALESCE(c.availability, 'missing'), \
@@ -312,7 +316,7 @@ pub async fn execute_claimed_step(
             pool,
             step,
             worker_id,
-            now,
+            clock.now(),
             StepOutcome::Cancelled {
                 message: "Cancellation accepted at the pre-execution checkpoint".into(),
             },
@@ -324,7 +328,7 @@ pub async fn execute_claimed_step(
             pool,
             step,
             worker_id,
-            now,
+            clock.now(),
             StepOutcome::Failed {
                 code: "stale_resource_revision".into(),
                 message: "Resource changed after this operation was planned".into(),
@@ -339,7 +343,7 @@ pub async fn execute_claimed_step(
             pool,
             step,
             worker_id,
-            now,
+            clock.now(),
             StepOutcome::Failed {
                 code: "capability_unavailable".into(),
                 message: "Resource capability is no longer available".into(),
@@ -362,7 +366,7 @@ pub async fn execute_claimed_step(
                 pool,
                 step,
                 worker_id,
-                now,
+                clock.now(),
                 StepOutcome::Failed {
                     code: "preflight_failed".into(),
                     message: safe_text(&format!("Unable to verify provider state: {error}")),
@@ -378,7 +382,7 @@ pub async fn execute_claimed_step(
             pool,
             step,
             worker_id,
-            now,
+            clock.now(),
             StepOutcome::Failed {
                 code: "stale_external_state".into(),
                 message: "Provider state changed after this operation was planned".into(),
@@ -410,11 +414,11 @@ pub async fn execute_claimed_step(
                 external_operation_id: None,
                 diagnostic: None,
             });
-    complete_step(pool, step, worker_id, now, outcome).await
+    complete_step(pool, step, worker_id, clock.now(), outcome).await
 }
 
-/// Finish the current append-only attempt and atomically derive the step and job state. This is
-/// public so long-running adapters can persist an outcome after managing their own lease renewal.
+/// Finish the current append-only attempt and atomically derive the step and job state. The
+/// runtime coordinator renews ownership while the adapter future is in flight.
 pub async fn complete_step(
     pool: &SqlitePool,
     step: &ClaimedStep,
@@ -424,6 +428,7 @@ pub async fn complete_step(
 ) -> Result<JobState> {
     let outcome = sanitize_outcome(outcome)?;
     let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
     let row: CompletionRow = sqlx::query_as(
         "SELECT j.action, j.resource_id, j.state AS job_state, s.state AS step_state, \
                 s.retry_class \
@@ -708,6 +713,7 @@ pub async fn claim_reconciliation(
     ensure!(!worker_id.trim().is_empty(), "worker id is required");
     ensure!(lease_seconds > 0, "lease duration must be positive");
     let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
     let candidate: Option<ClaimRow> = sqlx::query_as(
         "SELECT j.id, j.action, j.resource_id, j.resource_revision, r.kind AS resource_kind, \
                 r.display_name AS resource_name, j.input_json, j.external_fingerprint \
@@ -832,7 +838,7 @@ pub async fn reconcile_claimed_step(
     job: &ClaimedJob,
     step: &ClaimedStep,
     worker_id: &str,
-    now: i64,
+    clock: &dyn Clock,
 ) -> Result<JobState> {
     ensure!(job.id == step.job_id, "claimed step belongs to another job");
     let adapter = adapters.for_action(&job.action)?;
@@ -852,7 +858,235 @@ pub async fn reconcile_claimed_step(
             .unwrap_or_else(|error| ReconcileOutcome::StillUncertain {
                 message: safe_text(&format!("Provider reconciliation failed: {error}")),
             });
-    complete_reconciliation(pool, step, worker_id, now, outcome).await
+    complete_reconciliation(pool, step, worker_id, clock.now(), outcome).await
+}
+
+/// Release an owned job only at a safe checkpoint where no provider step is in flight.
+/// Runtime shutdown uses this to stop before the next step without waiting for lease expiry.
+pub async fn release_claimed_job(
+    pool: &SqlitePool,
+    job_id: &str,
+    worker_id: &str,
+    now: i64,
+) -> Result<bool> {
+    let mut transaction = pool.begin().await?;
+    let updated = sqlx::query(
+        "UPDATE jobs SET state = 'queued', queued_at = ?, lease_owner = NULL, \
+         lease_expires_at = NULL, updated_at = ? \
+         WHERE id = ? AND state = 'running' AND lease_owner = ? AND lease_expires_at > ? \
+           AND NOT EXISTS (SELECT 1 FROM job_steps \
+                           WHERE job_steps.job_id = jobs.id AND state = 'running')",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(job_id)
+    .bind(worker_id)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await?;
+    if updated.rows_affected() == 0 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    let (action, resource_id): (String, String) =
+        sqlx::query_as("SELECT action, resource_id FROM jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+    append_worker_event(
+        &mut transaction,
+        job_id,
+        &resource_id,
+        "job.recovered.v1",
+        serde_json::json!({
+            "previous_state": "running",
+            "state": "queued",
+            "reason": "runtime_shutdown",
+        }),
+    )
+    .await?;
+    let actor = ActorRef {
+        actor_type: ActorType::System,
+        id: None,
+        source: Some("operation_runtime".into()),
+    };
+    insert_worker_audit(
+        &mut transaction,
+        now,
+        &actor,
+        &action,
+        job_id,
+        "released_for_shutdown",
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// Release a step that was durably claimed but whose provider future has not been started.
+/// The runtime calls this only after observing shutdown in the claim-to-execution gap.
+pub async fn release_step_before_execution(
+    pool: &SqlitePool,
+    step: &ClaimedStep,
+    worker_id: &str,
+    now: i64,
+) -> Result<bool> {
+    let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
+    let owned: Option<(String, String)> = sqlx::query_as(
+        "SELECT j.action, j.resource_id FROM jobs j \
+         JOIN job_steps s ON s.job_id = j.id \
+         JOIN job_attempts a ON a.job_id = j.id AND a.step_id = s.id \
+         WHERE j.id = ? AND s.id = ? AND a.attempt_number = ? \
+           AND j.state = 'running' AND s.state = 'running' \
+           AND j.lease_owner = ? AND j.lease_expires_at > ? \
+           AND a.worker_id = ? AND a.finished_at IS NULL",
+    )
+    .bind(&step.job_id)
+    .bind(&step.id)
+    .bind(i64::from(step.attempt))
+    .bind(worker_id)
+    .bind(now)
+    .bind(worker_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some((action, resource_id)) = owned else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
+    finish_attempt(
+        &mut transaction,
+        step,
+        now,
+        "runtime_shutdown_before_execution",
+        None,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE job_steps SET state = 'pending', finished_at = NULL, updated_at = ? \
+         WHERE id = ? AND state = 'running'",
+    )
+    .bind(now)
+    .bind(&step.id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE jobs SET state = 'queued', queued_at = ?, lease_owner = NULL, \
+         lease_expires_at = NULL, updated_at = ? WHERE id = ? AND state = 'running'",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(&step.job_id)
+    .execute(&mut *transaction)
+    .await?;
+    append_worker_event(
+        &mut transaction,
+        &step.job_id,
+        &resource_id,
+        "job.recovered.v1",
+        serde_json::json!({
+            "previous_state": "running",
+            "state": "queued",
+            "reason": "runtime_shutdown_before_execution",
+            "step_id": step.id,
+            "attempt": step.attempt,
+        }),
+    )
+    .await?;
+    let actor = ActorRef {
+        actor_type: ActorType::System,
+        id: None,
+        source: Some("operation_runtime".into()),
+    };
+    insert_worker_audit(
+        &mut transaction,
+        now,
+        &actor,
+        &action,
+        &step.job_id,
+        "released_before_execution",
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// Release a reconciliation attempt claimed immediately before runtime shutdown. No provider
+/// verification has started, so the job remains in `needs_attention` for a later cadence.
+pub async fn release_reconciliation_before_verification(
+    pool: &SqlitePool,
+    step: &ClaimedStep,
+    worker_id: &str,
+    now: i64,
+) -> Result<bool> {
+    let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
+    let owned: Option<(String, String)> = sqlx::query_as(
+        "SELECT j.action, j.resource_id FROM jobs j \
+         JOIN job_steps s ON s.job_id = j.id \
+         JOIN job_attempts a ON a.job_id = j.id AND a.step_id = s.id \
+         WHERE j.id = ? AND s.id = ? AND a.attempt_number = ? \
+           AND j.state = 'needs_attention' AND s.state = 'needs_attention' \
+           AND j.lease_owner = ? AND j.lease_expires_at > ? \
+           AND a.worker_id = ? AND a.finished_at IS NULL",
+    )
+    .bind(&step.job_id)
+    .bind(&step.id)
+    .bind(i64::from(step.attempt))
+    .bind(worker_id)
+    .bind(now)
+    .bind(worker_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some((action, resource_id)) = owned else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
+    finish_attempt(
+        &mut transaction,
+        step,
+        now,
+        "runtime_shutdown_before_reconciliation",
+        None,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE jobs SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ? \
+         WHERE id = ? AND state = 'needs_attention'",
+    )
+    .bind(now)
+    .bind(&step.job_id)
+    .execute(&mut *transaction)
+    .await?;
+    append_worker_event(
+        &mut transaction,
+        &step.job_id,
+        &resource_id,
+        "job.reconciliation_pending.v1",
+        serde_json::json!({
+            "state": "needs_attention",
+            "reason": "runtime_shutdown_before_reconciliation",
+            "step_id": step.id,
+            "attempt": step.attempt,
+        }),
+    )
+    .await?;
+    let actor = ActorRef {
+        actor_type: ActorType::System,
+        id: None,
+        source: Some("operation_runtime".into()),
+    };
+    insert_worker_audit(
+        &mut transaction,
+        now,
+        &actor,
+        &action,
+        &step.job_id,
+        "reconciliation_released_for_shutdown",
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 pub async fn complete_reconciliation(
@@ -864,6 +1098,7 @@ pub async fn complete_reconciliation(
 ) -> Result<JobState> {
     let outcome = sanitize_reconciliation(outcome);
     let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
     let row: CompletionRow = sqlx::query_as(
         "SELECT j.action, j.resource_id, j.state AS job_state, s.state AS step_state, \
                 s.retry_class \
@@ -1206,6 +1441,7 @@ pub async fn request_cancellation(
     now: i64,
 ) -> Result<JobState> {
     let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
     let (state, resource_id): (String, String) =
         sqlx::query_as("SELECT state, resource_id FROM jobs WHERE id = ?")
             .bind(job_id)
@@ -1287,6 +1523,7 @@ pub async fn request_cancellation(
 /// `needs_attention` and is never replayed blindly.
 pub async fn recover_expired(pool: &SqlitePool, now: i64) -> Result<u64> {
     let mut transaction = pool.begin().await?;
+    acquire_write_intent(&mut transaction).await?;
     let jobs: Vec<(String, String)> = sqlx::query_as(
         "SELECT id, resource_id FROM jobs WHERE state = 'running' \
          AND lease_expires_at IS NOT NULL AND lease_expires_at <= ? ORDER BY id",
@@ -1366,6 +1603,15 @@ pub async fn recover_expired(pool: &SqlitePool, now: i64) -> Result<u64> {
     Ok(recovered)
 }
 
+/// SQLite deferred transactions that read before their first write can deadlock each other while
+/// upgrading. A no-row write obtains the reserved writer slot before transition reads begin.
+async fn acquire_write_intent(transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
+    sqlx::query("UPDATE jobs SET updated_at = updated_at WHERE 0")
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 async fn append_worker_event(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     job_id: &str,
@@ -1437,7 +1683,36 @@ mod tests {
     use anyhow::bail;
     use async_trait::async_trait;
     use sqlx::sqlite::SqlitePoolOptions;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc,
+    };
+
+    struct FixedClock(i64);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> i64 {
+            self.0
+        }
+    }
+
+    struct AtomicClock(AtomicI64);
+
+    impl AtomicClock {
+        fn new(now: i64) -> Self {
+            Self(AtomicI64::new(now))
+        }
+
+        fn set(&self, now: i64) {
+            self.0.store(now, Ordering::SeqCst);
+        }
+    }
+
+    impl Clock for AtomicClock {
+        fn now(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
 
     struct FakeContainerAdapter;
 
@@ -1776,7 +2051,7 @@ mod tests {
                 &claimed_job,
                 &claimed_step,
                 "reconciler-a",
-                104,
+                &FixedClock(104),
             )
             .await
             .unwrap(),
@@ -1865,6 +2140,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_can_release_reconciliation_before_provider_verification() {
+        let (pool, adapters, resource) = setup().await;
+        let (job, step) =
+            claim_job_and_step(&pool, &adapters, &resource, "release-reconciliation").await;
+        complete_step(
+            &pool,
+            &step,
+            "worker-a",
+            102,
+            StepOutcome::Uncertain {
+                code: "provider_timeout".into(),
+                message: "Provider outcome could not be verified".into(),
+                external_operation_id: Some("task-release".into()),
+                diagnostic: None,
+            },
+        )
+        .await
+        .unwrap();
+        let (_, reconciliation) = claim_reconciliation(&pool, &adapters, "reconciler-a", 103, 20)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(release_reconciliation_before_verification(
+            &pool,
+            &reconciliation,
+            "reconciler-a",
+            104,
+        )
+        .await
+        .unwrap());
+        let summary = jobs::get(&pool, &job.id).await.unwrap().unwrap();
+        assert_eq!(summary.state, JobState::NeedsAttention);
+        let lease_owner: Option<String> =
+            sqlx::query_scalar("SELECT lease_owner FROM jobs WHERE id = ?")
+                .bind(&job.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(lease_owner.is_none());
+        let outcome: String = sqlx::query_scalar(
+            "SELECT outcome FROM job_attempts WHERE job_id = ? ORDER BY attempt_number DESC LIMIT 1",
+        )
+        .bind(&job.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(outcome, "runtime_shutdown_before_reconciliation");
+    }
+
+    #[tokio::test]
     async fn execution_rejects_stale_external_fingerprint_before_adapter_call() {
         struct StaleAdapter;
 
@@ -1901,13 +2227,37 @@ mod tests {
         let (job, step) =
             claim_job_and_step(&pool, &adapters, &resource, "stale-fingerprint").await;
         assert_eq!(
-            execute_claimed_step(&pool, &adapters, &job, &step, "worker-a", 102)
+            execute_claimed_step(&pool, &adapters, &job, &step, "worker-a", &FixedClock(102),)
                 .await
                 .unwrap(),
             JobState::Failed
         );
         let summary = jobs::get(&pool, &job.id).await.unwrap().unwrap();
         assert_eq!(summary.error.unwrap().code, "stale_external_state");
+    }
+
+    #[tokio::test]
+    async fn execution_rejects_an_unavailable_capability_on_an_active_resource() {
+        let (pool, adapters, resource) = setup().await;
+        let (job, step) =
+            claim_job_and_step(&pool, &adapters, &resource, "unavailable-capability").await;
+        sqlx::query(
+            "UPDATE resource_capabilities SET availability = 'unavailable' \
+             WHERE resource_id = ? AND action = 'container.start'",
+        )
+        .bind(&resource.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            execute_claimed_step(&pool, &adapters, &job, &step, "worker-a", &FixedClock(102),)
+                .await
+                .unwrap(),
+            JobState::Failed
+        );
+        let summary = jobs::get(&pool, &job.id).await.unwrap().unwrap();
+        assert_eq!(summary.error.unwrap().code, "capability_unavailable");
     }
 
     #[tokio::test]
@@ -1972,7 +2322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_is_terminal_before_claim_and_pending_while_running() {
+    async fn cancellation_is_terminal_before_claim_and_at_the_next_safe_checkpoint() {
         let (pool, adapters, resource) = setup().await;
         let queued = submit_job(&pool, &resource, "queued-cancel", "never").await;
         let actor = ActorRef {
@@ -1998,9 +2348,208 @@ mod tests {
                 .unwrap(),
             JobState::Running
         );
-        assert!(claim_step(&pool, &running, "worker-a", 103, 10)
+        let claimed_job = jobs::get(&pool, &running).await.unwrap().unwrap();
+        assert_eq!(claimed_job.state, JobState::Running);
+        let step = claim_step(&pool, &running, "worker-a", 103, 10)
             .await
             .unwrap()
-            .is_none());
+            .unwrap();
+        let job = ClaimedJob {
+            id: running.clone(),
+            action: "container.start".into(),
+            resource,
+            input: serde_json::json!({}),
+            external_fingerprint: "state-1".into(),
+            lease_expires_at: 113,
+        };
+        assert_eq!(
+            execute_claimed_step(&pool, &adapters, &job, &step, "worker-a", &FixedClock(104),)
+                .await
+                .unwrap(),
+            JobState::Cancelled
+        );
+        assert_eq!(
+            jobs::get(&pool, &running).await.unwrap().unwrap().state,
+            JobState::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_uses_time_sampled_after_provider_execution() {
+        struct TimeAdvancingAdapter {
+            clock: Arc<AtomicClock>,
+        }
+
+        #[async_trait]
+        impl OperationAdapter for TimeAdvancingAdapter {
+            fn key(&self) -> &'static str {
+                "containers"
+            }
+
+            fn actions(&self) -> &[&'static str] {
+                &["container.start"]
+            }
+
+            async fn plan(&self, _request: PlanRequest) -> Result<OperationPlanV1> {
+                bail!("not used")
+            }
+
+            async fn external_fingerprint(&self, _request: &PlanRequest) -> Result<String> {
+                Ok("state-1".into())
+            }
+
+            async fn execute_step(&self, _request: StepRequest) -> Result<StepOutcome> {
+                self.clock.set(109);
+                Ok(StepOutcome::Succeeded {
+                    result: serde_json::json!({"completed": true}),
+                    external_operation_id: None,
+                })
+            }
+
+            async fn reconcile(&self, _request: StepRequest) -> Result<ReconcileOutcome> {
+                bail!("not used")
+            }
+        }
+
+        let (pool, _, resource) = setup().await;
+        let clock = Arc::new(AtomicClock::new(102));
+        let mut adapters = AdapterRegistry::new();
+        adapters
+            .register(Arc::new(TimeAdvancingAdapter {
+                clock: clock.clone(),
+            }))
+            .unwrap();
+        let (job, step) =
+            claim_job_and_step(&pool, &adapters, &resource, "fresh-completion-time").await;
+
+        assert_eq!(
+            execute_claimed_step(&pool, &adapters, &job, &step, "worker-a", clock.as_ref())
+                .await
+                .unwrap(),
+            JobState::Succeeded
+        );
+        let finished_at: i64 =
+            sqlx::query_scalar("SELECT finished_at FROM job_attempts WHERE job_id = ?")
+                .bind(&job.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(finished_at, 109);
+    }
+
+    #[tokio::test]
+    async fn untyped_adapter_errors_are_bounded_and_pattern_redacted() {
+        struct LeakyAdapter;
+
+        #[async_trait]
+        impl OperationAdapter for LeakyAdapter {
+            fn key(&self) -> &'static str {
+                "containers"
+            }
+
+            fn actions(&self) -> &[&'static str] {
+                &["container.start"]
+            }
+
+            async fn plan(&self, _request: PlanRequest) -> Result<OperationPlanV1> {
+                bail!("not used")
+            }
+
+            async fn external_fingerprint(&self, _request: &PlanRequest) -> Result<String> {
+                Ok("state-1".into())
+            }
+
+            async fn execute_step(&self, _request: StepRequest) -> Result<StepOutcome> {
+                bail!(
+                    "api_key=provider-secret {}",
+                    "x".repeat(MAX_PERSISTED_TEXT_CHARS + 100)
+                )
+            }
+
+            async fn reconcile(&self, _request: StepRequest) -> Result<ReconcileOutcome> {
+                bail!("not used")
+            }
+        }
+
+        let (pool, _, resource) = setup().await;
+        let mut adapters = AdapterRegistry::new();
+        adapters.register(Arc::new(LeakyAdapter)).unwrap();
+        let (job, step) =
+            claim_job_and_step(&pool, &adapters, &resource, "redacted-adapter-error").await;
+        assert_eq!(
+            execute_claimed_step(&pool, &adapters, &job, &step, "worker-a", &FixedClock(102),)
+                .await
+                .unwrap(),
+            JobState::NeedsAttention
+        );
+        let error = jobs::get(&pool, &job.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .error
+            .unwrap();
+        assert!(!error.message.contains("provider-secret"));
+        assert!(error.message.contains("[REDACTED]"));
+        assert!(error.message.chars().count() <= MAX_PERSISTED_TEXT_CHARS + 20);
+    }
+
+    #[tokio::test]
+    async fn shutdown_release_requires_a_safe_checkpoint() {
+        let (pool, adapters, resource) = setup().await;
+        let job_id = submit_job(&pool, &resource, "safe-release", "never").await;
+        claim_next(&pool, &adapters, "worker-a", 100, 20)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(release_claimed_job(&pool, &job_id, "worker-a", 101)
+            .await
+            .unwrap());
+        assert_eq!(
+            jobs::get(&pool, &job_id).await.unwrap().unwrap().state,
+            JobState::Queued
+        );
+        let event: String = sqlx::query_scalar(
+            "SELECT event_type FROM events WHERE job_id = ? ORDER BY sequence DESC LIMIT 1",
+        )
+        .bind(&job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(event, "job.recovered.v1");
+
+        let claimed = claim_next(&pool, &adapters, "worker-b", 102, 20)
+            .await
+            .unwrap()
+            .unwrap();
+        let _step = claim_step(&pool, &claimed.id, "worker-b", 103, 20)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!release_claimed_job(&pool, &job_id, "worker-b", 104)
+            .await
+            .unwrap());
+        assert_eq!(
+            jobs::get(&pool, &job_id).await.unwrap().unwrap().state,
+            JobState::Running
+        );
+
+        assert!(
+            release_step_before_execution(&pool, &_step, "worker-b", 105)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            jobs::get(&pool, &job_id).await.unwrap().unwrap().state,
+            JobState::Queued
+        );
+        let attempt_outcome: String = sqlx::query_scalar(
+            "SELECT outcome FROM job_attempts WHERE job_id = ? ORDER BY attempt_number DESC LIMIT 1",
+        )
+        .bind(&job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(attempt_outcome, "runtime_shutdown_before_execution");
     }
 }

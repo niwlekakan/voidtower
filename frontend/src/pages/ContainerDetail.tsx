@@ -135,6 +135,8 @@ function ComposeTab({ containerId }: { containerId: string }) {
   const [edited, setEdited]     = useState('')
   const [dirty, setDirty]       = useState(false)
   const [proposing, setProposing] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [submittedJobId, setSubmittedJobId] = useState<string | null>(null)
   const [diff, setDiff] = useState<{ added: number; removed: number; current_lines: number; proposed_lines: number } | null>(null)
 
   useEffect(() => {
@@ -166,6 +168,21 @@ function ComposeTab({ containerId }: { containerId: string }) {
     }
   }
 
+  const apply = async () => {
+    if (!data?.path || !diff) return
+    setApplying(true)
+    try {
+      const { job } = await api.containers.applyCompose(containerId, data.path, edited)
+      setSubmittedJobId(job.id)
+      const status = job.state === 'awaiting_approval' ? 'awaiting approval' : job.state
+      notify.success(`Compose apply submitted · ${status} · job ${job.id.slice(0, 8)}`)
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit Compose apply')
+    } finally {
+      setApplying(false)
+    }
+  }
+
   if (!data) return <p className="text-xs p-4" style={{ color: 'var(--text-muted)' }}>Loading…</p>
   if (!data.found) return (
     <p className="text-xs p-4" style={{ color: 'var(--text-muted)' }}>{data.message ?? 'No compose file found.'}</p>
@@ -187,6 +204,9 @@ function ComposeTab({ containerId }: { containerId: string }) {
                 +{diff.added} −{diff.removed} previewed
               </span>
               <Button size="sm" variant="ghost" onClick={() => setDiff(null)}>Clear preview</Button>
+              <Button size="sm" loading={applying} disabled={submittedJobId !== null} onClick={apply}>
+                {submittedJobId ? `Submitted ${submittedJobId.slice(0, 8)}` : 'Apply as job'}
+              </Button>
             </>
           )}
         </div>
@@ -195,13 +215,13 @@ function ComposeTab({ containerId }: { containerId: string }) {
       {diff && (
         <div className="rounded p-3 text-xs" style={{ background: 'var(--accent-warning-subtle)', border: '1px solid var(--accent-warning)', color: 'var(--accent-warning)' }}>
           <AlertTriangle size={12} className="inline mr-1.5" />
-          This is a read-only preview. Durable Compose apply will become available with job submission.
+          Applying submits this exact preview to the durable job queue and may require approval.
         </div>
       )}
 
       <textarea
         value={edited}
-        onChange={(e) => { setEdited(e.target.value); setDirty(true); setDiff(null) }}
+        onChange={(e) => { setEdited(e.target.value); setDirty(true); setDiff(null); setSubmittedJobId(null) }}
         className="w-full font-mono text-xs p-3 rounded resize-y outline-none"
         rows={24}
         style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}
@@ -232,8 +252,8 @@ export default function ContainerDetailPage() {
     if (!id) return
     setActioning(true)
     try {
-      await api.containers.action(id, action)
-      notify.success(`${action} sent`)
+      const { job } = await api.containers.action(id, action)
+      notify.success(`${action} submitted · job ${job.id.slice(0, 8)}`)
       setTimeout(refresh, 1500)
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Action failed')

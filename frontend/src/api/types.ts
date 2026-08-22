@@ -16,6 +16,28 @@ export interface UserRecord {
   force_password_change: boolean
 }
 
+export type DurableJobState =
+  | 'awaiting_approval'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'needs_attention'
+  | 'rejected'
+  | 'expired'
+
+export interface DurableJobSummary {
+  id: string
+  action: string
+  state: DurableJobState
+  approval_id: string | null
+}
+
+export interface DurableJobResponse {
+  job: DurableJobSummary
+}
+
 // Self-hosting hub: per-member app access / storage / self-deployed apps
 export interface StorageSummary {
   quota_bytes: number

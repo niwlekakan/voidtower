@@ -42,13 +42,19 @@ GET  /api/services/:name/logs
 ```
 GET  /api/containers
 GET  /api/containers/images
-POST /api/containers/:id/action   { action: start|stop|restart|remove }
+POST /api/containers/:id/action   { action: start|stop|restart|remove, dry_run?: boolean }
 GET  /api/containers/:id/logs
 GET  /api/containers/:id/exec     WebSocket PTY
 GET  /api/containers/:id/compose
-POST /api/containers/:id/compose/propose   { content }
-POST /api/containers/:id/compose/apply     { content }
+POST /api/containers/:id/compose/propose   { path, content }
+POST /api/containers/:id/compose/apply     { path?, content }
 ```
+
+Container mutations submit through the durable operation boundary. A normal action/apply returns
+`202 { "job": ... }`; `dry_run: true` returns the current advisory plan without creating a job.
+Callers may provide `Idempotency-Key`; compatibility callers that omit it receive legacy
+at-most-once-per-request behavior through a generated key. Compose content is validated and staged
+as a controlled opaque artifact before the job is submitted—the handler never applies it directly.
 
 ## App Vault
 

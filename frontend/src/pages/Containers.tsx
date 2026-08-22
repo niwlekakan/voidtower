@@ -107,8 +107,8 @@ export default function ContainersPage() {
     }
     setActionLoading(`${container.id}-${action}`)
     try {
-      await api.containers.action(container.id, action)
-      notify.success(`${action} sent to ${container.name}`)
+      const { job } = await api.containers.action(container.id, action)
+      notify.success(`${action} submitted for ${container.name} · job ${job.id.slice(0, 8)}`)
       await load()
     } catch (e: unknown) {
       notify.error(e instanceof Error ? e.message : 'Action failed')
@@ -121,8 +121,8 @@ export default function ContainersPage() {
     if (!removePlan) return
     setRemoveConfirming(true)
     try {
-      await api.containers.action(removePlan.containerId, 'remove')
-      notify.success('Container removed')
+      const { job } = await api.containers.action(removePlan.containerId, 'remove')
+      notify.success(`Container removal submitted · job ${job.id.slice(0, 8)}`)
       setRemovePlan(null)
       await load()
     } catch (e: unknown) {

@@ -43,7 +43,7 @@ impl CanonicalApiError {
         }
     }
 
-    fn policy_denied(job_id: String) -> Self {
+    pub(crate) fn policy_denied(job_id: String) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
             code: "policy_denied",

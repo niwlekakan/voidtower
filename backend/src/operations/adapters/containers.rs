@@ -159,23 +159,50 @@ impl ComposeArtifactStore {
     }
 
     pub async fn stage(&self, content: &[u8]) -> Result<ComposeArtifactMetadata> {
+        self.stage_for(&uuid::Uuid::new_v4().to_string(), content)
+            .await
+    }
+
+    pub async fn stage_for(
+        &self,
+        stable_identity: &str,
+        content: &[u8],
+    ) -> Result<ComposeArtifactMetadata> {
         validate_compose_content(content)?;
         let root = controlled_directory(&self.data_root, &self.root, true).await?;
-        let artifact_ref = uuid::Uuid::new_v4().to_string();
+        let identity_digest = Sha256::digest(stable_identity.as_bytes());
+        let mut uuid_bytes = [0u8; 16];
+        uuid_bytes.copy_from_slice(&identity_digest[..16]);
+        uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
+        uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
+        let artifact_ref = uuid::Uuid::from_bytes(uuid_bytes).to_string();
         let path = root.join(format!("{artifact_ref}.yaml"));
-        let mut file = tokio::fs::OpenOptions::new()
+        let opened = tokio::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&path)
-            .await
-            .context("cannot create controlled Compose artifact")?;
-        restrict_file_permissions(&path).await?;
-        file.write_all(content)
-            .await
-            .context("cannot write controlled Compose artifact")?;
-        file.sync_all()
-            .await
-            .context("cannot sync controlled Compose artifact")?;
+            .await;
+        match opened {
+            Ok(mut file) => {
+                restrict_file_permissions(&path).await?;
+                file.write_all(content)
+                    .await
+                    .context("cannot write controlled Compose artifact")?;
+                file.sync_all()
+                    .await
+                    .context("cannot sync controlled Compose artifact")?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = tokio::fs::symlink_metadata(&path)
+                    .await
+                    .context("cannot inspect controlled Compose artifact")?;
+                ensure!(
+                    metadata.is_file() && !metadata.file_type().is_symlink(),
+                    "Compose artifact is not a controlled regular file"
+                );
+            }
+            Err(error) => return Err(error).context("cannot create controlled Compose artifact"),
+        }
         Ok(ComposeArtifactMetadata {
             artifact_ref,
             sha256: sha256_bytes(content),
@@ -1888,6 +1915,30 @@ mod tests {
         assert!(store.stage(&oversized).await.is_err());
     }
 
+    #[tokio::test]
+    async fn stable_artifact_staging_reuses_the_reference_for_idempotent_submission() {
+        let directory = TestDir::new();
+        let store = ComposeArtifactStore::new(&directory.0);
+        let content = b"services:\n  web:\n    image: fixture:one\n";
+        let first = store
+            .stage_for("scope:resource:key", content)
+            .await
+            .unwrap();
+        let replay = store
+            .stage_for("scope:resource:key", content)
+            .await
+            .unwrap();
+
+        assert_eq!(first, replay);
+        assert!(store
+            .resolve(&ComposeApplyInput {
+                artifact_ref: replay.artifact_ref,
+                artifact_sha256: replay.sha256,
+            })
+            .await
+            .is_ok());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn artifact_store_and_live_config_reject_symlinks_and_escape() {
@@ -1996,12 +2047,13 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_compose_routes_cannot_stage_or_apply_outside_the_adapter() {
+    fn compatibility_compose_route_only_stages_controlled_artifacts_and_submits() {
         let source = include_str!("../../api/containers.rs");
         assert!(!source.contains("tokio::fs::write(&proposed_path"));
         assert!(!source.contains("tokio::fs::rename(proposed_path"));
         assert!(!source.contains(".args([\"compose\", \"up\""));
         assert!(source.contains("preview_compose_change("));
-        assert!(source.contains("Durable Compose submission is not enabled yet"));
+        assert!(source.contains(".stage_for("));
+        assert!(source.contains("operation_adoption::submit_with_key("));
     }
 }

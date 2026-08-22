@@ -141,7 +141,7 @@ export const api = {
   containers: {
     list: () => request<import('./types').ContainersResponse>('/api/containers'),
     action: (id: string, action: import('./types').ContainerAction) =>
-      request<{ ok: boolean }>(`/api/containers/${id}/action`, {
+      request<import('./types').DurableJobResponse>(`/api/containers/${id}/action`, {
         method: 'POST',
         body: JSON.stringify({ action }),
       }),
@@ -158,6 +158,10 @@ export const api = {
       request<{ compose_path: string; content: string; diff?: string }>(`/api/containers/${id}/compose`),
     previewCompose: (id: string, path: string, content: string) =>
       request<{ added: number; removed: number; current_lines: number; proposed_lines: number }>(`/api/containers/${id}/compose/propose`, {
+        method: 'POST', body: JSON.stringify({ path, content }),
+      }),
+    applyCompose: (id: string, path: string, content: string) =>
+      request<import('./types').DurableJobResponse>(`/api/containers/${id}/compose/apply`, {
         method: 'POST', body: JSON.stringify({ path, content }),
       }),
   },

@@ -71,6 +71,7 @@ pub mod mods;
 pub mod nav_config;
 pub mod network;
 pub mod node_enroll;
+mod operation_adoption;
 pub mod plugins;
 pub mod policy;
 pub mod proxmox;

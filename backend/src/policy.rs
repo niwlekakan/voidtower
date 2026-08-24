@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 pub struct PolicyRule {
     pub id: String,
     pub name: String,
-    /// "api_token" | "automation" | "*"
+    /// "api_token" | "automation" | "system" | "*"
     pub actor_type: String,
     /// "restart" | "stop" | "remove" | "deploy" | "run" | "*"
     pub action: String,
@@ -29,7 +29,7 @@ pub enum PolicyVerdict {
 /// Returns `Allow` if no deny rule matches (default-allow after scope check).
 /// Returns `Deny(reason)` if a matching deny rule fires.
 ///
-/// `actor_type`: "api_token" | "automation"
+/// `actor_type`: "api_token" | "automation" | "system"
 /// `action`:     "restart" | "stop" | "remove" | "deploy" | "run" | etc.
 /// `resource_type`: "container" | "service" | "app" | "backup" | "vm"
 /// `resource_id`: used to look up the resource's tags
@@ -85,13 +85,13 @@ pub async fn check(
         };
     }
 
-    // No matching rule (gap-analysis P0.2): `user` sessions are RBAC-governed, not
-    // policy_rules-governed (see `voidwatch::ActorKind`'s doc comment), so their
+    // No matching rule (gap-analysis P0.2): `user` sessions are RBAC-governed and trusted
+    // `system` actors have already passed canonical ingress/authority checks, so their
     // default-allow behavior is unchanged. `api_token` / `automation` / `ai` flip to
     // default-deny — allowed only via an explicit entry in
     // `voidwatch_default_allowlist`, seeded on upgrade by
     // `db::seed_default_allowlist_if_empty` so pre-existing usage doesn't break.
-    if actor_type == "user" {
+    if matches!(actor_type, "user" | "system") {
         return PolicyVerdict::Allow;
     }
 
@@ -232,6 +232,7 @@ mod tests {
 
         const CASES: &[(&str, bool)] = &[
             ("user", true),
+            ("system", true),
             ("api_token", false),
             ("automation", false),
             ("ai", false),

@@ -18,7 +18,7 @@ use sqlx::SqlitePool;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CredentialContext {
+pub enum InvocationContext {
     Session {
         user_id: String,
         role: String,
@@ -29,7 +29,11 @@ pub enum CredentialContext {
         role: String,
         scopes: Vec<String>,
     },
+    LocalCli,
+    Scheduler,
 }
+
+pub type CredentialContext = InvocationContext;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum InvocationError {
@@ -41,6 +45,8 @@ pub enum InvocationError {
     InsufficientScope,
     #[error("the action is not exposed to machine-capable ingress")]
     AiExposureDenied,
+    #[error("the action is not available from this ingress")]
+    IngressDenied,
     #[error("resource not found")]
     ResourceNotFound,
     #[error("action and resource kinds do not match")]
@@ -98,19 +104,27 @@ pub struct PlanViewV1 {
 
 pub fn authorize_action(
     action: &ActionMetadata,
-    credential: &CredentialContext,
+    credential: &InvocationContext,
 ) -> Result<(), InvocationError> {
+    if !action.ingresses.contains(&credential.action_ingress()) {
+        return Err(InvocationError::IngressDenied);
+    }
+    if matches!(credential, InvocationContext::Scheduler) {
+        return Ok(());
+    }
     let required_role = action
         .canonical_session_role
         .ok_or(InvocationError::UnknownAction)?;
     let current_role = match credential {
-        CredentialContext::Session { role, .. } | CredentialContext::Bearer { role, .. } => role,
+        InvocationContext::Session { role, .. } | InvocationContext::Bearer { role, .. } => role,
+        InvocationContext::LocalCli => "admin",
+        InvocationContext::Scheduler => unreachable!("scheduler handled above"),
     };
     if !role_allows(current_role, required_role) {
         return Err(InvocationError::Forbidden);
     }
 
-    if let CredentialContext::Bearer { scopes, .. } = credential {
+    if let InvocationContext::Bearer { scopes, .. } = credential {
         if action.ai_exposure != AiExposure::Callable {
             return Err(InvocationError::AiExposureDenied);
         }
@@ -145,7 +159,15 @@ fn role_allows(role: &str, required: RoleTier) -> bool {
     actual >= required
 }
 
-impl CredentialContext {
+impl InvocationContext {
+    pub fn action_ingress(&self) -> ActionIngress {
+        match self {
+            Self::Session { .. } | Self::Bearer { .. } => ActionIngress::Http,
+            Self::LocalCli => ActionIngress::LocalCli,
+            Self::Scheduler => ActionIngress::Scheduler,
+        }
+    }
+
     pub fn actor(&self) -> ActorRef {
         match self {
             Self::Session { user_id, .. } => ActorRef {
@@ -158,6 +180,16 @@ impl CredentialContext {
                 id: Some(token_id.clone()),
                 source: Some("http_bearer".into()),
             },
+            Self::LocalCli => ActorRef {
+                actor_type: ActorType::System,
+                id: Some("voidtower_cli".into()),
+                source: Some("local_cli".into()),
+            },
+            Self::Scheduler => ActorRef {
+                actor_type: ActorType::System,
+                id: Some("backup_restore_test".into()),
+                source: Some("scheduler".into()),
+            },
         }
     }
 
@@ -165,6 +197,8 @@ impl CredentialContext {
         match self {
             Self::Session { .. } => "http_session",
             Self::Bearer { .. } => "http_bearer",
+            Self::LocalCli => "local_cli",
+            Self::Scheduler => "scheduler",
         }
     }
 
@@ -174,6 +208,8 @@ impl CredentialContext {
             Self::Bearer { token_id, .. } => {
                 format!("v1:http_bearer:api_token:{token_id}")
             }
+            Self::LocalCli => "v1:local_cli:system:voidtower_cli".into(),
+            Self::Scheduler => "v1:scheduler:system:backup_restore_test".into(),
         }
     }
 }
@@ -201,16 +237,13 @@ impl PreparedInvocation {
 pub async fn prepare(
     pool: &SqlitePool,
     adapters: &AdapterRegistry,
-    credential: &CredentialContext,
+    credential: &InvocationContext,
     resource_id: &str,
     action_name: &str,
     input: Value,
 ) -> Result<PreparedInvocation, InvocationError> {
     let action = action_registry::action(action_name)
-        .filter(|action| {
-            action.execution == ActionExecution::DurableJob
-                && action.ingresses.contains(&ActionIngress::Http)
-        })
+        .filter(|action| action.execution == ActionExecution::DurableJob)
         .ok_or(InvocationError::UnknownAction)?;
     authorize_action(action, credential)?;
     canonical_json::to_canonical_string(&input).map_err(|_| InvocationError::PlanningRejected)?;
@@ -277,17 +310,14 @@ pub async fn prepare(
 pub async fn submit(
     pool: &SqlitePool,
     adapters: &AdapterRegistry,
-    credential: &CredentialContext,
+    credential: &InvocationContext,
     resource_id: &str,
     action_name: &str,
     input: Value,
     idempotency_key: &str,
 ) -> Result<crate::operations::contracts::JobSummaryV1, InvocationError> {
     let action = action_registry::action(action_name)
-        .filter(|action| {
-            action.execution == ActionExecution::DurableJob
-                && action.ingresses.contains(&ActionIngress::Http)
-        })
+        .filter(|action| action.execution == ActionExecution::DurableJob)
         .ok_or(InvocationError::UnknownAction)?;
     authorize_action(action, credential)?;
     validate_idempotency_key(idempotency_key)?;
@@ -411,13 +441,14 @@ fn validate_plan(action: &ActionMetadata, plan: &OperationPlanV1) -> Result<(), 
 
 async fn derive_policy(
     pool: &SqlitePool,
-    credential: &CredentialContext,
+    credential: &InvocationContext,
     action: &ActionMetadata,
     resource: &ResourceRef,
 ) -> SubmissionPolicy {
     let actor_kind = match credential {
-        CredentialContext::Session { .. } => ActorKind::User,
-        CredentialContext::Bearer { .. } => ActorKind::ApiToken,
+        InvocationContext::Session { .. } => ActorKind::User,
+        InvocationContext::Bearer { .. } => ActorKind::ApiToken,
+        InvocationContext::LocalCli | InvocationContext::Scheduler => ActorKind::System,
     };
     let action_kind = match action.kind {
         RegistryActionKind::Read => ActionKind::Read,
@@ -726,6 +757,48 @@ mod tests {
                 },
             ),
             Err(InvocationError::AiExposureDenied)
+        );
+    }
+
+    #[test]
+    fn local_cli_and_scheduler_contexts_are_typed_and_fail_closed() {
+        let local_cli = InvocationContext::LocalCli;
+        assert_eq!(local_cli.action_ingress(), ActionIngress::LocalCli);
+        assert_eq!(local_cli.ingress(), "local_cli");
+        assert_eq!(
+            local_cli.idempotency_scope(),
+            "v1:local_cli:system:voidtower_cli"
+        );
+        assert_eq!(local_cli.actor().actor_type, ActorType::System);
+        assert!(authorize_action(
+            action_registry::action("backup.config.delete").unwrap(),
+            &local_cli
+        )
+        .is_ok());
+        assert_eq!(
+            authorize_action(
+                action_registry::action("container.start").unwrap(),
+                &local_cli
+            ),
+            Err(InvocationError::IngressDenied)
+        );
+
+        let scheduler = InvocationContext::Scheduler;
+        assert_eq!(scheduler.action_ingress(), ActionIngress::Scheduler);
+        assert_eq!(scheduler.ingress(), "scheduler");
+        assert_eq!(
+            scheduler.idempotency_scope(),
+            "v1:scheduler:system:backup_restore_test"
+        );
+        assert_eq!(scheduler.actor().actor_type, ActorType::System);
+        assert!(authorize_action(
+            action_registry::action("backup.restore_test").unwrap(),
+            &scheduler
+        )
+        .is_ok());
+        assert_eq!(
+            authorize_action(action_registry::action("backup.run").unwrap(), &scheduler),
+            Err(InvocationError::IngressDenied)
         );
     }
 

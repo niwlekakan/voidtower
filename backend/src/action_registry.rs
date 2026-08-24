@@ -114,6 +114,8 @@ pub struct RouteMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionIngress {
     Http,
+    LocalCli,
+    Scheduler,
     Mcp,
     Studio,
     Webhook,
@@ -3767,6 +3769,7 @@ macro_rules! internal_action_metadata {
 macro_rules! durable_action_metadata {
     (
         $name:literal,
+        $ingresses:expr,
         $resource_kind:literal,
         $adapter_key:literal,
         $kind:expr,
@@ -3783,7 +3786,7 @@ macro_rules! durable_action_metadata {
     ) => {
         ActionMetadata {
             name: $name,
-            ingresses: HTTP,
+            ingresses: $ingresses,
             kind: $kind,
             risk: $risk,
             approval: $approval,
@@ -3809,6 +3812,7 @@ macro_rules! durable_mutation {
     ($name:literal, $resource_kind:literal, $adapter_key:literal, $risk:expr, $approval:expr) => {
         durable_action_metadata!(
             $name,
+            HTTP,
             $resource_kind,
             $adapter_key,
             ActionKind::Mutating,
@@ -3820,27 +3824,6 @@ macro_rules! durable_mutation {
             1,
             RecoveryClass::Reconcile,
             RoleTier::Admin,
-            BearerPolicy::Denied,
-            AiExposure::None
-        )
-    };
-}
-
-macro_rules! durable_operator_mutation {
-    ($name:literal, $resource_kind:literal, $adapter_key:literal, $risk:expr, $approval:expr) => {
-        durable_action_metadata!(
-            $name,
-            $resource_kind,
-            $adapter_key,
-            ActionKind::Mutating,
-            $risk,
-            $approval,
-            concat!($name, ".input.v1"),
-            concat!($name, ".result.v1"),
-            RetryClass::Never,
-            1,
-            RecoveryClass::Reconcile,
-            RoleTier::Operator,
             BearerPolicy::Denied,
             AiExposure::None
         )
@@ -3859,6 +3842,7 @@ macro_rules! durable_scoped_mutation {
     ) => {
         durable_action_metadata!(
             $name,
+            HTTP,
             $resource_kind,
             $adapter_key,
             ActionKind::Mutating,
@@ -3880,6 +3864,7 @@ macro_rules! durable_read_job {
     ($name:literal, $resource_kind:literal, $adapter_key:literal) => {
         durable_action_metadata!(
             $name,
+            HTTP,
             $resource_kind,
             $adapter_key,
             ActionKind::Read,
@@ -3897,29 +3882,14 @@ macro_rules! durable_read_job {
     };
 }
 
-macro_rules! durable_operator_read_job {
-    ($name:literal, $resource_kind:literal, $adapter_key:literal) => {
-        durable_action_metadata!(
-            $name,
-            $resource_kind,
-            $adapter_key,
-            ActionKind::Read,
-            RiskClass::Read,
-            ApprovalPolicy::NotApplicable,
-            concat!($name, ".input.v1"),
-            concat!($name, ".result.v1"),
-            RetryClass::Transient,
-            3,
-            RecoveryClass::Reconcile,
-            RoleTier::Operator,
-            BearerPolicy::Denied,
-            AiExposure::None
-        )
-    };
-}
-
 const MCP_AND_STUDIO: &[ActionIngress] = &[ActionIngress::Mcp, ActionIngress::Studio];
 const HTTP: &[ActionIngress] = &[ActionIngress::Http];
+const HTTP_AND_LOCAL_CLI: &[ActionIngress] = &[ActionIngress::Http, ActionIngress::LocalCli];
+const HTTP_LOCAL_CLI_AND_SCHEDULER: &[ActionIngress] = &[
+    ActionIngress::Http,
+    ActionIngress::LocalCli,
+    ActionIngress::Scheduler,
+];
 const WEBHOOK: &[ActionIngress] = &[ActionIngress::Webhook];
 const WEBHOOK_AUTOMATION: &[ActionIngress] = &[ActionIngress::Webhook, ActionIngress::Automation];
 const INTERNAL: &[ActionIngress] = &[ActionIngress::Internal];
@@ -4201,31 +4171,91 @@ pub const ACTIONS: &[ActionMetadata] = &[
         RoleTier::Admin,
         "proxy:manage"
     ),
-    durable_operator_mutation!(
+    durable_action_metadata!(
         "backup.config.create",
+        HTTP_AND_LOCAL_CLI,
         "system",
         "backups",
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
-    ),
-    durable_mutation!(
-        "backup.config.delete",
-        "backup_config",
-        "backups",
-        RiskClass::Destructive,
-        ApprovalPolicy::RiskLadder
-    ),
-    durable_scoped_mutation!(
-        "backup.run",
-        "backup_config",
-        "backups",
+        ActionKind::Mutating,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
+        "backup.config.create.input.v1",
+        "backup.config.create.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
         RoleTier::Operator,
-        "backups:run"
+        BearerPolicy::Denied,
+        AiExposure::None
     ),
-    durable_operator_read_job!("backup.check", "backup_config", "backups"),
-    durable_operator_read_job!("backup.restore_test", "backup_config", "backups"),
+    durable_action_metadata!(
+        "backup.config.delete",
+        HTTP_AND_LOCAL_CLI,
+        "backup_config",
+        "backups",
+        ActionKind::Mutating,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        "backup.config.delete.input.v1",
+        "backup.config.delete.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
+        RoleTier::Admin,
+        BearerPolicy::Denied,
+        AiExposure::None
+    ),
+    durable_action_metadata!(
+        "backup.run",
+        HTTP_AND_LOCAL_CLI,
+        "backup_config",
+        "backups",
+        ActionKind::Mutating,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        "backup.run.input.v1",
+        "backup.run.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Scope("backups:run"),
+        AiExposure::Callable
+    ),
+    durable_action_metadata!(
+        "backup.check",
+        HTTP_AND_LOCAL_CLI,
+        "backup_config",
+        "backups",
+        ActionKind::Read,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        "backup.check.input.v1",
+        "backup.check.result.v1",
+        RetryClass::Transient,
+        3,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Denied,
+        AiExposure::None
+    ),
+    durable_action_metadata!(
+        "backup.restore_test",
+        HTTP_LOCAL_CLI_AND_SCHEDULER,
+        "backup_config",
+        "backups",
+        ActionKind::Read,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        "backup.restore_test.input.v1",
+        "backup.restore_test.result.v1",
+        RetryClass::Transient,
+        3,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Denied,
+        AiExposure::None
+    ),
     durable_read_job!("update.voidtower.check", "update_target", "updates"),
     durable_mutation!(
         "update.voidtower.apply",

@@ -4,6 +4,7 @@
 
 pub mod adapters;
 pub mod approvals;
+pub mod backup_adoption;
 pub mod canonical_json;
 pub mod clock;
 pub mod contracts;

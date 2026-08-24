@@ -499,4 +499,33 @@ mod tests {
             assert_eq!(action.approval, ApprovalPolicy::NotApplicable);
         }
     }
+
+    #[test]
+    fn backup_actions_have_the_exact_non_http_ingress_matrix() {
+        for name in [
+            "backup.config.create",
+            "backup.config.delete",
+            "backup.run",
+            "backup.check",
+            "backup.restore_test",
+        ] {
+            let action = action_registry::action(name).unwrap();
+            assert!(action.ingresses.contains(&ActionIngress::Http), "{name}");
+            assert!(
+                action.ingresses.contains(&ActionIngress::LocalCli),
+                "{name}"
+            );
+            assert_eq!(
+                action.ingresses.contains(&ActionIngress::Scheduler),
+                name == "backup.restore_test",
+                "{name}"
+            );
+        }
+        for action in ACTIONS.iter().filter(|action| {
+            !action.name.starts_with("backup.") && action.execution == ActionExecution::DurableJob
+        }) {
+            assert!(!action.ingresses.contains(&ActionIngress::LocalCli));
+            assert!(!action.ingresses.contains(&ActionIngress::Scheduler));
+        }
+    }
 }

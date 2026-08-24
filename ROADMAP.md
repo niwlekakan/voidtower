@@ -31,7 +31,7 @@ approved documents take precedence.
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
 | **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
 | **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
-| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. Container lifecycle and Compose compatibility routes are adopted; the other five domains, backup CLI, durable SSE, shared frontend UX, and final bypass closure remain. |
+| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. Containers, Firewall, Proxy, and Backups are adopted across their compatibility mutations; Backup CLI and scheduled restore tests also use typed durable submission. Updates, Proxmox, durable SSE, shared frontend UX, and final bypass closure remain. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
 
 ### Current execution order
@@ -50,9 +50,9 @@ pipeline, durable jobs, audit history, or redaction rules.
 ### J0 durable-operation adoption
 
 J0 has a complete execution kernel and production worker/reconciler lifecycle, but it is not yet
-the production mutation path. The HTTP compatibility handlers and CLI callers remain authoritative
-until each is converted to plan and submit through the durable boundary. “Runtime complete”
-therefore does not mean “J0 complete.”
+the only production mutation path. Compatibility callers remain authoritative until each is
+converted to plan and submit through the durable boundary. “Runtime complete” therefore does not
+mean “J0 complete.”
 
 | Workstream | Status | Evidence / remaining work |
 |---|---|---|
@@ -61,13 +61,13 @@ therefore does not mean “J0 complete.”
 | Six-domain runtime adapters | **Done (staged)** | Containers, Firewall, Proxy, Updates, Backups, and Proxmox cover all 51 declared durable actions. The staged adapter registry now validates as complete. |
 | Docker Compose safety boundary | **Done (production)** | Compose planning uses controlled immutable artifacts, rollback preparation, bounded/redacted provider output, and no-replay reconciliation. The compatibility apply route now binds the observed config path, stages idempotency-stable artifacts, and submits the canonical durable job; it never executes Compose itself. Pause/unpause were explicitly removed from J0 scope because no registered or legacy action existed. |
 | Canonical mutation API | **Done** | All 51 durable actions are available through strict typed advisory-plan and durable-submit routes with server-derived actor, ingress, plan, risk, retry/recovery, concurrency, capability/resource validation, Voidwatch policy, scoped full-intent idempotency, stable bearer identity, bounded/redacted errors, and fail-closed role/scope/AI exposure. Authenticated job cancellation delegates only to the durable worker cancellation transaction. |
-| Compatibility routes and CLI | **In progress** | Container lifecycle and Compose apply now observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Firewall, Proxy, Backups, Updates, Proxmox, and backup CLI callers still require adoption. |
+| Compatibility routes and CLI | **In progress** | Containers, Compose apply, Firewall, Proxy, and Backups now observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Backup mutation CLI commands submit and wait through the same typed boundary, and scheduled restore tests use a system actor plus deterministic window idempotency. Updates and Proxmox still require adoption. |
 | Durable event delivery | **Partial** | Durable event history and ordered cursors exist. `/api/events/stream` still polls metrics and systemd rather than streaming the durable log with `Last-Event-ID`; `/api/integrations/events` is not yet a cursor-compatible alias; deduplicated alert/service transitions are not fully converged. |
 | Shared frontend Jobs/Approvals UX | **Missing** | No shared Jobs or Approvals pages, job progress/detail flow, cursor recovery, or six-domain submit/follow conversion exists. `ChangePlanModal` still represents the legacy dry-run/direct-execute pattern. |
 | Bypass closure and public contract | **Missing** | Add source-inventory enforcement for every adopted route, remove obsolete direct/dry-run branches and duplicate transient state, document the public asynchronous contract, and pass the complete release verification matrix. |
 
-The next publishable J0 checkpoint converts Firewall and Proxy compatibility routes to the proven
-canonical mutation boundary, reusing the compatibility bridge established by Containers.
+The next publishable J0 checkpoint converts Updates, followed by Proxmox, to the proven canonical
+mutation boundary before cross-domain bypass closure.
 
 ---
 

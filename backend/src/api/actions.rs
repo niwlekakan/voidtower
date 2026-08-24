@@ -117,6 +117,11 @@ impl From<InvocationError> for CanonicalApiError {
                 "ai_exposure_denied",
                 "This action is not exposed to machine-capable ingress.",
             ),
+            InvocationError::IngressDenied => (
+                StatusCode::FORBIDDEN,
+                "ingress_denied",
+                "This action is not available from the current ingress.",
+            ),
             InvocationError::ResourceNotFound => (
                 StatusCode::NOT_FOUND,
                 "resource_not_found",

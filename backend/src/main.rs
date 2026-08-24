@@ -242,7 +242,7 @@ async fn main() -> Result<()> {
     if let Some(command) = cli.command {
         std::fs::create_dir_all(&cfg.data_dir)?;
         let pool = db::init_pool(&cfg.db_path()).await?;
-        run_command(&pool, command).await?;
+        run_command(&pool, &cfg, command).await?;
         return Ok(());
     }
 
@@ -260,32 +260,7 @@ async fn main() -> Result<()> {
     }
 
     // Load or generate secrets encryption key
-    let secrets_key: Arc<[u8; 32]> = {
-        let key_path = cfg.config_dir.join("secrets.key");
-        let key_bytes = if key_path.exists() {
-            let raw = std::fs::read(&key_path)?;
-            anyhow::ensure!(raw.len() == 32, "secrets.key must be exactly 32 bytes");
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&raw);
-            arr
-        } else {
-            use rand::RngCore;
-            let mut arr = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut arr);
-            std::fs::write(&key_path, arr)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
-            }
-            tracing::info!(
-                "Generated new secrets encryption key at {}",
-                key_path.display()
-            );
-            arr
-        };
-        Arc::new(key_bytes)
-    };
+    let secrets_key = load_or_create_secrets_key(&cfg)?;
 
     // Bootstrap token
     let bootstrap_result = auth::ensure_bootstrap_token(&cfg.bootstrap_token_path()).await?;
@@ -521,18 +496,27 @@ async fn main() -> Result<()> {
     });
 
     // Item #10A: scheduled restore-test runner (checks every 60s against cron expressions)
-    let rt_pool = pool.clone();
+    let rt_state = state.clone();
     tokio::spawn(async move {
+        const ACTION: &str = "backup.restore_test";
+        let context = operations::invocation::InvocationContext::Scheduler;
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
+            if let Err(error) = operations::backup_adoption::authorize(&context, ACTION) {
+                tracing::warn!(
+                    error_code = "backup_restore_test_scheduler_authorization_failed",
+                    error = %error
+                );
+                continue;
+            }
             if !backups::is_restic_available() {
                 continue;
             }
             let Ok(cfgs) = sqlx::query_as::<_, backups::BackupConfig>(
                 &format!("SELECT {} FROM backup_configs WHERE enabled = 1 AND restore_test_schedule IS NOT NULL",
                     "id, name, source_path, repo_path, schedule, retention_days, enabled, last_run_at, last_status, created_at, last_check_at, last_check_status, last_restore_test_at, last_restore_test_status, restore_test_schedule")
-            ).fetch_all(&rt_pool).await else { continue };
+            ).fetch_all(&rt_state.db).await else { continue };
 
             let now_ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -556,24 +540,48 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                let pool2 = rt_pool.clone();
-                let cfg2 = cfg.clone();
-                tokio::spawn(async move {
-                    match backups::restore_test_config(&pool2, &cfg2, &backups::restic_password())
-                        .await
-                    {
-                        Ok(probe) => tracing::info!(
-                            "Scheduled restore test for '{}': {}",
-                            cfg2.name,
-                            probe.status
-                        ),
-                        Err(error) => tracing::warn!(
-                            "Scheduled restore test for '{}' could not record its result: {}",
-                            cfg2.name,
-                            error
-                        ),
+                let adopted = match operations::backup_adoption::resolve_config_target(
+                    &rt_state.db,
+                    &context,
+                    operations::backup_adoption::BackupSelector::Id(&cfg.id),
+                    ACTION,
+                )
+                .await
+                {
+                    Ok(adopted) => adopted,
+                    Err(error) => {
+                        tracing::warn!(
+                            error_code = "backup_restore_test_scheduler_target_failed",
+                            config_id = %cfg.id,
+                            error = %error
+                        );
+                        continue;
                     }
-                });
+                };
+                let idempotency_key = scheduled_restore_test_idempotency_key(&cfg.id, now_ts);
+                match operations::invocation::submit(
+                    &rt_state.db,
+                    &rt_state.operation_adapters,
+                    &context,
+                    &adopted.resource.id,
+                    ACTION,
+                    serde_json::json!({}),
+                    &idempotency_key,
+                )
+                .await
+                {
+                    Ok(job) => tracing::info!(
+                        event_code = "backup_restore_test_scheduled",
+                        config_id = %cfg.id,
+                        job_id = %job.id,
+                        state = job.state.as_str()
+                    ),
+                    Err(error) => tracing::warn!(
+                        error_code = "backup_restore_test_scheduler_submit_failed",
+                        config_id = %cfg.id,
+                        error = %error
+                    ),
+                }
             }
         }
     });
@@ -670,6 +678,34 @@ async fn main() -> Result<()> {
     serve_result?;
 
     Ok(())
+}
+
+fn load_or_create_secrets_key(cfg: &config::Config) -> Result<Arc<[u8; 32]>> {
+    std::fs::create_dir_all(&cfg.config_dir)?;
+    let key_path = cfg.config_dir.join("secrets.key");
+    let key_bytes = if key_path.exists() {
+        let raw = std::fs::read(&key_path)?;
+        anyhow::ensure!(raw.len() == 32, "secrets.key must be exactly 32 bytes");
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&raw);
+        key
+    } else {
+        use rand::RngCore;
+        let mut key = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut key);
+        std::fs::write(&key_path, key)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+        }
+        tracing::info!(
+            "Generated new secrets encryption key at {}",
+            key_path.display()
+        );
+        key
+    };
+    Ok(Arc::new(key_bytes))
 }
 
 async fn bind_then_start<T>(
@@ -802,14 +838,18 @@ fn unix_now() -> i64 {
         .as_secs() as i64
 }
 
+fn scheduled_restore_test_idempotency_key(config_id: &str, now: i64) -> String {
+    format!("scheduled-restore-test:{config_id}:{}", now / 60)
+}
+
 fn is_valid_role(role: &str) -> bool {
     matches!(role, "owner" | "admin" | "operator" | "viewer")
 }
 
-async fn run_command(pool: &SqlitePool, command: Command) -> Result<()> {
+async fn run_command(pool: &SqlitePool, cfg: &config::Config, command: Command) -> Result<()> {
     match command {
         Command::User { action } => run_user_command(pool, action).await,
-        Command::Backup { action } => run_backup_command(pool, action).await,
+        Command::Backup { action } => run_backup_command(pool, cfg, action).await,
     }
 }
 
@@ -910,17 +950,11 @@ const BACKUP_SELECT_COLS: &str =
      last_run_at, last_status, created_at, last_check_at, last_check_status, \
      last_restore_test_at, last_restore_test_status, restore_test_schedule";
 
-async fn find_backup_by_name(pool: &SqlitePool, name: &str) -> Result<backups::BackupConfig> {
-    sqlx::query_as::<_, backups::BackupConfig>(&format!(
-        "SELECT {BACKUP_SELECT_COLS} FROM backup_configs WHERE name = ?"
-    ))
-    .bind(name)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| anyhow::anyhow!("Backup job '{name}' not found"))
-}
-
-async fn run_backup_command(pool: &SqlitePool, action: BackupCommand) -> Result<()> {
+async fn run_backup_command(
+    pool: &SqlitePool,
+    cfg: &config::Config,
+    action: BackupCommand,
+) -> Result<()> {
     match action {
         BackupCommand::List => {
             let configs = sqlx::query_as::<_, backups::BackupConfig>(&format!(
@@ -954,73 +988,203 @@ async fn run_backup_command(pool: &SqlitePool, action: BackupCommand) -> Result<
             if !backups::is_restic_available() {
                 println!("\nWarning: restic is not installed — run/check/restore-test will fail.");
             }
+            Ok(())
         }
+        mutation => run_backup_mutation(pool, cfg, mutation).await,
+    }
+}
+
+async fn run_backup_mutation(
+    pool: &SqlitePool,
+    cfg: &config::Config,
+    command: BackupCommand,
+) -> Result<()> {
+    operations::registry::validate()?;
+    let secrets_key = load_or_create_secrets_key(cfg)?;
+    let adapters = Arc::new(operations::adapters::AdapterRegistry::staged(
+        pool.clone(),
+        secrets_key,
+        cfg.data_dir.clone(),
+    )?);
+    let prepared =
+        operations::runtime::prepare(pool.clone(), adapters.clone(), cfg.operations.clone())
+            .await?;
+    let runtime = prepared.start();
+    let result = submit_and_wait_for_backup_job(pool, &adapters, command).await;
+    if !runtime.shutdown().await {
+        tracing::warn!(error_code = "operation_runtime_unclean_shutdown");
+    }
+    result
+}
+
+async fn submit_and_wait_for_backup_job(
+    pool: &SqlitePool,
+    adapters: &operations::adapters::AdapterRegistry,
+    command: BackupCommand,
+) -> Result<()> {
+    use operations::{
+        backup_adoption::{self, BackupSelector},
+        invocation::{self, InvocationContext},
+    };
+
+    let context = InvocationContext::LocalCli;
+    let (resource, action, input) = match command {
         BackupCommand::Create {
             name,
             source,
             repo,
             retention_days,
         } => {
-            let id = Uuid::new_v4().to_string();
-            backups::create_config(
-                pool,
-                &id,
-                &backups::BackupConfigInput {
-                    name: name.clone(),
-                    source_path: source,
-                    repo_path: repo,
-                    schedule: None,
-                    retention_days: retention_days.unwrap_or(30),
-                    restore_test_schedule: None,
-                },
-                &id,
+            let resource = backup_adoption::resolve_create_target(pool, &context).await?;
+            let input = backups::BackupConfigInput {
+                name,
+                source_path: source,
+                repo_path: repo,
+                schedule: None,
+                retention_days: retention_days.unwrap_or(30),
+                restore_test_schedule: None,
+            };
+            input.validate()?;
+            (
+                resource,
+                "backup.config.create",
+                serde_json::to_value(input)?,
             )
-            .await?;
-            println!("Created backup job '{name}' ({id})");
         }
         BackupCommand::Run { name } => {
-            if !backups::is_restic_available() {
-                anyhow::bail!("restic is not installed");
-            }
-            let cfg = find_backup_by_name(pool, &name).await?;
-            let password = backups::restic_password();
-            backups::prepare_config_repository(&cfg, &password).await?;
-            let run = backups::run_config_backup(pool, &cfg, &password, None).await?;
-            println!("Backup '{name}': {}", run.status);
-            if let Some(snap) = run.snapshot_id {
-                println!("Snapshot: {snap}");
-            }
+            let adopted = backup_adoption::resolve_config_target(
+                pool,
+                &context,
+                BackupSelector::Name(&name),
+                "backup.run",
+            )
+            .await?;
+            (adopted.resource, "backup.run", serde_json::json!({}))
         }
         BackupCommand::Check { name } => {
-            if !backups::is_restic_available() {
-                anyhow::bail!("restic is not installed");
-            }
-            let cfg = find_backup_by_name(pool, &name).await?;
-            let probe = backups::check_config(pool, &cfg, &backups::restic_password()).await?;
-            println!("Check '{name}': {}", probe.status);
-            if let Some(m) = probe.message {
-                println!("{m}");
-            }
+            let adopted = backup_adoption::resolve_config_target(
+                pool,
+                &context,
+                BackupSelector::Name(&name),
+                "backup.check",
+            )
+            .await?;
+            (adopted.resource, "backup.check", serde_json::json!({}))
         }
         BackupCommand::RestoreTest { name } => {
-            if !backups::is_restic_available() {
-                anyhow::bail!("restic is not installed");
-            }
-            let cfg = find_backup_by_name(pool, &name).await?;
-            let probe =
-                backups::restore_test_config(pool, &cfg, &backups::restic_password()).await?;
-            println!("Restore test '{name}': {}", probe.status);
-            if let Some(m) = probe.message {
-                println!("{m}");
-            }
+            let adopted = backup_adoption::resolve_config_target(
+                pool,
+                &context,
+                BackupSelector::Name(&name),
+                "backup.restore_test",
+            )
+            .await?;
+            (
+                adopted.resource,
+                "backup.restore_test",
+                serde_json::json!({}),
+            )
         }
         BackupCommand::Delete { name } => {
-            let cfg = find_backup_by_name(pool, &name).await?;
-            backups::delete_config(pool, &cfg.id).await?;
-            println!("Deleted backup job '{name}' (config only — data on disk is untouched)");
+            let adopted = backup_adoption::resolve_config_target(
+                pool,
+                &context,
+                BackupSelector::Name(&name),
+                "backup.config.delete",
+            )
+            .await?;
+            (
+                adopted.resource,
+                "backup.config.delete",
+                serde_json::json!({}),
+            )
+        }
+        BackupCommand::List => anyhow::bail!("backup list is not a mutation"),
+    };
+    let idempotency_key = format!("cli-{}", Uuid::new_v4());
+    let job = invocation::submit(
+        pool,
+        adapters,
+        &context,
+        &resource.id,
+        action,
+        input,
+        &idempotency_key,
+    )
+    .await?;
+    println!("Submitted (job {})", job.id);
+    wait_for_backup_job(pool, &job.id).await
+}
+
+async fn wait_for_backup_job(pool: &SqlitePool, job_id: &str) -> Result<()> {
+    use operations::contracts::JobState;
+
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(30 * 60));
+    tokio::pin!(timeout);
+    let interrupted = tokio::signal::ctrl_c();
+    tokio::pin!(interrupted);
+    loop {
+        let job = operations::jobs::get(pool, job_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("submitted backup job disappeared"))?;
+        match job.state {
+            JobState::Queued | JobState::Running => {}
+            JobState::AwaitingApproval => {
+                println!("State: awaiting_approval");
+                if let Some(approval_id) = job.approval_id {
+                    println!("Approval: {approval_id}");
+                    if let Some(approval) = operations::approvals::get(pool, &approval_id).await? {
+                        println!("Requirement: {}", bounded_cli_text(&approval.requirement));
+                        println!("Reason: {}", bounded_cli_text(&approval.reason));
+                    }
+                }
+                return Ok(());
+            }
+            JobState::Succeeded => {
+                println!("State: succeeded");
+                if let Some(result) = job.result {
+                    println!("Result: {}", bounded_cli_json(&result));
+                }
+                return Ok(());
+            }
+            JobState::NeedsAttention => {
+                println!("State: needs_attention");
+                if let Some(error) = job.error {
+                    println!("Diagnostic: {}", bounded_cli_text(&error.message));
+                }
+                anyhow::bail!("backup job {job_id} needs operator attention");
+            }
+            state => {
+                println!("State: {}", state.as_str());
+                if let Some(error) = job.error {
+                    println!("Diagnostic: {}", bounded_cli_text(&error.message));
+                }
+                anyhow::bail!("backup job {job_id} ended in state {}", state.as_str());
+            }
+        }
+
+        tokio::select! {
+            result = &mut interrupted => {
+                result?;
+                anyhow::bail!("stopped waiting for backup job {job_id}; the durable job remains recoverable");
+            }
+            () = &mut timeout => {
+                anyhow::bail!("timed out waiting for backup job {job_id}; the durable job remains recoverable");
+            }
+            () = tokio::time::sleep(tokio::time::Duration::from_millis(250)) => {}
         }
     }
-    Ok(())
+}
+
+fn bounded_cli_json(value: &serde_json::Value) -> String {
+    bounded_cli_text(&serde_json::to_string(value).unwrap_or_else(|_| "null".into()))
+}
+
+fn bounded_cli_text(value: &str) -> String {
+    api::mcp::redact::redact_patterns(value)
+        .chars()
+        .take(4 * 1024)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1045,5 +1209,94 @@ mod lifecycle_tests {
 
         assert!(result.is_err());
         assert!(!started.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn scheduled_restore_test_keys_are_stable_per_utc_minute() {
+        let first = scheduled_restore_test_idempotency_key("config-1", 120);
+        assert_eq!(
+            first,
+            scheduled_restore_test_idempotency_key("config-1", 179)
+        );
+        assert_ne!(
+            first,
+            scheduled_restore_test_idempotency_key("config-1", 180)
+        );
+        assert_ne!(
+            first,
+            scheduled_restore_test_idempotency_key("config-2", 120)
+        );
+    }
+
+    #[test]
+    fn cli_diagnostics_are_bounded_and_redacted() {
+        let output = bounded_cli_text(&format!("api_key=known-secret-value {}", "x".repeat(5000)));
+        assert!(!output.contains("known-secret-value"));
+        assert!(output.chars().count() <= 4 * 1024);
+    }
+
+    #[tokio::test]
+    async fn backup_create_cli_submits_and_waits_through_the_durable_runtime() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        operations::resources::observe(
+            &pool,
+            operations::resources::ObserveResource {
+                kind: "system",
+                display_name: "This VoidTower",
+                node_id: None,
+                provider: Some("local"),
+                namespace: "voidtower.singleton",
+                scope_key: "local",
+                alias: "system",
+            },
+            None,
+            "seed",
+        )
+        .await
+        .unwrap();
+        let cfg = config::Config::default();
+        let adapters = Arc::new(
+            operations::adapters::AdapterRegistry::staged(
+                pool.clone(),
+                Arc::new([0u8; 32]),
+                cfg.data_dir.clone(),
+            )
+            .unwrap(),
+        );
+        let prepared = operations::runtime::prepare(pool.clone(), adapters.clone(), cfg.operations)
+            .await
+            .unwrap();
+        let runtime = prepared.start();
+        submit_and_wait_for_backup_job(
+            &pool,
+            &adapters,
+            BackupCommand::Create {
+                name: "CLI backup".into(),
+                source: "/srv/data".into(),
+                repo: "/srv/restic".into(),
+                retention_days: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(runtime.shutdown().await);
+
+        let config: Option<String> =
+            sqlx::query_scalar("SELECT id FROM backup_configs WHERE name = 'CLI backup'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(config.is_some());
+        let job = operations::jobs::list(&pool, 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(job.ingress, "local_cli");
+        assert_eq!(
+            job.actor.actor_type,
+            operations::contracts::ActorType::System
+        );
+        assert_eq!(job.state, operations::contracts::JobState::Succeeded);
     }
 }

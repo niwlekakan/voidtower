@@ -48,6 +48,20 @@ impl From<AppError> for CompatibilityError {
     }
 }
 
+impl From<crate::operations::backup_adoption::BackupAdoptionError> for CompatibilityError {
+    fn from(error: crate::operations::backup_adoption::BackupAdoptionError) -> Self {
+        use crate::operations::backup_adoption::BackupAdoptionError;
+        match error {
+            BackupAdoptionError::Invocation(error) => Self::Canonical(error.into()),
+            BackupAdoptionError::ConfigNotFound => Self::Legacy(AppError::NotFound),
+            BackupAdoptionError::ResticUnavailable => Self::Legacy(AppError::FeatureUnavailable(
+                "restic is not installed".into(),
+            )),
+            BackupAdoptionError::Internal(error) => Self::Legacy(AppError::Internal(error)),
+        }
+    }
+}
+
 impl IntoResponse for CompatibilityError {
     fn into_response(self) -> Response {
         match self {

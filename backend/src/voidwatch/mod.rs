@@ -35,7 +35,7 @@ use sqlx::SqlitePool;
 /// The originator of an action being evaluated at the choke point.
 ///
 /// Mirrors `policy::PolicyRule::actor_type`'s existing string convention
-/// (`"api_token" | "automation" | "*"`); `User` is new here and intentionally
+/// (`"api_token" | "automation" | "system" | "*"`); `User` is new here and intentionally
 /// matches only `"*"` rules, preserving the existing convention elsewhere in the
 /// codebase (e.g. `api/containers.rs`) that session-authenticated users are governed
 /// by RBAC (`auth::User::role`), not `policy_rules`.
@@ -48,6 +48,8 @@ pub enum ActorKind {
     Automation,
     /// A logged-in human session (e.g. the Studio MCP tool panel).
     User,
+    /// Trusted local or scheduled system actor admitted by the canonical action registry.
+    System,
     /// An AI actor distinguishable from a human-held API token (gap-analysis P0.2).
     /// No ingress point constructs this yet — per the P0-02 task spec's
     /// scope-bypass caveat, today's `ApiToken` requests can't reliably tell a human
@@ -66,6 +68,7 @@ impl ActorKind {
             ActorKind::ApiToken => "api_token",
             ActorKind::Automation => "automation",
             ActorKind::User => "user",
+            ActorKind::System => "system",
             ActorKind::Ai => "ai",
         }
     }
@@ -366,6 +369,46 @@ pub(crate) mod tests {
         .await;
 
         assert_eq!(verdict, Verdict::Allow);
+    }
+
+    #[tokio::test]
+    async fn evaluate_system_actor_defaults_to_allow_but_obeys_policy_rules() {
+        let pool = setup_db().await;
+        let resource = Resource {
+            resource_type: "backup_config",
+            resource_id: "backup-1",
+        };
+        assert_eq!(
+            evaluate(
+                &pool,
+                Actor {
+                    kind: ActorKind::System,
+                },
+                ActionKind::Mutating,
+                "backup.run",
+                resource,
+            )
+            .await,
+            Verdict::Allow
+        );
+
+        insert_rule(&pool, "system", "backup.run", "backup_config", "deny", 1).await;
+        assert!(matches!(
+            evaluate(
+                &pool,
+                Actor {
+                    kind: ActorKind::System,
+                },
+                ActionKind::Mutating,
+                "backup.run",
+                Resource {
+                    resource_type: "backup_config",
+                    resource_id: "backup-1",
+                },
+            )
+            .await,
+            Verdict::Deny(_)
+        ));
     }
 
     /// The new `ai` actor class (gap-analysis P0.2) default-denies just like

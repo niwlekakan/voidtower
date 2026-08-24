@@ -1081,18 +1081,82 @@ mod tests {
 
     #[test]
     fn compatibility_and_cli_callers_use_the_typed_backup_service_boundary() {
-        let callers = format!(
-            "{}\n{}",
-            include_str!("../../api/backups.rs"),
-            include_str!("../../main.rs")
+        fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            let start = source
+                .find(start)
+                .unwrap_or_else(|| panic!("missing {start}"));
+            let tail = &source[start..];
+            let end = tail.find(end).unwrap_or_else(|| panic!("missing {end}"));
+            &tail[..end]
+        }
+
+        let api = include_str!("../../api/backups.rs");
+        assert!(
+            section(api, "pub async fn create(", "pub async fn run_now(")
+                .contains("operation_adoption::submit(")
         );
-        for low_level in [
-            "backups::run_backup(",
-            "backups::run_check(",
-            "backups::run_restore_test(",
-            "backups::init_repo(",
+        for (start, end) in [
+            ("pub async fn run_now(", "pub async fn check("),
+            ("pub async fn check(", "pub async fn restore_test("),
+            ("pub async fn restore_test(", "pub async fn delete_plan("),
+            ("pub async fn delete(", "async fn submit_existing("),
         ] {
-            assert!(!callers.contains(low_level), "direct call: {low_level}");
+            assert!(
+                section(api, start, end).contains("submit_existing("),
+                "{start}"
+            );
+        }
+        assert!(
+            section(api, "pub async fn delete_plan(", "pub async fn delete(")
+                .contains("operation_adoption::prepare(")
+        );
+        let submit_existing = section(api, "async fn submit_existing(", "#[cfg(test)]");
+        assert!(submit_existing.contains("backup_adoption::resolve_config_target("));
+        assert!(submit_existing.contains("operation_adoption::submit("));
+
+        let main = include_str!("../../main.rs");
+        let cli = section(
+            main,
+            "async fn submit_and_wait_for_backup_job(",
+            "async fn wait_for_backup_job(",
+        );
+        for (start, end) in [
+            ("BackupCommand::Create {", "BackupCommand::Run {"),
+            ("BackupCommand::Run {", "BackupCommand::Check {"),
+            ("BackupCommand::Check {", "BackupCommand::RestoreTest {"),
+            ("BackupCommand::RestoreTest {", "BackupCommand::Delete {"),
+            ("BackupCommand::Delete {", "BackupCommand::List =>"),
+        ] {
+            assert!(
+                section(cli, start, end).contains("backup_adoption::resolve_"),
+                "{start}"
+            );
+        }
+        assert!(cli.contains("invocation::submit("));
+        assert!(cli.contains("wait_for_backup_job("));
+
+        let scheduler = section(
+            main,
+            "// Item #10A: scheduled restore-test runner",
+            "// Item #10C: daily alert",
+        );
+        assert!(scheduler.contains("backup_adoption::authorize("));
+        assert!(scheduler.contains("backup_adoption::resolve_config_target("));
+        assert!(scheduler.contains("invocation::submit("));
+
+        let callers = format!("{api}\n{main}");
+        for direct_service_call in [
+            "create_config(",
+            "delete_config(",
+            "prepare_config_repository(",
+            "run_config_backup(",
+            "check_config(",
+            "restore_test_config(",
+        ] {
+            assert!(
+                !callers.contains(direct_service_call),
+                "direct call: {direct_service_call}"
+            );
         }
     }
 }

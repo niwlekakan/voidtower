@@ -15,6 +15,7 @@ pub mod registry;
 pub mod resources;
 pub mod runtime;
 pub mod state;
+pub mod update_adoption;
 pub mod worker;
 
 pub(crate) fn unix_now() -> i64 {

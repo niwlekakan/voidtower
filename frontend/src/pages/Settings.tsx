@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuthStore } from '@/store/auth'
 import { api, ApiClientError, isTauri } from '@/api/client'
-import type { UserRecord } from '@/api/types'
+import type { SystemVersionInfo, UserRecord, VoidTowerUpdateInfo } from '@/api/types'
 import Button from '@/components/ui/Button'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import { notify } from '@/store/notifications'
@@ -11,6 +11,8 @@ import type { OidcConfigSaveRequest } from '@/api/types'
 import { useThemeStore, type UiMode } from '@/store/theme'
 import { setDeviceTierOverride, type DeviceTier } from '@/aios/hooks/useDeviceTier'
 import { Accessibility } from 'lucide-react'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
 
 function AppearanceSection() {
   const { uiMode, setUiMode } = useThemeStore()
@@ -1061,24 +1063,34 @@ function NotificationsSection() {
 // ─── System section ───────────────────────────────────────────────────────────
 
 function SystemSection() {
-  const [version, setVersion] = useState<{ commit: string; branch: string; commit_date: string; dirty: boolean } | null>(null)
-  const [check, setCheck] = useState<{ behind: number; ahead: number; can_update: boolean; remote_commit: string } | null>(null)
-  const [checking, setChecking] = useState(false)
+  const [version, setVersion] = useState<SystemVersionInfo | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<VoidTowerUpdateInfo | null>(null)
   const [restarting, setRestarting] = useState(false)
-  const [updating, setUpdating] = useState(false)
   const [pendingAction, setPendingAction] = useState<'restart' | 'update' | null>(null)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
+  const checking = tracking && trackedJob?.action === 'update.voidtower.check'
+  const updating = tracking && trackedJob?.action === 'update.voidtower.apply'
 
-  useEffect(() => {
-    fetch('/api/system/version', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null).then(setVersion).catch(() => {})
+  const loadVersion = useCallback(async () => {
+    try { setVersion(await api.systemUpdate.version()) } catch { /* server may be restarting */ }
   }, [])
 
+  const loadUpdateInfo = useCallback(async () => {
+    try { setUpdateInfo(await api.updates.infoVt()) } catch { /* provider may be unavailable */ }
+  }, [])
+
+  useEffect(() => {
+    loadVersion()
+    loadUpdateInfo()
+  }, [loadUpdateInfo, loadVersion])
+
   const checkUpdates = async () => {
-    setChecking(true)
     try {
-      const r = await fetch('/api/system/update-check', { credentials: 'include' })
-      if (r.ok) setCheck(await r.json())
-    } finally { setChecking(false) }
+      const { job } = await api.systemUpdate.check()
+      track(job, { label: 'System update check', onSucceeded: loadUpdateInfo })
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit update check')
+    }
   }
 
   const confirmRestart = async () => {
@@ -1110,37 +1122,22 @@ function SystemSection() {
 
   const confirmUpdate = async () => {
     setPendingAction(null)
-    setUpdating(true)
-    notify.info('Update started', 'VoidTower will restart when done — this may take a few minutes.')
     try {
-      await fetch('/api/system/update', { method: 'POST', credentials: 'include' })
-      let wentDown = false
-      let elapsed = 0
-      const poll = setInterval(async () => {
-        elapsed += 3000
-        if (elapsed > 20 * 60_000) {
-          clearInterval(poll)
-          setUpdating(false)
-          notify.error('Update is taking too long — check server logs.')
-          return
-        }
-        try {
-          const r = await fetch('/api/system/version', { credentials: 'include' })
-          if (r.ok && wentDown) {
-            clearInterval(poll)
-            setUpdating(false)
-            setCheck(null)
-            const v = await r.json()
-            setVersion(v)
-            notify.success('Update complete.')
-          } else if (!r.ok) { wentDown = true }
-        } catch { wentDown = true }
-      }, 3000)
-    } catch {
-      setUpdating(false)
-      notify.error('Failed to start update')
+      const { job } = await api.systemUpdate.apply()
+      track(job, {
+        label: 'System update',
+        onSucceeded: async () => {
+          await Promise.all([loadVersion(), loadUpdateInfo()])
+        },
+      })
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit system update')
     }
   }
+
+  const canUpdate = updateInfo?.mode === 'docker'
+    ? updateInfo.update_status === 'update-available'
+    : (updateInfo?.behind ?? 0) > 0
 
   return (
     <div className="card space-y-4">
@@ -1148,6 +1145,8 @@ function SystemSection() {
         <GitBranch size={15} style={{ color: 'var(--accent-primary)' }} />
         <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>System</h2>
       </div>
+
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
 
       {version && (
         <div className="flex flex-wrap gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -1157,16 +1156,18 @@ function SystemSection() {
         </div>
       )}
 
-      {check && (
+      {updateInfo && (
         <div className="rounded px-3 py-2 text-xs" style={{
-          background: check.can_update ? 'var(--accent-warning, #f59e0b)18' : 'var(--accent-success)18',
-          border: `1px solid ${check.can_update ? 'var(--accent-warning, #f59e0b)44' : 'var(--accent-success)44'}`,
-          color: check.can_update ? 'var(--accent-warning, #f59e0b)' : 'var(--accent-success)',
+          background: canUpdate ? 'var(--accent-warning, #f59e0b)18' : 'var(--accent-success)18',
+          border: `1px solid ${canUpdate ? 'var(--accent-warning, #f59e0b)44' : 'var(--accent-success)44'}`,
+          color: canUpdate ? 'var(--accent-warning, #f59e0b)' : 'var(--accent-success)',
         }}>
-          {check.can_update
-            ? `${check.behind} new commit${check.behind !== 1 ? 's' : ''} available (${check.remote_commit})`
+          {canUpdate
+            ? updateInfo.mode === 'docker'
+              ? 'A newer local container image is ready to apply'
+              : `${updateInfo.behind} new commit${updateInfo.behind !== 1 ? 's' : ''} available (${updateInfo.remote_commit})`
             : 'Up to date'}
-          {check.ahead > 0 && ` · ${check.ahead} local commit${check.ahead !== 1 ? 's' : ''} ahead`}
+          {updateInfo.ahead > 0 && ` · ${updateInfo.ahead} local commit${updateInfo.ahead !== 1 ? 's' : ''} ahead`}
         </div>
       )}
 
@@ -1176,7 +1177,7 @@ function SystemSection() {
             ? <><RefreshCw size={13} className="animate-spin mr-1.5" />Checking…</>
             : <><RefreshCw size={13} className="mr-1.5" />Check for updates</>}
         </Button>
-        {check?.can_update && (
+        {canUpdate && (
           <Button variant="secondary" size="sm" onClick={() => setPendingAction('update')} disabled={updating}>
             {updating
               ? <><Download size={13} className="animate-spin mr-1.5" />Updating…</>

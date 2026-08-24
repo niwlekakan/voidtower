@@ -700,25 +700,50 @@ export const api = {
   },
 
   updates: {
+    infoVt: () =>
+      request<import('./types').VoidTowerUpdateInfo>('/api/updates/voidtower'),
+    checkVt: () =>
+      request<import('./types').DurableJobResponse>('/api/updates/voidtower/check', { method: 'POST' }),
     applyVt: (dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
-        | { ok: boolean; backup_tag?: string }
+        | import('./types').DurableJobResponse
       >('/api/updates/voidtower/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
     rollbackVt: (tag: string, dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
-        | { ok: boolean; rolling_back_to?: string }
+        | import('./types').DurableJobResponse
       >('/api/updates/voidtower/rollback', { method: 'POST', body: JSON.stringify({ tag, dry_run: dryRun }) }),
+    infoOdysseus: () =>
+      request<import('./types').OdysseusUpdateInfo>('/api/updates/odysseus'),
+    applyOdysseus: () =>
+      request<import('./types').DurableJobResponse>('/api/updates/odysseus/apply', { method: 'POST' }),
+    infoDocker: () =>
+      request<import('./types').DockerUpdateRow[]>('/api/updates/docker'),
+    checkDocker: () =>
+      request<import('./types').DurableJobResponse>('/api/updates/docker/check', { method: 'POST' }),
     dockerApply: (id: string, dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
-        | { ok: boolean; output: string; image: string }
+        | import('./types').DurableJobResponse
       >(`/api/updates/docker/${id}/apply`, { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+    infoOs: () =>
+      request<import('./types').OsUpdateInfo>('/api/updates/os'),
     applyOs: (dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
-        | { ok: boolean; dry_run: boolean; output: string }
+        | import('./types').DurableJobResponse
       >('/api/updates/os/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+  },
+
+  operationJobs: {
+    get: (id: string) =>
+      request<import('./types').DurableJobResponse>(`/api/jobs/${id}`),
+  },
+
+  systemUpdate: {
+    version: () => request<import('./types').SystemVersionInfo>('/api/system/version'),
+    check: () => request<import('./types').DurableJobResponse>('/api/system/update-check'),
+    apply: () => request<import('./types').DurableJobResponse>('/api/system/update', { method: 'POST' }),
   },
 }

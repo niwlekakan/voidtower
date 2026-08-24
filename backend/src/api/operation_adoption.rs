@@ -62,6 +62,19 @@ impl From<crate::operations::backup_adoption::BackupAdoptionError> for Compatibi
     }
 }
 
+impl From<crate::operations::update_adoption::UpdateAdoptionError> for CompatibilityError {
+    fn from(error: crate::operations::update_adoption::UpdateAdoptionError) -> Self {
+        use crate::operations::update_adoption::UpdateAdoptionError;
+        match error {
+            UpdateAdoptionError::Invocation(error) => Self::Canonical(error.into()),
+            UpdateAdoptionError::Unavailable(message) => {
+                Self::Legacy(AppError::FeatureUnavailable(message))
+            }
+            UpdateAdoptionError::Internal(error) => Self::Legacy(AppError::Internal(error)),
+        }
+    }
+}
+
 impl IntoResponse for CompatibilityError {
     fn into_response(self) -> Response {
         match self {

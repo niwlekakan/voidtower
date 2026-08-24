@@ -38,6 +38,53 @@ export interface DurableJobResponse {
   job: DurableJobSummary
 }
 
+export interface VoidTowerUpdateInfo {
+  mode: 'git' | 'docker'
+  current_commit: string
+  remote_commit: string
+  behind: number
+  ahead: number
+  commits: Array<{ hash: string; subject: string; author: string; date: string }>
+  backup_tags: string[]
+  fetch_error: string | null
+  current_image: string | null
+  update_status: 'unknown' | 'up-to-date' | 'update-available' | null
+  update_detail: string | null
+}
+
+export interface DockerUpdateRow {
+  container_id: string
+  container_name: string
+  image: string
+  status: 'unknown' | 'up-to-date' | 'update-available'
+  detail: string | null
+}
+
+export interface OsUpdateInfo {
+  package_manager: string
+  available: boolean
+  count: number
+  packages: string[]
+  error: string | null
+}
+
+export interface OdysseusUpdateInfo {
+  installed: boolean
+  mode: 'git' | 'none'
+  current_commit: string
+  remote_commit: string
+  behind: number
+  ahead: number
+  fetch_error: string | null
+}
+
+export interface SystemVersionInfo {
+  commit: string
+  branch: string
+  commit_date: string
+  dirty: boolean
+}
+
 // Self-hosting hub: per-member app access / storage / self-deployed apps
 export interface StorageSummary {
   quota_bytes: number

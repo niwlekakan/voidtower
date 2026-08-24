@@ -1,21 +1,23 @@
 use crate::{
     auth,
     error::{AppError, Result},
-    updates::{
-        self as update_provider, ExecutionResult, UpdateRequest, UpdateSnapshot, UpdateTarget,
+    operations::{
+        invocation::{CredentialContext, PreparedInvocation},
+        update_adoption,
     },
+    updates::{self as update_provider, UpdateSnapshot, UpdateTarget},
     AppState,
 };
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
+    response::{IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    sync::{Mutex, OnceLock},
-};
+
+use super::operation_adoption::{self, CompatibilityResult};
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let sid = jar
@@ -61,23 +63,6 @@ pub struct VtUpdateInfo {
     pub update_detail: Option<String>,
 }
 
-#[derive(Clone)]
-struct VtDockerStatus {
-    status: String,
-    detail: Option<String>,
-}
-
-static VT_DOCKER_CACHE: OnceLock<Mutex<VtDockerStatus>> = OnceLock::new();
-
-fn vt_docker_cache() -> &'static Mutex<VtDockerStatus> {
-    VT_DOCKER_CACHE.get_or_init(|| {
-        Mutex::new(VtDockerStatus {
-            status: "unknown".into(),
-            detail: None,
-        })
-    })
-}
-
 pub async fn vt_info(State(state): State<AppState>, jar: CookieJar) -> Result<Json<VtUpdateInfo>> {
     require_admin(&state, &jar).await?;
     let snapshot = update_provider::snapshot(&UpdateTarget::VoidTower)
@@ -113,22 +98,22 @@ pub async fn vt_info(State(state): State<AppState>, jar: CookieJar) -> Result<Js
             update_status: None,
             update_detail: None,
         },
-        UpdateSnapshot::VoidTowerDocker(snapshot) => {
-            let cached = vt_docker_cache().lock().unwrap().clone();
-            VtUpdateInfo {
-                mode: "docker".into(),
-                current_commit: String::new(),
-                remote_commit: String::new(),
-                behind: 0,
-                ahead: 0,
-                commits: vec![],
-                backup_tags: vec![],
-                fetch_error: None,
-                current_image: Some(snapshot.image),
-                update_status: Some(cached.status),
-                update_detail: cached.detail,
-            }
-        }
+        UpdateSnapshot::VoidTowerDocker(snapshot) => VtUpdateInfo {
+            mode: "docker".into(),
+            current_commit: String::new(),
+            remote_commit: String::new(),
+            behind: 0,
+            ahead: 0,
+            commits: vec![],
+            backup_tags: vec![],
+            fetch_error: None,
+            current_image: Some(snapshot.image),
+            update_status: Some(image_status(
+                &snapshot.container_image_id,
+                &snapshot.local_image_id,
+            )),
+            update_detail: image_detail(&snapshot.container_image_id, &snapshot.local_image_id),
+        },
         _ => {
             return Err(AppError::Internal(anyhow::anyhow!(
                 "invalid VoidTower snapshot"
@@ -140,42 +125,17 @@ pub async fn vt_info(State(state): State<AppState>, jar: CookieJar) -> Result<Js
 pub async fn check_vt(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    let snapshot = update_provider::snapshot(&UpdateTarget::VoidTower)
-        .await
-        .map_err(provider_error)?;
-    if !matches!(snapshot, UpdateSnapshot::VoidTowerDocker(_)) {
-        return Err(AppError::FeatureUnavailable(
-            "only available in Docker mode".into(),
-        ));
-    }
-    {
-        let mut cached = vt_docker_cache().lock().unwrap();
-        cached.status = "checking".into();
-        cached.detail = None;
-    }
-    tokio::spawn(async {
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let result = update_provider::execute(
-            &UpdateTarget::VoidTower,
-            &UpdateRequest::Check,
-            &operation_id,
-        )
-        .await;
-        let (status, detail) = match result {
-            Ok(ExecutionResult::Completed { message }) if message.contains("newer") => {
-                ("update-available", Some(message))
-            }
-            Ok(ExecutionResult::Completed { .. }) => ("up-to-date", None),
-            Ok(ExecutionResult::RestartInitiated { message }) => ("error", Some(message)),
-            Err(error) => ("error", Some(error.to_string())),
-        };
-        let mut cached = vt_docker_cache().lock().unwrap();
-        cached.status = status.into();
-        cached.detail = detail;
-    });
-    Ok(Json(serde_json::json!({"ok": true})))
+    headers: HeaderMap,
+) -> CompatibilityResult<Response> {
+    submit_action(
+        &state,
+        &jar,
+        "update.voidtower.check",
+        None,
+        serde_json::json!({}),
+        &headers,
+    )
+    .await
 }
 
 #[derive(Deserialize, Default)]
@@ -187,30 +147,19 @@ pub struct ApplyReq {
 pub async fn apply_vt(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(req): Json<ApplyReq>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    let snapshot = update_provider::snapshot(&UpdateTarget::VoidTower)
-        .await
-        .map_err(provider_error)?;
-    if req.dry_run {
-        let (mode, current, target) = voidtower_plan_values(&snapshot)?;
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "plan": {
-                "title": format!("Update VoidTower ({mode})"),
-                "risk": "high",
-                "changes": [
-                    {"label": "Current version", "value": current},
-                    {"label": "Target version", "value": target},
-                    {"label": "Safety", "value": "Persist rollback point before apply"},
-                    {"label": "Downtime", "value": "Brief — UI unavailable during restart"}
-                ],
-                "preview": null
-            }
-        })));
-    }
-    execute_legacy_mutation(UpdateTarget::VoidTower, UpdateRequest::Apply).await
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state,
+        &jar,
+        "update.voidtower.apply",
+        None,
+        serde_json::json!({}),
+        req.dry_run,
+        &headers,
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -223,37 +172,23 @@ pub struct RollbackReq {
 pub async fn rollback_vt(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(req): Json<RollbackReq>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
+) -> CompatibilityResult<Response> {
+    let credential = super::actions::credential(&state, &jar, None).await?;
+    update_adoption::authorize(&credential, "update.voidtower.rollback")?;
     update_provider::validate_backup_tag(&req.tag)
         .map_err(|_| AppError::BadRequest("Invalid backup tag".into()))?;
-    if req.dry_run {
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "plan": {
-                "title": "Rollback VoidTower",
-                "risk": "high",
-                "changes": [
-                    {"label": "Target tag", "value": req.tag},
-                    {"label": "Safety", "value": "Snapshot current state before rollback"},
-                    {"label": "Action", "value": "checkout + rebuild + restart"}
-                ],
-                "preview": null
-            }
-        })));
-    }
-    execute_legacy_mutation(
-        UpdateTarget::VoidTower,
-        UpdateRequest::Rollback {
-            tag: req.tag.clone(),
-        },
+    prepare_or_submit_with_credential(
+        &state,
+        &credential,
+        "update.voidtower.rollback",
+        None,
+        serde_json::json!({"tag": req.tag}),
+        req.dry_run,
+        &headers,
     )
     .await
-    .map(|Json(mut value)| {
-        value["rolling_back_to"] = serde_json::Value::String(req.tag);
-        Json(value)
-    })
 }
 
 // ─── Docker image updates ─────────────────────────────────────────────────────
@@ -265,12 +200,6 @@ pub struct DockerImageRow {
     pub image: String,
     pub status: String,
     pub detail: Option<String>,
-}
-
-static DOCKER_CACHE: OnceLock<Mutex<HashMap<String, DockerImageRow>>> = OnceLock::new();
-
-fn docker_cache() -> &'static Mutex<HashMap<String, DockerImageRow>> {
-    DOCKER_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub async fn docker_info(
@@ -287,21 +216,15 @@ pub async fn docker_info(
             "invalid Docker update snapshot"
         )));
     };
-    let cache = docker_cache().lock().unwrap();
     Ok(Json(
         containers
             .into_iter()
-            .map(|container| {
-                cache
-                    .get(&container.container_id)
-                    .cloned()
-                    .unwrap_or(DockerImageRow {
-                        container_id: container.container_id,
-                        container_name: container.container_name,
-                        image: container.image,
-                        status: "unknown".into(),
-                        detail: None,
-                    })
+            .map(|container| DockerImageRow {
+                container_id: container.container_id,
+                container_name: container.container_name,
+                image: container.image,
+                status: image_status(&container.container_image_id, &container.local_image_id),
+                detail: image_detail(&container.container_image_id, &container.local_image_id),
             })
             .collect(),
     ))
@@ -310,121 +233,36 @@ pub async fn docker_info(
 pub async fn docker_check(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    let UpdateSnapshot::DockerEngine { containers } =
-        update_provider::snapshot(&UpdateTarget::DockerEngine)
-            .await
-            .map_err(provider_error)?
-    else {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "invalid Docker update snapshot"
-        )));
-    };
-    {
-        let mut cache = docker_cache().lock().unwrap();
-        for container in &containers {
-            cache.insert(
-                container.container_id.clone(),
-                DockerImageRow {
-                    container_id: container.container_id.clone(),
-                    container_name: container.container_name.clone(),
-                    image: container.image.clone(),
-                    status: "checking".into(),
-                    detail: None,
-                },
-            );
-        }
-    }
-    tokio::spawn(async move {
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let result = update_provider::execute(
-            &UpdateTarget::DockerEngine,
-            &UpdateRequest::Check,
-            &operation_id,
-        )
-        .await;
-        let refreshed = update_provider::snapshot(&UpdateTarget::DockerEngine).await;
-        let mut cache = docker_cache().lock().unwrap();
-        match (result, refreshed) {
-            (
-                Ok(ExecutionResult::Completed { .. }),
-                Ok(UpdateSnapshot::DockerEngine { containers }),
-            ) => {
-                for container in containers {
-                    let update_available = !container.local_image_id.is_empty()
-                        && container.container_image_id != container.local_image_id;
-                    cache.insert(
-                        container.container_id.clone(),
-                        DockerImageRow {
-                            container_id: container.container_id,
-                            container_name: container.container_name,
-                            image: container.image,
-                            status: if update_available {
-                                "update-available"
-                            } else {
-                                "up-to-date"
-                            }
-                            .into(),
-                            detail: update_available
-                                .then(|| "New image downloaded and ready to apply".into()),
-                        },
-                    );
-                }
-            }
-            (Err(error), _) => {
-                for row in cache.values_mut().filter(|row| row.status == "checking") {
-                    row.status = "error".into();
-                    row.detail = Some(error.to_string());
-                }
-            }
-            _ => {}
-        }
-    });
-    Ok(Json(
-        serde_json::json!({"ok": true, "message": "Check started"}),
-    ))
+    headers: HeaderMap,
+) -> CompatibilityResult<Response> {
+    submit_action(
+        &state,
+        &jar,
+        "update.docker.check",
+        None,
+        serde_json::json!({}),
+        &headers,
+    )
+    .await
 }
 
 pub async fn docker_apply(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(container_id): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<ApplyReq>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    let target = UpdateTarget::DockerImage {
-        container_id: container_id.clone(),
-    };
-    let UpdateSnapshot::DockerImage(snapshot) = update_provider::snapshot(&target)
-        .await
-        .map_err(|error| AppError::BadRequest(error.to_string()))?
-    else {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "invalid Docker image snapshot"
-        )));
-    };
-    if req.dry_run {
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "plan": {
-                "title": "Update container",
-                "risk": "medium",
-                "changes": [
-                    {"label": "Container", "value": snapshot.container_name},
-                    {"label": "Image", "value": snapshot.image},
-                    {"label": "Safety", "value": "Persist current image ID before apply"}
-                ],
-                "preview": null
-            }
-        })));
-    }
-    let response = execute_legacy_mutation(target, UpdateRequest::Apply).await?;
-    if let Some(row) = docker_cache().lock().unwrap().get_mut(&container_id) {
-        row.status = "up-to-date".into();
-        row.detail = None;
-    }
-    Ok(response)
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state,
+        &jar,
+        "update.docker.apply",
+        Some(&container_id),
+        serde_json::json!({}),
+        req.dry_run,
+        &headers,
+    )
+    .await
 }
 
 // ─── Odysseus bare-metal updates ─────────────────────────────────────────────
@@ -464,9 +302,17 @@ pub async fn odysseus_info(State(state): State<AppState>, jar: CookieJar) -> Res
 pub async fn apply_odysseus(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    execute_legacy_mutation(UpdateTarget::Odysseus, UpdateRequest::Apply).await
+    headers: HeaderMap,
+) -> CompatibilityResult<Response> {
+    submit_action(
+        &state,
+        &jar,
+        "update.odysseus.apply",
+        None,
+        serde_json::json!({}),
+        &headers,
+    )
+    .await
 }
 
 // ─── OS package updates ───────────────────────────────────────────────────────
@@ -514,96 +360,137 @@ pub struct OsApplyReq {
 pub async fn apply_os(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(req): Json<OsApplyReq>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    if req.dry_run {
-        let UpdateSnapshot::OperatingSystem {
-            package_manager,
-            packages,
-        } = update_provider::snapshot(&UpdateTarget::OperatingSystem)
-            .await
-            .map_err(provider_error)?
-        else {
-            return Err(AppError::Internal(anyhow::anyhow!(
-                "invalid operating-system update snapshot"
-            )));
-        };
-        let preview = (!packages.is_empty()).then(|| packages.join("\n"));
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "plan": {
-                "title": format!("Apply OS updates ({package_manager})"),
-                "risk": os_update_risk(packages.len()),
-                "changes": [
-                    {"label": "Package manager", "value": package_manager},
-                    {"label": "Packages to update", "value": packages.len().to_string()},
-                    {"label": "Safety", "value": "Persist installed-package manifest before apply"}
-                ],
-                "preview": preview
-            },
-            "error": null
-        })));
-    }
-    execute_legacy_mutation(UpdateTarget::OperatingSystem, UpdateRequest::Apply).await
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state,
+        &jar,
+        "update.os.apply",
+        None,
+        serde_json::json!({}),
+        req.dry_run,
+        &headers,
+    )
+    .await
 }
 
-async fn execute_legacy_mutation(
-    target: UpdateTarget,
-    request: UpdateRequest,
-) -> Result<Json<serde_json::Value>> {
-    let operation_id = uuid::Uuid::new_v4().to_string();
-    let rollback = update_provider::prepare_rollback(&target, &operation_id)
-        .await
-        .map_err(provider_error)?;
-    let execution = update_provider::execute(&target, &request, &operation_id)
-        .await
-        .map_err(provider_error)?;
-    let message = match execution {
-        ExecutionResult::Completed { message } | ExecutionResult::RestartInitiated { message } => {
-            message
-        }
-    };
+async fn prepare_or_submit(
+    state: &AppState,
+    jar: &CookieJar,
+    action: &str,
+    container_selector: Option<&str>,
+    input: serde_json::Value,
+    dry_run: bool,
+    headers: &HeaderMap,
+) -> CompatibilityResult<Response> {
+    let credential = super::actions::credential(state, jar, None).await?;
+    prepare_or_submit_with_credential(
+        state,
+        &credential,
+        action,
+        container_selector,
+        input,
+        dry_run,
+        headers,
+    )
+    .await
+}
+
+async fn prepare_or_submit_with_credential(
+    state: &AppState,
+    credential: &CredentialContext,
+    action: &str,
+    container_selector: Option<&str>,
+    input: serde_json::Value,
+    dry_run: bool,
+    headers: &HeaderMap,
+) -> CompatibilityResult<Response> {
+    let adopted =
+        update_adoption::resolve_target(&state.db, credential, action, container_selector).await?;
+    if dry_run {
+        let prepared =
+            operation_adoption::prepare(state, credential, &adopted.resource.id, action, input)
+                .await?;
+        return legacy_plan_response(prepared);
+    }
+    operation_adoption::submit(
+        state,
+        credential,
+        &adopted.resource.id,
+        action,
+        input,
+        headers,
+    )
+    .await
+}
+
+async fn submit_action(
+    state: &AppState,
+    jar: &CookieJar,
+    action: &str,
+    container_selector: Option<&str>,
+    input: serde_json::Value,
+    headers: &HeaderMap,
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        state,
+        jar,
+        action,
+        container_selector,
+        input,
+        false,
+        headers,
+    )
+    .await
+}
+
+fn legacy_plan_response(prepared: PreparedInvocation) -> CompatibilityResult<Response> {
+    let view = prepared.view();
+    let mut plan =
+        serde_json::to_value(view.operation).map_err(|error| AppError::Internal(error.into()))?;
+    plan["risk"] = serde_json::Value::String("high".into());
     Ok(Json(serde_json::json!({
-        "ok": true,
-        "operation_id": operation_id,
-        "rollback_kind": rollback.kind,
-        "message": message
-    })))
+        "dry_run": true,
+        "plan": plan,
+        "policy": view.policy,
+        "resource": view.resource,
+    }))
+    .into_response())
 }
 
-fn voidtower_plan_values(snapshot: &UpdateSnapshot) -> Result<(&'static str, String, String)> {
-    match snapshot {
-        UpdateSnapshot::VoidTowerGit(snapshot) => Ok((
-            "git",
-            short(&snapshot.current_commit),
-            short(&snapshot.remote_commit),
-        )),
-        UpdateSnapshot::VoidTowerBinary {
-            current_version,
-            remote_version,
-        } => Ok(("binary", current_version.clone(), remote_version.clone())),
-        UpdateSnapshot::VoidTowerDocker(snapshot) => Ok((
-            "Docker",
-            short(&snapshot.container_image_id),
-            short(&snapshot.local_image_id),
-        )),
-        _ => Err(AppError::Internal(anyhow::anyhow!(
-            "invalid VoidTower snapshot"
-        ))),
+fn image_status(container_image_id: &str, local_image_id: &str) -> String {
+    if container_image_id.is_empty() || local_image_id.is_empty() {
+        "unknown"
+    } else if container_image_id == local_image_id {
+        "up-to-date"
+    } else {
+        "update-available"
     }
+    .into()
+}
+
+fn image_detail(container_image_id: &str, local_image_id: &str) -> Option<String> {
+    (image_status(container_image_id, local_image_id) == "update-available")
+        .then(|| "A newer local image is ready to apply".into())
 }
 
 fn short(value: &str) -> String {
     value.chars().take(12).collect()
 }
 
-fn os_update_risk(count: usize) -> &'static str {
-    if count == 0 {
-        "low"
-    } else if count <= 10 {
-        "medium"
-    } else {
-        "high"
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_status_is_derived_without_process_local_state() {
+        assert_eq!(image_status("sha256:same", "sha256:same"), "up-to-date");
+        assert_eq!(
+            image_status("sha256:running", "sha256:local"),
+            "update-available"
+        );
+        assert_eq!(image_status("", "sha256:local"), "unknown");
+        assert_eq!(image_status("sha256:running", ""), "unknown");
     }
 }

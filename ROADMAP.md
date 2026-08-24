@@ -4,7 +4,7 @@ VoidTower is a self-hosted infrastructure command tower — control plane, app c
 
 ---
 
-## VoidTower 1.0 Delivery Status — 2026-08-21
+## VoidTower 1.0 Delivery Status — 2026-08-25
 
 The current 1.0 scope is larger than the legacy phase/backlog sections below. This roadmap
 summarizes the public product boundary and its dependency-ordered work packages.
@@ -31,7 +31,7 @@ approved documents take precedence.
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
 | **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
 | **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
-| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. Containers, Firewall, Proxy, and Backups are adopted across their compatibility mutations; Backup CLI and scheduled restore tests also use typed durable submission. Updates, Proxmox, durable SSE, shared frontend UX, and final bypass closure remain. |
+| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. Containers, Firewall, Proxy, Backups, and Updates are adopted across their compatibility mutations; Backup CLI and scheduled restore tests also use typed durable submission. Proxmox, durable SSE, shared frontend UX, and final bypass closure remain. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
 
 ### Current execution order
@@ -61,13 +61,13 @@ mean “J0 complete.”
 | Six-domain runtime adapters | **Done (staged)** | Containers, Firewall, Proxy, Updates, Backups, and Proxmox cover all 51 declared durable actions. The staged adapter registry now validates as complete. |
 | Docker Compose safety boundary | **Done (production)** | Compose planning uses controlled immutable artifacts, rollback preparation, bounded/redacted provider output, and no-replay reconciliation. The compatibility apply route now binds the observed config path, stages idempotency-stable artifacts, and submits the canonical durable job; it never executes Compose itself. Pause/unpause were explicitly removed from J0 scope because no registered or legacy action existed. |
 | Canonical mutation API | **Done** | All 51 durable actions are available through strict typed advisory-plan and durable-submit routes with server-derived actor, ingress, plan, risk, retry/recovery, concurrency, capability/resource validation, Voidwatch policy, scoped full-intent idempotency, stable bearer identity, bounded/redacted errors, and fail-closed role/scope/AI exposure. Authenticated job cancellation delegates only to the durable worker cancellation transaction. |
-| Compatibility routes and CLI | **In progress** | Containers, Compose apply, Firewall, Proxy, and Backups now observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Backup mutation CLI commands submit and wait through the same typed boundary, and scheduled restore tests use a system actor plus deterministic window idempotency. Updates and Proxmox still require adoption. |
+| Compatibility routes and CLI | **In progress** | Containers, Compose apply, Firewall, Proxy, Backups, and Updates now observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Backup mutation CLI commands submit and wait through the same typed boundary, and scheduled restore tests use a system actor plus deterministic window idempotency. The Updates and Settings screens follow submitted jobs locally without replaying mutations. Proxmox still requires adoption. |
 | Durable event delivery | **Partial** | Durable event history and ordered cursors exist. `/api/events/stream` still polls metrics and systemd rather than streaming the durable log with `Last-Event-ID`; `/api/integrations/events` is not yet a cursor-compatible alias; deduplicated alert/service transitions are not fully converged. |
-| Shared frontend Jobs/Approvals UX | **Missing** | No shared Jobs or Approvals pages, job progress/detail flow, cursor recovery, or six-domain submit/follow conversion exists. `ChangePlanModal` still represents the legacy dry-run/direct-execute pattern. |
+| Shared frontend Jobs/Approvals UX | **Missing** | Updates now has page-local typed job following, but there are no shared Jobs or Approvals pages, cross-domain job progress/detail flow, or cursor recovery. Remaining `ChangePlanModal` callers still represent the legacy dry-run/direct-execute pattern. |
 | Bypass closure and public contract | **Missing** | Add source-inventory enforcement for every adopted route, remove obsolete direct/dry-run branches and duplicate transient state, document the public asynchronous contract, and pass the complete release verification matrix. |
 
-The next publishable J0 checkpoint converts Updates, followed by Proxmox, to the proven canonical
-mutation boundary before cross-domain bypass closure.
+The next publishable J0 checkpoint converts Proxmox to the proven canonical mutation boundary,
+then closes cross-domain bypasses before the shared Jobs/Approvals and durable SSE work.
 
 ---
 
@@ -104,7 +104,7 @@ Features confirmed present in the codebase (pages + API modules).
 | **Integrations** | Scoped API tokens; Odysseus config (enable/disable, MCP toggle, webhook secret); legacy polling SSE plus durable event-history reads; webhook trigger; tool manifest at `/api/integrations/odysseus/manifest`. Cursor-resumable durable SSE remains in J0. |
 | **Themes** | 23 built-in themes (`frontend/src/theme/themes.ts`) + live custom token editor (CSS variables), 14-param animation editor |
 | **Animated Backgrounds** | 8 canvas presets (Void, Grid, Aurora, Pulse, Noise, Hex, Hex Classic, Circuit) + 4 glass levels |
-| **Updates** | In-UI updater — Docker image check/apply; bare-metal pull/rebuild with rollback points; OS package updates (apt/pacman/dnf) |
+| **Updates** | In-UI updater — Docker image check/apply; bare-metal pull/rebuild with rollback points; Odysseus update checks; OS package updates (apt/pacman/dnf). All update mutations submit durable jobs and the Updates/Settings screens follow their state locally. |
 | **TOTP / SSO** | TOTP enrollment + login step (Security page); Authentik OIDC SSO login with group→role mapping and auto-create-on-login (Settings → Security); per-proxy Authentik forward-auth gating |
 | **Multi-user / RBAC** | Owner / Admin / Operator / Viewer plus constrained Member / Guest / Demo roles; positive authorization is covered by exhaustive real-router tests |
 
@@ -122,7 +122,7 @@ are still being hardened onto the shared J0 contracts.
 | 2 | **Capability detection page** | **Done** | per-capability detection with install hints; confirmed present at Settings → Capabilities |
 | 3 | **Doctor / diagnostics mode** | **Done** | `--doctor --json` CLI flag + UI at Settings → Diagnostics, 12 health checks |
 | 4 | **Disaster recovery mode** | **Done** | confirmed: `backend/src/api/disaster.rs` has `export_config`/`import_config`/`emergency_reset_admin`/`emergency_disable` plus CLI-only `cli_export`/`cli_import` that work without booting the web server |
-| 5 | **Dry-run / change planning** | **Legacy shipped; durable replacement in progress** | `ChangePlanModal` is wired into proxy create/edit, firewall rules, OS updates, container remove, backup delete, and Proxmox operations. J0 must replace dry-run followed by direct execution with immutable job planning, approval decisions bound to that plan, and submit/follow progress. |
+| 5 | **Dry-run / change planning** | **Legacy shipped; durable replacement in progress** | Containers, Firewall, Proxy, Backups, and Updates now use immutable adapter-produced planning and durable submission; update screens also follow job progress locally. Remaining legacy `ChangePlanModal` callers, including Proxmox, must move to plans and approval decisions bound to the durable job before the shared Jobs/Approvals UX lands. |
 | 6 | **Policy engine** | **Done**, hardened in P0 | `backend/src/policy.rs` + `backend/src/voidwatch/` — actor/action/resource/tag matching, DB-backed rules, CRUD API + UI. `voidwatch::evaluate()` is now the single choke point for MCP `tools/call`, Studio `mcp_invoke`, and automation/webhook actions (P0.1); `api_token`/`automation`/`ai` actors are default-deny with a migrated allowlist (P0.2); mode ladder + risk classes gate the AI/automation ingress path (P0.3 backend); a hardcoded irreversibility denylist blocks 9 action classes regardless of mode (P0.4); bearer tokens carry real enforced scopes, closing the god-token bypass (P0.6). Still open: making mode-ladder verdicts mandatory (not advisory) at the six UI-driven handlers — needs an approvals-queue mechanism, tracked as [issue #11](https://github.com/niwlekakan/voidtower/issues/11) |
 | 7 | **Secrets manager** | **Done**, with gaps | AES-256-GCM store, reveal-on-demand audit logging built; redaction on the AI context path shipped (P0.5: MCP tool-call output, Studio `mcp_invoke`, `get_context` bundle — `backend/src/api/redact.rs`); still missing: secret rotation, scoped per-token access |
 | 8 | **Resource tags** | **Done**, with gaps | covers services/containers/VMs/backups/apps/proxmox_vm today (`GET /api/tags/map?type=`); still missing: automations, alerts, API tokens; not yet wired into policy/alert routing |

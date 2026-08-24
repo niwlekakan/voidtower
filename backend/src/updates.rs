@@ -1087,15 +1087,62 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_routes_do_not_own_update_helper_scripts() {
-        let source = include_str!("api/updates.rs");
-        assert!(!source.contains("voidtower-update.sh"));
-        assert!(!source.contains("odysseus-update.sh"));
-        assert!(!source.contains("voidtower-rollback.sh"));
-        assert!(!source.contains("Command::new"));
-        assert!(!source.contains("std::fs::"));
-        assert!(!source.contains(".spawn()"));
-        assert!(source.contains("update_provider::prepare_rollback("));
-        assert!(source.contains("update_provider::execute("));
+    fn compatibility_routes_use_the_canonical_update_boundary() {
+        let updates = include_str!("api/updates.rs");
+        assert!(updates.contains("update_adoption::resolve_target("));
+        assert!(updates.contains("operation_adoption::prepare("));
+        assert!(updates.contains("operation_adoption::submit("));
+        for forbidden in [
+            "update_provider::prepare_rollback(",
+            "update_provider::execute(",
+            "voidtower-update.sh",
+            "odysseus-update.sh",
+            "voidtower-rollback.sh",
+            "Command::new",
+            "std::fs::",
+            "tokio::spawn",
+            "OnceLock",
+            "Mutex",
+        ] {
+            assert!(
+                !updates.contains(forbidden),
+                "Updates compatibility handlers contain direct execution state {forbidden}"
+            );
+        }
+
+        let system = include_str!("api/system.rs");
+        for (start, end) in [
+            ("pub async fn update_check(", "// ─── Restart"),
+            ("pub async fn update(", "async fn submit_voidtower_action("),
+        ] {
+            let section = system
+                .split_once(start)
+                .unwrap_or_else(|| panic!("missing system compatibility handler {start}"))
+                .1
+                .split_once(end)
+                .unwrap_or_else(|| panic!("missing system handler boundary {end}"))
+                .0;
+            assert!(section.contains("submit_voidtower_action("));
+            for forbidden in [
+                "Command::new",
+                "std::fs::write",
+                "git pull",
+                "curl -fsSL",
+                "voidtower-update.sh",
+                ".spawn()",
+            ] {
+                assert!(
+                    !section.contains(forbidden),
+                    "system update handler {start} contains direct execution {forbidden}"
+                );
+            }
+        }
+
+        let submit = system
+            .split_once("async fn submit_voidtower_action(")
+            .expect("missing system update submission helper")
+            .1;
+        assert!(submit.contains("update_adoption::resolve_target("));
+        assert!(submit.contains("operation_adoption::submit("));
     }
 }

@@ -11,6 +11,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 interface FirewallRule { num: number; to: string; action: string; from: string; ipv6: boolean }
 interface FirewallStatus { backend: string; enabled: boolean; rules: FirewallRule[]; logging: string | null; error: string | null }
+interface DurableJobResponse { job: { id: string; state: string } }
 
 const ACTION_COLOR: Record<string, string> = {
   ALLOW: 'var(--accent-success)', DENY: 'var(--accent-error)',
@@ -47,8 +48,8 @@ function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const execute = async () => {
     setExec(true)
     try {
-      await apiFetch('/api/firewall/rules', { method: 'POST', body: JSON.stringify(body()) })
-      notify.success('Rule added')
+      const { job } = await apiFetch<DurableJobResponse>('/api/firewall/rules', { method: 'POST', body: JSON.stringify(body()) })
+      notify.success(`Firewall rule submitted · job ${job.id.slice(0, 8)}`)
       onSaved(); onClose()
     } catch (e: any) { notify.error(e.message ?? 'Failed to add rule') }
     finally { setExec(false) }
@@ -118,8 +119,8 @@ export default function FirewallPage() {
     if (!confirm(`${action === 'disable' ? 'Disable' : 'Enable'} the firewall?`)) return
     setToggling(true)
     try {
-      await apiFetch('/api/firewall/action', { method: 'POST', body: JSON.stringify({ action }) })
-      notify.success(`Firewall ${action}d`)
+      const { job } = await apiFetch<DurableJobResponse>('/api/firewall/action', { method: 'POST', body: JSON.stringify({ action }) })
+      notify.success(`Firewall ${action} submitted · job ${job.id.slice(0, 8)}`)
       load()
     } catch (e: any) { notify.error(e.message ?? 'Action failed') }
     finally { setToggling(false) }
@@ -128,8 +129,8 @@ export default function FirewallPage() {
   const deleteRule = async (num: number) => {
     if (!confirm(`Delete rule #${num}? Rule numbers will shift after deletion.`)) return
     try {
-      await apiFetch('/api/firewall/rules/delete', { method: 'POST', body: JSON.stringify({ num }) })
-      notify.success(`Rule #${num} deleted`)
+      const { job } = await apiFetch<DurableJobResponse>('/api/firewall/rules/delete', { method: 'POST', body: JSON.stringify({ num }) })
+      notify.success(`Rule #${num} deletion submitted · job ${job.id.slice(0, 8)}`)
       load()
     } catch (e: any) { notify.error(e.message ?? 'Delete failed') }
   }

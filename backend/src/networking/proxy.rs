@@ -270,7 +270,37 @@ mod tests {
         let source = include_str!("../api/proxy.rs");
         assert!(!source.contains("args([\"exec\", &id, \"nginx\", \"-s\", \"reload\"])"));
         assert!(!source.contains("std::fs::write(&path, content)"));
-        assert!(source.contains("proxy_provider::execute("));
-        assert!(source.contains("proxy_provider::write_conf("));
+        assert_eq!(source.matches("operation_adoption::submit(").count(), 6);
+        assert_eq!(source.matches("operation_adoption::prepare(").count(), 1);
+
+        for (start, end) in [
+            ("pub async fn create(", "/// Shared helper"),
+            ("pub async fn delete_proxy(", "pub async fn update_proxy("),
+            ("pub async fn update_proxy(", "// ── AI auto-proxy"),
+            ("pub async fn ai_auto_proxy(", "// ── nginx management"),
+            ("pub async fn nginx_action(", "pub async fn nginx_logs("),
+            ("pub async fn toggle(", "// ── Health check"),
+        ] {
+            let section = source
+                .split_once(start)
+                .unwrap_or_else(|| panic!("missing compatibility handler {start}"))
+                .1
+                .split_once(end)
+                .unwrap_or_else(|| panic!("missing compatibility handler boundary {end}"))
+                .0;
+            assert!(section.contains("operation_adoption::submit("));
+            for forbidden in [
+                "sqlx::query(",
+                "write_nginx_conf(",
+                "remove_nginx_conf_checked(",
+                "reload_nginx(",
+                "proxy_provider::execute(",
+            ] {
+                assert!(
+                    !section.contains(forbidden),
+                    "compatibility handler {start} contains direct mutation {forbidden}"
+                );
+            }
+        }
     }
 }

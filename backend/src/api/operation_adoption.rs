@@ -115,6 +115,42 @@ pub(crate) async fn observe_available(
     Ok(resource)
 }
 
+pub(crate) async fn resolve_available(
+    state: &AppState,
+    credential: &CredentialContext,
+    expected_kind: &str,
+    namespace: &str,
+    scope_key: &str,
+    alias: &str,
+    actions: &[&str],
+) -> CompatibilityResult<ResourceRef> {
+    for action in actions {
+        authorize(credential, action)?;
+    }
+    let resource = resources::resolve_alias(&state.db, namespace, scope_key, alias)
+        .await
+        .map_err(|error| CompatibilityError::Legacy(AppError::Internal(error)))?
+        .ok_or(InvocationError::ResourceNotFound)?;
+    if resource.kind != expected_kind {
+        return Err(InvocationError::ResourceKindMismatch.into());
+    }
+    let correlation_id = uuid::Uuid::new_v4().to_string();
+    for action in actions {
+        resources::set_capability(
+            &state.db,
+            &resource.id,
+            action,
+            crate::operations::contracts::CapabilityAvailability::Available,
+            None,
+            None,
+            &correlation_id,
+        )
+        .await
+        .map_err(|error| CompatibilityError::Legacy(AppError::Internal(error)))?;
+    }
+    Ok(resource)
+}
+
 pub(crate) async fn prepare(
     state: &AppState,
     credential: &CredentialContext,
@@ -251,6 +287,51 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.id, resource.id);
         let capability = resources::capability(&state.db, &resource.id, "container.restart")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(capability.availability, "available");
+    }
+
+    #[tokio::test]
+    async fn compatibility_resolution_uses_the_seeded_alias_and_marks_capabilities() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(db);
+        let credential = CredentialContext::Session {
+            user_id: "admin".into(),
+            role: "admin".into(),
+        };
+        let seeded = resources::observe(
+            &state.db,
+            ObserveResource {
+                kind: "firewall",
+                display_name: "Local Firewall",
+                node_id: None,
+                provider: Some("local"),
+                namespace: "voidtower.singleton",
+                scope_key: "local",
+                alias: "firewall",
+            },
+            None,
+            "seed",
+        )
+        .await
+        .unwrap();
+
+        let resolved = resolve_available(
+            &state,
+            &credential,
+            "firewall",
+            "voidtower.singleton",
+            "local",
+            "firewall",
+            &["firewall.enable"],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved.id, seeded.id);
+        let capability = resources::capability(&state.db, &resolved.id, "firewall.enable")
             .await
             .unwrap()
             .unwrap();

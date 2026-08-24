@@ -314,7 +314,7 @@ export interface ProxyOptions {
   customHeaders?: ProxyCustomHeader[]
   rateLimitRpm?: number | null
   basicAuthUser?: string | null
-  basicAuthPassword?: string | null
+  basicAuthSecretId?: string | null
   websocketExtended?: boolean
   cacheStatic?: boolean
 }

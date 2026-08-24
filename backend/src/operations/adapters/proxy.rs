@@ -1000,6 +1000,7 @@ fn build_config(
         rate_limit_rpm: input.rate_limit_rpm,
         basic_auth_user: input.basic_auth_user.clone(),
         basic_auth_password,
+        basic_auth_secret_id: None,
         websocket_extended: input.websocket_extended,
         cache_static: input.cache_static,
     };

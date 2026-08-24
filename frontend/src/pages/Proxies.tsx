@@ -26,7 +26,7 @@ interface ProxyAdvancedState {
   headers: ProxyCustomHeader[]
   rateLimitRpm: string
   basicAuthUser: string
-  basicAuthPassword: string
+  basicAuthSecretId: string
   websocketExtended: boolean
   cacheStatic: boolean
 }
@@ -36,14 +36,14 @@ function advancedStateToOptions(s: ProxyAdvancedState): ProxyOptions {
     customHeaders: s.headers,
     rateLimitRpm: s.rateLimitRpm.trim() ? Number(s.rateLimitRpm) : null,
     basicAuthUser: s.basicAuthUser.trim() || null,
-    basicAuthPassword: s.basicAuthPassword.trim() || null,
+    basicAuthSecretId: s.basicAuthSecretId.trim() || null,
     websocketExtended: s.websocketExtended,
     cacheStatic: s.cacheStatic,
   }
 }
 
 const emptyAdvanced: ProxyAdvancedState = {
-  headers: [], rateLimitRpm: '', basicAuthUser: '', basicAuthPassword: '',
+  headers: [], rateLimitRpm: '', basicAuthUser: '', basicAuthSecretId: '',
   websocketExtended: false, cacheStatic: false,
 }
 
@@ -133,8 +133,8 @@ function ProxyAdvancedFields({ state, onChange, basicAuthExisting, onPreset }: P
           <input value={state.basicAuthUser} onChange={e => set('basicAuthUser', e.target.value)}
             placeholder="username (blank = disabled)" className="w-full px-2 py-1.5 rounded text-xs outline-none"
             style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
-          <input type="password" value={state.basicAuthPassword} onChange={e => set('basicAuthPassword', e.target.value)}
-            placeholder={basicAuthExisting ? 'leave blank to keep current password' : 'password'}
+          <input value={state.basicAuthSecretId} onChange={e => set('basicAuthSecretId', e.target.value)}
+            placeholder={basicAuthExisting ? 'leave blank to keep current secret' : 'Secrets vault UUID'}
             className="w-full px-2 py-1.5 rounded text-xs outline-none"
             style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
         </div>
@@ -283,18 +283,19 @@ function NginxBackendCard({ available, nginxBackend, onInstalled }: {
     setActionLoading(action)
     if (action !== 'test') setTestOutput(null)
     try {
-      const r = await fetch('/api/proxy/nginx/action', {
+      const response = await fetch('/api/proxy/nginx/action', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
-      }).then(r => r.json())
+      })
+      const r = await response.json()
 
       if (action === 'test') {
         setTestOutput(r.output ?? (r.ok ? 'Test passed' : 'Test failed'))
       } else {
-        notify[r.ok ? 'success' : 'error'](r.message ?? (r.ok ? `nginx ${action} succeeded` : `nginx ${action} failed`))
-        await fetchStatus()
+        if (!response.ok || !r.job) throw new Error(r.error?.message ?? `Failed to submit nginx ${action}`)
+        notify.success(`nginx ${action} submitted · job ${r.job.id.slice(0, 8)}`)
       }
     } catch {
       notify.error(`Failed to ${action} nginx`)
@@ -634,8 +635,8 @@ export default function ProxiesPage() {
       const res = await api.proxy.plan(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect, opts)
       setPendingPlan(res.plan)
       setPendingAction(() => async () => {
-        const r = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect, opts)
-        notify.success(`Proxy created — ${r.nginx}`)
+        const { job } = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect, opts)
+        notify.success(`Proxy creation submitted · job ${job.id.slice(0, 8)}`)
         setDomain(''); setUpstream('http://localhost:'); setSsl(false); setAllowEmbed(true); setSsoProtect(false)
         setAdvanced(emptyAdvanced)
         setShowForm(false)
@@ -650,8 +651,8 @@ export default function ProxiesPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      const r = await api.proxy.delete(id)
-      notify.success(`Removed — ${r.nginx}`)
+      const { job } = await api.proxy.delete(id)
+      notify.success(`Proxy removal submitted · job ${job.id.slice(0, 8)}`)
       setConfirmDeleteId(null)
       refresh()
     } catch (err) {
@@ -670,7 +671,7 @@ export default function ProxiesPage() {
       headers: p.custom_headers ? JSON.parse(p.custom_headers) : [],
       rateLimitRpm: p.rate_limit_rpm ? String(p.rate_limit_rpm) : '',
       basicAuthUser: p.basic_auth_user ?? '',
-      basicAuthPassword: '',
+      basicAuthSecretId: '',
       websocketExtended: p.websocket_extended,
       cacheStatic: p.cache_static,
     })
@@ -687,8 +688,8 @@ export default function ProxiesPage() {
       const res = await api.proxy.planUpdate(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect, opts)
       setPendingPlan(res.plan)
       setPendingAction(() => async () => {
-        const r = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect, opts)
-        notify.success(`Updated — ${r.nginx}`)
+        const { job } = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect, opts)
+        notify.success(`Proxy update submitted · job ${job.id.slice(0, 8)}`)
         setEditingId(null)
         refresh()
       })
@@ -702,8 +703,8 @@ export default function ProxiesPage() {
   const handleToggle = async (p: ProxyConfig) => {
     setToggling(p.id)
     try {
-      const r = await api.proxy.toggle(p.id)
-      notify.success(r.enabled ? 'Proxy enabled' : 'Proxy disabled')
+      const { job } = await api.proxy.toggle(p.id)
+      notify.success(`Proxy ${p.enabled ? 'disable' : 'enable'} submitted · job ${job.id.slice(0, 8)}`)
       refresh()
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Toggle failed')

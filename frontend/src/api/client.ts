@@ -68,7 +68,7 @@ function proxyOptsBody(opts: import('./types').ProxyOptions) {
     custom_headers: opts.customHeaders ?? [],
     rate_limit_rpm: opts.rateLimitRpm ?? null,
     basic_auth_user: opts.basicAuthUser ?? null,
-    basic_auth_password: opts.basicAuthPassword ?? null,
+    basic_auth_secret_id: opts.basicAuthSecretId ?? null,
     websocket_extended: opts.websocketExtended ?? false,
     cache_static: opts.cacheStatic ?? false,
   }
@@ -233,19 +233,19 @@ export const api = {
     list: () =>
       request<{ proxies: import('./types').ProxyConfig[]; nginx_available: boolean; nginx_backend: 'docker' | 'system' | 'none'; sites_dir: string }>('/api/proxy'),
     create: (domain: string, upstream: string, ssl: boolean, allow_embed = false, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
-      request<{ ok: boolean; id: string; nginx: string }>('/api/proxy', {
+      request<import('./types').DurableJobResponse>('/api/proxy', {
         method: 'POST',
         body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, ...proxyOptsBody(opts) }),
       }),
     delete: (id: string) =>
-      request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, { method: 'DELETE' }),
+      request<import('./types').DurableJobResponse>(`/api/proxy/${id}`, { method: 'DELETE' }),
     update: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
-      request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, {
+      request<import('./types').DurableJobResponse>(`/api/proxy/${id}`, {
         method: 'PUT',
         body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, ...proxyOptsBody(opts) }),
       }),
     toggle: (id: string) =>
-      request<{ ok: boolean; enabled: boolean; nginx: string }>(`/api/proxy/${id}/toggle`, { method: 'POST' }),
+      request<import('./types').DurableJobResponse>(`/api/proxy/${id}/toggle`, { method: 'POST' }),
     health: (id: string) =>
       request<{ status: 'up' | 'down'; latency_ms: number; checked_at: number }>(`/api/proxy/${id}/health`),
     plan: (domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>

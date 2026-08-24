@@ -171,6 +171,9 @@ mod tests {
     fn compatibility_routes_cannot_execute_ufw_outside_provider_boundary() {
         let source = include_str!("../api/firewall.rs");
         assert!(!source.contains("Command::new(\"ufw\")"));
-        assert_eq!(source.matches("firewall_provider::execute(").count(), 3);
+        assert!(!source.contains("firewall_provider::execute("));
+        assert!(!source.contains("FirewallMutation"));
+        assert_eq!(source.matches("operation_adoption::submit(").count(), 3);
+        assert_eq!(source.matches("operation_adoption::prepare(").count(), 1);
     }
 }

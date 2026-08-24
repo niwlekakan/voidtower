@@ -1,16 +1,23 @@
 use crate::{
-    audit, auth,
+    auth,
     error::{AppError, Result},
     networking::proxy::{self as proxy_provider, NginxAction},
     AppState,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
+    http::HeaderMap,
+    response::{IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use super::{
+    bearer_auth::AuthenticatedApiToken,
+    operation_adoption::{self, CompatibilityResource, CompatibilityResult},
+};
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
     let session_id = jar
@@ -40,7 +47,9 @@ fn validate_domain(d: &str) -> Result<()> {
     }
     // Allow hostname, subdomain.host.tld, and wildcard subdomain *.host.tld
     let stripped = d.strip_prefix("*.").unwrap_or(d);
-    let ok = stripped.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    let ok = stripped
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
         && !stripped.starts_with('.')
         && !stripped.ends_with('.');
     if !ok {
@@ -60,7 +69,9 @@ fn validate_upstream(u: &str) -> Result<()> {
     // Block cloud metadata endpoints and unspecified addresses
     let lower = u.to_lowercase();
     if lower.contains("169.254.") || lower.contains("//0.0.0.0") || lower.contains("[::ffff:0]") {
-        return Err(AppError::BadRequest("Upstream address is not permitted".into()));
+        return Err(AppError::BadRequest(
+            "Upstream address is not permitted".into(),
+        ));
     }
     Ok(())
 }
@@ -158,7 +169,9 @@ pub(crate) fn open_firewall_port(port: &str) {
         let _ = std::process::Command::new("firewall-cmd")
             .args(["--permanent", "--add-port", &tcp, "--quiet"])
             .output();
-        let _ = std::process::Command::new("firewall-cmd").args(["--reload", "--quiet"]).output();
+        let _ = std::process::Command::new("firewall-cmd")
+            .args(["--reload", "--quiet"])
+            .output();
         return;
     }
     if std::process::Command::new("iptables")
@@ -184,7 +197,9 @@ pub(crate) fn close_firewall_port(port: &str) {
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("Status: active"))
         .unwrap_or(false)
     {
-        let _ = std::process::Command::new("ufw").args(["delete", "allow", &tcp]).output();
+        let _ = std::process::Command::new("ufw")
+            .args(["delete", "allow", &tcp])
+            .output();
         return;
     }
     if std::process::Command::new("firewall-cmd")
@@ -196,16 +211,14 @@ pub(crate) fn close_firewall_port(port: &str) {
         let _ = std::process::Command::new("firewall-cmd")
             .args(["--permanent", "--remove-port", &tcp, "--quiet"])
             .output();
-        let _ = std::process::Command::new("firewall-cmd").args(["--reload", "--quiet"]).output();
+        let _ = std::process::Command::new("firewall-cmd")
+            .args(["--reload", "--quiet"])
+            .output();
         return;
     }
     let _ = std::process::Command::new("iptables")
         .args(["-D", "INPUT", "-p", "tcp", "--dport", port, "-j", "ACCEPT"])
         .output();
-}
-
-fn conf_path(domain: &str) -> std::path::PathBuf {
-    proxy_provider::conf_path(domain).expect("validated proxy domain")
 }
 
 fn parsed_custom_headers(cfg: &ProxyConfig) -> Vec<CustomHeader> {
@@ -218,7 +231,13 @@ fn parsed_custom_headers(cfg: &ProxyConfig) -> Vec<CustomHeader> {
 fn custom_header_lines(cfg: &ProxyConfig) -> String {
     parsed_custom_headers(cfg)
         .iter()
-        .map(|h| format!("        add_header {} \"{}\" always;\n", h.name.trim(), h.value.replace('"', "\\\"")))
+        .map(|h| {
+            format!(
+                "        add_header {} \"{}\" always;\n",
+                h.name.trim(),
+                h.value.replace('"', "\\\"")
+            )
+        })
         .collect()
 }
 
@@ -247,7 +266,10 @@ fn rate_limit_zone_decl(cfg: &ProxyConfig) -> String {
 
 fn rate_limit_use_line(cfg: &ProxyConfig) -> String {
     match cfg.rate_limit_rpm {
-        Some(rpm) if rpm > 0 => format!("        limit_req zone={} burst=20 nodelay;\n", zone_name(&cfg.domain)),
+        Some(rpm) if rpm > 0 => format!(
+            "        limit_req zone={} burst=20 nodelay;\n",
+            zone_name(&cfg.domain)
+        ),
         _ => String::new(),
     }
 }
@@ -265,7 +287,10 @@ fn htpasswd_path(domain: &str) -> std::path::PathBuf {
 fn htpasswd_hash(password: &str) -> String {
     use sha1::{Digest, Sha1};
     let digest = Sha1::digest(password.as_bytes());
-    format!("{{SHA}}{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, digest))
+    format!(
+        "{{SHA}}{}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, digest)
+    )
 }
 
 fn write_htpasswd_file(domain: &str, user: &str, pass_hash: &str) -> Result<()> {
@@ -274,8 +299,7 @@ fn write_htpasswd_file(domain: &str, user: &str, pass_hash: &str) -> Result<()> 
 }
 
 fn remove_htpasswd_file_checked(domain: &str) -> Result<()> {
-    proxy_provider::remove_htpasswd(domain)
-        .map_err(|error| AppError::BadRequest(error.to_string()))
+    proxy_provider::remove_htpasswd(domain).map_err(|error| AppError::BadRequest(error.to_string()))
 }
 
 fn auth_basic_lines(cfg: &ProxyConfig) -> String {
@@ -359,7 +383,11 @@ fn sso_auth_lines() -> &'static str {
 /// outpost sets, which commonly include `X-Frame-Options: DENY` and silently fails
 /// to render.
 fn sso_locations(allow_embed: bool) -> String {
-    let embed = if allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
+    let embed = if allow_embed {
+        format!("\n{}", embed_headers())
+    } else {
+        String::new()
+    };
     format!(
         r#"
     location /outpost.goauthentik.io {{
@@ -427,22 +455,29 @@ pub(crate) fn write_nginx_conf(cfg: &ProxyConfig) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn remove_nginx_conf(domain: &str) {
-    let _ = remove_nginx_conf_checked(domain);
-}
-
 pub(crate) fn remove_nginx_conf_checked(domain: &str) -> Result<()> {
-    proxy_provider::remove_conf(domain)
-        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    proxy_provider::remove_conf(domain).map_err(|error| AppError::BadRequest(error.to_string()))?;
     remove_htpasswd_file_checked(domain)
 }
 
 pub(crate) fn nginx_conf_content(cfg: &ProxyConfig) -> String {
     let domain = &cfg.domain;
     let upstream = rewrite_upstream_for_docker(&cfg.upstream);
-    let embed = if cfg.allow_embed { format!("\n{}", embed_headers()) } else { String::new() };
-    let sso = if cfg.sso_protect { sso_auth_lines() } else { "" };
-    let sso_locs = if cfg.sso_protect { sso_locations(cfg.allow_embed) } else { String::new() };
+    let embed = if cfg.allow_embed {
+        format!("\n{}", embed_headers())
+    } else {
+        String::new()
+    };
+    let sso = if cfg.sso_protect {
+        sso_auth_lines()
+    } else {
+        ""
+    };
+    let sso_locs = if cfg.sso_protect {
+        sso_locations(cfg.allow_embed)
+    } else {
+        String::new()
+    };
     let zone_decl = rate_limit_zone_decl(cfg);
     let gzip_lines = gzip_server_lines(cfg);
     let static_loc = static_cache_location(&upstream, cfg);
@@ -549,6 +584,8 @@ pub struct CreateRequest {
     #[serde(default)]
     pub basic_auth_password: Option<String>,
     #[serde(default)]
+    pub basic_auth_secret_id: Option<String>,
+    #[serde(default)]
     pub websocket_extended: bool,
     #[serde(default)]
     pub cache_static: bool,
@@ -567,7 +604,10 @@ fn resolve_basic_auth(
     let Some(user) = user else {
         return Ok((None, None));
     };
-    let password = password_in.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let password = password_in
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if let Some(pw) = password {
         return Ok((Some(user.to_string()), Some(htpasswd_hash(pw))));
     }
@@ -578,31 +618,9 @@ fn resolve_basic_auth(
             }
         }
     }
-    Err(AppError::BadRequest("Basic auth password is required".into()))
-}
-
-/// Extra dry-run plan rows for the fields added on top of the original
-/// domain/upstream/ssl/embed/sso set — only listed when actually set, so a
-/// plain proxy's preview stays as short as it always was.
-fn extra_change_rows(cfg: &ProxyConfig) -> Vec<serde_json::Value> {
-    let mut rows = Vec::new();
-    if !parsed_custom_headers(cfg).is_empty() {
-        let names: Vec<String> = parsed_custom_headers(cfg).into_iter().map(|h| h.name).collect();
-        rows.push(serde_json::json!({ "label": "Custom headers", "value": names.join(", ") }));
-    }
-    if let Some(rpm) = cfg.rate_limit_rpm {
-        rows.push(serde_json::json!({ "label": "Rate limit", "value": format!("{rpm} req/min per IP") }));
-    }
-    if let Some(user) = &cfg.basic_auth_user {
-        rows.push(serde_json::json!({ "label": "Basic auth", "value": format!("enabled (user: {user})") }));
-    }
-    if cfg.websocket_extended {
-        rows.push(serde_json::json!({ "label": "WebSocket passthrough", "value": "extended (buffering off, 3600s timeout)" }));
-    }
-    if cfg.cache_static {
-        rows.push(serde_json::json!({ "label": "Static cache + gzip", "value": "enabled (7d expires on static assets)" }));
-    }
-    rows
+    Err(AppError::BadRequest(
+        "Basic auth password is required".into(),
+    ))
 }
 
 /// Builds the `ProxyConfig` that will be persisted and used to render the nginx
@@ -623,14 +641,21 @@ pub(crate) fn build_proxy_config(
         .cloned()
         .collect();
     for h in &headers {
-        if !h.name.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if !h
+            .name
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
             return Err(AppError::BadRequest(format!(
                 "Invalid header name '{}': only letters, digits and hyphens allowed",
                 h.name
             )));
         }
         if h.value.contains('\n') || h.value.contains('\r') {
-            return Err(AppError::BadRequest("Header values cannot contain newlines".into()));
+            return Err(AppError::BadRequest(
+                "Header values cannot contain newlines".into(),
+            ));
         }
     }
     let custom_headers = if headers.is_empty() {
@@ -659,19 +684,11 @@ pub(crate) fn build_proxy_config(
     })
 }
 
-/// True when Authentik SSO is configured and enabled — required before any proxy
-/// can be flagged `sso_protect`, so the UI can't produce a gate pointing at nothing.
-async fn oidc_is_enabled(db: &sqlx::SqlitePool) -> bool {
-    sqlx::query_scalar::<_, bool>("SELECT enabled FROM oidc_config WHERE id = 'default'")
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(false)
-}
-
 #[derive(Clone, Copy, PartialEq)]
-enum NginxMode { Docker, None }
+enum NginxMode {
+    Docker,
+    None,
+}
 
 struct NginxSetupStatus {
     mode: NginxMode,
@@ -686,7 +703,12 @@ fn check_nginx_setup() -> NginxSetupStatus {
 
     let writable = |dir: &std::path::Path| -> bool {
         let tmp = dir.join(".vt-write-test");
-        if std::fs::write(&tmp, b"").is_ok() { let _ = std::fs::remove_file(&tmp); true } else { false }
+        if std::fs::write(&tmp, b"").is_ok() {
+            let _ = std::fs::remove_file(&tmp);
+            true
+        } else {
+            false
+        }
     };
 
     if let Some(id) = docker_nginx_container_id() {
@@ -697,22 +719,161 @@ fn check_nginx_setup() -> NginxSetupStatus {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        return NginxSetupStatus { mode: NginxMode::Docker, conf_d_exists, conf_d_writable, can_reload, container_running: true };
+        return NginxSetupStatus {
+            mode: NginxMode::Docker,
+            conf_d_exists,
+            conf_d_writable,
+            can_reload,
+            container_running: true,
+        };
     }
 
     if docker_conf_d.exists() {
         let conf_d_writable = writable(docker_conf_d);
-        return NginxSetupStatus { mode: NginxMode::Docker, conf_d_exists: true, conf_d_writable, can_reload: false, container_running: false };
+        return NginxSetupStatus {
+            mode: NginxMode::Docker,
+            conf_d_exists: true,
+            conf_d_writable,
+            can_reload: false,
+            container_running: false,
+        };
     }
 
-    NginxSetupStatus { mode: NginxMode::None, conf_d_exists: false, conf_d_writable: false, can_reload: false, container_running: false }
+    NginxSetupStatus {
+        mode: NginxMode::None,
+        conf_d_exists: false,
+        conf_d_writable: false,
+        can_reload: false,
+        container_running: false,
+    }
 }
 
 // ─── Public wrappers for use by other modules ────────────────────────────────
 
-pub fn nginx_active_pub() -> bool { nginx_active() }
+pub fn nginx_active_pub() -> bool {
+    nginx_active()
+}
 
-pub fn reload_nginx_pub() -> std::result::Result<String, String> { reload_nginx() }
+pub fn reload_nginx_pub() -> std::result::Result<String, String> {
+    reload_nginx()
+}
+
+async fn ensure_proxy_provider_available() -> Result<()> {
+    let snapshot = tokio::task::spawn_blocking(proxy_provider::snapshot)
+        .await
+        .map_err(|error| AppError::Internal(error.into()))?
+        .map_err(|error| AppError::FeatureUnavailable(error.to_string()))?;
+    snapshot
+        .container_id
+        .is_some()
+        .then_some(())
+        .ok_or_else(|| {
+            AppError::FeatureUnavailable(
+                "nginx-proxy is not deployed — deploy it from App Vault".into(),
+            )
+        })
+}
+
+async fn resolve_proxy_service(
+    state: &AppState,
+    credential: &crate::operations::invocation::CredentialContext,
+    action: &str,
+) -> CompatibilityResult<crate::operations::contracts::ResourceRef> {
+    operation_adoption::resolve_available(
+        state,
+        credential,
+        "reverse_proxy_service",
+        "voidtower.singleton",
+        "local",
+        "reverse-proxy",
+        &[action],
+    )
+    .await
+}
+
+async fn observe_proxy_rule(
+    state: &AppState,
+    credential: &crate::operations::invocation::CredentialContext,
+    proxy_id: &str,
+    action: &str,
+) -> CompatibilityResult<crate::operations::contracts::ResourceRef> {
+    let config = sqlx::query_as::<_, ProxyConfig>("SELECT * FROM proxy_configs WHERE id = ?")
+        .bind(proxy_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|error| AppError::Internal(error.into()))?
+        .ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
+    observe_proxy_config(state, credential, &config, action).await
+}
+
+async fn observe_proxy_config(
+    state: &AppState,
+    credential: &crate::operations::invocation::CredentialContext,
+    config: &ProxyConfig,
+    action: &str,
+) -> CompatibilityResult<crate::operations::contracts::ResourceRef> {
+    operation_adoption::observe_available(
+        state,
+        credential,
+        CompatibilityResource {
+            kind: "proxy_rule",
+            display_name: &config.domain,
+            node_id: None,
+            provider: Some("nginx"),
+            namespace: "voidtower.proxy_config",
+            scope_key: "local",
+            alias: &config.id,
+        },
+        &[action],
+    )
+    .await
+}
+
+fn canonical_rule_input(req: &CreateRequest) -> CompatibilityResult<serde_json::Value> {
+    if req
+        .basic_auth_password
+        .as_deref()
+        .is_some_and(|password| !password.trim().is_empty())
+    {
+        return Err(AppError::BadRequest(
+            "Basic auth passwords must be stored in Secrets and supplied as basic_auth_secret_id"
+                .into(),
+        )
+        .into());
+    }
+    Ok(serde_json::json!({
+        "domain": req.domain,
+        "upstream": req.upstream,
+        "ssl": req.ssl,
+        "allow_embed": req.allow_embed,
+        "sso_protect": req.sso_protect,
+        "custom_headers": req.custom_headers,
+        "rate_limit_rpm": req.rate_limit_rpm,
+        "basic_auth_user": req.basic_auth_user,
+        "basic_auth_secret_id": req.basic_auth_secret_id,
+        "websocket_extended": req.websocket_extended,
+        "cache_static": req.cache_static,
+    }))
+}
+
+async fn compatibility_plan(
+    state: &AppState,
+    credential: &crate::operations::invocation::CredentialContext,
+    resource_id: &str,
+    action: &str,
+    input: serde_json::Value,
+) -> CompatibilityResult<Response> {
+    let prepared =
+        operation_adoption::prepare(state, credential, resource_id, action, input).await?;
+    let view = prepared.view();
+    Ok(Json(serde_json::json!({
+        "dry_run": true,
+        "plan": view.operation,
+        "policy": view.policy,
+        "resource": view.resource,
+    }))
+    .into_response())
+}
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
@@ -722,12 +883,14 @@ pub async fn nginx_setup_status(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    let s = tokio::task::spawn_blocking(check_nginx_setup).await.unwrap();
+    let s = tokio::task::spawn_blocking(check_nginx_setup)
+        .await
+        .unwrap();
     let mut steps: Vec<serde_json::Value> = Vec::new();
 
     let mode_str = match s.mode {
         NginxMode::Docker => "docker",
-        NginxMode::None   => "none",
+        NginxMode::None => "none",
     };
 
     match s.mode {
@@ -771,7 +934,11 @@ pub async fn nginx_setup_status(
         None
     } else {
         let cmds: Vec<&str> = steps.iter().filter_map(|s| s["cmd"].as_str()).collect();
-        if cmds.is_empty() { None } else { Some(cmds.join(" && \\\n")) }
+        if cmds.is_empty() {
+            None
+        } else {
+            Some(cmds.join(" && \\\n"))
+        }
     };
 
     Ok(Json(serde_json::json!({
@@ -787,21 +954,21 @@ pub async fn nginx_setup_status(
     })))
 }
 
-
 pub async fn list(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    let proxies = sqlx::query_as::<_, ProxyConfig>(
-        "SELECT * FROM proxy_configs ORDER BY created_at",
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let proxies =
+        sqlx::query_as::<_, ProxyConfig>("SELECT * FROM proxy_configs ORDER BY created_at")
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
-    let nginx_ok = tokio::task::spawn_blocking(|| docker_nginx_container_id().is_some()).await.unwrap();
+    let nginx_ok = tokio::task::spawn_blocking(|| docker_nginx_container_id().is_some())
+        .await
+        .unwrap();
 
     Ok(Json(serde_json::json!({
         "proxies": proxies,
@@ -814,86 +981,23 @@ pub async fn list(
 pub async fn create(
     State(state): State<AppState>,
     jar: CookieJar,
+    token: Option<Extension<AuthenticatedApiToken>>,
+    headers: HeaderMap,
     Json(req): Json<CreateRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
+) -> CompatibilityResult<Response> {
+    const ACTION: &str = "proxy.rule.create";
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
+    operation_adoption::authorize(&credential, ACTION)?;
+    ensure_proxy_provider_available().await?;
+    let resource = resolve_proxy_service(&state, &credential, ACTION).await?;
+    let dry_run = req.dry_run;
+    let input = canonical_rule_input(&req)?;
 
-    validate_domain(&req.domain)?;
-    validate_upstream(&req.upstream)?;
-
-    if req.sso_protect && !oidc_is_enabled(&state.db).await {
-        return Err(AppError::BadRequest(
-            "Authentik SSO is not configured — set it up under Settings before protecting a proxy with it".into(),
-        ));
+    if dry_run {
+        return compatibility_plan(&state, &credential, &resource.id, ACTION, input).await;
     }
-
-    let id = Uuid::new_v4().to_string();
-    let now = unix_now();
-    let cfg = build_proxy_config(id.clone(), req.domain.clone(), &req, now, None)?;
-
-    if req.dry_run {
-        let conf_file = conf_path(&req.domain);
-        let exists = conf_file.exists();
-        let content = nginx_conf_content(&cfg);
-        let mut changes = vec![
-            serde_json::json!({ "label": "Domain", "value": req.domain }),
-            serde_json::json!({ "label": "Upstream", "value": req.upstream }),
-            serde_json::json!({ "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } }),
-            serde_json::json!({ "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } }),
-            serde_json::json!({ "label": "Authentik protection", "value": if req.sso_protect { "enabled — visitors must authenticate via Authentik first" } else { "disabled" } }),
-        ];
-        changes.extend(extra_change_rows(&cfg));
-        changes.push(serde_json::json!({ "label": "Config file", "value": conf_file.display().to_string() }));
-        changes.push(serde_json::json!({ "label": "Config file action", "value": if exists { "overwrite existing" } else { "create new" } }));
-        changes.push(serde_json::json!({ "label": "Rollback", "value": "Delete conf file and reload nginx" }));
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "plan": {
-                "title": "Create Nginx Proxy",
-                "risk": if req.sso_protect { "medium" } else { "low" },
-                "changes": changes,
-                "preview": content,
-            }
-        })));
-    }
-
-    sqlx::query(
-        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at, custom_headers, rate_limit_rpm, basic_auth_user, basic_auth_pass_hash, websocket_extended, cache_static) VALUES (?,?,?,?,1,?,?,?,?,?,?,?,?,?)",
-    )
-    .bind(&id)
-    .bind(&req.domain)
-    .bind(&req.upstream)
-    .bind(req.ssl)
-    .bind(req.allow_embed)
-    .bind(req.sso_protect)
-    .bind(now)
-    .bind(&cfg.custom_headers)
-    .bind(cfg.rate_limit_rpm)
-    .bind(&cfg.basic_auth_user)
-    .bind(&cfg.basic_auth_pass_hash)
-    .bind(cfg.websocket_extended)
-    .bind(cfg.cache_static)
-    .execute(&state.db)
-    .await
-    .map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            AppError::BadRequest(format!("Domain '{}' already has a proxy rule", req.domain))
-        } else {
-            AppError::Internal(e.into())
-        }
-    })?;
-
-    write_nginx_conf(&cfg)?;
-
-    let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "proxy.create",
-        Some("proxy"), Some(&id), "success", None,
-        Some(&format!("domain={},upstream={}", req.domain, req.upstream)),
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true, "id": id, "nginx": reload_msg })))
+    operation_adoption::submit(&state, &credential, &resource.id, ACTION, input, &headers).await
 }
 
 /// Shared helper: insert a proxy record and write/reload nginx.
@@ -947,142 +1051,49 @@ pub async fn create_proxy_record(
 pub async fn delete_proxy(
     State(state): State<AppState>,
     jar: CookieJar,
+    token: Option<Extension<AuthenticatedApiToken>>,
     Path(proxy_id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT domain FROM proxy_configs WHERE id = ?")
-            .bind(&proxy_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-
-    let (domain,) = row.ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
-
-    sqlx::query("DELETE FROM proxy_configs WHERE id = ?")
-        .bind(&proxy_id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    remove_nginx_conf(&domain);
-    let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "proxy.delete",
-        Some("proxy"), Some(&proxy_id), "success", None,
-        Some(&format!("domain={domain}")),
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true, "nginx": reload_msg })))
+    headers: HeaderMap,
+) -> CompatibilityResult<Response> {
+    const ACTION: &str = "proxy.rule.delete";
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
+    operation_adoption::authorize(&credential, ACTION)?;
+    ensure_proxy_provider_available().await?;
+    let resource = observe_proxy_rule(&state, &credential, &proxy_id, ACTION).await?;
+    operation_adoption::submit(
+        &state,
+        &credential,
+        &resource.id,
+        ACTION,
+        serde_json::json!({}),
+        &headers,
+    )
+    .await
 }
 
 pub async fn update_proxy(
     State(state): State<AppState>,
     jar: CookieJar,
+    token: Option<Extension<AuthenticatedApiToken>>,
     Path(proxy_id): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<CreateRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
+) -> CompatibilityResult<Response> {
+    const ACTION: &str = "proxy.rule.update";
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
+    operation_adoption::authorize(&credential, ACTION)?;
+    ensure_proxy_provider_available().await?;
+    let resource = observe_proxy_rule(&state, &credential, &proxy_id, ACTION).await?;
+    let dry_run = req.dry_run;
+    let input = canonical_rule_input(&req)?;
 
-    validate_domain(&req.domain)?;
-    validate_upstream(&req.upstream)?;
-
-    // Fetch the full current row — needed both for old domain/enabled state and
-    // to preserve basic auth's existing hash / health_* fields across the edit.
-    let existing = sqlx::query_as::<_, ProxyConfig>("SELECT * FROM proxy_configs WHERE id = ?")
-        .bind(&proxy_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
-
-    let old_domain = existing.domain.clone();
-    let enabled = existing.enabled;
-
-    if req.sso_protect && !oidc_is_enabled(&state.db).await {
-        return Err(AppError::BadRequest(
-            "Authentik SSO is not configured — set it up under Settings before protecting a proxy with it".into(),
-        ));
+    if dry_run {
+        return compatibility_plan(&state, &credential, &resource.id, ACTION, input).await;
     }
-
-    let cfg = build_proxy_config(proxy_id.clone(), req.domain.clone(), &req, existing.created_at, Some(&existing))?;
-
-    if req.dry_run {
-        let conf_file = conf_path(&req.domain);
-        let content = nginx_conf_content(&cfg);
-        let domain_changed = old_domain != req.domain;
-        let mut changes = vec![
-            serde_json::json!({ "label": "Domain", "value": format!("{} → {}", old_domain, req.domain) }),
-            serde_json::json!({ "label": "Upstream", "value": req.upstream }),
-            serde_json::json!({ "label": "SSL", "value": if req.ssl { "yes (Let's Encrypt)" } else { "no" } }),
-            serde_json::json!({ "label": "Allow embed", "value": if req.allow_embed { "yes (strips X-Frame-Options)" } else { "no" } }),
-            serde_json::json!({ "label": "Authentik protection", "value": if req.sso_protect { "enabled — visitors must authenticate via Authentik first" } else { "disabled" } }),
-        ];
-        changes.extend(extra_change_rows(&cfg));
-        changes.push(serde_json::json!({ "label": "Config file", "value": conf_file.display().to_string() }));
-        changes.push(serde_json::json!({ "label": "Config file action", "value": if domain_changed { "rename old conf + write new" } else { "overwrite in place" } }));
-        changes.push(serde_json::json!({ "label": "Nginx reload", "value": if enabled { "yes" } else { "no (proxy is disabled)" } }));
-        changes.push(serde_json::json!({ "label": "Rollback", "value": "Revert domain/upstream fields and re-save" }));
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "plan": {
-                "title": "Update Nginx Proxy",
-                "risk": if req.sso_protect && enabled { "medium" } else { "low" },
-                "changes": changes,
-                "preview": if enabled { Some(content) } else { None::<String> },
-            }
-        })));
-    }
-
-    sqlx::query(
-        "UPDATE proxy_configs SET domain = ?, upstream = ?, ssl = ?, allow_embed = ?, sso_protect = ?, custom_headers = ?, rate_limit_rpm = ?, basic_auth_user = ?, basic_auth_pass_hash = ?, websocket_extended = ?, cache_static = ? WHERE id = ?",
-    )
-    .bind(&req.domain)
-    .bind(&req.upstream)
-    .bind(req.ssl)
-    .bind(req.allow_embed)
-    .bind(req.sso_protect)
-    .bind(&cfg.custom_headers)
-    .bind(cfg.rate_limit_rpm)
-    .bind(&cfg.basic_auth_user)
-    .bind(&cfg.basic_auth_pass_hash)
-    .bind(cfg.websocket_extended)
-    .bind(cfg.cache_static)
-    .bind(&proxy_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            AppError::BadRequest(format!("Domain '{}' already has a proxy rule", req.domain))
-        } else {
-            AppError::Internal(e.into())
-        }
-    })?;
-
-    // Remove old conf when domain changed (regardless of enabled state)
-    if old_domain != req.domain {
-        remove_nginx_conf(&old_domain);
-    }
-
-    // Only write/reload nginx if the proxy is currently enabled
-    let reload_msg = if enabled {
-        write_nginx_conf(&cfg)?;
-        reload_nginx().unwrap_or_else(|e| format!("warning: {e}"))
-    } else {
-        "proxy is disabled — nginx not updated".into()
-    };
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "proxy.update",
-        Some("proxy"), Some(&proxy_id), "success", None,
-        Some(&format!("domain={},upstream={}", req.domain, req.upstream)),
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true, "nginx": reload_msg })))
+    operation_adoption::submit(&state, &credential, &resource.id, ACTION, input, &headers).await
 }
-
 
 // ── AI auto-proxy ─────────────────────────────────────────────────────────────
 
@@ -1094,10 +1105,15 @@ pub struct AiAutoReq {
 pub async fn ai_auto_proxy(
     State(state): State<AppState>,
     jar: CookieJar,
+    token: Option<Extension<AuthenticatedApiToken>>,
+    headers: HeaderMap,
     Json(req): Json<AiAutoReq>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    validate_upstream(&req.upstream)?;
+) -> CompatibilityResult<Response> {
+    const ACTION: &str = "proxy.rule.create";
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
+    operation_adoption::authorize(&credential, ACTION)?;
+    ensure_proxy_provider_available().await?;
 
     let hostname = tokio::task::spawn_blocking(|| {
         std::process::Command::new("hostname")
@@ -1111,64 +1127,21 @@ pub async fn ai_auto_proxy(
     .unwrap();
 
     let domain = format!("ai.{hostname}");
-
-    // Remove existing proxy for this domain so we can recreate with allow_embed=true
-    let existing: Option<(String,)> = sqlx::query_as("SELECT id FROM proxy_configs WHERE domain = ?")
-        .bind(&domain)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    if let Some((existing_id,)) = existing {
-        sqlx::query("DELETE FROM proxy_configs WHERE id = ?")
-            .bind(&existing_id)
-            .execute(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        remove_nginx_conf(&domain);
-    }
-
-    let id = Uuid::new_v4().to_string();
-    let now = unix_now();
-
-    sqlx::query(
-        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at) VALUES (?,?,?,?,?,?,0,?)",
-    )
-    .bind(&id)
-    .bind(&domain)
-    .bind(&req.upstream)
-    .bind(false)
-    .bind(true)
-    .bind(true)
-    .bind(now)
-    .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    write_nginx_conf(&ProxyConfig {
-        id: id.clone(),
-        domain: domain.clone(),
-        upstream: req.upstream.clone(),
-        ssl: false,
-        enabled: true,
-        allow_embed: true,
-        created_at: now,
-        ..Default::default()
-    })?;
-    let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
-
-    audit::log(
-        &state.db, None, "human", "proxy.ai-auto",
-        Some("proxy"), Some(&id), "success", None,
-        Some(&format!("domain={domain},upstream={}", req.upstream)),
-    ).await;
-
-    Ok(Json(serde_json::json!({
-        "ok": true,
+    let resource = resolve_proxy_service(&state, &credential, ACTION).await?;
+    let input = serde_json::json!({
         "domain": domain,
-        "url": format!("http://{domain}"),
-        "nginx": reload_msg,
-    })))
+        "upstream": req.upstream,
+        "ssl": false,
+        "allow_embed": true,
+        "sso_protect": false,
+        "custom_headers": [],
+        "rate_limit_rpm": null,
+        "basic_auth_user": null,
+        "basic_auth_secret_id": null,
+        "websocket_extended": false,
+        "cache_static": false,
+    });
+    operation_adoption::submit(&state, &credential, &resource.id, ACTION, input, &headers).await
 }
 
 // ── nginx management ─────────────────────────────────────────────────────────
@@ -1181,46 +1154,49 @@ pub struct NginxActionReq {
 pub async fn nginx_action(
     State(state): State<AppState>,
     jar: CookieJar,
+    token: Option<Extension<AuthenticatedApiToken>>,
+    headers: HeaderMap,
     Json(req): Json<NginxActionReq>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-
+) -> CompatibilityResult<Response> {
     let action = req.action.as_str();
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
+    operation_adoption::authorize(&credential, "proxy.nginx.reload")?;
 
-    match action {
-        "test" => {
-            let out = tokio::task::spawn_blocking(proxy_provider::test_configuration)
+    if action == "test" {
+        let out = tokio::task::spawn_blocking(proxy_provider::test_configuration)
             .await
-            .unwrap();
-
-            return Ok(Json(match out {
-                Ok(output) => serde_json::json!({ "ok": true, "output": output }),
-                Err(error) => serde_json::json!({ "ok": false, "output": error.to_string() }),
-            }));
-        }
-        "start" | "stop" | "restart" | "reload" => {}
+            .map_err(|error| AppError::Internal(error.into()))?;
+        return Ok(Json(match out {
+            Ok(output) => serde_json::json!({ "ok": true, "output": output }),
+            Err(error) => serde_json::json!({ "ok": false, "output": error.to_string() }),
+        })
+        .into_response());
+    }
+    let action = match action {
+        "start" => "proxy.nginx.start",
+        "stop" => "proxy.nginx.stop",
+        "restart" => "proxy.nginx.restart",
+        "reload" => "proxy.nginx.reload",
         _ => {
             return Err(AppError::BadRequest(
                 "action must be start|stop|restart|reload|test".into(),
-            ));
+            )
+            .into())
         }
-    }
-
-    let mutation = match action {
-        "start" => NginxAction::Start,
-        "stop" => NginxAction::Stop,
-        "restart" => NginxAction::Restart,
-        "reload" => NginxAction::Reload,
-        _ => unreachable!("validated action"),
     };
-    let result = tokio::task::spawn_blocking(move || proxy_provider::execute(mutation))
+    operation_adoption::authorize(&credential, action)?;
+    ensure_proxy_provider_available().await?;
+    let resource = resolve_proxy_service(&state, &credential, action).await?;
+    operation_adoption::submit(
+        &state,
+        &credential,
+        &resource.id,
+        action,
+        serde_json::json!({}),
+        &headers,
+    )
     .await
-    .unwrap();
-
-    match result {
-        Ok(result) => Ok(Json(serde_json::json!({ "ok": true, "message": result.message }))),
-        Err(error) => Ok(Json(serde_json::json!({ "ok": false, "message": error.to_string() }))),
-    }
 }
 
 pub async fn nginx_logs(
@@ -1246,12 +1222,17 @@ pub async fn nginx_logs(
             }
         }
 
-        (String::new(), vec!["nginx-proxy container is not running — deploy it from App Vault".to_string()])
+        (
+            String::new(),
+            vec!["nginx-proxy container is not running — deploy it from App Vault".to_string()],
+        )
     })
     .await
     .unwrap();
 
-    Ok(Json(serde_json::json!({ "path": result.0, "lines": result.1 })))
+    Ok(Json(
+        serde_json::json!({ "path": result.0, "lines": result.1 }),
+    ))
 }
 
 pub async fn nginx_status(
@@ -1293,35 +1274,31 @@ pub async fn nginx_status(
 pub async fn toggle(
     State(state): State<AppState>,
     jar: CookieJar,
+    token: Option<Extension<AuthenticatedApiToken>>,
     Path(proxy_id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-
+    headers: HeaderMap,
+) -> CompatibilityResult<Response> {
+    const ACTION: &str = "proxy.rule.toggle";
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
+    operation_adoption::authorize(&credential, ACTION)?;
+    ensure_proxy_provider_available().await?;
     let cfg = sqlx::query_as::<_, ProxyConfig>("SELECT * FROM proxy_configs WHERE id = ?")
         .bind(&proxy_id)
         .fetch_optional(&state.db)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
-
-    let new_enabled = !cfg.enabled;
-
-    sqlx::query("UPDATE proxy_configs SET enabled = ? WHERE id = ?")
-        .bind(new_enabled)
-        .bind(&proxy_id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    if new_enabled {
-        write_nginx_conf(&cfg)?;
-    } else {
-        remove_nginx_conf(&cfg.domain);
-    }
-
-    let reload_msg = reload_nginx().unwrap_or_else(|e| format!("warning: {e}"));
-
-    Ok(Json(serde_json::json!({ "ok": true, "enabled": new_enabled, "nginx": reload_msg })))
+    let resource = observe_proxy_config(&state, &credential, &cfg, ACTION).await?;
+    operation_adoption::submit(
+        &state,
+        &credential,
+        &resource.id,
+        ACTION,
+        serde_json::json!({"enabled": !cfg.enabled}),
+        &headers,
+    )
+    .await
 }
 
 // ── Health check ──────────────────────────────────────────────────────────────
@@ -1349,7 +1326,8 @@ pub async fn proxy_health(
         .ok_or_else(|| AppError::BadRequest("Proxy not found".into()))?;
 
     let host_ip = docker_host_ip();
-    let target = cfg.upstream
+    let target = cfg
+        .upstream
         .replace("//localhost:", &format!("//{host_ip}:"))
         .replace("//127.0.0.1:", &format!("//{host_ip}:"));
     let client = reqwest::Client::builder()
@@ -1380,4 +1358,44 @@ pub async fn proxy_health(
         "latency_ms": latency_ms,
         "checked_at": checked_at,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> CreateRequest {
+        CreateRequest {
+            domain: "app.example.test".into(),
+            upstream: "http://127.0.0.1:8080".into(),
+            ssl: false,
+            allow_embed: false,
+            sso_protect: false,
+            dry_run: false,
+            custom_headers: Vec::new(),
+            rate_limit_rpm: None,
+            basic_auth_user: Some("operator".into()),
+            basic_auth_password: None,
+            basic_auth_secret_id: Some("00000000-0000-4000-8000-000000000001".into()),
+            websocket_extended: false,
+            cache_static: false,
+        }
+    }
+
+    #[test]
+    fn compatibility_input_preserves_only_basic_auth_secret_references() {
+        let input = canonical_rule_input(&request()).unwrap();
+        assert_eq!(
+            input["basic_auth_secret_id"],
+            "00000000-0000-4000-8000-000000000001"
+        );
+        assert!(input.get("basic_auth_password").is_none());
+    }
+
+    #[test]
+    fn compatibility_input_rejects_raw_basic_auth_passwords() {
+        let mut request = request();
+        request.basic_auth_password = Some("raw-secret".into());
+        assert!(canonical_rule_input(&request).is_err());
+    }
 }

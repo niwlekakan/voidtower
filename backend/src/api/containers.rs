@@ -101,29 +101,7 @@ pub async fn action(
     let credential =
         super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
     let action = canonical_action(&req.action);
-    operation_adoption::authorize(&credential, action)?;
-    if !containers::is_docker_available() {
-        return Err(AppError::FeatureUnavailable("Docker is not available".into()).into());
-    }
-    let listed = containers::list_containers()
-        .await
-        .map_err(|error| AppError::FeatureUnavailable(error.to_string()))?;
-    let container = select_container(&listed, &id)?;
-    let resource = operation_adoption::observe_available(
-        &state,
-        &credential,
-        CompatibilityResource {
-            kind: "container",
-            display_name: &container.name,
-            node_id: None,
-            provider: Some("docker"),
-            namespace: "docker.container",
-            scope_key: "local-engine",
-            alias: &container.id,
-        },
-        &[action],
-    )
-    .await?;
+    let resource = resolve_action_resource(&state, &credential, &id, action).await?;
     let input = serde_json::json!({});
 
     if req.dry_run {
@@ -468,13 +446,44 @@ pub async fn apply_compose(
     .await
 }
 
-fn canonical_action(action: &ContainerAction) -> &'static str {
+pub(crate) fn canonical_action(action: &ContainerAction) -> &'static str {
     match action {
         ContainerAction::Start => "container.start",
         ContainerAction::Stop => "container.stop",
         ContainerAction::Restart => "container.restart",
         ContainerAction::Remove => "container.remove",
     }
+}
+
+pub(crate) async fn resolve_action_resource(
+    state: &AppState,
+    credential: &crate::operations::invocation::CredentialContext,
+    requested: &str,
+    action: &str,
+) -> CompatibilityResult<crate::operations::contracts::ResourceRef> {
+    operation_adoption::authorize(credential, action)?;
+    if !containers::is_docker_available() {
+        return Err(AppError::FeatureUnavailable("Docker is not available".into()).into());
+    }
+    let listed = containers::list_containers()
+        .await
+        .map_err(|error| AppError::FeatureUnavailable(error.to_string()))?;
+    let container = select_container(&listed, requested)?;
+    operation_adoption::observe_available(
+        state,
+        credential,
+        CompatibilityResource {
+            kind: "container",
+            display_name: &container.name,
+            node_id: None,
+            provider: Some("docker"),
+            namespace: "docker.container",
+            scope_key: "local-engine",
+            alias: &container.id,
+        },
+        &[action],
+    )
+    .await
 }
 
 fn select_container(

@@ -10,7 +10,7 @@ use axum::{
     body::Body,
     extract::{ConnectInfo, Path, State},
     http::{HeaderMap, HeaderValue, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -1737,7 +1737,7 @@ pub struct UpdateComposeRequest {
     pub content: String,
 }
 
-// ─── open-ui: auto-create embed proxy ────────────────────────────────────────
+// ─── open-ui: resolve an existing embed proxy without mutating state ─────────
 
 #[derive(Deserialize)]
 pub struct OpenUiRequest {
@@ -1767,102 +1767,33 @@ pub async fn open_ui(
     let domain = format!("{}.embed", req.project_name);
     let upstream = format!("http://localhost:{}", req.primary_port);
 
-    // Look up any existing embed record. The upstream + nginx conf are always
-    // refreshed below to match the current `upstream` even when a port was
-    // already allocated — otherwise an app whose catalog `web_port` changed
-    // (or that was first opened before `web_port`/`web_path` were added) keeps
-    // routing to the stale port forever, since the conf was only ever written
-    // once at first-open time.
-    let existing: Option<(bool, Option<i64>, String)> = sqlx::query_as(
-        "SELECT allow_embed, embed_port, upstream FROM proxy_configs WHERE domain = ?",
+    // Opening an app is read-only. Reuse an existing enabled embed rule only when
+    // it still targets this app's current port and nginx is actually available.
+    let existing: Option<(bool, bool, Option<i64>, String)> = sqlx::query_as(
+        "SELECT enabled, allow_embed, embed_port, upstream FROM proxy_configs WHERE domain = ?",
     )
     .bind(&domain)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let embed_url: Option<String>;
-    let proxy_created: bool;
-
     let nginx_ok = tokio::task::spawn_blocking(crate::api::proxy::nginx_active_pub)
         .await
         .unwrap_or(false);
-
-    if nginx_ok {
-        let embed_port = match &existing {
-            Some((_, Some(port), _)) => *port as u16,
-            _ => {
-                // Allocate next free embed port in 8800–8899 range.
-                let next_port: i64 = sqlx::query_scalar(
-                    "SELECT COALESCE(MAX(embed_port), 8799) + 1 FROM proxy_configs WHERE embed_port IS NOT NULL",
-                )
-                .fetch_one(&state.db)
-                .await
-                .unwrap_or(8800);
-                (next_port as u16).clamp(8800, 8899)
-            }
-        };
-
-        proxy_created = existing.is_none();
-        let upstream_changed = existing.as_ref().map(|(_, _, u)| u != &upstream).unwrap_or(true);
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        let saved = if proxy_created {
-            sqlx::query(
-                "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, embed_port, created_at) VALUES (?,?,?,0,1,1,?,?)",
-            )
-            .bind(uuid::Uuid::new_v4().to_string())
-            .bind(&domain)
-            .bind(&upstream)
-            .bind(embed_port as i64)
-            .bind(now)
-            .execute(&state.db)
-            .await
-            .map(|_| true)
-            .unwrap_or(false)
-        } else if upstream_changed {
-            sqlx::query("UPDATE proxy_configs SET upstream = ?, embed_port = ? WHERE domain = ?")
-                .bind(&upstream)
-                .bind(embed_port as i64)
-                .bind(&domain)
-                .execute(&state.db)
-                .await
-                .map(|_| true)
-                .unwrap_or(false)
-        } else {
-            true
-        };
-
-        if saved {
-            // Always rewrite the conf — self-heals if the upstream port drifted
-            // since it was last written, without requiring the user to delete
-            // and recreate the proxy entry.
-            let _ = crate::api::proxy::write_nginx_port_conf(&req.project_name, &upstream, embed_port);
-            let _ = crate::api::proxy::reload_nginx_pub();
-            if proxy_created {
-                // Open the port in the local firewall non-blocking.
-                let port_str = embed_port.to_string();
-                tokio::task::spawn_blocking(move || {
-                    crate::api::proxy::open_firewall_port(&port_str);
-                });
-            }
-            embed_url = Some(format!("http://{}:{}", host, embed_port));
-        } else {
-            embed_url = None;
-        }
-    } else {
-        embed_url = None;
-        proxy_created = false;
-    }
+    let embed_url = existing
+        .filter(|(enabled, allow_embed, _, configured_upstream)| {
+            nginx_ok && *enabled && *allow_embed && configured_upstream == &upstream
+        })
+        .and_then(|(_, _, port, _)| port)
+        .and_then(|port| u16::try_from(port).ok())
+        .map(|port| format!("http://{}:{}", host, port));
+    let proxy_available = embed_url.is_some();
 
     Ok(Json(serde_json::json!({
         "url": direct_url,
         "embed_url": embed_url,
-        "proxy_created": proxy_created,
+        "proxy_created": false,
+        "proxy_available": proxy_available,
     })))
 }
 
@@ -2333,12 +2264,11 @@ pub async fn expose_app(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(project_name): Path<String>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<ExposeAppRequest>,
-) -> Result<Json<serde_json::Value>> {
+) -> super::operation_adoption::CompatibilityResult<Response> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_admin(&user)?;
-    let ip = addr.ip().to_string();
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
         .bind(&project_name).fetch_optional(&state.db).await
@@ -2346,13 +2276,28 @@ pub async fn expose_app(
     let port = row.primary_port.filter(|&p| p > 0)
         .ok_or_else(|| AppError::BadRequest("No port configured for this app".into()))? as u16;
     let upstream = format!("http://localhost:{port}");
-    let proxy_id = crate::api::proxy::create_proxy_record(
-        &state.db, &req.domain, &upstream, req.ssl, req.allow_embed,
-    ).await?;
-    audit::log(&state.db, Some(&user.id), &user.username, "app.expose",
-        Some("app"), Some(&project_name), "success", Some(&ip),
-        Some(&format!("domain={},proxy={proxy_id}", req.domain))).await;
-    Ok(Json(serde_json::json!({ "ok": true, "proxy_id": proxy_id, "upstream": upstream })))
+    let credential = super::actions::credential(&state, &jar, None).await?;
+    crate::api::proxy::create_with_credential(
+        &state,
+        &credential,
+        &headers,
+        crate::api::proxy::CreateRequest {
+            domain: req.domain,
+            upstream,
+            ssl: req.ssl,
+            allow_embed: req.allow_embed,
+            sso_protect: false,
+            dry_run: false,
+            custom_headers: Vec::new(),
+            rate_limit_rpm: None,
+            basic_auth_user: None,
+            basic_auth_password: None,
+            basic_auth_secret_id: None,
+            websocket_extended: false,
+            cache_static: false,
+        },
+    )
+    .await
 }
 
 pub async fn delete_app_volumes(

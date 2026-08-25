@@ -661,7 +661,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/apps/:project_name/expose",
         SessionPolicy::Required(RoleTier::Admin),
@@ -669,7 +669,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxy.rule.create"]
     ),
     route_metadata!(
         Get,
@@ -847,7 +848,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         SessionPolicy::Required(RoleTier::Session),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
+        RiskClass::Read,
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
@@ -1511,7 +1512,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/integrations/webhooks",
         SessionPolicy::HandlerManaged,
@@ -1519,7 +1520,12 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::Callable
+        AiExposure::Callable,
+        [
+            "container.start",
+            "container.stop",
+            "container.restart",
+        ]
     ),
     route_metadata!(
         Get,
@@ -3860,6 +3866,36 @@ macro_rules! durable_scoped_mutation {
     };
 }
 
+macro_rules! durable_webhook_scoped_mutation {
+    (
+        $name:literal,
+        $resource_kind:literal,
+        $adapter_key:literal,
+        $risk:expr,
+        $approval:expr,
+        $session_role:expr,
+        $scope:literal
+    ) => {
+        durable_action_metadata!(
+            $name,
+            HTTP_AND_WEBHOOK,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Mutating,
+            $risk,
+            $approval,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Never,
+            1,
+            RecoveryClass::Reconcile,
+            $session_role,
+            BearerPolicy::Scope($scope),
+            AiExposure::Callable
+        )
+    };
+}
+
 macro_rules! durable_read_job {
     ($name:literal, $resource_kind:literal, $adapter_key:literal) => {
         durable_action_metadata!(
@@ -3884,6 +3920,7 @@ macro_rules! durable_read_job {
 
 const MCP_AND_STUDIO: &[ActionIngress] = &[ActionIngress::Mcp, ActionIngress::Studio];
 const HTTP: &[ActionIngress] = &[ActionIngress::Http];
+const HTTP_AND_WEBHOOK: &[ActionIngress] = &[ActionIngress::Http, ActionIngress::Webhook];
 const HTTP_AND_LOCAL_CLI: &[ActionIngress] = &[ActionIngress::Http, ActionIngress::LocalCli];
 const HTTP_LOCAL_CLI_AND_SCHEDULER: &[ActionIngress] = &[
     ActionIngress::Http,
@@ -4014,7 +4051,7 @@ pub const ACTIONS: &[ActionMetadata] = &[
     // Durable HTTP operations. These names are resource-qualified so jobs, capabilities, audit
     // records, and events never need the compatibility route or request shape to disambiguate an
     // action.
-    durable_scoped_mutation!(
+    durable_webhook_scoped_mutation!(
         "container.start",
         "container",
         "containers",
@@ -4023,7 +4060,7 @@ pub const ACTIONS: &[ActionMetadata] = &[
         RoleTier::Operator,
         "containers:restart"
     ),
-    durable_scoped_mutation!(
+    durable_webhook_scoped_mutation!(
         "container.stop",
         "container",
         "containers",
@@ -4032,7 +4069,7 @@ pub const ACTIONS: &[ActionMetadata] = &[
         RoleTier::Operator,
         "containers:restart"
     ),
-    durable_scoped_mutation!(
+    durable_webhook_scoped_mutation!(
         "container.restart",
         "container",
         "containers",

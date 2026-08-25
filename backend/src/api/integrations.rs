@@ -1,14 +1,14 @@
 use crate::{
     audit, auth,
-    containers::{self, ContainerAction},
     error::{AppError, Result},
+    operations::invocation::CredentialContext,
     services::{self, ServiceAction},
     voidwatch, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
-    response::sse::{Event, KeepAlive, Sse},
+    response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -772,22 +772,9 @@ pub struct WebhookReq {
     pub dry_run: Option<bool>,
 }
 
-/// Neither `webhook()` call site below has anywhere to park a verdict short of a plain
-/// `Allow`: there's no approval-queue to hold a `RequireApproval` (P0-03 scope note), and
-/// no snapshot mechanism wired to this ingress path to satisfy `AllowRequireSnapshot` —
-/// unlike `api/proxmox.rs`'s `vm_snapshot`, nothing here can snapshot a Docker container
-/// or service before mutating it. So every non-`Allow` verdict blocks here; the safe
-/// interim behavior is to refuse rather than silently proceed as if it were `Allow`.
-///
-/// This one function is shared by both call sites specifically so that reasoning can't
-/// drift out of sync between them again — the P0-03 review's Finding 1 was exactly that
-/// drift: `run_automation_job`'s match arm was correct (`AllowRequireSnapshot` never
-/// actually occurs for its fixed `"automation_job"` resource type) but its "not reachable,
-/// treat like `Allow`" shape got copy-pasted onto `webhook()`'s structured-action match
-/// arm below, where `resource_type` is *not* fixed and does include `"container"` (a
-/// `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES` entry) — so `AllowRequireSnapshot` was
-/// reachable there and got silently treated as `Allow`, skipping the "mandatory" pre-apply
-/// snapshot Trusted mode is supposed to guarantee.
+/// Legacy automation and service webhook mutations cannot park a verdict for later approval
+/// or satisfy a required snapshot, so every non-`Allow` verdict blocks. Container webhook
+/// actions use the canonical durable-operation path instead and do not call this helper.
 fn verdict_block_reason(verdict: &voidwatch::Verdict) -> Option<&str> {
     match verdict {
         voidwatch::Verdict::Allow => None,
@@ -925,23 +912,23 @@ pub async fn webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<WebhookReq>,
-) -> Result<Json<serde_json::Value>> {
+) -> super::operation_adoption::CompatibilityResult<Response> {
     if get_setting(&state, "odysseus.enabled").await != "true" {
         return Err(AppError::FeatureUnavailable(
             "Odysseus integration is not enabled".into(),
-        ));
+        ).into());
     }
     if get_setting(&state, "odysseus.emergency_disabled").await == "true" {
         return Err(AppError::FeatureUnavailable(
             "Odysseus integration is emergency-disabled".into(),
-        ));
+        ).into());
     }
 
     let expected_secret = get_setting(&state, "odysseus.webhook_secret").await;
     if expected_secret.is_empty() {
         return Err(AppError::FeatureUnavailable(
             "Webhook secret not configured — generate one in Settings → Integrations".into(),
-        ));
+        ).into());
     }
 
     let provided = headers
@@ -952,7 +939,7 @@ pub async fn webhook(
         .trim();
 
     if !constant_time_eq(&sha256_hex(provided), &sha256_hex(&expected_secret)) {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized.into());
     }
 
     let dry_run = req.dry_run.unwrap_or(false);
@@ -973,7 +960,7 @@ pub async fn webhook(
             "ok": true,
             "dry_run": dry_run,
             "automation_id": automation_id,
-        })));
+        })).into_response());
     }
 
     // ── Structured resource actions ──────────────────────────────────────────
@@ -985,14 +972,55 @@ pub async fn webhook(
         let (resource_type, action_name, container_action, service_action) = match action_str
             .as_str()
         {
-            "container.restart" => ("container", "restart", Some(ContainerAction::Restart), None),
-            "container.start" => ("container", "start", Some(ContainerAction::Start), None),
-            "container.stop" => ("container", "stop", Some(ContainerAction::Stop), None),
-            "service.restart" => ("service", "restart", None, Some(ServiceAction::Restart)),
-            "service.start" => ("service", "start", None, Some(ServiceAction::Start)),
-            "service.stop" => ("service", "stop", None, Some(ServiceAction::Stop)),
-            other => return Err(AppError::BadRequest(format!("Unknown action: {}", other))),
+            "container.restart" => ("container", "container.restart", true, None),
+            "container.start" => ("container", "container.start", true, None),
+            "container.stop" => ("container", "container.stop", true, None),
+            "service.restart" => ("service", "restart", false, Some(ServiceAction::Restart)),
+            "service.start" => ("service", "start", false, Some(ServiceAction::Start)),
+            "service.stop" => ("service", "stop", false, Some(ServiceAction::Stop)),
+            other => return Err(AppError::BadRequest(format!("Unknown action: {}", other)).into()),
         };
+
+        if container_action {
+            let credential = CredentialContext::Webhook {
+                source_id: "odysseus".into(),
+            };
+            let resource = super::containers::resolve_action_resource(
+                &state,
+                &credential,
+                &resource_id,
+                action_name,
+            )
+            .await?;
+            let input = serde_json::json!({});
+            if dry_run {
+                let prepared = super::operation_adoption::prepare(
+                    &state,
+                    &credential,
+                    &resource.id,
+                    action_name,
+                    input,
+                )
+                .await?;
+                let view = prepared.view();
+                return Ok(Json(serde_json::json!({
+                    "dry_run": true,
+                    "plan": view.operation,
+                    "policy": view.policy,
+                    "resource": view.resource,
+                }))
+                .into_response());
+            }
+            return super::operation_adoption::submit(
+                &state,
+                &credential,
+                &resource.id,
+                action_name,
+                input,
+                &headers,
+            )
+            .await;
+        }
 
         // Policy check — actor_type "automation" for webhook-sourced actions
         let verdict = voidwatch::evaluate(
@@ -1008,11 +1036,7 @@ pub async fn webhook(
             },
         )
         .await;
-        // See `verdict_block_reason`'s doc comment above — this is the call site whose
-        // resource_type (`"container"` for the restart/start/stop actions matched above)
-        // actually is snapshot-capable, so this is where Finding 1 was live: silently
-        // treating `AllowRequireSnapshot` as `Allow` let a Trusted-mode-mandated
-        // pre-apply snapshot be skipped entirely.
+        // The remaining structured branch is the explicitly deferred legacy service path.
         if let Some(reason) = verdict_block_reason(&verdict) {
             audit::log_sourced(
                 &state.db,
@@ -1027,7 +1051,7 @@ pub async fn webhook(
                 Some("odysseus"),
             )
             .await;
-            return Err(AppError::PolicyDenied(reason.to_string()));
+            return Err(AppError::PolicyDenied(reason.to_string()).into());
         }
 
         audit::log_sourced(
@@ -1045,11 +1069,7 @@ pub async fn webhook(
         .await;
 
         if !dry_run {
-            if let Some(ca) = container_action {
-                containers::container_action(&resource_id, ca)
-                    .await
-                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
-            } else if let Some(sa) = service_action {
+            if let Some(sa) = service_action {
                 services::run_service_action(&resource_id, sa)
                     .map_err(|e| AppError::BadRequest(e.to_string()))?;
             }
@@ -1060,10 +1080,10 @@ pub async fn webhook(
             "dry_run": dry_run,
             "action": action_str,
             "resource_id": resource_id,
-        })));
+        })).into_response());
     }
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,12 +1251,7 @@ mod tests {
         assert!(result.is_ok(), "an allowlisted action must still run");
     }
 
-    /// `verdict_block_reason` is what both `webhook()` call sites consult before
-    /// executing a mutation — this is the shared logic Finding 1 (P0-03 adversarial
-    /// review) found broken at one of its two call sites. Assert directly that all three
-    /// non-`Allow` variants block, `AllowRequireSnapshot` included: silently treating it
-    /// like `Allow` is exactly how a Trusted-mode "mandatory" pre-apply snapshot got
-    /// skipped last time.
+    /// Deferred legacy webhook mutations still fail closed for every non-`Allow` verdict.
     #[test]
     fn verdict_block_reason_blocks_everything_but_allow() {
         assert_eq!(verdict_block_reason(&voidwatch::Verdict::Allow), None);
@@ -1261,55 +1276,4 @@ mod tests {
         );
     }
 
-    /// Reproduces the exact Finding 1 scenario end-to-end through `voidwatch::evaluate`:
-    /// Trusted mode, an allowlisted `(automation, restart, container)` tuple — precisely
-    /// the shape `webhook()`'s structured-action branch produces for `container.restart`.
-    /// `resource_type = "container"` is in `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES`,
-    /// so `evaluate()` must return `AllowRequireSnapshot`, and `verdict_block_reason` must
-    /// treat that as blocking rather than as `Allow` — otherwise a container gets
-    /// restarted with the mandatory pre-apply snapshot silently skipped.
-    #[tokio::test]
-    async fn structured_action_snapshot_required_verdict_blocks_instead_of_silently_allowing() {
-        let pool = setup_db().await;
-        sqlx::query(
-            "INSERT INTO voidwatch_mode_settings (scope, mode, updated_at) VALUES (?, ?, 0)",
-        )
-        .bind(crate::voidwatch::mode::GLOBAL_SCOPE)
-        .bind("trusted")
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at)
-             VALUES ('a1', 'automation', 'restart', 'container', 0)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let verdict = voidwatch::evaluate(
-            &pool,
-            voidwatch::Actor {
-                kind: voidwatch::ActorKind::Automation,
-            },
-            voidwatch::ActionKind::Mutating,
-            "restart",
-            voidwatch::Resource {
-                resource_type: "container",
-                resource_id: "c1",
-            },
-        )
-        .await;
-
-        assert!(
-            matches!(verdict, voidwatch::Verdict::AllowRequireSnapshot(_)),
-            "expected AllowRequireSnapshot for an allowlisted mutate-class action on a \
-             snapshot-capable resource type in Trusted mode, got {verdict:?}"
-        );
-        assert!(
-            verdict_block_reason(&verdict).is_some(),
-            "webhook()'s structured-action path has no snapshot mechanism wired up, so \
-             this verdict must block execution, not proceed as if it were Allow"
-        );
-    }
 }

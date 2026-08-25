@@ -13,6 +13,60 @@ mount scope enforcement.
 
 ---
 
+## Durable operations
+
+VoidTower's Containers, Firewall, Proxy, Updates, Backups, and Proxmox operation families use one
+asynchronous mutation contract. Discover the canonical resource and its currently available
+capabilities before planning or submitting an action:
+
+```
+GET  /api/resources
+GET  /api/resources/:id
+GET  /api/resources/:id/capabilities
+POST /api/resources/:id/actions/:action/plan   { "input": { ... } }
+POST /api/resources/:id/actions/:action        { "input": { ... } }
+GET  /api/jobs?limit=50
+GET  /api/jobs/:id
+POST /api/jobs/:id/cancel
+GET  /api/approvals?status=&limit=50
+GET  /api/approvals/:id
+POST /api/approvals/:id/approve                { "comment": "..." }
+POST /api/approvals/:id/reject                 { "comment": "..." }
+GET  /api/events?after=&limit=
+```
+
+Planning returns `200` and has no durable side effect. Canonical submission requires an
+`Idempotency-Key` header and returns `202 { "job": ... }` when the request is accepted. Keys are
+1–128 ASCII characters, begin with an alphanumeric character, and thereafter may also contain
+`.`, `_`, `:`, or `-`. Reusing a key with the same credential and identical intent returns the same
+job; reusing it for different intent returns `409 idempotency_conflict`. Adopted compatibility
+routes accept the same header but generate a request-scoped key when older callers omit it.
+
+A returned job is an acceptance record, not evidence that the provider mutation succeeded. Stable
+states are `awaiting_approval`, `queued`, `running`, `succeeded`, `failed`, `cancelled`,
+`needs_attention`, `rejected`, and `expired`. `needs_attention` is deliberately non-terminal while
+the reconciler resolves an uncertain provider outcome. Plans are immutable and approval decisions
+remain bound to the exact job and observed resource revision. Cancellation is cooperative and is
+accepted only while a job is queued or running. Retry and recovery policy come from the registered
+action and plan; callers must not resubmit while following a job.
+
+Policy denial returns `403 policy_denied` with the rejected durable `job_id`. Other canonical errors
+use `{ "error": { "code", "message", "job_id"? } }`. Persisted plans, results, events, and errors
+use bounded, redacted representations; credentials and staged secret contents are never returned.
+
+The adopted compatibility inventory contains 48 route keys: App Vault exposure (1), Odysseus
+container webhooks (1), Backups (5), Containers/Compose apply (2), Firewall (3), Proxy/nginx (6),
+Updates/system update (9), and Proxmox plus legacy Proxmox VM routes (21). Each mapped durable
+branch returns `202 { "job": ... }`; a compatibility `dry_run: true` returns an advisory plan and
+creates no job. App Vault/model Compose lifecycle, AI proxy-settings orchestration, service and
+arbitrary-automation webhook actions, and ephemeral Proxmox VNC ticket creation remain synchronous
+exceptions because they do not yet have matching durable actions. The current web clients follow
+submitted jobs locally; shared Jobs/Approvals navigation and cursor-resumable durable SSE are not
+yet shipped. `/api/events` exposes durable history, while `/api/events/stream` remains the legacy
+live stream.
+
+---
+
 ## Auth
 
 ```
@@ -65,10 +119,16 @@ POST /api/apps/deploy              { app_id, project_name?, env_overrides? }
 POST /api/apps/:name/start|stop|restart|redeploy
 GET  /api/apps/:name/compose
 POST /api/apps/:name/compose       { content }
+POST /api/apps/:name/expose        { domain, ssl?, allow_embed? }
+POST /api/apps/open-ui             { project_name, primary_port }
 GET  /api/apps/:name/logs
 GET  /api/apps/:name/status
 DELETE /api/apps/:name
 ```
+
+App exposure submits `proxy.rule.create` and returns a durable job. `open-ui` is a read-only lookup:
+it returns an existing valid embed proxy when available and never creates proxy, nginx, database,
+or firewall state. Its response includes `proxy_available`; `proxy_created` is always `false`.
 
 ## Models
 
@@ -120,6 +180,9 @@ POST /api/vms/proxmox/action       { vmid, kind, node, action }
 POST /api/vms/proxmox/test
 ```
 
+The three legacy Proxmox configuration/action/test mutations return durable jobs. Local libvirt VM
+actions remain synchronous because no local-VM durable action is registered.
+
 ## Files
 
 ```
@@ -139,17 +202,23 @@ POST /api/files/rename             { from, to }
 GET  /api/proxy
 POST /api/proxy                    { domain, upstream, ssl, allow_embed? }
 DELETE /api/proxy/:id
+PUT  /api/proxy/:id
 POST /api/proxy/:id/toggle
+POST /api/proxy/nginx/action       { action: start|stop|restart|reload }
 ```
+
+Proxy mutations return durable jobs. The nginx `test` action is an informational synchronous read.
 
 ## Firewall
 
 ```
 GET  /api/firewall
-POST /api/firewall/rules           { action, direction, port, protocol, from? }
-POST /api/firewall/rules/delete    { rule_number }
+POST /api/firewall/rules           { action, direction?, port?, proto?, from?, comment?, dry_run? }
+POST /api/firewall/rules/delete    { num }
 POST /api/firewall/action          { action: enable|disable|reload|reset }
 ```
+
+Firewall mutations return durable jobs; `dry_run: true` returns an advisory plan.
 
 ## WireGuard
 
@@ -195,6 +264,9 @@ POST /api/backups/:id/check
 POST /api/backups/:id/restore-test
 DELETE /api/backups/:id
 ```
+
+All five Backup mutation/check routes return durable jobs. `check` and `restore-test` are durable
+read operations and do not require approval.
 
 ## Alerts & status checks
 
@@ -265,6 +337,24 @@ POST /api/security/sessions/revoke-others
 DELETE /api/security/sessions/:id
 ```
 
+## Updates
+
+```
+POST /api/updates/docker/check
+POST /api/updates/docker/:id/apply
+POST /api/updates/odysseus/apply
+POST /api/updates/os/apply
+POST /api/updates/voidtower/check
+POST /api/updates/voidtower/apply
+POST /api/updates/voidtower/rollback
+GET  /api/system/update-check
+POST /api/system/update
+```
+
+These compatibility routes return durable jobs, including the slow check operations. The GET
+`/api/system/update-check` alias is retained for compatibility; new callers should use the POST
+VoidTower check action and follow its returned job.
+
 ## System
 
 ```
@@ -285,9 +375,13 @@ GET  /api/integrations/odysseus/config
 POST /api/integrations/odysseus/config           { enabled?, mcp_enabled?, allowed_url?, webhook_secret?, emergency_disable? }
 GET  /api/integrations/odysseus/manifest
 GET  /api/integrations/events                    SSE stream
-POST /api/integrations/webhooks                  { automation_id, dry_run? }
+POST /api/integrations/webhooks                  { automation_id?, action?, resource_id?, dry_run? }
 GET  /api/integrations/actions
 ```
+
+Webhook `container.start`, `container.stop`, and `container.restart` actions return a durable job;
+their dry runs return a canonical plan. `service.*` and `automation_id` webhook requests retain the
+legacy synchronous `{ "ok": true, ... }` response until matching durable actions are introduced.
 
 ## Voidwatch (Odysseus-side)
 

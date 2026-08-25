@@ -31,6 +31,9 @@ pub enum InvocationContext {
     },
     LocalCli,
     Scheduler,
+    Webhook {
+        source_id: String,
+    },
 }
 
 pub type CredentialContext = InvocationContext;
@@ -112,6 +115,11 @@ pub fn authorize_action(
     if matches!(credential, InvocationContext::Scheduler) {
         return Ok(());
     }
+    if matches!(credential, InvocationContext::Webhook { .. }) {
+        return (action.ai_exposure == AiExposure::Callable)
+            .then_some(())
+            .ok_or(InvocationError::AiExposureDenied);
+    }
     let required_role = action
         .canonical_session_role
         .ok_or(InvocationError::UnknownAction)?;
@@ -119,6 +127,7 @@ pub fn authorize_action(
         InvocationContext::Session { role, .. } | InvocationContext::Bearer { role, .. } => role,
         InvocationContext::LocalCli => "admin",
         InvocationContext::Scheduler => unreachable!("scheduler handled above"),
+        InvocationContext::Webhook { .. } => unreachable!("webhook handled above"),
     };
     if !role_allows(current_role, required_role) {
         return Err(InvocationError::Forbidden);
@@ -165,6 +174,7 @@ impl InvocationContext {
             Self::Session { .. } | Self::Bearer { .. } => ActionIngress::Http,
             Self::LocalCli => ActionIngress::LocalCli,
             Self::Scheduler => ActionIngress::Scheduler,
+            Self::Webhook { .. } => ActionIngress::Webhook,
         }
     }
 
@@ -190,6 +200,11 @@ impl InvocationContext {
                 id: Some("backup_restore_test".into()),
                 source: Some("scheduler".into()),
             },
+            Self::Webhook { source_id } => ActorRef {
+                actor_type: ActorType::Automation,
+                id: Some(source_id.clone()),
+                source: Some("odysseus_webhook".into()),
+            },
         }
     }
 
@@ -199,6 +214,7 @@ impl InvocationContext {
             Self::Bearer { .. } => "http_bearer",
             Self::LocalCli => "local_cli",
             Self::Scheduler => "scheduler",
+            Self::Webhook { .. } => "webhook",
         }
     }
 
@@ -210,6 +226,7 @@ impl InvocationContext {
             }
             Self::LocalCli => "v1:local_cli:system:voidtower_cli".into(),
             Self::Scheduler => "v1:scheduler:system:backup_restore_test".into(),
+            Self::Webhook { source_id } => format!("v1:webhook:automation:{source_id}"),
         }
     }
 }
@@ -449,6 +466,7 @@ async fn derive_policy(
         InvocationContext::Session { .. } => ActorKind::User,
         InvocationContext::Bearer { .. } => ActorKind::ApiToken,
         InvocationContext::LocalCli | InvocationContext::Scheduler => ActorKind::System,
+        InvocationContext::Webhook { .. } => ActorKind::Automation,
     };
     let action_kind = match action.kind {
         RegistryActionKind::Read => ActionKind::Read,
@@ -798,6 +816,30 @@ mod tests {
         .is_ok());
         assert_eq!(
             authorize_action(action_registry::action("backup.run").unwrap(), &scheduler),
+            Err(InvocationError::IngressDenied)
+        );
+
+        let webhook = InvocationContext::Webhook {
+            source_id: "odysseus".into(),
+        };
+        assert_eq!(webhook.action_ingress(), ActionIngress::Webhook);
+        assert_eq!(webhook.ingress(), "webhook");
+        assert_eq!(
+            webhook.idempotency_scope(),
+            "v1:webhook:automation:odysseus"
+        );
+        assert_eq!(webhook.actor().actor_type, ActorType::Automation);
+        assert_eq!(webhook.actor().id.as_deref(), Some("odysseus"));
+        assert!(authorize_action(
+            action_registry::action("container.start").unwrap(),
+            &webhook
+        )
+        .is_ok());
+        assert_eq!(
+            authorize_action(
+                action_registry::action("proxy.rule.create").unwrap(),
+                &webhook
+            ),
             Err(InvocationError::IngressDenied)
         );
     }

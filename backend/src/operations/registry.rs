@@ -30,6 +30,7 @@ pub const ADAPTERS: &[AdapterMetadata] = &[
 /// Compatibility routes included in the approved six-domain adoption. POST routes that only plan
 /// and the ephemeral Proxmox VNC-ticket route are intentionally absent.
 const ADOPTED_ROUTES: &[(HttpMethod, &str)] = &[
+    (HttpMethod::Post, "/api/apps/:project_name/expose"),
     (HttpMethod::Post, "/api/backups"),
     (HttpMethod::Delete, "/api/backups/:id"),
     (HttpMethod::Post, "/api/backups/:id/check"),
@@ -40,6 +41,7 @@ const ADOPTED_ROUTES: &[(HttpMethod, &str)] = &[
     (HttpMethod::Post, "/api/firewall/action"),
     (HttpMethod::Post, "/api/firewall/rules"),
     (HttpMethod::Post, "/api/firewall/rules/delete"),
+    (HttpMethod::Post, "/api/integrations/webhooks"),
     (HttpMethod::Post, "/api/proxy"),
     (HttpMethod::Delete, "/api/proxy/:id"),
     (HttpMethod::Put, "/api/proxy/:id"),
@@ -362,23 +364,34 @@ fn validate_route_mappings() -> Result<()> {
                     action_name
                 );
             }
-            let route_role = match route.session {
-                SessionPolicy::Required(role) => role,
+            match route.session {
+                SessionPolicy::Required(route_role) => {
+                    let action_role = required_role(action.canonical_session_role, action.name)?;
+                    ensure!(
+                        role_rank(route_role) >= role_rank(action_role),
+                        "route {} {} weakens action {} session role",
+                        route.method.as_str(),
+                        route.path,
+                        action.name
+                    );
+                }
+                SessionPolicy::HandlerManaged => {
+                    ensure!(
+                        route.credential == crate::api::mcp::action_registry::CredentialPolicy::WebhookHmac
+                            && action.ingresses.contains(&ActionIngress::Webhook),
+                        "mapped handler-managed route {} {} is not bound to webhook action {}",
+                        route.method.as_str(),
+                        route.path,
+                        action.name
+                    );
+                }
                 other => bail!(
                     "mapped route {} {} has unsupported session policy {:?}",
                     route.method.as_str(),
                     route.path,
                     other
                 ),
-            };
-            let action_role = required_role(action.canonical_session_role, action.name)?;
-            ensure!(
-                role_rank(route_role) >= role_rank(action_role),
-                "route {} {} weakens action {} session role",
-                route.method.as_str(),
-                route.path,
-                action.name
-            );
+            }
             ensure!(
                 bearer_at_least_as_restrictive(route.bearer, action.canonical_bearer),
                 "route {} {} weakens action {} bearer policy",
@@ -432,9 +445,14 @@ const fn risk_rank(risk: RiskClass) -> u8 {
 mod tests {
     use super::*;
 
+    fn occurrences(source: &str, needle: &str) -> usize {
+        source.match_indices(needle).count()
+    }
+
     #[test]
     fn operation_registry_is_complete_and_consistent() {
         validate().expect("operation registry should be valid");
+        assert_eq!(ADOPTED_ROUTES.len(), 48, "the adopted route inventory drifted");
     }
 
     #[test]
@@ -526,6 +544,118 @@ mod tests {
         }) {
             assert!(!action.ingresses.contains(&ActionIngress::LocalCli));
             assert!(!action.ingresses.contains(&ActionIngress::Scheduler));
+        }
+    }
+
+    #[test]
+    fn container_webhook_actions_use_the_durable_submission_path() {
+        for name in ["container.start", "container.stop", "container.restart"] {
+            let action = action_registry::action(name).expect("container action metadata");
+            assert_eq!(action.execution, ActionExecution::DurableJob, "{name}");
+            assert_eq!(
+                action.ingresses,
+                &[ActionIngress::Http, ActionIngress::Webhook],
+                "{name}"
+            );
+        }
+
+        let integrations = include_str!("../api/integrations.rs");
+        assert!(integrations.contains("operation_adoption::submit("));
+        assert!(!integrations.contains("containers::container_action("));
+        assert!(!integrations.contains("container_service::container_action("));
+
+        let adapter = include_str!("adapters/containers.rs");
+        assert_eq!(
+            occurrences(adapter, "container_service::container_action("),
+            1,
+            "the container adapter must remain the only native execution boundary"
+        );
+    }
+
+    #[test]
+    fn app_exposure_is_durable_and_open_ui_is_read_only() {
+        let apps = include_str!("../api/apps.rs");
+        let expose = apps
+            .split_once("pub async fn expose_app(")
+            .expect("expose handler")
+            .1
+            .split_once("pub async fn delete_app_volumes(")
+            .expect("handler boundary")
+            .0;
+        assert!(expose.contains("create_with_credential("));
+        assert!(!expose.contains("audit::log("));
+        assert!(!expose.contains("create_proxy_record"));
+
+        let open_ui = apps
+            .split_once("pub async fn open_ui(")
+            .expect("open-ui handler")
+            .1
+            .split_once("pub async fn update_compose(")
+            .expect("handler boundary")
+            .0;
+        for forbidden in [
+            ".execute(&state.db)",
+            "write_nginx_port_conf",
+            "reload_nginx_pub",
+            "open_firewall_port",
+            "create_proxy_record",
+        ] {
+            assert!(!open_ui.contains(forbidden), "open-ui contains {forbidden}");
+        }
+        assert!(!apps.contains("create_proxy_record"));
+        assert!(!apps.contains("write_nginx_port_conf"));
+    }
+
+    #[test]
+    fn deferred_direct_execution_inventory_is_exact() {
+        let apps = include_str!("../api/apps.rs");
+        for (needle, expected) in [
+            ("containers::deploy_compose(", 7),
+            ("containers::deploy_compose_cancellable(", 1),
+            ("containers::restart_compose(", 1),
+            ("containers::remove_compose(", 3),
+            ("containers::stop_compose(", 1),
+            ("containers::pull_compose(", 1),
+        ] {
+            assert_eq!(occurrences(apps, needle), expected, "App Vault bypass drift: {needle}");
+        }
+
+        let models = include_str!("../api/models.rs");
+        assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 3);
+
+        let settings = include_str!("../api/settings.rs");
+        for (needle, expected) in [
+            ("reload_nginx_pub()", 3),
+            ("open_firewall_port(", 2),
+            ("close_firewall_port(", 4),
+        ] {
+            assert_eq!(occurrences(settings, needle), expected, "settings bypass drift: {needle}");
+        }
+    }
+
+    #[test]
+    fn shipped_domain_clients_follow_accepted_jobs() {
+        let clients = [
+            ("Containers", include_str!("../../../frontend/src/pages/Containers.tsx")),
+            ("Container detail", include_str!("../../../frontend/src/pages/ContainerDetail.tsx")),
+            ("Firewall", include_str!("../../../frontend/src/pages/Firewall.tsx")),
+            ("Proxies", include_str!("../../../frontend/src/pages/Proxies.tsx")),
+            ("Backups", include_str!("../../../frontend/src/pages/Backups.tsx")),
+            ("Dashboard", include_str!("../../../frontend/src/pages/Dashboard.tsx")),
+            ("Updates", include_str!("../../../frontend/src/pages/Updates.tsx")),
+            ("Settings", include_str!("../../../frontend/src/pages/Settings.tsx")),
+            ("Proxmox", include_str!("../../../frontend/src/pages/ProxmoxPage.tsx")),
+            ("VMs", include_str!("../../../frontend/src/pages/VMs.tsx")),
+            ("native containers", include_str!("../../../frontend/src/aios/panels/containers.tsx")),
+            ("native firewall", include_str!("../../../frontend/src/aios/panels/firewall.tsx")),
+            ("native proxies", include_str!("../../../frontend/src/aios/panels/proxies.tsx")),
+            ("native backups", include_str!("../../../frontend/src/aios/panels/backups.tsx")),
+            ("native Proxmox", include_str!("../../../frontend/src/aios/panels/proxmox.tsx")),
+            ("native VMs", include_str!("../../../frontend/src/aios/panels/vms.tsx")),
+        ];
+        for (name, source) in clients {
+            assert!(source.contains("useDurableJobTracker"), "{name} does not track jobs");
+            assert!(source.contains("DurableJobNotice"), "{name} does not expose job state");
         }
     }
 }

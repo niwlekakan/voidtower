@@ -148,6 +148,12 @@ Each setting also has an environment override:
 `VOIDTOWER_OPERATIONS_ERROR_BACKOFF_MAX_SECONDS`, and
 `VOIDTOWER_OPERATIONS_SHUTDOWN_TIMEOUT_SECONDS`.
 
+The adopted Containers, Firewall, Proxy, Updates, Backups, and Proxmox mutation routes return
+`202 { "job": ... }`. Acceptance is not completion: follow `GET /api/jobs/:id` until the durable
+job reaches a conclusive state. Canonical submissions require `Idempotency-Key`; compatibility
+routes generate a request-scoped key for older clients. See the [API reference](docs/api.md#durable-operations)
+for planning, approvals, cancellation, replay, errors, and the explicitly synchronous exceptions.
+
 ---
 
 ## Voidwatch — AI ops integration

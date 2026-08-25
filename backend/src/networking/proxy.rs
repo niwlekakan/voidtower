@@ -137,24 +137,11 @@ pub fn htpasswd_path(domain: &str) -> Result<PathBuf> {
     Ok(Path::new(NGINX_CONF_DIR).join(format!("voidtower-{domain}.htpasswd")))
 }
 
-pub fn port_conf_path(slug: &str) -> Result<PathBuf> {
-    validate_slug_path_component(slug)?;
-    Ok(Path::new(NGINX_CONF_DIR).join(format!("voidtower-embed-port-{slug}.conf")))
-}
-
 pub fn write_conf(domain: &str, content: &str) -> Result<()> {
     write_file(
         &conf_path(domain)?,
         content.as_bytes(),
         "nginx configuration",
-    )
-}
-
-pub fn write_port_conf(slug: &str, content: &str) -> Result<()> {
-    write_file(
-        &port_conf_path(slug)?,
-        content.as_bytes(),
-        "nginx port configuration",
     )
 }
 
@@ -206,16 +193,6 @@ fn validate_domain_path_component(domain: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_slug_path_component(slug: &str) -> Result<()> {
-    ensure!(!slug.is_empty(), "proxy slug is empty");
-    ensure!(
-        slug.chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_')),
-        "proxy slug is not a safe path component"
-    );
-    Ok(())
-}
-
 fn write_file(path: &Path, content: &[u8], label: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -254,7 +231,6 @@ mod tests {
         assert!(conf_path("app.example.test").is_ok());
         assert!(conf_path("../../etc/passwd").is_err());
         assert!(htpasswd_path("bad\\name").is_err());
-        assert!(port_conf_path("../../../bad").is_err());
     }
 
     #[test]
@@ -274,7 +250,7 @@ mod tests {
         assert_eq!(source.matches("operation_adoption::prepare(").count(), 1);
 
         for (start, end) in [
-            ("pub async fn create(", "/// Shared helper"),
+            ("pub async fn create(", "pub async fn delete_proxy("),
             ("pub async fn delete_proxy(", "pub async fn update_proxy("),
             ("pub async fn update_proxy(", "// ── AI auto-proxy"),
             ("pub async fn ai_auto_proxy(", "// ── nginx management"),

@@ -14,7 +14,7 @@ export default function AppEmbedOverlay() {
     return () => window.removeEventListener('keydown', onKey)
   }, [close])
 
-  const { iframeSrc, embedUrl, loading, proxyCreated: showBadge } = useAppEmbedUrl(
+  const { iframeSrc, embedUrl, loading, proxyAvailable: showBadge } = useAppEmbedUrl(
     app?.project_name ?? null,
     def,
     app?.primary_port ?? null,

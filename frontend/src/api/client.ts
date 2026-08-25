@@ -203,9 +203,13 @@ export const api = {
         method: 'POST', body: JSON.stringify(body),
       }),
     openUi: (projectName: string, primaryPort: number) =>
-      request<{ url: string; embed_url: string | null; proxy_created: boolean }>('/api/apps/open-ui', {
+      request<{ url: string; embed_url: string | null; proxy_created: false; proxy_available: boolean }>('/api/apps/open-ui', {
         method: 'POST',
         body: JSON.stringify({ project_name: projectName, primary_port: primaryPort }),
+      }),
+    expose: (projectName: string, body: { domain: string; ssl?: boolean; allow_embed?: boolean }) =>
+      request<import('./types').DurableJobResponse>(`/api/apps/${projectName}/expose`, {
+        method: 'POST', body: JSON.stringify(body),
       }),
     detectExternal: () =>
       request<import('./types').ExternalStack[]>('/api/apps/detect-external'),

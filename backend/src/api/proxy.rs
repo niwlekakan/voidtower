@@ -12,7 +12,6 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::{
     bearer_auth::AuthenticatedApiToken,
@@ -39,41 +38,6 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
-}
-
-fn validate_domain(d: &str) -> Result<()> {
-    if d.is_empty() || d.len() > 253 {
-        return Err(AppError::BadRequest("Invalid domain length".into()));
-    }
-    // Allow hostname, subdomain.host.tld, and wildcard subdomain *.host.tld
-    let stripped = d.strip_prefix("*.").unwrap_or(d);
-    let ok = stripped
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        && !stripped.starts_with('.')
-        && !stripped.ends_with('.');
-    if !ok {
-        return Err(AppError::BadRequest(
-            "Domain must contain only letters, digits, dots and hyphens".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_upstream(u: &str) -> Result<()> {
-    if !u.starts_with("http://") && !u.starts_with("https://") {
-        return Err(AppError::BadRequest(
-            "Upstream must start with http:// or https://".into(),
-        ));
-    }
-    // Block cloud metadata endpoints and unspecified addresses
-    let lower = u.to_lowercase();
-    if lower.contains("169.254.") || lower.contains("//0.0.0.0") || lower.contains("[::ffff:0]") {
-        return Err(AppError::BadRequest(
-            "Upstream address is not permitted".into(),
-        ));
-    }
-    Ok(())
 }
 
 /// Host-side bind-mount path for the Docker nginx-proxy container's conf.d.
@@ -405,38 +369,6 @@ fn sso_locations(allow_embed: bool) -> String {
     }}
 "#
     )
-}
-
-// Port-based nginx config for app embeds — no server_name, listen on a unique
-// port so any LAN client can reach it via http://<server-ip>:<embed_port>/
-// without requiring any DNS or /etc/hosts configuration.
-pub fn write_nginx_port_conf(slug: &str, upstream: &str, port: u16) -> Result<()> {
-    let upstream = rewrite_upstream_for_docker(upstream);
-    let content = format!(
-        r#"# Managed by VoidTower — do not edit manually
-server {{
-    listen 0.0.0.0:{port};
-
-    location / {{
-        proxy_pass {upstream};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_hide_header X-Frame-Options;
-        add_header X-Frame-Options "ALLOWALL" always;
-        add_header Content-Security-Policy "frame-ancestors *" always;
-    }}
-}}
-"#
-    );
-    proxy_provider::write_port_conf(slug, &content)
-        .map_err(|error| AppError::BadRequest(error.to_string()))?;
-    Ok(())
 }
 
 /// Writes the per-domain conf (and sibling htpasswd file, if basic auth is set)
@@ -985,67 +917,28 @@ pub async fn create(
     headers: HeaderMap,
     Json(req): Json<CreateRequest>,
 ) -> CompatibilityResult<Response> {
-    const ACTION: &str = "proxy.rule.create";
     let credential =
         super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
-    operation_adoption::authorize(&credential, ACTION)?;
+    create_with_credential(&state, &credential, &headers, req).await
+}
+
+pub(crate) async fn create_with_credential(
+    state: &AppState,
+    credential: &crate::operations::invocation::CredentialContext,
+    headers: &HeaderMap,
+    req: CreateRequest,
+) -> CompatibilityResult<Response> {
+    const ACTION: &str = "proxy.rule.create";
+    operation_adoption::authorize(credential, ACTION)?;
     ensure_proxy_provider_available().await?;
-    let resource = resolve_proxy_service(&state, &credential, ACTION).await?;
+    let resource = resolve_proxy_service(state, credential, ACTION).await?;
     let dry_run = req.dry_run;
     let input = canonical_rule_input(&req)?;
 
     if dry_run {
-        return compatibility_plan(&state, &credential, &resource.id, ACTION, input).await;
+        return compatibility_plan(state, credential, &resource.id, ACTION, input).await;
     }
-    operation_adoption::submit(&state, &credential, &resource.id, ACTION, input, &headers).await
-}
-
-/// Shared helper: insert a proxy record and write/reload nginx.
-/// Used by both the HTTP `create` handler and `apps::expose_app`.
-pub async fn create_proxy_record(
-    db: &sqlx::SqlitePool,
-    domain: &str,
-    upstream: &str,
-    ssl: bool,
-    allow_embed: bool,
-) -> Result<String> {
-    validate_domain(domain)?;
-    validate_upstream(upstream)?;
-
-    let id = Uuid::new_v4().to_string();
-    let now = unix_now();
-
-    sqlx::query(
-        "INSERT INTO proxy_configs (id, domain, upstream, ssl, enabled, allow_embed, sso_protect, created_at) VALUES (?,?,?,?,1,?,0,?)",
-    )
-    .bind(&id)
-    .bind(domain)
-    .bind(upstream)
-    .bind(ssl)
-    .bind(allow_embed)
-    .bind(now)
-    .execute(db)
-    .await
-    .map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            AppError::BadRequest(format!("Domain '{domain}' already has a proxy rule"))
-        } else {
-            AppError::Internal(e.into())
-        }
-    })?;
-
-    write_nginx_conf(&ProxyConfig {
-        id: id.clone(),
-        domain: domain.to_string(),
-        upstream: upstream.to_string(),
-        ssl,
-        enabled: true,
-        allow_embed,
-        created_at: now,
-        ..Default::default()
-    })?;
-    let _ = reload_nginx();
-    Ok(id)
+    operation_adoption::submit(state, credential, &resource.id, ACTION, input, headers).await
 }
 
 pub async fn delete_proxy(

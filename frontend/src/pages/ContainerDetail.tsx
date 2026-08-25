@@ -5,6 +5,8 @@ import { api, ApiClientError } from '@/api/client'
 import { notify } from '@/store/notifications'
 import type { ContainerInfo } from '@/api/types'
 import Button from '@/components/ui/Button'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 type Tab = 'overview' | 'compose' | 'logs' | 'terminal'
 
@@ -136,8 +138,8 @@ function ComposeTab({ containerId }: { containerId: string }) {
   const [dirty, setDirty]       = useState(false)
   const [proposing, setProposing] = useState(false)
   const [applying, setApplying] = useState(false)
-  const [submittedJobId, setSubmittedJobId] = useState<string | null>(null)
   const [diff, setDiff] = useState<{ added: number; removed: number; current_lines: number; proposed_lines: number } | null>(null)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   useEffect(() => {
     fetch(`/api/containers/${containerId}/compose`, { credentials: 'include' })
@@ -173,9 +175,16 @@ function ComposeTab({ containerId }: { containerId: string }) {
     setApplying(true)
     try {
       const { job } = await api.containers.applyCompose(containerId, data.path, edited)
-      setSubmittedJobId(job.id)
-      const status = job.state === 'awaiting_approval' ? 'awaiting approval' : job.state
-      notify.success(`Compose apply submitted · ${status} · job ${job.id.slice(0, 8)}`)
+      track(job, {
+        label: 'Compose apply',
+        onSucceeded: async () => {
+          const next = await fetch(`/api/containers/${containerId}/compose`, { credentials: 'include' }).then(r => r.json())
+          setData(next)
+          setEdited(next.content ?? '')
+          setDirty(false)
+          setDiff(null)
+        },
+      })
     } catch (error) {
       notify.error(error instanceof Error ? error.message : 'Failed to submit Compose apply')
     } finally {
@@ -190,6 +199,7 @@ function ComposeTab({ containerId }: { containerId: string }) {
 
   return (
     <div className="space-y-3">
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       <div className="flex items-center justify-between">
         <p className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{data.path}</p>
         <div className="flex gap-2">
@@ -204,8 +214,8 @@ function ComposeTab({ containerId }: { containerId: string }) {
                 +{diff.added} −{diff.removed} previewed
               </span>
               <Button size="sm" variant="ghost" onClick={() => setDiff(null)}>Clear preview</Button>
-              <Button size="sm" loading={applying} disabled={submittedJobId !== null} onClick={apply}>
-                {submittedJobId ? `Submitted ${submittedJobId.slice(0, 8)}` : 'Apply as job'}
+              <Button size="sm" loading={applying} disabled={tracking} onClick={apply}>
+                {tracking && trackedJob ? `Tracking ${trackedJob.id.slice(0, 8)}` : 'Apply as job'}
               </Button>
             </>
           )}
@@ -221,7 +231,7 @@ function ComposeTab({ containerId }: { containerId: string }) {
 
       <textarea
         value={edited}
-        onChange={(e) => { setEdited(e.target.value); setDirty(true); setDiff(null); setSubmittedJobId(null) }}
+        onChange={(e) => { setEdited(e.target.value); setDirty(true); setDiff(null) }}
         className="w-full font-mono text-xs p-3 rounded resize-y outline-none"
         rows={24}
         style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}
@@ -238,6 +248,7 @@ export default function ContainerDetailPage() {
   const [tab, setTab] = useState<Tab>('overview')
   const [container, setContainer] = useState<ContainerInfo | null>(null)
   const [actioning, setActioning] = useState(false)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const refresh = useCallback(() => {
     api.containers.list().then((r) => {
@@ -253,8 +264,7 @@ export default function ContainerDetailPage() {
     setActioning(true)
     try {
       const { job } = await api.containers.action(id, action)
-      notify.success(`${action} submitted · job ${job.id.slice(0, 8)}`)
-      setTimeout(refresh, 1500)
+      track(job, { label: `Container ${action}`, onSucceeded: refresh })
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Action failed')
     } finally {
@@ -281,6 +291,7 @@ export default function ContainerDetailPage() {
 
   return (
     <div className="space-y-4 max-w-4xl">
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {/* Header */}
       <div className="flex items-center gap-3">
         <button onClick={() => navigate('/containers')} className="hover:opacity-70" style={{ color: 'var(--text-muted)' }}>

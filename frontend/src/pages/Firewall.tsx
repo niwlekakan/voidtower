@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react'
 import { ShieldCheck, ShieldOff, Plus, Trash2, RefreshCw, X, AlertTriangle } from 'lucide-react'
 import { notify } from '@/store/notifications'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import type { DurableJobResponse, DurableJobSummary } from '@/api/types'
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...init?.headers } })
@@ -11,14 +14,12 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 interface FirewallRule { num: number; to: string; action: string; from: string; ipv6: boolean }
 interface FirewallStatus { backend: string; enabled: boolean; rules: FirewallRule[]; logging: string | null; error: string | null }
-interface DurableJobResponse { job: { id: string; state: string } }
-
 const ACTION_COLOR: Record<string, string> = {
   ALLOW: 'var(--accent-success)', DENY: 'var(--accent-error)',
   LIMIT: 'var(--accent-warning)', REJECT: 'var(--accent-error)',
 }
 
-function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function AddRuleModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitted: (job: DurableJobSummary) => void }) {
   const [action, setAction]   = useState('allow')
   const [port, setPort]       = useState('')
   const [proto, setProto]     = useState('tcp')
@@ -49,8 +50,7 @@ function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     setExec(true)
     try {
       const { job } = await apiFetch<DurableJobResponse>('/api/firewall/rules', { method: 'POST', body: JSON.stringify(body()) })
-      notify.success(`Firewall rule submitted · job ${job.id.slice(0, 8)}`)
-      onSaved(); onClose()
+      onSubmitted(job); onClose()
     } catch (e: any) { notify.error(e.message ?? 'Failed to add rule') }
     finally { setExec(false) }
   }
@@ -103,6 +103,7 @@ export default function FirewallPage() {
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
   const [toggling, setToggling] = useState(false)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const load = () => {
     setLoading(true)
@@ -120,8 +121,7 @@ export default function FirewallPage() {
     setToggling(true)
     try {
       const { job } = await apiFetch<DurableJobResponse>('/api/firewall/action', { method: 'POST', body: JSON.stringify({ action }) })
-      notify.success(`Firewall ${action} submitted · job ${job.id.slice(0, 8)}`)
-      load()
+      track(job, { label: `Firewall ${action}`, onSucceeded: load })
     } catch (e: any) { notify.error(e.message ?? 'Action failed') }
     finally { setToggling(false) }
   }
@@ -130,8 +130,7 @@ export default function FirewallPage() {
     if (!confirm(`Delete rule #${num}? Rule numbers will shift after deletion.`)) return
     try {
       const { job } = await apiFetch<DurableJobResponse>('/api/firewall/rules/delete', { method: 'POST', body: JSON.stringify({ num }) })
-      notify.success(`Rule #${num} deletion submitted · job ${job.id.slice(0, 8)}`)
-      load()
+      track(job, { label: `Delete firewall rule #${num}`, onSucceeded: load })
     } catch (e: any) { notify.error(e.message ?? 'Delete failed') }
   }
 
@@ -140,6 +139,7 @@ export default function FirewallPage() {
 
   return (
     <div className="space-y-4">
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Firewall</h1>
@@ -231,7 +231,10 @@ export default function FirewallPage() {
         </div>
       )}
 
-      {adding && <AddRuleModal onClose={() => setAdding(false)} onSaved={load} />}
+      {adding && <AddRuleModal
+        onClose={() => setAdding(false)}
+        onSubmitted={(job) => track(job, { label: 'Add firewall rule', onSucceeded: load })}
+      />}
     </div>
   )
 }

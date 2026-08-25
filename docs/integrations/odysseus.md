@@ -159,6 +159,28 @@ Content-Type: application/json
 
 Event types: `node_down`, `high_cpu`, `high_memory`, `disk_nearly_full`, `service_failed`, `container_unhealthy`, `backup_failed`, `certificate_expiring`, `suspicious_login`, `automation_completed`, `security_finding`, `app_deployment_failed`, `config_drift_detected`.
 
+### Triggering VoidTower from Odysseus
+
+Odysseus may call VoidTower's inbound webhook with the shared webhook secret:
+
+```http
+POST /api/integrations/webhooks
+Authorization: Bearer <webhook-secret>
+Content-Type: application/json
+
+{ "action": "container.restart", "resource_id": "my-container" }
+```
+
+`container.start`, `container.stop`, and `container.restart` use VoidTower's canonical durable
+operation path. A normal request returns `202 { "job": ... }`; the returned job is acceptance, not
+provider success, and can be followed at `GET /api/jobs/:id`. Add `"dry_run": true` to receive the
+canonical plan without creating a job. Unknown actions and durable actions that are not explicitly
+webhook-enabled fail closed.
+
+The same endpoint still supports the legacy `service.start|stop|restart` and `automation_id`
+requests. Those branches return synchronous `{ "ok": true, ... }` responses and are intentionally
+not described as durable or approval-backed yet.
+
 ---
 
 ## Real-Time Event Stream
@@ -179,6 +201,9 @@ Returns a `text/event-stream` of infrastructure events in real time.
 - Tokens are hashed at rest (SHA-256). Plaintext is never stored after creation.
 - The tool manifest (`/api/integrations/odysseus/manifest`) is public — no auth required. It contains no sensitive data.
 - All agent-triggered actions are logged with `actor_type = 'agent'` in the audit log.
+- Durable container webhook jobs record a typed automation actor and `webhook` ingress; they do not
+  inherit a human session role or API-token scopes.
 - Emergency disable can be triggered from VoidTower or Odysseus and takes effect immediately.
 - The Odysseus integration is disabled by default. Enable explicitly in VoidTower settings.
-- Webhook payloads must carry a valid HMAC-SHA256 signature or they are rejected (HTTP 401).
+- VoidTower's outbound event webhooks carry an HMAC-SHA256 signature. Inbound Odysseus action
+  requests must carry the configured shared secret as a Bearer credential or are rejected.

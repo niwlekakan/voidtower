@@ -75,6 +75,19 @@ impl From<crate::operations::update_adoption::UpdateAdoptionError> for Compatibi
     }
 }
 
+impl From<crate::operations::proxmox_adoption::ProxmoxAdoptionError> for CompatibilityError {
+    fn from(error: crate::operations::proxmox_adoption::ProxmoxAdoptionError) -> Self {
+        use crate::operations::proxmox_adoption::ProxmoxAdoptionError;
+        match error {
+            ProxmoxAdoptionError::Invocation(error) => Self::Canonical(error.into()),
+            ProxmoxAdoptionError::Unavailable(message) => {
+                Self::Legacy(AppError::FeatureUnavailable(message))
+            }
+            ProxmoxAdoptionError::Internal(error) => Self::Legacy(AppError::Internal(error)),
+        }
+    }
+}
+
 impl IntoResponse for CompatibilityError {
     fn into_response(self) -> Response {
         match self {

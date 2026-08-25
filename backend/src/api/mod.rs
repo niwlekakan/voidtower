@@ -436,7 +436,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
             get(proxmox::list_storage_content)
                 .post(proxmox::upload_storage_content)
-                .delete(proxmox::delete_storage_content))
+                .delete(proxmox::delete_storage_content)
+                .layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/api/proxmox/:host_id/nodes/:node/disks",             get(proxmox::list_node_disks))
         .route("/api/proxmox/:host_id/nodes/:node/disks/smart",       get(proxmox::disk_smart))
         .route("/api/proxmox/:host_id/nodes/:node/disks/wipe",        post(proxmox::wipe_disk))

@@ -4503,6 +4503,87 @@ mod tests {
     }
 
     #[test]
+    fn proxmox_compatibility_matrix_is_exact_and_never_weakens_action_policy() {
+        let expected: HashSet<(&str, &str, Vec<&str>)> = HashSet::from([
+            ("POST", "/api/proxmox/hosts", vec!["proxmox.host.create"]),
+            ("DELETE", "/api/proxmox/hosts/:host_id", vec!["proxmox.host.delete"]),
+            ("POST", "/api/vms/proxmox/config", vec!["proxmox.host.configure"]),
+            ("POST", "/api/vms/proxmox/test", vec!["proxmox.host.test"]),
+            (
+                "POST",
+                "/api/vms/proxmox/action",
+                vec![
+                    "proxmox.guest.start",
+                    "proxmox.guest.stop",
+                    "proxmox.guest.shutdown",
+                    "proxmox.guest.reboot",
+                    "proxmox.guest.suspend",
+                    "proxmox.guest.resume",
+                ],
+            ),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/start", vec!["proxmox.guest.start"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/stop", vec!["proxmox.guest.stop"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/shutdown", vec!["proxmox.guest.shutdown"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/reboot", vec!["proxmox.guest.reboot"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/reset", vec!["proxmox.guest.reset"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/suspend", vec!["proxmox.guest.suspend"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/resume", vec!["proxmox.guest.resume"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/snapshot", vec!["proxmox.snapshot.create"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/rollback/:snapname", vec!["proxmox.snapshot.rollback"]),
+            ("DELETE", "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname", vec!["proxmox.snapshot.delete"]),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/disk-passthrough", vec!["proxmox.disk.attach"]),
+            ("POST", "/api/proxmox/:host_id/lxc/deploy", vec!["proxmox.lxc.deploy"]),
+            ("POST", "/api/proxmox/:host_id/nodes/:node/storage/:storage/content", vec!["proxmox.storage.upload"]),
+            ("DELETE", "/api/proxmox/:host_id/nodes/:node/storage/:storage/content", vec!["proxmox.storage.delete"]),
+            ("POST", "/api/proxmox/:host_id/nodes/:node/disks/wipe", vec!["proxmox.disk.wipe"]),
+            ("POST", "/api/proxmox/:host_id/nodes/:node/disks/init", vec!["proxmox.disk.initialize"]),
+        ]);
+
+        let actual: HashSet<(&str, &str, Vec<&str>)> = ROUTES
+            .iter()
+            .filter(|route| route.path.contains("proxmox") && !route.canonical_actions.is_empty())
+            .map(|route| (route.method.as_str(), route.path, route.canonical_actions.to_vec()))
+            .collect();
+        assert_eq!(actual, expected);
+
+        let actions: HashSet<&str> = actual
+            .iter()
+            .flat_map(|(_, _, actions)| actions.iter().copied())
+            .collect();
+        assert_eq!(actions.len(), 20, "the compatibility matrix must cover exactly 20 actions");
+
+        fn risk_rank(risk: RiskClass) -> u8 {
+            match risk {
+                RiskClass::Read => 0,
+                RiskClass::Mutate => 1,
+                RiskClass::Destructive => 2,
+                RiskClass::Irreversible => 3,
+            }
+        }
+        fn approval_rank(policy: ApprovalPolicy) -> u8 {
+            match policy {
+                ApprovalPolicy::NotApplicable => 0,
+                ApprovalPolicy::RiskLadder => 1,
+                ApprovalPolicy::Always => 2,
+            }
+        }
+
+        for route in ROUTES
+            .iter()
+            .filter(|route| route.path.contains("proxmox") && !route.canonical_actions.is_empty())
+        {
+            assert_eq!(route.session, SessionPolicy::Required(RoleTier::Admin));
+            assert_eq!(route.credential, CredentialPolicy::SessionCookie);
+            assert_eq!(route.bearer, BearerPolicy::Denied);
+            for action_name in route.canonical_actions {
+                let action = action(action_name).expect("mapped Proxmox action must be registered");
+                assert!(risk_rank(route.risk) >= risk_rank(action.risk));
+                assert!(approval_rank(route.approval) >= approval_rank(action.approval));
+            }
+        }
+    }
+
+    #[test]
     fn session_policy_and_credential_kind_are_consistent() {
         for metadata in ROUTES {
             let consistent = matches!(

@@ -6,6 +6,8 @@ import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModa
 import { api, ApiClientError } from '@/api/client'
 import { notify } from '@/store/notifications'
 import type { ProxmoxHost, PveVm, PveStorage, PveTask, PveSnapshot } from '@/api/types'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 type Tab = 'vms' | 'storage' | 'tasks' | 'snapshots'
 
@@ -36,6 +38,7 @@ function relTime(ts: number) {
 }
 
 export default function NativeProxmoxPanel() {
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
   const [hosts, setHosts] = useState<ProxmoxHost[]>([])
   const [activeHost, setActiveHost] = useState<string>('')
   const [tab, setTab] = useState<Tab>('vms')
@@ -51,10 +54,8 @@ export default function NativeProxmoxPanel() {
   const [snapConfirming, setSnapConfirming] = useState(false)
 
   useEffect(() => {
-    fetch('/api/proxmox/hosts', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : { hosts: [] })
-      .then(d => {
-        const h: ProxmoxHost[] = d.hosts ?? []
+    api.proxmox.listHosts()
+      .then(h => {
         setHosts(h)
         if (h.length > 0) setActiveHost(h[0].id)
       })
@@ -92,10 +93,8 @@ export default function NativeProxmoxPanel() {
     const key = `${vmid}-${action}`
     setActing(key)
     try {
-      await fetch(`/api/proxmox/${activeHost}/vms/${vmid}/${action}`, {
-        method: 'POST', credentials: 'include',
-      })
-      await fetchAll()
+      const { job } = await api.proxmox.vmAction(activeHost, vmid, action)
+      track(job, { label: `${action} VM ${vmid}`, onSucceeded: fetchAll })
     } finally {
       setActing(null)
     }
@@ -143,14 +142,13 @@ export default function NativeProxmoxPanel() {
     setSnapConfirming(true)
     try {
       if (snapPlan.action === 'rollback') {
-        await api.proxmox.rollbackSnapshot(activeHost, snapPlan.vmid, snapPlan.snapname)
-        notify.success(`Rollback to "${snapPlan.snapname}" queued`)
+        const { job } = await api.proxmox.rollbackSnapshot(activeHost, snapPlan.vmid, snapPlan.snapname)
+        track(job, { label: `Rollback VM ${snapPlan.vmid} to ${snapPlan.snapname}`, onSucceeded: fetchSnapshots })
       } else {
-        await api.proxmox.deleteSnapshot(activeHost, snapPlan.vmid, snapPlan.snapname)
-        notify.success(`Snapshot "${snapPlan.snapname}" deleted`)
+        const { job } = await api.proxmox.deleteSnapshot(activeHost, snapPlan.vmid, snapPlan.snapname)
+        track(job, { label: `Delete snapshot ${snapPlan.snapname}`, onSucceeded: fetchSnapshots })
       }
       setSnapPlan(null)
-      await fetchSnapshots()
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : `${snapPlan.action === 'rollback' ? 'Rollback' : 'Delete'} failed`)
     } finally { setSnapConfirming(false) }
@@ -176,6 +174,7 @@ export default function NativeProxmoxPanel() {
 
   return (
     <NativePanelShell>
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {/* host selector */}
       {hosts.length > 1 && (
         <div style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-subtle)' }}>

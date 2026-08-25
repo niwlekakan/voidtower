@@ -9,11 +9,12 @@ use crate::{
     operations::{
         canonical_json,
         contracts::{OperationPlanV1, PlanChange, PlannedStepV1},
+        proxmox_adoption::LEGACY_HOST_ID,
     },
 };
 use anyhow::{bail, ensure, Context, Result};
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -55,6 +56,7 @@ struct HostSnapshot {
     node: String,
     fingerprint: Option<String>,
     token_version: i64,
+    verify_ssl: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +68,7 @@ struct HostAccess {
     fingerprint: Option<String>,
     token: String,
     token_version: i64,
+    verify_ssl: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -107,6 +110,7 @@ enum Operation {
         node: Option<String>,
         fingerprint: Option<String>,
         token_secret_id: Option<String>,
+        verify_ssl: Option<bool>,
     },
     HostDelete {
         host_id: String,
@@ -205,6 +209,25 @@ impl Operation {
             _ => None,
         }
     }
+
+    fn token_secret_id(&self) -> Option<&str> {
+        match self {
+            Self::HostCreate {
+                token_secret_id, ..
+            } => Some(token_secret_id),
+            Self::HostConfigure {
+                token_secret_id, ..
+            } => token_secret_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn staged_path(&self) -> Option<&Path> {
+        match self {
+            Self::StorageUpload { staged_path, .. } => Some(staged_path),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -218,6 +241,13 @@ enum TaskState {
     Running,
     Succeeded,
     Failed(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TaskReference {
+    upid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vmid: Option<String>,
 }
 
 #[async_trait]
@@ -242,6 +272,9 @@ impl HttpProxmoxProvider {
     }
 
     async fn host(&self, id: &str) -> Result<HostAccess> {
+        if id == LEGACY_HOST_ID {
+            return self.legacy_host().await;
+        }
         let row: (String, String, String, Option<String>) =
             sqlx::query_as("SELECT name, url, node, fingerprint FROM proxmox_hosts WHERE id = ?")
                 .bind(id)
@@ -265,12 +298,71 @@ impl HttpProxmoxProvider {
             fingerprint: row.3,
             token,
             token_version: version,
+            verify_ssl: false,
         })
     }
 
-    fn client() -> Result<reqwest::Client> {
+    async fn legacy_host(&self) -> Result<HostAccess> {
+        let host: String = self
+            .setting("proxmox_host")
+            .await?
+            .context("legacy Proxmox host is not configured")?;
+        let port = self
+            .setting("proxmox_port")
+            .await?
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(8006);
+        let node = self
+            .setting("proxmox_node")
+            .await?
+            .filter(|value| !value.is_empty() && value != "all")
+            .unwrap_or_else(|| "pve".into());
+        let verify_ssl = self
+            .setting("proxmox_verify_ssl")
+            .await?
+            .is_some_and(|value| value == "true");
+        let encrypted: Option<(String, i64)> = sqlx::query_as(
+            "SELECT value_enc, version FROM secrets WHERE name = 'proxmox_legacy_token'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let (token, token_version) = match encrypted {
+            Some((value, version)) => (
+                secrets::decrypt(&self.secrets_key, &value)
+                    .context("legacy Proxmox token decryption failed")?,
+                version,
+            ),
+            None => (
+                self.setting("proxmox_token")
+                    .await?
+                    .context("legacy Proxmox token is not configured")?,
+                0,
+            ),
+        };
+        Ok(HostAccess {
+            id: LEGACY_HOST_ID.into(),
+            name: "Legacy Proxmox".into(),
+            url: format!("https://{host}:{port}"),
+            node,
+            fingerprint: None,
+            token,
+            token_version,
+            verify_ssl,
+        })
+    }
+
+    async fn setting(&self, key: &str) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    fn client_for(host: &HostAccess) -> Result<reqwest::Client> {
         Ok(reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(!host.verify_ssl)
             .timeout(Duration::from_secs(30))
             .build()?)
     }
@@ -283,7 +375,7 @@ impl HttpProxmoxProvider {
         body: Option<Value>,
     ) -> Result<Value> {
         let url = format!("{}/api2/json{}", host.url.trim_end_matches('/'), path);
-        let mut request = Self::client()?
+        let mut request = Self::client_for(host)?
             .request(method, url)
             .header("Authorization", format!("PVEAPIToken={}", host.token));
         if let Some(body) = body {
@@ -313,6 +405,66 @@ impl HttpProxmoxProvider {
              description = excluded.description, updated_at = excluded.updated_at, version = secrets.version + 1",
         ).bind(uuid::Uuid::new_v4().to_string()).bind(format!("proxmox_token_{host_id}"))
             .bind(description).bind(value_enc).bind(now).bind(now).bind(version).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn configure_legacy(
+        &self,
+        url: Option<&str>,
+        node: Option<&str>,
+        token_secret_id: Option<&str>,
+        verify_ssl: Option<bool>,
+    ) -> Result<()> {
+        let parsed = url.map(reqwest::Url::parse).transpose()?;
+        let candidate: Option<(String, i64)> = match token_secret_id {
+            Some(secret_id) => Some(
+                sqlx::query_as("SELECT value_enc, version FROM secrets WHERE id = ?")
+                    .bind(secret_id)
+                    .fetch_optional(&self.pool)
+                    .await?
+                    .context("token_secret_id does not reference a secret")?,
+            ),
+            None => None,
+        };
+        let now = crate::operations::unix_now();
+        let mut transaction = self.pool.begin().await?;
+        if let Some(url) = parsed {
+            let host = url.host_str().context("invalid legacy Proxmox URL")?;
+            let port = url.port().unwrap_or(8006).to_string();
+            upsert_setting(&mut transaction, "proxmox_host", host, now).await?;
+            upsert_setting(&mut transaction, "proxmox_port", &port, now).await?;
+        }
+        if let Some(node) = node {
+            upsert_setting(&mut transaction, "proxmox_node", node, now).await?;
+        }
+        if let Some(verify_ssl) = verify_ssl {
+            upsert_setting(
+                &mut transaction,
+                "proxmox_verify_ssl",
+                if verify_ssl { "true" } else { "false" },
+                now,
+            )
+            .await?;
+        }
+        if let Some((value_enc, version)) = candidate {
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at, version) \
+                 VALUES (?, 'proxmox_legacy_token', 'Legacy Proxmox API token', ?, ?, ?, ?) \
+                 ON CONFLICT(name) DO UPDATE SET value_enc = excluded.value_enc, \
+                 updated_at = excluded.updated_at, version = secrets.version + 1",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(value_enc)
+            .bind(now)
+            .bind(now)
+            .bind(version)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query("DELETE FROM settings WHERE key = 'proxmox_token'")
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -433,14 +585,18 @@ impl ProxmoxProvider for HttpProxmoxProvider {
                 token_secret_id,
                 ..
             } => {
-                let host = self.host(id).await?;
+                let host = self.host(id).await.ok();
+                if id != LEGACY_HOST_ID && host.is_none() {
+                    bail!("Proxmox host is not configured");
+                }
                 let replacement_token_version = match token_secret_id {
                     Some(secret_id) => Some(self.secret_version(secret_id).await?),
                     None => None,
                 };
-                Ok(
-                    json!({"host": host_snapshot(&host), "replacement_token_version": replacement_token_version}),
-                )
+                Ok(json!({
+                    "host": host.as_ref().map(host_snapshot),
+                    "replacement_token_version": replacement_token_version
+                }))
             }
             Operation::HostDelete { host_id: id } => {
                 let host = self.host(id).await?;
@@ -504,15 +660,29 @@ impl ProxmoxProvider for HttpProxmoxProvider {
                 node,
                 fingerprint,
                 token_secret_id,
+                verify_ssl,
             } => {
                 ensure!(
                     name.is_some()
                         || url.is_some()
                         || node.is_some()
                         || fingerprint.is_some()
-                        || token_secret_id.is_some(),
+                        || token_secret_id.is_some()
+                        || verify_ssl.is_some(),
                     "host configure input has no changes"
                 );
+                if id == LEGACY_HOST_ID {
+                    self.configure_legacy(
+                        url.as_deref(),
+                        node.as_deref(),
+                        token_secret_id.as_deref(),
+                        verify_ssl,
+                    )
+                    .await?;
+                    return Ok(Execution::Complete(
+                        json!({"host_id": id, "status": "configured"}),
+                    ));
+                }
                 sqlx::query("UPDATE proxmox_hosts SET name = COALESCE(?, name), url = COALESCE(?, url), node = COALESCE(?, node), fingerprint = COALESCE(?, fingerprint) WHERE id = ?")
                     .bind(name.as_deref()).bind(url.as_deref()).bind(node.as_deref()).bind(fingerprint.as_deref()).bind(&id).execute(&self.pool).await?;
                 if let Some(secret_id) = token_secret_id {
@@ -596,6 +766,7 @@ impl HttpProxmoxProvider {
                 json!({"host_id": host_id, "nodes": bounded_state(nodes)}),
             ));
         }
+        let mut task_result = json!({"host_id": host_id, "status": "submitted"});
         let (method, path, body, immediate) = match &operation {
             Operation::Guest {
                 node,
@@ -677,12 +848,22 @@ impl HttpProxmoxProvider {
                     .as_str()
                     .context("Proxmox nextid response is invalid")?
                     .to_owned();
+                task_result = json!({"host_id": host_id, "status": "submitted", "vmid": vmid});
                 (
                     reqwest::Method::POST,
                     format!("/nodes/{node}/lxc"),
-                    Some(
-                        json!({"vmid": vmid, "hostname": hostname, "ostemplate": ostemplate, "cores": cores, "memory": memory, "rootfs": format!("{storage}:{disk_gb}"), "start": 1}),
-                    ),
+                    Some(json!({
+                        "vmid": vmid,
+                        "hostname": hostname,
+                        "ostemplate": ostemplate,
+                        "cores": cores,
+                        "memory": memory,
+                        "rootfs": format!("{storage}:{disk_gb}"),
+                        "net0": "name=eth0,bridge=vmbr0,ip=dhcp",
+                        "start": 1,
+                        "onboot": 1,
+                        "features": "nesting=1"
+                    })),
                     false,
                 )
             }
@@ -750,7 +931,7 @@ impl HttpProxmoxProvider {
                 json!({"host_id": host_id, "status": "applied"}),
             ));
         }
-        submitted(data, &host_id)
+        submitted_with_result(data, task_result)
     }
 
     async fn upload(
@@ -796,7 +977,7 @@ impl HttpProxmoxProvider {
             host.url.trim_end_matches('/')
         );
         let response = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(!host.verify_ssl)
             .timeout(Duration::from_secs(900))
             .build()?
             .post(url)
@@ -812,6 +993,10 @@ impl HttpProxmoxProvider {
 }
 
 fn submitted(data: Value, host_id: &str) -> Result<Execution> {
+    submitted_with_result(data, json!({"host_id": host_id, "status": "submitted"}))
+}
+
+fn submitted_with_result(data: Value, result: Value) -> Result<Execution> {
     let upid = data
         .as_str()
         .context("Proxmox mutation did not return a task ID")?
@@ -820,9 +1005,37 @@ fn submitted(data: Value, host_id: &str) -> Result<Execution> {
         !upid.is_empty() && upid.len() <= 1024,
         "invalid Proxmox task ID"
     );
-    Ok(Execution::Submitted {
-        upid,
-        result: json!({"host_id": host_id, "status": "submitted"}),
+    Ok(Execution::Submitted { upid, result })
+}
+
+fn task_reference(upid: &str, result: &Value) -> Result<String> {
+    let Some(vmid) = result.get("vmid").and_then(Value::as_str) else {
+        return Ok(upid.into());
+    };
+    let encoded = canonical_json::to_canonical_string(&TaskReference {
+        upid: upid.into(),
+        vmid: Some(vmid.into()),
+    })?;
+    ensure!(encoded.len() <= 1024, "Proxmox task reference is too large");
+    Ok(encoded)
+}
+
+fn parse_task_reference(value: &str) -> Result<TaskReference> {
+    if value.starts_with('{') {
+        let reference: TaskReference = serde_json::from_str(value)?;
+        ensure!(
+            !reference.upid.is_empty() && reference.upid.len() <= 1024,
+            "invalid Proxmox task ID"
+        );
+        return Ok(reference);
+    }
+    ensure!(
+        !value.is_empty() && value.len() <= 1024,
+        "invalid Proxmox task ID"
+    );
+    Ok(TaskReference {
+        upid: value.into(),
+        vmid: None,
     })
 }
 
@@ -873,6 +1086,7 @@ impl ProxmoxAdapter {
                         "node",
                         "fingerprint",
                         "token_secret_id",
+                        "verify_ssl",
                     ],
                 )?;
                 ensure!(
@@ -898,6 +1112,7 @@ impl ProxmoxAdapter {
                         "node",
                         "fingerprint",
                         "token_secret_id",
+                        "verify_ssl",
                     ],
                 )?;
                 ensure!(
@@ -911,6 +1126,7 @@ impl ProxmoxAdapter {
                     node: optional(input, "node"),
                     fingerprint: optional(input, "fingerprint"),
                     token_secret_id: optional(input, "token_secret_id"),
+                    verify_ssl: optional_bool(input, "verify_ssl")?,
                 })
             }
             "proxmox.host.delete" | "proxmox.host.test" => {
@@ -957,6 +1173,23 @@ impl ProxmoxAdapter {
             }
             _ => self.target_operation(request, input).await,
         }
+    }
+
+    async fn is_compatibility_secret(&self, secret_id: &str) -> Result<bool> {
+        let name: Option<String> = sqlx::query_scalar("SELECT name FROM secrets WHERE id = ?")
+            .bind(secret_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(name.is_some_and(|name| name.starts_with("proxmox_staged_")))
+    }
+
+    async fn cleanup_compatibility_secret(&self, secret_id: &str) -> Result<bool> {
+        let result =
+            sqlx::query("DELETE FROM secrets WHERE id = ? AND name LIKE 'proxmox_staged_%'")
+                .bind(secret_id)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn target_operation(
@@ -1123,6 +1356,22 @@ impl ProxmoxAdapter {
         );
         Ok(path)
     }
+
+    async fn cleanup_staged_file(&self, name: &str) -> Result<bool> {
+        ensure!(
+            !name.contains('/') && !name.contains('\\') && name != "." && name != "..",
+            "staged_file must be a filename"
+        );
+        let root = tokio::fs::canonicalize(&self.upload_root)
+            .await
+            .context("Proxmox upload staging directory is unavailable")?;
+        let path = root.join(name);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 #[async_trait]
@@ -1139,6 +1388,39 @@ impl OperationAdapter for ProxmoxAdapter {
         let snapshot = self.provider.snapshot(&operation).await?;
         let metadata = action_registry::action(&request.action)
             .context("Proxmox action is absent from registry")?;
+        let retry_class = metadata
+            .retry
+            .context("Proxmox action has no retry metadata")?
+            .class
+            .as_str();
+        let recovery_class = metadata
+            .recovery
+            .context("Proxmox action has no recovery metadata")?
+            .as_str();
+        let mut steps = vec![PlannedStepV1 {
+            kind: "execute".into(),
+            name: request.action.clone(),
+            retry_class: retry_class.into(),
+            recovery_class: recovery_class.into(),
+        }];
+        if let Some(secret_id) = operation.token_secret_id() {
+            if self.is_compatibility_secret(secret_id).await? {
+                steps.push(PlannedStepV1 {
+                    kind: "cleanup_secret".into(),
+                    name: "Clean up staged Proxmox credential".into(),
+                    retry_class: retry_class.into(),
+                    recovery_class: recovery_class.into(),
+                });
+            }
+        }
+        if operation.staged_path().is_some() {
+            steps.push(PlannedStepV1 {
+                kind: "cleanup_file".into(),
+                name: "Clean up staged Proxmox upload".into(),
+                retry_class: retry_class.into(),
+                recovery_class: recovery_class.into(),
+            });
+        }
         Ok(OperationPlanV1 {
             schema_version: 1,
             title: title(&request.action, &request.resource.display_name),
@@ -1146,21 +1428,7 @@ impl OperationAdapter for ProxmoxAdapter {
             changes: changes(&operation),
             preview: None,
             external_fingerprint: canonical_json::digest(&snapshot)?,
-            steps: vec![PlannedStepV1 {
-                kind: "execute".into(),
-                name: request.action,
-                retry_class: metadata
-                    .retry
-                    .context("Proxmox action has no retry metadata")?
-                    .class
-                    .as_str()
-                    .into(),
-                recovery_class: metadata
-                    .recovery
-                    .context("Proxmox action has no recovery metadata")?
-                    .as_str()
-                    .into(),
-            }],
+            steps,
         })
     }
 
@@ -1174,6 +1442,30 @@ impl OperationAdapter for ProxmoxAdapter {
     }
 
     async fn execute_step(&self, request: StepRequest) -> Result<StepOutcome> {
+        if request.step.kind == "cleanup_secret" {
+            let input = object(&request.input)?;
+            let secret_id = required(input, "token_secret_id")?;
+            let removed = self
+                .cleanup_compatibility_secret(&secret_id)
+                .await
+                .unwrap_or(false);
+            return Ok(StepOutcome::Succeeded {
+                result: json!({"staged_secret_removed": removed}),
+                external_operation_id: None,
+            });
+        }
+        if request.step.kind == "cleanup_file" {
+            let input = object(&request.input)?;
+            let staged_file = required(input, "staged_file")?;
+            let removed = self
+                .cleanup_staged_file(&staged_file)
+                .await
+                .unwrap_or(false);
+            return Ok(StepOutcome::Succeeded {
+                result: json!({"staged_file_removed": removed}),
+                external_operation_id: None,
+            });
+        }
         ensure!(
             request.step.kind == "execute" && request.step.name == request.action,
             "Proxmox step/action mismatch"
@@ -1189,13 +1481,16 @@ impl OperationAdapter for ProxmoxAdapter {
                 result: bounded_state(result),
                 external_operation_id: None,
             }),
-            Ok(Execution::Submitted { upid, result }) => Ok(StepOutcome::Uncertain {
-                code: "proxmox_task_pending".into(),
-                message: "Proxmox accepted the operation; task completion is being reconciled"
-                    .into(),
-                external_operation_id: Some(upid),
-                diagnostic: Some(bounded_state(result)),
-            }),
+            Ok(Execution::Submitted { upid, result }) => {
+                let reference = task_reference(&upid, &result)?;
+                Ok(StepOutcome::Uncertain {
+                    code: "proxmox_task_pending".into(),
+                    message: "Proxmox accepted the operation; task completion is being reconciled"
+                        .into(),
+                    external_operation_id: Some(reference),
+                    diagnostic: Some(bounded_state(result)),
+                })
+            }
             Err(error) => Ok(StepOutcome::Uncertain {
                 code: "proxmox_execution_uncertain".into(),
                 message: crate::api::mcp::redact::redact_patterns(&format!(
@@ -1214,17 +1509,22 @@ impl OperationAdapter for ProxmoxAdapter {
             input: request.input,
         };
         let operation = self.operation(&plan).await?;
-        let upid = request
+        let reference = request
             .external_operation_id
             .context("Proxmox reconciliation requires a task ID")?;
+        let task = parse_task_reference(&reference)?;
         let host_id = operation.host_id().context("Proxmox task has no host")?;
         let node = operation.node().context("Proxmox task has no node")?;
-        match self.provider.task_status(host_id, node, &upid).await? {
+        match self.provider.task_status(host_id, node, &task.upid).await? {
             TaskState::Running => Ok(ReconcileOutcome::StillUncertain {
                 message: "Proxmox task is still running".into(),
             }),
             TaskState::Succeeded => Ok(ReconcileOutcome::Succeeded {
-                result: json!({"task_id": upid, "status": "succeeded"}),
+                result: json!({
+                    "task_id": task.upid,
+                    "status": "succeeded",
+                    "vmid": task.vmid
+                }),
             }),
             TaskState::Failed(message) => Ok(ReconcileOutcome::Failed {
                 code: "proxmox_task_failed".into(),
@@ -1242,7 +1542,26 @@ fn host_snapshot(host: &HostAccess) -> HostSnapshot {
         node: host.node.clone(),
         fingerprint: host.fingerprint.clone(),
         token_version: host.token_version,
+        verify_ssl: host.verify_ssl,
     }
+}
+
+async fn upsert_setting(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    key: &str,
+    value: &str,
+    now: i64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(key)
+    .bind(value)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 fn object(value: &Value) -> Result<&Map<String, Value>> {
     value
@@ -1280,6 +1599,13 @@ fn optional(input: &Map<String, Value>, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .filter(|v| !v.is_empty())
+}
+fn optional_bool(input: &Map<String, Value>, key: &str) -> Result<Option<bool>> {
+    match input.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => bail!("invalid {key}"),
+    }
 }
 fn bounded(value: String, max: usize, label: &str) -> Result<String> {
     ensure!(!value.is_empty() && value.len() <= max, "invalid {label}");
@@ -1435,9 +1761,10 @@ fn changes(operation: &Operation) -> Vec<PlanChange> {
 }
 fn risk_name(risk: RiskClass) -> &'static str {
     match risk {
-        RiskClass::Read => "low",
-        RiskClass::Mutate => "medium",
-        RiskClass::Destructive | RiskClass::Irreversible => "high",
+        RiskClass::Read => "read",
+        RiskClass::Mutate => "mutate",
+        RiskClass::Destructive => "destructive",
+        RiskClass::Irreversible => "irreversible",
     }
 }
 

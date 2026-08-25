@@ -1,13 +1,28 @@
-use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{FromRequest, Multipart, Path, Query, State},
+    http::HeaderMap,
+    response::{IntoResponse, Response},
     Json,
 };
-use std::collections::HashMap;
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-use crate::{audit, auth, error::{AppError, Result}, AppState};
+use crate::{
+    audit, auth,
+    error::{AppError, Result},
+    operations::{
+        invocation::{CredentialContext, PreparedInvocation},
+        proxmox_adoption::{self, ProxmoxSelector},
+    },
+    AppState,
+};
+
+use super::operation_adoption::{self, CompatibilityResult};
 
 // ── crypto helper (same logic as api/secrets.rs) ─────────────────────────────
 
@@ -18,7 +33,8 @@ fn decrypt_secret(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
     let (nonce_bytes, ciphertext) = blob.split_at(12);
     let cipher = Aes256Gcm::new(key.into());
     let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher.decrypt(nonce, ciphertext)
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
         .map_err(|_| anyhow::anyhow!("decryption failed"))?;
     String::from_utf8(plaintext).map_err(Into::into)
 }
@@ -38,6 +54,139 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
         return Err(AppError::Forbidden);
     }
     Ok(user)
+}
+
+async fn prepare_or_submit(
+    state: &AppState,
+    jar: &CookieJar,
+    headers: &HeaderMap,
+    action: &str,
+    selector: ProxmoxSelector,
+    input: serde_json::Value,
+    dry_run: bool,
+) -> CompatibilityResult<Response> {
+    let credential = super::actions::credential(state, jar, None).await?;
+    prepare_or_submit_with_credential(
+        state,
+        &credential,
+        headers,
+        action,
+        selector,
+        input,
+        dry_run,
+    )
+    .await
+}
+
+async fn prepare_or_submit_with_credential(
+    state: &AppState,
+    credential: &CredentialContext,
+    headers: &HeaderMap,
+    action: &str,
+    selector: ProxmoxSelector,
+    input: serde_json::Value,
+    dry_run: bool,
+) -> CompatibilityResult<Response> {
+    let adopted = proxmox_adoption::resolve_target(
+        &state.db,
+        state.secrets_key.clone(),
+        credential,
+        action,
+        selector,
+    )
+    .await?;
+    if dry_run {
+        let prepared =
+            operation_adoption::prepare(state, credential, &adopted.resource.id, action, input)
+                .await?;
+        return legacy_plan_response(prepared);
+    }
+    operation_adoption::submit(
+        state,
+        credential,
+        &adopted.resource.id,
+        action,
+        input,
+        headers,
+    )
+    .await
+}
+
+fn legacy_plan_response(prepared: PreparedInvocation) -> CompatibilityResult<Response> {
+    let view = prepared.view();
+    let mut plan =
+        serde_json::to_value(view.operation).map_err(|error| AppError::Internal(error.into()))?;
+    plan["risk"] = serde_json::Value::String(
+        match plan["risk"].as_str() {
+            Some("read") => "low",
+            Some("mutate") => "medium",
+            _ => "high",
+        }
+        .into(),
+    );
+    Ok(Json(serde_json::json!({
+        "dry_run": true,
+        "plan": plan,
+        "policy": view.policy,
+        "resource": view.resource,
+    }))
+    .into_response())
+}
+
+fn guest_selector(host_id: String, vmid: u64) -> ProxmoxSelector {
+    ProxmoxSelector::Guest {
+        host_id,
+        node: None,
+        kind: None,
+        vmid,
+    }
+}
+
+fn encrypt_secret(key: &[u8; 32], value: &str) -> anyhow::Result<String> {
+    use aes_gcm::aead::{rand_core::RngCore, OsRng};
+    let cipher = Aes256Gcm::new(key.into());
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, value.as_bytes())
+        .map_err(|_| anyhow::anyhow!("encryption failed"))?;
+    let mut blob = nonce_bytes.to_vec();
+    blob.extend_from_slice(&ciphertext);
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &blob,
+    ))
+}
+
+pub(crate) async fn stage_compatibility_secret(state: &AppState, value: &str) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let name = format!("proxmox_staged_{id}");
+    let encrypted = encrypt_secret(&state.secrets_key, value).map_err(AppError::Internal)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    sqlx::query(
+        "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+         VALUES (?, ?, 'Temporary Proxmox compatibility credential', ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(encrypted)
+    .bind(now)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+    Ok(id)
+}
+
+pub(crate) async fn discard_compatibility_secret(state: &AppState, id: &str) {
+    let _ = sqlx::query("DELETE FROM secrets WHERE id = ? AND name LIKE 'proxmox_staged_%'")
+        .bind(id)
+        .execute(&state.db)
+        .await;
 }
 
 // ── host + token loader ───────────────────────────────────────────────────────
@@ -62,12 +211,10 @@ async fn get_host_and_token(state: &AppState, host_id: &str) -> Result<HostInfo>
 
     // token is stored encrypted in the secrets table under key proxmox_token_{host_id}
     let secret_name = format!("proxmox_token_{}", host_id);
-    let enc_row = sqlx::query_as::<_, (String,)>(
-        "SELECT value_enc FROM secrets WHERE name = ?",
-    )
-    .bind(&secret_name)
-    .fetch_optional(&state.db)
-    .await
+    let enc_row = sqlx::query_as::<_, (String,)>("SELECT value_enc FROM secrets WHERE name = ?")
+        .bind(&secret_name)
+        .fetch_optional(&state.db)
+        .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::BadRequest(format!("No token configured for host {}", host_id)))?;
 
@@ -91,14 +238,23 @@ fn build_client() -> std::result::Result<reqwest::Client, reqwest::Error> {
 // ── VM type detection ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VmKind { Qemu, Lxc }
+enum VmKind {
+    Qemu,
+    Lxc,
+}
 
 impl VmKind {
     fn path_segment(self) -> &'static str {
-        match self { VmKind::Qemu => "qemu", VmKind::Lxc => "lxc" }
+        match self {
+            VmKind::Qemu => "qemu",
+            VmKind::Lxc => "lxc",
+        }
     }
     fn as_str(self) -> &'static str {
-        match self { VmKind::Qemu => "qemu", VmKind::Lxc => "lxc" }
+        match self {
+            VmKind::Qemu => "qemu",
+            VmKind::Lxc => "lxc",
+        }
     }
 }
 
@@ -112,38 +268,23 @@ async fn detect_vm_kind(
     for kind in &[VmKind::Qemu, VmKind::Lxc] {
         let url = format!(
             "{}/nodes/{}/{}/{}/status/current",
-            base, node, kind.path_segment(), vmid
+            base,
+            node,
+            kind.path_segment(),
+            vmid
         );
-        if let Ok(res) = client.get(&url).header("Authorization", auth_header).send().await {
+        if let Ok(res) = client
+            .get(&url)
+            .header("Authorization", auth_header)
+            .send()
+            .await
+        {
             if res.status().is_success() {
                 return Ok(*kind);
             }
         }
     }
     Err(AppError::NotFound)
-}
-
-// ── shared response helpers ───────────────────────────────────────────────────
-
-fn task_response(body: serde_json::Value) -> serde_json::Value {
-    let upid = body["data"].as_str().unwrap_or("").to_string();
-    serde_json::json!({ "ok": true, "task": upid })
-}
-
-/// Shape expected by the frontend's `ChangePlanModal` (see `components/ui/ChangePlanModal.tsx`).
-fn change_plan(title: &str, risk: &str, changes: Vec<(&str, String)>) -> serde_json::Value {
-    let changes: Vec<serde_json::Value> = changes
-        .into_iter()
-        .map(|(label, value)| serde_json::json!({ "label": label, "value": value }))
-        .collect();
-    serde_json::json!({
-        "dry_run": true,
-        "plan": { "title": title, "risk": risk, "changes": changes, "preview": null }
-    })
-}
-
-fn vm_target(kind: VmKind, vmid: u64, node: &str) -> String {
-    format!("{} {} ({})", kind.as_str().to_uppercase(), vmid, node)
 }
 
 // ── host CRUD routes ──────────────────────────────────────────────────────────
@@ -248,106 +389,66 @@ pub struct CreateHostRequest {
     pub token_secret: String,
 }
 
+
 pub async fn create_host(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(req): Json<CreateHostRequest>,
-) -> Result<Json<serde_json::Value>> {
-    use aes_gcm::aead::{OsRng, rand_core::RngCore};
-
-    let user = require_admin(&state, &jar).await?;
-    let id = uuid::Uuid::new_v4().to_string();
-    let node = req.node.as_deref().unwrap_or("pve").to_string();
-
-    sqlx::query(
-        "INSERT INTO proxmox_hosts (id, name, url, node, fingerprint) VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&req.name)
-    .bind(&req.url)
-    .bind(&node)
-    .bind(&req.fingerprint)
-    .execute(&state.db)
-    .await
-    .map_err(AppError::Database)?;
-
-    // PVE API token format: "user@realm!tokenname=uuid"
-    let token = format!("{}={}", req.token_id, req.token_secret);
-
-    // encrypt and store token
-    let cipher = Aes256Gcm::new(state.secrets_key.as_ref().into());
-    let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, token.as_bytes())
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("encryption failed")))?;
-    let mut blob = nonce_bytes.to_vec();
-    blob.extend_from_slice(&ciphertext);
-    let enc = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &blob);
-
-    let secret_name = format!("proxmox_token_{}", id);
-    let secret_id = uuid::Uuid::new_v4().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    sqlx::query(
-        "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&secret_id)
-    .bind(&secret_name)
-    .bind(format!("Proxmox API token for host {}", req.name))
-    .bind(&enc)
-    .bind(now)
-    .bind(now)
-    .execute(&state.db)
-    .await
-    .map_err(AppError::Database)?;
-
-    crate::operations::resources::observe(
+) -> CompatibilityResult<Response> {
+    let credential = super::actions::credential(&state, &jar, None).await?;
+    proxmox_adoption::resolve_target(
         &state.db,
-        crate::operations::resources::ObserveResource {
-            kind: "proxmox_host",
-            display_name: &req.name,
-            node_id: None,
-            provider: Some("proxmox"),
-            namespace: "voidtower.proxmox_host",
-            scope_key: "local",
-            alias: &id,
-        },
-        Some(crate::operations::contracts::ActorRef {
-            actor_type: crate::operations::contracts::ActorType::Human,
-            id: Some(user.id),
-            source: Some("compatibility_api".into()),
-        }),
-        &uuid::Uuid::new_v4().to_string(),
+        state.secrets_key.clone(),
+        &credential,
+        "proxmox.host.create",
+        ProxmoxSelector::System,
     )
-    .await
-    .map_err(AppError::Internal)?;
-
-    Ok(Json(serde_json::json!({ "ok": true, "id": id })))
+    .await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let token = format!("{}={}", req.token_id, req.token_secret);
+    let secret_id = stage_compatibility_secret(&state, &token).await?;
+    let input = serde_json::json!({
+        "host_id": id,
+        "name": req.name,
+        "url": req.url,
+        "node": req.node.unwrap_or_else(|| "pve".into()),
+        "fingerprint": req.fingerprint,
+        "token_secret_id": secret_id,
+    });
+    let result = prepare_or_submit_with_credential(
+        &state,
+        &credential,
+        &headers,
+        "proxmox.host.create",
+        ProxmoxSelector::System,
+        input,
+        false,
+    )
+    .await;
+    if result.is_err() {
+        discard_compatibility_secret(&state, &secret_id).await;
+    }
+    result
 }
 
 pub async fn delete_host(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(host_id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    sqlx::query("DELETE FROM proxmox_hosts WHERE id = ?")
-        .bind(&host_id)
-        .execute(&state.db)
-        .await
-        .map_err(AppError::Database)?;
-    let secret_name = format!("proxmox_token_{}", host_id);
-    let _ = sqlx::query("DELETE FROM secrets WHERE name = ?")
-        .bind(&secret_name)
-        .execute(&state.db)
-        .await;
-    Ok(Json(serde_json::json!({ "ok": true })))
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state,
+        &jar,
+        &headers,
+        "proxmox.host.delete",
+        ProxmoxSelector::Host { host_id },
+        serde_json::json!({}),
+        false,
+    )
+    .await
 }
-
 // ── proxmox passthrough routes ────────────────────────────────────────────────
 
 /// GET a Proxmox API endpoint, unwrap `data`, propagate HTTP errors as 502.
@@ -615,269 +716,66 @@ pub struct DryRunBody {
     pub dry_run: bool,
 }
 
+
 pub async fn vm_start(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, vmid)): Path<(String, u64)>,
-    body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-
-    if dry_run {
-        return Ok(Json(change_plan(
-            "Start VM/LXC", "low",
-            vec![("Target", vm_target(kind, vmid, &host.node))],
-        )));
-    }
-
-    let url = format!("{}/nodes/{}/{}/{}/status/start", base, host.node, kind.path_segment(), vmid);
-
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        audit::log(
-            &state.db, Some(&user.id), &user.username,
-            "proxmox.vm.start", Some("vm"), Some(&vmid.to_string()),
-            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
-        ).await;
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+) -> CompatibilityResult<Response> {
+    guest_action(&state, &jar, &headers, host_id, vmid, "start", body).await
 }
 
 pub async fn vm_stop(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, vmid)): Path<(String, u64)>,
-    body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-
-    if dry_run {
-        return Ok(Json(change_plan(
-            "Stop VM/LXC", "medium",
-            vec![
-                ("Target", vm_target(kind, vmid, &host.node)),
-                ("Action", "Graceful shutdown (ACPI)".to_string()),
-                ("Reversible", "Yes — start it again afterward".to_string()),
-            ],
-        )));
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.vm.stop", Some("vm"), Some(&vmid.to_string()),
-        "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
-    ).await;
-
-    // graceful ACPI shutdown
-    let url = format!("{}/nodes/{}/{}/{}/status/shutdown", base, host.node, kind.path_segment(), vmid);
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+) -> CompatibilityResult<Response> {
+    guest_action(&state, &jar, &headers, host_id, vmid, "stop", body).await
 }
 
-// shutdown is an alias for stop (same graceful ACPI behaviour)
 pub async fn vm_shutdown(
-    state: State<AppState>,
-    jar: CookieJar,
-    path: Path<(String, u64)>,
-    body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    vm_stop(state, jar, path, body).await
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+) -> CompatibilityResult<Response> {
+    guest_action(&state, &jar, &headers, host_id, vmid, "shutdown", body).await
 }
 
 pub async fn vm_reboot(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, vmid)): Path<(String, u64)>,
-    body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-
-    if dry_run {
-        return Ok(Json(change_plan(
-            "Reboot VM/LXC", "medium",
-            vec![
-                ("Target", vm_target(kind, vmid, &host.node)),
-                ("Action", "Graceful reboot (ACPI)".to_string()),
-            ],
-        )));
-    }
-
-    let url = format!("{}/nodes/{}/{}/{}/status/reboot", base, host.node, kind.path_segment(), vmid);
-
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        audit::log(
-            &state.db, Some(&user.id), &user.username,
-            "proxmox.vm.reboot", Some("vm"), Some(&vmid.to_string()),
-            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
-        ).await;
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+) -> CompatibilityResult<Response> {
+    guest_action(&state, &jar, &headers, host_id, vmid, "reboot", body).await
 }
 
-// Hard reset — QEMU only, no LXC equivalent (a container has no virtual power button to cycle).
 pub async fn vm_reset(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, vmid)): Path<(String, u64)>,
-    body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-    if kind == VmKind::Lxc {
-        return Err(AppError::BadRequest("Reset is not supported for LXC containers".into()));
-    }
-
-    if dry_run {
-        return Ok(Json(change_plan(
-            "Reset VM", "high",
-            vec![
-                ("Target", vm_target(kind, vmid, &host.node)),
-                ("Action", "Hard reset — equivalent to pressing the physical reset button".to_string()),
-                ("Reversible", "No — unsaved guest OS state is lost".to_string()),
-            ],
-        )));
-    }
-
-    let url = format!("{}/nodes/{}/{}/{}/status/reset", base, host.node, kind.path_segment(), vmid);
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        audit::log(
-            &state.db, Some(&user.id), &user.username,
-            "proxmox.vm.reset", Some("vm"), Some(&vmid.to_string()),
-            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
-        ).await;
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+) -> CompatibilityResult<Response> {
+    guest_action(&state, &jar, &headers, host_id, vmid, "reset", body).await
 }
 
 pub async fn vm_suspend(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, vmid)): Path<(String, u64)>,
-    body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-
-    if dry_run {
-        return Ok(Json(change_plan(
-            "Suspend VM/LXC", "medium",
-            vec![
-                ("Target", vm_target(kind, vmid, &host.node)),
-                ("Action", "Suspend to RAM — execution paused, memory state kept".to_string()),
-            ],
-        )));
-    }
-
-    let url = format!("{}/nodes/{}/{}/{}/status/suspend", base, host.node, kind.path_segment(), vmid);
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        audit::log(
-            &state.db, Some(&user.id), &user.username,
-            "proxmox.vm.suspend", Some("vm"), Some(&vmid.to_string()),
-            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
-        ).await;
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+) -> CompatibilityResult<Response> {
+    guest_action(&state, &jar, &headers, host_id, vmid, "suspend", body).await
 }
 
 pub async fn vm_resume(
-    State(state): State<AppState>,
-    jar: CookieJar,
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
     Path((host_id, vmid)): Path<(String, u64)>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-
-    let url = format!("{}/nodes/{}/{}/{}/status/resume", base, host.node, kind.path_segment(), vmid);
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        audit::log(
-            &state.db, Some(&user.id), &user.username,
-            "proxmox.vm.resume", Some("vm"), Some(&vmid.to_string()),
-            "success", None, Some(&format!("host={} node={} type={}", host_id, host.node, kind.as_str())),
-        ).await;
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+) -> CompatibilityResult<Response> {
+    guest_action(&state, &jar, &headers, host_id, vmid, "resume", None).await
 }
 
+async fn guest_action(
+    state: &AppState, jar: &CookieJar, headers: &HeaderMap,
+    host_id: String, vmid: u64, action: &str, body: Option<Json<DryRunBody>>,
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        state, jar, headers, &format!("proxmox.guest.{action}"),
+        guest_selector(host_id, vmid), serde_json::json!({}),
+        body.is_some_and(|body| body.dry_run),
+    ).await
+}
 #[derive(Deserialize)]
 pub struct SnapshotBody {
     pub name: String,
@@ -886,157 +784,42 @@ pub struct SnapshotBody {
     pub dry_run: bool,
 }
 
+
 pub async fn vm_snapshot(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, vmid)): Path<(String, u64)>,
-    Json(req): Json<SnapshotBody>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-
-    if req.dry_run {
-        return Ok(Json(change_plan(
-            "Create Snapshot", "low",
-            vec![
-                ("Target", vm_target(kind, vmid, &host.node)),
-                ("Name", req.name.clone()),
-                ("Description", req.description.clone().unwrap_or_else(|| "—".to_string())),
-            ],
-        )));
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.vm.snapshot", Some("vm"), Some(&vmid.to_string()),
-        "success", None,
-        Some(&format!("host={} node={} type={} snap={}", host_id, host.node, kind.as_str(), req.name)),
-    ).await;
-
-    let url = format!("{}/nodes/{}/{}/{}/snapshot", base, host.node, kind.path_segment(), vmid);
-    let mut params = std::collections::HashMap::new();
-    params.insert("snapname", req.name.clone());
-    if let Some(desc) = &req.description {
-        params.insert("description", desc.clone());
-    }
-
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .form(&params)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>, Json(req): Json<SnapshotBody>,
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state, &jar, &headers, "proxmox.snapshot.create",
+        guest_selector(host_id, vmid),
+        serde_json::json!({"name": req.name, "description": req.description}),
+        req.dry_run,
+    ).await
 }
 
 pub async fn vm_rollback(
-    State(state): State<AppState>,
-    jar: CookieJar,
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
     Path((host_id, vmid, snapname)): Path<(String, u64, String)>,
     body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-
-    if dry_run {
-        return Ok(Json(change_plan(
-            "Rollback to Snapshot", "high",
-            vec![
-                ("Target", vm_target(kind, vmid, &host.node)),
-                ("Snapshot", snapname.clone()),
-                ("Effect", "Reverts disk and config to the snapshot state".to_string()),
-                ("Reversible", "No — changes made since the snapshot are lost".to_string()),
-            ],
-        )));
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.vm.rollback", Some("vm"), Some(&vmid.to_string()),
-        "success", None,
-        Some(&format!("host={} node={} type={} snap={}", host_id, host.node, kind.as_str(), snapname)),
-    ).await;
-
-    let url = format!(
-        "{}/nodes/{}/{}/{}/snapshot/{}/rollback",
-        base, host.node, kind.path_segment(), vmid, snapname
-    );
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state, &jar, &headers, "proxmox.snapshot.rollback",
+        guest_selector(host_id, vmid), serde_json::json!({"name": snapname}),
+        body.is_some_and(|body| body.dry_run),
+    ).await
 }
 
 pub async fn vm_delete_snapshot(
-    State(state): State<AppState>,
-    jar: CookieJar,
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
     Path((host_id, vmid, snapname)): Path<(String, u64, String)>,
     body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
-
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-
-    if dry_run {
-        return Ok(Json(change_plan(
-            "Delete Snapshot", "medium",
-            vec![
-                ("Target", vm_target(kind, vmid, &host.node)),
-                ("Snapshot", snapname.clone()),
-                ("Reversible", "No — this snapshot cannot be recovered".to_string()),
-            ],
-        )));
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.vm.delete_snapshot", Some("vm"), Some(&vmid.to_string()),
-        "success", None,
-        Some(&format!("host={} node={} type={} snap={}", host_id, host.node, kind.as_str(), snapname)),
-    ).await;
-
-    let url = format!(
-        "{}/nodes/{}/{}/{}/snapshot/{}",
-        base, host.node, kind.path_segment(), vmid, snapname
-    );
-    let res = client.delete(&url).header("Authorization", &auth_header)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state, &jar, &headers, "proxmox.snapshot.delete",
+        guest_selector(host_id, vmid), serde_json::json!({"name": snapname}),
+        body.is_some_and(|body| body.dry_run),
+    ).await
 }
-
 pub async fn vm_vncproxy(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1095,31 +878,6 @@ pub async fn vm_vncproxy(
     })))
 }
 
-async fn pve_post(
-    client: &reqwest::Client,
-    url: &str,
-    auth: &str,
-    body: &serde_json::Value,
-) -> Result<serde_json::Value> {
-    let res = client
-        .post(url)
-        .header("Authorization", auth)
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Proxmox unreachable: {e}")))?;
-    let status = res.status();
-    let resp: serde_json::Value = res
-        .json()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Proxmox response parse error: {e}")))?;
-    if !status.is_success() {
-        let msg = resp["errors"].to_string();
-        return Err(AppError::BadRequest(format!("Proxmox {status} — {msg}")));
-    }
-    Ok(resp["data"].clone())
-}
-
 #[derive(Deserialize)]
 pub struct DeployToLxcRequest {
     pub node: String,
@@ -1141,82 +899,27 @@ fn lxc_default_memory()  -> u32    { 1024 }
 fn lxc_default_storage() -> String { "local-lvm".into() }
 fn lxc_default_disk()    -> u32    { 20 }
 
+
 pub async fn deploy_app_to_lxc(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path(host_id): Path<String>,
-    Json(req): Json<DeployToLxcRequest>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-
-    let host   = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let auth   = format!("PVEAPIToken={}", host.token);
-    let base   = proxmox_base(&host.url);
-
-    // Next available VMID
-    let vmid_val = pve_get(&client, &format!("{base}/cluster/nextid"), &auth).await?;
-    let vmid = vmid_val
-        .as_str()
-        .ok_or_else(|| AppError::BadRequest("Could not obtain next VMID".into()))?
-        .to_string();
-
-    // Create the LXC container
-    let create_body = serde_json::json!({
-        "vmid":     vmid,
-        "hostname": req.hostname,
-        "ostemplate": req.ostemplate,
-        "cores":    req.cores,
-        "memory":   req.memory,
-        "rootfs":   format!("{}:{}", req.storage, req.disk_gb),
-        "net0":     "name=eth0,bridge=vmbr0,ip=dhcp",
-        "start":    1,
-        "onboot":   1,
-        "features": "nesting=1",
-    });
-
-    pve_post(
-        &client,
-        &format!("{base}/nodes/{}/lxc", req.node),
-        &auth,
-        &create_body,
-    )
-    .await?;
-
-    // Ensure it starts (Proxmox may queue it; ignore if already running)
-    let _ = pve_post(
-        &client,
-        &format!("{base}/nodes/{}/lxc/{vmid}/status/start", req.node),
-        &auth,
-        &serde_json::json!({}),
-    )
-    .await;
-
-    let bootstrap = format!(
-        "#!/bin/bash\n\
-         # VoidTower bootstrap — {hostname}\n\
-         set -e\n\
-         apt-get update -q && apt-get install -y -q curl ca-certificates\n\
-         curl -fsSL https://get.docker.com | sh\n\
-         systemctl enable --now docker\n\
-         mkdir -p /opt/app\n\
-         cat > /opt/app/docker-compose.yml << 'COMPOSE_EOF'\n\
-         {compose}\n\
-         COMPOSE_EOF\n\
-         cd /opt/app && docker compose up -d\n\
-         echo \"Done — {hostname} is running.\"",
-        hostname = req.hostname,
-        compose  = req.compose_yaml,
-    );
-
-    Ok(Json(serde_json::json!({
-        "vmid":             vmid,
-        "hostname":         req.hostname,
-        "node":             req.node,
-        "bootstrap_script": bootstrap,
-    })))
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path(host_id): Path<String>, Json(req): Json<DeployToLxcRequest>,
+) -> CompatibilityResult<Response> {
+    let _compose_yaml = req.compose_yaml;
+    prepare_or_submit(
+        &state, &jar, &headers, "proxmox.lxc.deploy",
+        ProxmoxSelector::Host { host_id },
+        serde_json::json!({
+            "node": req.node,
+            "hostname": req.hostname,
+            "ostemplate": req.ostemplate,
+            "cores": req.cores,
+            "memory": req.memory,
+            "storage": req.storage,
+            "disk_gb": req.disk_gb,
+        }),
+        false,
+    ).await
 }
-
 pub async fn list_snapshots(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1235,12 +938,6 @@ pub async fn list_snapshots(
 
 // ── storage content browser ───────────────────────────────────────────────────
 
-/// Proxmox volids look like `local:iso/foo.iso` or `local-lvm:vm-101-disk-0` — `:` and `/`
-/// must be percent-encoded when the volid is embedded in a URL path segment.
-fn encode_volid(volid: &str) -> String {
-    volid.replace('%', "%25").replace(':', "%3A").replace('/', "%2F")
-}
-
 pub async fn list_storage_content(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1256,110 +953,130 @@ pub async fn list_storage_content(
     Ok(Json(data))
 }
 
+
 pub async fn upload_storage_content(
-    State(state): State<AppState>,
-    jar: CookieJar,
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
     Path((host_id, node, storage)): Path<(String, String, String)>,
     request: axum::extract::Request,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let host = get_host_and_token(&state, &host_id).await?;
+) -> CompatibilityResult<Response> {
+    use tokio::io::AsyncWriteExt;
 
-    // Stream the browser's multipart body verbatim to Proxmox without buffering into RAM.
-    // The frontend sends fields in Proxmox's required order: `content` (type) then `filename` (file data).
-    let ct = request
-        .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("multipart/form-data")
-        .to_string();
-
-    let stream = request.into_body().into_data_stream();
-
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(900))
-        .build()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth = format!("PVEAPIToken={}", host.token);
-    let url = format!("{}/nodes/{}/storage/{}/upload", base, node, storage);
-
-    let res = client
-        .post(&url)
-        .header("Authorization", &auth)
-        .header(reqwest::header::CONTENT_TYPE, &ct)
-        .body(reqwest::Body::wrap_stream(stream))
-        .send()
+    let credential = super::actions::credential(&state, &jar, None).await?;
+    let selector = ProxmoxSelector::Storage { host_id, node, storage };
+    proxmox_adoption::resolve_target(
+        &state.db, state.secrets_key.clone(), &credential,
+        "proxmox.storage.upload", selector.clone(),
+    ).await?;
+    let mut multipart = Multipart::from_request(request, &state)
         .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(|error| AppError::BadRequest(format!("Invalid upload: {error}")))?;
 
-    if !res.status().is_success() {
-        let msg = res.text().await.unwrap_or_default();
-        return Err(AppError::Internal(anyhow::anyhow!("Proxmox upload error: {}", msg)));
+    let root = state.config.data_dir.join("proxmox-uploads");
+    tokio::fs::create_dir_all(&root).await
+        .map_err(|error| AppError::Internal(error.into()))?;
+    let mut content = None;
+    let mut staged_name: Option<String> = None;
+    loop {
+        let next = match multipart.next_field().await {
+            Ok(next) => next,
+            Err(error) => {
+                if let Some(name) = &staged_name {
+                    let _ = tokio::fs::remove_file(root.join(name)).await;
+                }
+                return Err(AppError::BadRequest(format!("Invalid upload: {error}")).into());
+            }
+        };
+        let Some(mut field) = next else { break };
+        match field.name() {
+            Some("content") => {
+                content = Some(match field.text().await {
+                    Ok(content) => content,
+                    Err(error) => {
+                        if let Some(name) = &staged_name {
+                            let _ = tokio::fs::remove_file(root.join(name)).await;
+                        }
+                        return Err(AppError::BadRequest(format!("Invalid upload: {error}")).into());
+                    }
+                });
+            }
+            Some("filename") => {
+                if let Some(name) = &staged_name {
+                    let _ = tokio::fs::remove_file(root.join(name)).await;
+                    return Err(AppError::BadRequest("Only one upload file is allowed".into()).into());
+                }
+                let safe_name: String = field.file_name().unwrap_or("upload.bin").chars()
+                    .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+                    .take(180).collect();
+                let name = format!("{}--{}", uuid::Uuid::new_v4(), safe_name);
+                let path = root.join(&name);
+                let mut file = tokio::fs::File::create(&path).await
+                    .map_err(|error| AppError::Internal(error.into()))?;
+                let mut length = 0u64;
+                loop {
+                    let chunk = match field.chunk().await {
+                        Ok(chunk) => chunk,
+                        Err(error) => {
+                            let _ = tokio::fs::remove_file(&path).await;
+                            return Err(AppError::BadRequest(format!("Invalid upload: {error}")).into());
+                        }
+                    };
+                    let Some(chunk) = chunk else { break };
+                    length += chunk.len() as u64;
+                    if length > 16 * 1024 * 1024 * 1024u64 {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        return Err(AppError::BadRequest("Upload exceeds 16 GiB".into()).into());
+                    }
+                    if let Err(error) = file.write_all(&chunk).await {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        return Err(AppError::Internal(error.into()).into());
+                    }
+                }
+                if let Err(error) = file.flush().await {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return Err(AppError::Internal(error.into()).into());
+                }
+                staged_name = Some(name);
+            }
+            _ => {}
+        }
     }
-    let body: serde_json::Value = res.json().await.unwrap_or_default();
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.storage.upload", Some("proxmox_storage"), Some(&storage),
-        "success", None,
-        Some(&format!("host={} node={} storage={}", host_id, node, storage)),
+    let staged_name = staged_name
+        .ok_or_else(|| AppError::BadRequest("Missing filename field".into()))?;
+    let content = match content {
+        Some(content) => content,
+        None => {
+            let _ = tokio::fs::remove_file(root.join(&staged_name)).await;
+            return Err(AppError::BadRequest("Missing content field".into()).into());
+        }
+    };
+    let input = serde_json::json!({"content": content, "staged_file": staged_name});
+    let result = prepare_or_submit_with_credential(
+        &state, &credential, &headers, "proxmox.storage.upload",
+        selector, input, false,
     ).await;
-
-    Ok(Json(task_response(body)))
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(root.join(&staged_name)).await;
+    }
+    result
 }
-
 #[derive(Deserialize)]
 pub struct VolidQuery {
     pub volid: String,
 }
 
+
 pub async fn delete_storage_content(
-    State(state): State<AppState>,
-    jar: CookieJar,
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
     Path((host_id, node, storage)): Path<(String, String, String)>,
-    Query(q): Query<VolidQuery>,
-    body: Option<Json<DryRunBody>>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let dry_run = body.map(|b| b.dry_run).unwrap_or(false);
-    let host = get_host_and_token(&state, &host_id).await?;
-
-    if dry_run {
-        return Ok(Json(change_plan(
-            "Delete Storage Content", "high",
-            vec![
-                ("Target", q.volid.clone()),
-                ("Storage", format!("{} ({})", storage, node)),
-                ("Reversible", "No — the file is permanently removed from storage".to_string()),
-            ],
-        )));
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.storage.delete_content", Some("proxmox_storage"), Some(&storage),
-        "success", None, Some(&format!("host={} node={} storage={} volid={}", host_id, node, storage, q.volid)),
-    ).await;
-
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth = format!("PVEAPIToken={}", host.token);
-    let url = format!("{}/nodes/{}/storage/{}/content/{}", base, node, storage, encode_volid(&q.volid));
-
-    let res = client.delete(&url).header("Authorization", &auth)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        let body: serde_json::Value = res.json().await.unwrap_or_default();
-        Ok(Json(task_response(body)))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
-    }
+    Query(q): Query<VolidQuery>, body: Option<Json<DryRunBody>>,
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state, &jar, &headers, "proxmox.storage.delete",
+        ProxmoxSelector::Storage { host_id, node, storage },
+        serde_json::json!({"volid": q.volid}),
+        body.is_some_and(|body| body.dry_run),
+    ).await
 }
-
 // ── physical disk management ──────────────────────────────────────────────────
 
 pub async fn list_node_disks(
@@ -1431,42 +1148,17 @@ pub struct WipeDiskBody {
     pub dry_run: bool,
 }
 
+
 pub async fn wipe_disk(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, node)): Path<(String, String)>,
-    Json(req): Json<WipeDiskBody>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let host = get_host_and_token(&state, &host_id).await?;
-
-    if req.dry_run {
-        return Ok(Json(change_plan(
-            "Wipe Disk", "high",
-            vec![
-                ("Disk", req.disk.clone()),
-                ("Node", node.clone()),
-                ("Effect", "Erases the partition table and all data on this disk".to_string()),
-                ("Reversible", "No — data cannot be recovered".to_string()),
-            ],
-        )));
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.disk.wipe", Some("proxmox_disk"), Some(&req.disk),
-        "success", None, Some(&format!("host={} node={}", host_id, node)),
-    ).await;
-
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth = format!("PVEAPIToken={}", host.token);
-    let url = format!("{}/nodes/{}/disks/wipedisk", base, node);
-    let data = pve_post(&client, &url, &auth, &serde_json::json!({ "disk": req.disk })).await?;
-    let upid = data.as_str().unwrap_or("").to_string();
-    Ok(Json(serde_json::json!({ "ok": true, "task": upid })))
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, node)): Path<(String, String)>, Json(req): Json<WipeDiskBody>,
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state, &jar, &headers, "proxmox.disk.wipe",
+        ProxmoxSelector::Disk { host_id, node, disk: req.disk },
+        serde_json::json!({}), req.dry_run,
+    ).await
 }
-
 #[derive(Deserialize)]
 pub struct InitDiskBody {
     pub disk: String,
@@ -1478,62 +1170,22 @@ pub struct InitDiskBody {
     pub dry_run: bool,
 }
 
+
 pub async fn init_disk_storage(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, node)): Path<(String, String)>,
-    Json(req): Json<InitDiskBody>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let host = get_host_and_token(&state, &host_id).await?;
-
-    if req.dry_run {
-        return Ok(Json(change_plan(
-            "Initialize Disk as Storage", "high",
-            vec![
-                ("Disk", req.disk.clone()),
-                ("Filesystem", req.fstype.clone()),
-                ("Storage name", req.name.clone()),
-                ("Effect", "Formats the disk and registers it as a new Proxmox storage pool".to_string()),
-                ("Reversible", "No — existing data on the disk is destroyed".to_string()),
-            ],
-        )));
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.disk.init", Some("proxmox_disk"), Some(&req.disk),
-        "success", None, Some(&format!("host={} node={} fstype={} name={}", host_id, node, req.fstype, req.name)),
-    ).await;
-
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth = format!("PVEAPIToken={}", host.token);
-
-    let (endpoint, body) = match req.fstype.as_str() {
-        "directory" => ("directory", serde_json::json!({
-            "device": req.disk, "name": req.name, "filesystem": "ext4", "add_storage": 1,
-        })),
-        "lvm" => ("lvm", serde_json::json!({
-            "device": req.disk, "name": req.name, "add_storage": 1,
-        })),
-        "lvmthin" => ("lvmthin", serde_json::json!({
-            "device": req.disk, "name": req.name, "add_storage": 1,
-        })),
-        "zfs" => ("zfs", serde_json::json!({
-            "devices": req.disk, "name": req.name,
-            "raidlevel": req.raidlevel.clone().unwrap_or_else(|| "single".to_string()),
-            "add_storage": 1,
-        })),
-        other => return Err(AppError::BadRequest(format!("Unknown filesystem type: {}", other))),
-    };
-
-    let url = format!("{}/nodes/{}/disks/{}", base, node, endpoint);
-    let data = pve_post(&client, &url, &auth, &body).await?;
-    let upid = data.as_str().unwrap_or("").to_string();
-    Ok(Json(serde_json::json!({ "ok": true, "task": upid })))
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, node)): Path<(String, String)>, Json(req): Json<InitDiskBody>,
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state, &jar, &headers, "proxmox.disk.initialize",
+        ProxmoxSelector::Disk { host_id, node, disk: req.disk },
+        serde_json::json!({
+            "fstype": req.fstype,
+            "name": req.name,
+            "raidlevel": req.raidlevel,
+        }),
+        req.dry_run,
+    ).await
 }
-
 // ── disk passthrough to VM ────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1550,54 +1202,143 @@ fn default_passthrough_bus() -> String {
 }
 
 pub async fn vm_disk_passthrough(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path((host_id, vmid)): Path<(String, u64)>,
-    Json(req): Json<DiskPassthroughBody>,
-) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let host = get_host_and_token(&state, &host_id).await?;
-    let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&host.url);
-    let auth_header = format!("PVEAPIToken={}", host.token);
+    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>, Json(req): Json<DiskPassthroughBody>,
+) -> CompatibilityResult<Response> {
+    prepare_or_submit(
+        &state, &jar, &headers, "proxmox.disk.attach",
+        guest_selector(host_id, vmid),
+        serde_json::json!({"disk_path": req.disk_path, "bus": req.bus}),
+        req.dry_run,
+    ).await
+}
 
-    let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-    if kind == VmKind::Lxc {
-        return Err(AppError::BadRequest("Disk passthrough is only supported for QEMU VMs".into()));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum_extra::extract::cookie::Cookie;
+
+    #[tokio::test]
+    async fn host_creation_stages_the_token_and_only_submits_a_durable_job() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let state = crate::api::mcp::test_support::build(pool.clone());
+        let jar = CookieJar::new().add(Cookie::new("vt_session", session));
+
+        create_host(
+            State(state.clone()),
+            jar,
+            HeaderMap::new(),
+            Json(CreateHostRequest {
+                name: "PVE".into(),
+                url: "https://pve.internal:8006".into(),
+                node: Some("pve".into()),
+                fingerprint: None,
+                token_id: "root@pam!voidtower".into(),
+                token_secret: "supersecret".into(),
+            }),
+        ).await.unwrap();
+
+        let hosts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM proxmox_hosts")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(hosts, 0);
+        let input: String = sqlx::query_scalar(
+            "SELECT input_json FROM jobs WHERE action = 'proxmox.host.create'",
+        ).fetch_one(&pool).await.unwrap();
+        assert!(!input.contains("supersecret"));
+        assert!(!input.contains("root@pam!voidtower="));
+        assert!(input.contains("token_secret_id"));
+        let encrypted: String = sqlx::query_scalar(
+            "SELECT value_enc FROM secrets WHERE name LIKE 'proxmox_staged_%'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            decrypt_secret(&state.secrets_key, &encrypted).unwrap(),
+            "root@pam!voidtower=supersecret"
+        );
     }
 
-    if req.dry_run {
-        return Ok(Json(change_plan(
-            "Attach Disk Passthrough", "high",
-            vec![
-                ("Target", vm_target(kind, vmid, &host.node)),
-                ("Host disk", req.disk_path.clone()),
-                ("Bus/slot", req.bus.clone()),
-                ("Effect", "Maps the raw host block device directly into the VM — bypasses Proxmox's virtual disk image".to_string()),
-                ("Caution", "The disk becomes unavailable to the host while attached; detach before reusing it elsewhere".to_string()),
-            ],
-        )));
-    }
+    #[test]
+    fn compatibility_mutations_only_delegate_to_the_canonical_boundary() {
+        let source = include_str!("proxmox.rs");
+        let function = |name: &str| {
+            let declaration = format!("pub async fn {name}");
+            let start = source
+                .find(&declaration)
+                .unwrap_or_else(|| panic!("missing handler {name}"));
+            let tail = &source[start..];
+            let body_start = tail.find('{').expect("handler must have a body");
+            let mut depth = 0usize;
+            let mut end = tail.len();
+            for (offset, character) in tail[body_start..].char_indices() {
+                match character {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = body_start + offset + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            &tail[..end]
+        };
 
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.vm.disk_passthrough", Some("vm"), Some(&vmid.to_string()),
-        "success", None,
-        Some(&format!("host={} node={} disk={} bus={}", host_id, host.node, req.disk_path, req.bus)),
-    ).await;
+        let handlers = [
+            "create_host",
+            "delete_host",
+            "vm_start",
+            "vm_stop",
+            "vm_shutdown",
+            "vm_reboot",
+            "vm_reset",
+            "vm_suspend",
+            "vm_resume",
+            "vm_snapshot",
+            "vm_rollback",
+            "vm_delete_snapshot",
+            "deploy_app_to_lxc",
+            "upload_storage_content",
+            "delete_storage_content",
+            "wipe_disk",
+            "init_disk_storage",
+            "vm_disk_passthrough",
+        ];
+        let forbidden = [
+            ".send(",
+            ".post(",
+            ".delete(",
+            "pve_post",
+            "INSERT INTO proxmox_hosts",
+            "DELETE FROM proxmox_hosts",
+            "INSERT INTO settings",
+            "DELETE FROM settings",
+            "audit::log",
+        ];
+        for name in handlers {
+            let body = function(name);
+            assert!(
+                body.contains("prepare_or_submit")
+                    || body.contains("guest_action")
+                    || body.contains("operation_adoption::submit"),
+                "adopted handler {name} must delegate to the durable boundary"
+            );
+            for needle in forbidden {
+                assert!(
+                    !body.contains(needle),
+                    "adopted handler {name} contains forbidden direct execution marker {needle}"
+                );
+            }
+        }
 
-    let url = format!("{}/nodes/{}/qemu/{}/config", base, host.node, vmid);
-    let mut params = std::collections::HashMap::new();
-    params.insert(req.bus.clone(), req.disk_path.clone());
-
-    let res = client.post(&url).header("Authorization", &auth_header)
-        .form(&params)
-        .send().await.map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        Ok(Json(serde_json::json!({ "ok": true })))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Err(AppError::Internal(anyhow::anyhow!("Proxmox error: {}", msg)))
+        for action in [
+            "proxmox.host.create", "proxmox.host.delete", "proxmox.guest.{action}",
+            "proxmox.snapshot.create", "proxmox.snapshot.rollback", "proxmox.snapshot.delete",
+            "proxmox.disk.attach", "proxmox.lxc.deploy", "proxmox.storage.upload",
+            "proxmox.storage.delete", "proxmox.disk.wipe", "proxmox.disk.initialize",
+        ] {
+            assert!(source.contains(action), "missing compatibility mapping {action}");
+        }
     }
 }

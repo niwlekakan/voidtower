@@ -16,7 +16,7 @@ export type DurableJobTone = 'info' | 'success' | 'warning' | 'error'
 
 interface TrackOptions {
   label: string
-  onSucceeded?: () => void | Promise<void>
+  onSucceeded?: (job: DurableJobSummary) => void | Promise<void>
 }
 
 interface TrackedJob {
@@ -28,7 +28,7 @@ interface TrackedJob {
 
 interface CompletionCallbacks {
   jobId: string
-  onSucceeded?: () => void | Promise<void>
+  onSucceeded?: (job: DurableJobSummary) => void | Promise<void>
 }
 
 export function durableJobStateLabel(state: DurableJobState): string {
@@ -85,7 +85,7 @@ export function useDurableJobTracker() {
     if (!FOLLOWED_STATES.has(job.state)) {
       announceTerminal(options.label, job)
       callbacks.current = null
-      if (job.state === 'succeeded') void options.onSucceeded?.()
+      if (job.state === 'succeeded') void options.onSucceeded?.(job)
       return
     }
     const shortId = job.id.slice(0, 8)
@@ -135,7 +135,7 @@ export function useDurableJobTracker() {
         const completion = callbacks.current
         callbacks.current = null
         if (job.state === 'succeeded' && completion?.jobId === job.id) {
-          await completion.onSucceeded?.()
+          await completion.onSucceeded?.(job)
         }
       } catch {
         if (!cancelled) schedule()
@@ -157,5 +157,85 @@ export function useDurableJobTracker() {
       : false,
     track,
     clear,
+  }
+}
+
+interface BatchCallbacks {
+  onSucceeded?: () => void | Promise<void>
+}
+
+export function useDurableJobBatchTracker() {
+  const [batch, setBatch] = useState<{
+    jobs: DurableJobSummary[]
+    label: string
+    deadline: number
+    foregroundStopped: boolean
+  } | null>(null)
+  const callbacks = useRef<BatchCallbacks | null>(null)
+
+  const trackBatch = useCallback((jobs: DurableJobSummary[], options: {
+    label: string
+    onSucceeded?: () => void | Promise<void>
+  }) => {
+    if (jobs.length === 0) return
+    callbacks.current = { onSucceeded: options.onSucceeded }
+    setBatch({
+      jobs,
+      label: options.label,
+      deadline: Date.now() + FOREGROUND_LIMIT_MILLIS,
+      foregroundStopped: false,
+    })
+    notify.info(`${options.label} submitted`, `${jobs.length} durable jobs`)
+  }, [])
+
+  useEffect(() => {
+    if (!batch || batch.foregroundStopped || batch.jobs.every(job => !FOLLOWED_STATES.has(job.state))) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const poll = async () => {
+      if (cancelled) return
+      if (Date.now() >= batch.deadline) {
+        callbacks.current = null
+        setBatch(current => current ? { ...current, foregroundStopped: true } : current)
+        notify.warning(`${batch.label} is still running durably`, 'Stopped foreground batch tracking')
+        return
+      }
+      try {
+        const responses = await Promise.all(batch.jobs.map(job => api.operationJobs.get(job.id)))
+        if (cancelled) return
+        const jobs = responses.map(response => response.job)
+        setBatch(current => current ? { ...current, jobs } : current)
+        if (jobs.some(job => FOLLOWED_STATES.has(job.state))) {
+          timer = setTimeout(poll, POLL_MILLIS)
+          return
+        }
+        const succeeded = jobs.filter(job => job.state === 'succeeded').length
+        if (succeeded === jobs.length) {
+          notify.success(`${batch.label} completed`, `${succeeded} of ${jobs.length} jobs succeeded`)
+          const completion = callbacks.current
+          callbacks.current = null
+          await completion?.onSucceeded?.()
+        } else {
+          callbacks.current = null
+          notify.warning(`${batch.label} requires attention`, `${succeeded} of ${jobs.length} jobs succeeded`)
+        }
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, POLL_MILLIS)
+      }
+    }
+    timer = setTimeout(poll, POLL_MILLIS)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [batch])
+
+  return {
+    batchJobs: batch?.jobs ?? [],
+    batchLabel: batch?.label ?? null,
+    batchTracking: batch
+      ? !batch.foregroundStopped && batch.jobs.some(job => FOLLOWED_STATES.has(job.state))
+      : false,
+    trackBatch,
   }
 }

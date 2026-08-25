@@ -31,13 +31,13 @@ approved documents take precedence.
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
 | **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
 | **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
-| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. Containers, Firewall, Proxy, Backups, and Updates are adopted across their compatibility mutations; Backup CLI and scheduled restore tests also use typed durable submission. Proxmox, durable SSE, shared frontend UX, and final bypass closure remain. |
+| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. All six compatibility domains now submit durable jobs; Backup CLI and scheduled restore tests also use typed durable submission. Durable SSE, shared frontend UX, and final cross-domain bypass closure remain. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
 
 ### Current execution order
 
 1. **Completed:** **D0-01/D0-02** established numbered, fail-fast schema migrations.
-2. Finish **J0-01/J0-03**: convert the six compatibility domains and CLI callers to the canonical mutation API, then land durable SSE/frontend UX and close direct-execution bypasses.
+2. Finish **J0-01/J0-03**: close cross-domain direct-execution bypasses, then land shared Jobs/Approvals UX and durable SSE on the canonical mutation API.
 3. Land the CMDB/Asset Registry on those contracts.
 4. Implement the local `vt-agent`, then secure remote enrollment and managed-cluster operation.
 5. Add placement-driven Docker/App Vault and VM/LXC workflows, including full Proxmox and managed community-script integration.
@@ -49,10 +49,10 @@ pipeline, durable jobs, audit history, or redaction rules.
 
 ### J0 durable-operation adoption
 
-J0 has a complete execution kernel and production worker/reconciler lifecycle, but it is not yet
-the only production mutation path. Compatibility callers remain authoritative until each is
-converted to plan and submit through the durable boundary. “Runtime complete” therefore does not
-mean “J0 complete.”
+J0 has a complete execution kernel, production worker/reconciler lifecycle, and six-domain
+compatibility adoption, but it is not yet the only production mutation path. Cross-domain bypass
+closure, the public asynchronous contract, shared frontend job/approval workflows, and durable SSE
+still remain. “Runtime complete” therefore does not mean “J0 complete.”
 
 | Workstream | Status | Evidence / remaining work |
 |---|---|---|
@@ -61,13 +61,13 @@ mean “J0 complete.”
 | Six-domain runtime adapters | **Done (staged)** | Containers, Firewall, Proxy, Updates, Backups, and Proxmox cover all 51 declared durable actions. The staged adapter registry now validates as complete. |
 | Docker Compose safety boundary | **Done (production)** | Compose planning uses controlled immutable artifacts, rollback preparation, bounded/redacted provider output, and no-replay reconciliation. The compatibility apply route now binds the observed config path, stages idempotency-stable artifacts, and submits the canonical durable job; it never executes Compose itself. Pause/unpause were explicitly removed from J0 scope because no registered or legacy action existed. |
 | Canonical mutation API | **Done** | All 51 durable actions are available through strict typed advisory-plan and durable-submit routes with server-derived actor, ingress, plan, risk, retry/recovery, concurrency, capability/resource validation, Voidwatch policy, scoped full-intent idempotency, stable bearer identity, bounded/redacted errors, and fail-closed role/scope/AI exposure. Authenticated job cancellation delegates only to the durable worker cancellation transaction. |
-| Compatibility routes and CLI | **In progress** | Containers, Compose apply, Firewall, Proxy, Backups, and Updates now observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Backup mutation CLI commands submit and wait through the same typed boundary, and scheduled restore tests use a system actor plus deterministic window idempotency. The Updates and Settings screens follow submitted jobs locally without replaying mutations. Proxmox still requires adoption. |
+| Compatibility routes and CLI | **Done (production)** | Containers, Compose apply, Firewall, Proxy, Backups, Updates, and all 21 mapped Proxmox compatibility routes now observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Backup mutation CLI commands submit and wait through the same typed boundary, and scheduled restore tests use a system actor plus deterministic window idempotency. Updates, Settings, Proxmox, legacy VMs, native panels, and App Vault's LXC deployment follow submitted jobs locally without replaying mutations. Informational reads and ephemeral Proxmox VNC ticket creation remain intentionally synchronous. |
 | Durable event delivery | **Partial** | Durable event history and ordered cursors exist. `/api/events/stream` still polls metrics and systemd rather than streaming the durable log with `Last-Event-ID`; `/api/integrations/events` is not yet a cursor-compatible alias; deduplicated alert/service transitions are not fully converged. |
-| Shared frontend Jobs/Approvals UX | **Missing** | Updates now has page-local typed job following, but there are no shared Jobs or Approvals pages, cross-domain job progress/detail flow, or cursor recovery. Remaining `ChangePlanModal` callers still represent the legacy dry-run/direct-execute pattern. |
-| Bypass closure and public contract | **Missing** | Add source-inventory enforcement for every adopted route, remove obsolete direct/dry-run branches and duplicate transient state, document the public asynchronous contract, and pass the complete release verification matrix. |
+| Shared frontend Jobs/Approvals UX | **Missing** | Updates and Proxmox surfaces now have page-local typed job following, including bounded Proxmox batch tracking, but there are no shared Jobs or Approvals pages, cross-domain job progress/detail flow, or cursor recovery. Remaining `ChangePlanModal` callers outside the adopted six-domain paths still represent the legacy dry-run/direct-execute pattern. |
+| Bypass closure and public contract | **In progress** | Adopted six-domain handlers have source-inventory enforcement. A repository-wide residual bypass sweep, removal of obsolete direct/dry-run branches and duplicate transient state, documentation of the public asynchronous contract, and the complete release verification matrix remain. |
 
-The next publishable J0 checkpoint converts Proxmox to the proven canonical mutation boundary,
-then closes cross-domain bypasses before the shared Jobs/Approvals and durable SSE work.
+The next publishable J0 checkpoint closes residual cross-domain bypasses and documents the public
+asynchronous contract before the shared Jobs/Approvals and durable SSE work.
 
 ---
 
@@ -122,7 +122,7 @@ are still being hardened onto the shared J0 contracts.
 | 2 | **Capability detection page** | **Done** | per-capability detection with install hints; confirmed present at Settings → Capabilities |
 | 3 | **Doctor / diagnostics mode** | **Done** | `--doctor --json` CLI flag + UI at Settings → Diagnostics, 12 health checks |
 | 4 | **Disaster recovery mode** | **Done** | confirmed: `backend/src/api/disaster.rs` has `export_config`/`import_config`/`emergency_reset_admin`/`emergency_disable` plus CLI-only `cli_export`/`cli_import` that work without booting the web server |
-| 5 | **Dry-run / change planning** | **Legacy shipped; durable replacement in progress** | Containers, Firewall, Proxy, Backups, and Updates now use immutable adapter-produced planning and durable submission; update screens also follow job progress locally. Remaining legacy `ChangePlanModal` callers, including Proxmox, must move to plans and approval decisions bound to the durable job before the shared Jobs/Approvals UX lands. |
+| 5 | **Dry-run / change planning** | **Legacy shipped; durable replacement in progress** | Containers, Firewall, Proxy, Backups, Updates, and Proxmox now use immutable adapter-produced planning and durable submission; Updates and Proxmox surfaces also follow job progress locally. Remaining legacy callers outside those adopted paths must move to plans and approval decisions bound to durable jobs before the shared Jobs/Approvals UX lands. |
 | 6 | **Policy engine** | **Done**, hardened in P0 | `backend/src/policy.rs` + `backend/src/voidwatch/` — actor/action/resource/tag matching, DB-backed rules, CRUD API + UI. `voidwatch::evaluate()` is now the single choke point for MCP `tools/call`, Studio `mcp_invoke`, and automation/webhook actions (P0.1); `api_token`/`automation`/`ai` actors are default-deny with a migrated allowlist (P0.2); mode ladder + risk classes gate the AI/automation ingress path (P0.3 backend); a hardcoded irreversibility denylist blocks 9 action classes regardless of mode (P0.4); bearer tokens carry real enforced scopes, closing the god-token bypass (P0.6). Still open: making mode-ladder verdicts mandatory (not advisory) at the six UI-driven handlers — needs an approvals-queue mechanism, tracked as [issue #11](https://github.com/niwlekakan/voidtower/issues/11) |
 | 7 | **Secrets manager** | **Done**, with gaps | AES-256-GCM store, reveal-on-demand audit logging built; redaction on the AI context path shipped (P0.5: MCP tool-call output, Studio `mcp_invoke`, `get_context` bundle — `backend/src/api/redact.rs`); still missing: secret rotation, scoped per-token access |
 | 8 | **Resource tags** | **Done**, with gaps | covers services/containers/VMs/backups/apps/proxmox_vm today (`GET /api/tags/map?type=`); still missing: automations, alerts, API tokens; not yet wired into policy/alert routing |

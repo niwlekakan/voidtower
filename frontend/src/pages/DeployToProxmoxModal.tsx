@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { Server, Copy, Check, Loader2 } from 'lucide-react'
 import { api } from '@/api/client'
 import type { AppDef } from '@/api/types'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 interface Props { app: AppDef; onClose: () => void }
 
@@ -15,6 +17,7 @@ interface Result {
 }
 
 export default function DeployToProxmoxModal({ app, onClose }: Props) {
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
   const [hosts, setHosts]     = useState<PveHost[]>([])
   const [hostId, setHostId]   = useState('')
   const [node, setNode]       = useState('')
@@ -46,7 +49,22 @@ export default function DeployToProxmoxModal({ app, onClose }: Props) {
         compose_yaml: composeYaml,
         cores, memory, storage, disk_gb: diskGb,
       })
-      setResult(res)
+      track(res.job, {
+        label: `Deploy ${hostname} to Proxmox`,
+        onSucceeded: completed => {
+          const operationResult = completed.result as { vmid?: string } | null
+          if (!operationResult?.vmid) {
+            setErr('The LXC completed without returning a VMID')
+            return
+          }
+          setResult({
+            vmid: operationResult.vmid,
+            hostname,
+            node,
+            bootstrap_script: bootstrapScript(hostname, composeYaml),
+          })
+        },
+      })
     } catch (e: any) { setErr(e.message || 'Deploy failed') }
     finally { setLoading(false) }
   }
@@ -76,6 +94,8 @@ export default function DeployToProxmoxModal({ app, onClose }: Props) {
           <Server size={16} style={{ color: 'var(--accent-primary)' }} />
           <span style={{ fontWeight: 600, fontSize: 15 }}>Deploy {app.name} to Proxmox LXC</span>
         </div>
+
+        <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
 
         {result ? (
           <>
@@ -160,7 +180,7 @@ export default function DeployToProxmoxModal({ app, onClose }: Props) {
 
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                   <button onClick={onClose} style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
-                  <button onClick={deploy} disabled={loading} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent-primary)', color: '#fff', cursor: 'pointer', fontSize: 13, opacity: loading ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <button onClick={deploy} disabled={loading || tracking} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent-primary)', color: '#fff', cursor: 'pointer', fontSize: 13, opacity: loading || tracking ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 6 }}>
                     {loading && <Loader2 size={13} className="animate-spin" />}
                     {loading ? 'Creating LXC…' : 'Create LXC'}
                   </button>
@@ -172,4 +192,19 @@ export default function DeployToProxmoxModal({ app, onClose }: Props) {
       </div>
     </div>
   )
+}
+
+function bootstrapScript(hostname: string, composeYaml: string) {
+  return `#!/bin/bash
+# VoidTower bootstrap — ${hostname}
+set -e
+apt-get update -q && apt-get install -y -q curl ca-certificates
+curl -fsSL https://get.docker.com | sh
+systemctl enable --now docker
+mkdir -p /opt/app
+cat > /opt/app/docker-compose.yml << 'COMPOSE_EOF'
+${composeYaml}
+COMPOSE_EOF
+cd /opt/app && docker compose up -d
+echo "Done — ${hostname} is running."`
 }

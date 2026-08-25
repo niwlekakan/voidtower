@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Play, Square, RotateCcw, Pause, Power } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
+import { api } from '@/api/client'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 interface VM {
   id: string; name: string; state: string; source: 'local' | 'proxmox'
@@ -22,6 +25,7 @@ function fmtMem(b: number) {
 }
 
 export default function NativeVMsPanel() {
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
   const [vms, setVms] = useState<VM[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('all')
@@ -48,12 +52,8 @@ export default function NativeVMsPanel() {
   }
 
   async function actProxmox(vm: VM, action: string) {
-    await fetch('/api/vms/proxmox/action', {
-      method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vmid: vm.id, node: vm.node, action, kind: vm.kind ?? 'vm' }),
-    })
-    load()
+    const { job } = await api.vms.proxmoxAction(Number(vm.id), vm.kind ?? 'vm', vm.node ?? 'pve', canonicalProxmoxAction(action))
+    track(job, { label: `${action} ${vm.name}`, onSucceeded: load })
   }
 
   function act(vm: VM, action: string) {
@@ -67,6 +67,7 @@ export default function NativeVMsPanel() {
 
   return (
     <NativePanelShell tabs={TABS} activeTab={tab} onTabChange={setTab}>
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {loading ? <LoadingState /> : filtered.length === 0 ? <EmptyState text="No VMs" /> :
         filtered.map(v => {
           const st = v.state.toLowerCase()
@@ -108,4 +109,10 @@ export default function NativeVMsPanel() {
       }
     </NativePanelShell>
   )
+}
+
+function canonicalProxmoxAction(action: string) {
+  if (action === 'pause') return 'suspend'
+  if (action === 'restart') return 'reboot'
+  return action
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { createContext, useState, useEffect, useCallback, useContext, useRef } from 'react'
 import {
   Server, Plus, Trash2, Play, Square, RotateCcw, Camera, ChevronDown, ChevronRight,
   RefreshCw, AlertCircle, Database, Cpu, MemoryStick, HardDrive, Monitor, X,
@@ -6,9 +6,32 @@ import {
 } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
 import { notify } from '@/store/notifications'
-import type { ProxmoxHost, PveVm, PveNode, PveStorage, PveStorageContent, PveDisk, PveTask, PveSnapshot, AddHostRequest, Tag, TagMap } from '@/api/types'
+import type { ProxmoxHost, PveVm, PveNode, PveStorage, PveStorageContent, PveDisk, PveTask, PveSnapshot, AddHostRequest, Tag, TagMap, DurableJobSummary, DurableJobResponse } from '@/api/types'
 import Button from '@/components/ui/Button'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobBatchTracker, useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+
+type ProxmoxJobTracker = (
+  job: DurableJobSummary,
+  label: string,
+  onSucceeded?: (job: DurableJobSummary) => void | Promise<void>,
+) => void
+
+const ProxmoxJobContext = createContext<ProxmoxJobTracker | null>(null)
+const ProxmoxBatchJobContext = createContext<((jobs: DurableJobSummary[], label: string, onSucceeded?: () => void | Promise<void>) => void) | null>(null)
+
+function useProxmoxJobTracker() {
+  const tracker = useContext(ProxmoxJobContext)
+  if (!tracker) throw new Error('Proxmox job tracker is unavailable')
+  return tracker
+}
+
+function useProxmoxBatchJobTracker() {
+  const tracker = useContext(ProxmoxBatchJobContext)
+  if (!tracker) throw new Error('Proxmox batch job tracker is unavailable')
+  return tracker
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -90,6 +113,7 @@ type HostTab = 'vms' | 'storage' | 'disks' | 'tasks' | 'backups'
 // ── Add Host Modal ────────────────────────────────────────────────────────────
 
 function AddHostModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const trackJob = useProxmoxJobTracker()
   const [form, setForm] = useState<AddHostRequest>({ name: '', url: '', node: 'pve', token_id: '', token_secret: '', fingerprint: '' })
   const [saving, setSaving] = useState(false)
   const set = (k: keyof AddHostRequest, v: string) => setForm(f => ({ ...f, [k]: v }))
@@ -101,9 +125,9 @@ function AddHostModal({ onClose, onAdded }: { onClose: () => void; onAdded: () =
       const payload: AddHostRequest = { ...form }
       if (!payload.fingerprint) delete payload.fingerprint
       if (!payload.node) payload.node = 'pve'
-      await api.proxmox.addHost(payload)
-      notify.success('Proxmox host added')
-      onAdded(); onClose()
+      const { job } = await api.proxmox.addHost(payload)
+      trackJob(job, `Add ${payload.name}`, onAdded)
+      onClose()
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Failed to add host')
     } finally { setSaving(false) }
@@ -151,6 +175,7 @@ function AddHostModal({ onClose, onAdded }: { onClose: () => void; onAdded: () =
 // ── Snapshot modal ────────────────────────────────────────────────────────────
 
 function CreateSnapshotModal({ hostId, vm, onClose, onDone }: { hostId: string; vm: PveVm; onClose: () => void; onDone: () => void }) {
+  const trackJob = useProxmoxJobTracker()
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [saving, setSaving] = useState(false)
@@ -172,9 +197,9 @@ function CreateSnapshotModal({ hostId, vm, onClose, onDone }: { hostId: string; 
   const confirmCreate = async () => {
     setConfirming(true)
     try {
-      await api.proxmox.createSnapshot(hostId, vm.vmid, name.trim(), desc.trim())
-      notify.success(`Snapshot "${name}" created`)
-      onDone(); onClose()
+      const { job } = await api.proxmox.createSnapshot(hostId, vm.vmid, name.trim(), desc.trim())
+      trackJob(job, `Create snapshot ${name.trim()}`, onDone)
+      onClose()
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Failed to create snapshot')
     } finally { setConfirming(false) }
@@ -302,6 +327,7 @@ function SummaryBar({ nodes, vms, storage }: { nodes: PveNode[]; vms: PveVm[]; s
 // ── Snapshot row ──────────────────────────────────────────────────────────────
 
 function SnapshotRow({ hostId, vm, onRefresh }: { hostId: string; vm: PveVm; onRefresh: () => void }) {
+  const trackJob = useProxmoxJobTracker()
   const [open, setOpen] = useState(false)
   const [snaps, setSnaps] = useState<PveSnapshot[]>([])
   const [loading, setLoading] = useState(false)
@@ -347,13 +373,11 @@ function SnapshotRow({ hostId, vm, onRefresh }: { hostId: string; vm: PveVm; onR
     setConfirming(true)
     try {
       if (snapPlan.action === 'rollback') {
-        await api.proxmox.rollbackSnapshot(hostId, vm.vmid, snapPlan.snapname)
-        notify.success(`Rollback to "${snapPlan.snapname}" queued`)
-        onRefresh()
+        const { job } = await api.proxmox.rollbackSnapshot(hostId, vm.vmid, snapPlan.snapname)
+        trackJob(job, `Rollback ${vm.name ?? vm.vmid} to ${snapPlan.snapname}`, onRefresh)
       } else {
-        await api.proxmox.deleteSnapshot(hostId, vm.vmid, snapPlan.snapname)
-        notify.success(`Snapshot "${snapPlan.snapname}" deleted`)
-        await load()
+        const { job } = await api.proxmox.deleteSnapshot(hostId, vm.vmid, snapPlan.snapname)
+        trackJob(job, `Delete snapshot ${snapPlan.snapname}`, load)
       }
       setSnapPlan(null)
     } catch (err) {
@@ -525,6 +549,8 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
   hostId: string; vms: PveVm[]; tagsMap: TagMap; allTags: Tag[]
   onRefresh: () => void; onTagsChange: () => void
 }) {
+  const trackJob = useProxmoxJobTracker()
+  const trackBatch = useProxmoxBatchJobTracker()
   const [sortKey, setSortKey]     = useState<SortKey>('vmid')
   const [sortAsc, setSortAsc]     = useState(true)
   const [statusF, setStatusF]     = useState<StatusFilter>('all')
@@ -581,9 +607,8 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
     const key = `${vm.vmid}-${action}`
     setBusy(key)
     try {
-      await api.proxmox.vmAction(hostId, vm.vmid, action)
-      notify.success(`${action} sent to ${vm.name ?? vm.vmid}`)
-      onRefresh()
+      const { job } = await api.proxmox.vmAction(hostId, vm.vmid, action)
+      trackJob(job, `${action} ${vm.name ?? vm.vmid}`, onRefresh)
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : `Failed to ${action}`) }
     finally { setBusy(null) }
   }
@@ -592,10 +617,9 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
     if (!actionPlan) return
     setPlanConfirming(true)
     try {
-      await api.proxmox.vmAction(hostId, actionPlan.vm.vmid, actionPlan.action)
-      notify.success(`${actionPlan.action} sent to ${actionPlan.vm.name ?? actionPlan.vm.vmid}`)
+      const { job } = await api.proxmox.vmAction(hostId, actionPlan.vm.vmid, actionPlan.action)
+      trackJob(job, `${actionPlan.action} ${actionPlan.vm.name ?? actionPlan.vm.vmid}`, onRefresh)
       setActionPlan(null)
-      onRefresh()
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : `Failed to ${actionPlan.action}`) }
     finally { setPlanConfirming(false) }
   }
@@ -618,10 +642,9 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
     if (targets.length === 0) { notify.error('No stopped VMs selected'); return }
     setBulkBusy(true)
     try {
-      await Promise.all(targets.map(v => api.proxmox.vmAction(hostId, v.vmid, 'start')))
-      notify.success(`Start sent to ${targets.length} VM(s)`)
+      const responses = await Promise.all(targets.map(v => api.proxmox.vmAction(hostId, v.vmid, 'start')))
+      trackBatch(responses.map(response => response.job), `Start ${targets.length} guests`, onRefresh)
       setSelected(new Set())
-      onRefresh()
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Bulk start failed') }
     finally { setBulkBusy(false) }
   }
@@ -644,11 +667,10 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
     if (!bulkPlan) return
     setBulkConfirming(true)
     try {
-      await Promise.all(bulkPlan.vms.map(v => api.proxmox.vmAction(hostId, v.vmid, 'stop')))
-      notify.success(`Stop sent to ${bulkPlan.vms.length} VM(s)`)
+      const responses = await Promise.all(bulkPlan.vms.map(v => api.proxmox.vmAction(hostId, v.vmid, 'stop')))
+      trackBatch(responses.map(response => response.job), `Stop ${bulkPlan.vms.length} guests`, onRefresh)
       setBulkPlan(null)
       setSelected(new Set())
-      onRefresh()
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Bulk stop failed') }
     finally { setBulkConfirming(false) }
   }
@@ -905,6 +927,7 @@ function VmsTable({ hostId, vms, tagsMap, allTags, onRefresh, onTagsChange }: {
 function UploadContentModal({ hostId, node, storage, onClose, onDone }: {
   hostId: string; node: string; storage: string; onClose: () => void; onDone: () => void
 }) {
+  const trackJob = useProxmoxJobTracker()
   const [file, setFile] = useState<File | null>(null)
   const [contentType, setContentType] = useState<'iso' | 'vztmpl'>('iso')
   const [uploading, setUploading] = useState(false)
@@ -923,8 +946,9 @@ function UploadContentModal({ hostId, node, storage, onClose, onDone }: {
         const body = await res.json().catch(() => null)
         throw new Error(body?.error?.message ?? res.statusText)
       }
-      notify.success(`Uploaded "${file.name}"`)
-      onDone(); onClose()
+      const { job } = await res.json() as DurableJobResponse
+      trackJob(job, `Upload ${file.name}`, onDone)
+      onClose()
     } catch (err) {
       notify.error(err instanceof Error ? err.message : 'Upload failed')
     } finally { setUploading(false) }
@@ -963,6 +987,7 @@ function UploadContentModal({ hostId, node, storage, onClose, onDone }: {
 // ── Storage pool row (expandable content browser) ────────────────────────────
 
 function StoragePoolRow({ hostId, pool }: { hostId: string; pool: PveStorage }) {
+  const trackJob = useProxmoxJobTracker()
   const [open, setOpen] = useState(false)
   const [content, setContent] = useState<PveStorageContent[]>([])
   const [loading, setLoading] = useState(false)
@@ -1001,10 +1026,9 @@ function StoragePoolRow({ hostId, pool }: { hostId: string; pool: PveStorage }) 
     if (!delPlan) return
     setConfirming(true)
     try {
-      await api.proxmox.deleteStorageContent(hostId, node, pool.storage, delPlan.volid)
-      notify.success('Deleted')
+      const { job } = await api.proxmox.deleteStorageContent(hostId, node, pool.storage, delPlan.volid)
+      trackJob(job, `Delete ${delPlan.volid}`, load)
       setDelPlan(null)
-      await load()
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Delete failed') }
     finally { setConfirming(false) }
   }
@@ -1143,6 +1167,7 @@ function SmartModal({ disk, data, onClose }: { disk: PveDisk; data: Record<strin
 function InitDiskModal({ hostId, node, disk, onClose, onDone }: {
   hostId: string; node: string; disk: PveDisk; onClose: () => void; onDone: () => void
 }) {
+  const trackJob = useProxmoxJobTracker()
   const [fstype, setFstype] = useState('directory')
   const [name, setName] = useState('')
   const [raidlevel, setRaidlevel] = useState('single')
@@ -1164,9 +1189,9 @@ function InitDiskModal({ hostId, node, disk, onClose, onDone }: {
   const confirm = async () => {
     setConfirming(true)
     try {
-      await api.proxmox.initDisk(hostId, node, disk.devpath, fstype, name.trim(), fstype === 'zfs' ? raidlevel : undefined)
-      notify.success(`Disk ${disk.devpath} initialized as "${name.trim()}"`)
-      onDone(); onClose()
+      const { job } = await api.proxmox.initDisk(hostId, node, disk.devpath, fstype, name.trim(), fstype === 'zfs' ? raidlevel : undefined)
+      trackJob(job, `Initialize ${disk.devpath}`, onDone)
+      onClose()
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Initialize failed') }
     finally { setConfirming(false) }
   }
@@ -1221,6 +1246,7 @@ function InitDiskModal({ hostId, node, disk, onClose, onDone }: {
 function PassthroughModal({ hostId, disk, vms, onClose, onDone }: {
   hostId: string; disk: PveDisk; vms: PveVm[]; onClose: () => void; onDone: () => void
 }) {
+  const trackJob = useProxmoxJobTracker()
   const qemuVms = vms.filter(v => v.type === 'qemu')
   const [vmid, setVmid] = useState<number | ''>('')
   const [bus, setBus] = useState('scsi1')
@@ -1249,9 +1275,9 @@ function PassthroughModal({ hostId, disk, vms, onClose, onDone }: {
     if (!vmid) return
     setConfirming(true)
     try {
-      await api.proxmox.diskPassthrough(hostId, vmid, disk.devpath, bus)
-      notify.success(`${disk.devpath} attached to VM ${vmid} as ${bus}`)
-      onDone(); onClose()
+      const { job } = await api.proxmox.diskPassthrough(hostId, vmid, disk.devpath, bus)
+      trackJob(job, `Attach ${disk.devpath} to VM ${vmid}`, onDone)
+      onClose()
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Attach failed') }
     finally { setConfirming(false) }
   }
@@ -1292,6 +1318,7 @@ function PassthroughModal({ hostId, disk, vms, onClose, onDone }: {
 // ── Physical disks panel ──────────────────────────────────────────────────────
 
 function DisksPanel({ hostId, nodes, vms }: { hostId: string; nodes: PveNode[]; vms: PveVm[] }) {
+  const trackJob = useProxmoxJobTracker()
   const [node, setNode] = useState(nodes[0]?.node ?? '')
   const [disks, setDisks] = useState<PveDisk[]>([])
   const [loading, setLoading] = useState(false)
@@ -1340,10 +1367,9 @@ function DisksPanel({ hostId, nodes, vms }: { hostId: string; nodes: PveNode[]; 
     if (!wipePlan) return
     setConfirming(true)
     try {
-      await api.proxmox.wipeDisk(hostId, node, wipePlan.disk.devpath)
-      notify.success(`Wiping ${wipePlan.disk.devpath}`)
+      const { job } = await api.proxmox.wipeDisk(hostId, node, wipePlan.disk.devpath)
+      trackJob(job, `Wipe ${wipePlan.disk.devpath}`, load)
       setWipePlan(null)
-      await load()
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Wipe failed') }
     finally { setConfirming(false) }
   }
@@ -1674,6 +1700,14 @@ export default function ProxmoxPage() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [activeHostId, setActiveHostId] = useState<string | null>(null)
   const [deleting, setDeleting]     = useState<string | null>(null)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
+  const { batchJobs, batchLabel, batchTracking, trackBatch } = useDurableJobBatchTracker()
+  const trackJob = useCallback<ProxmoxJobTracker>((job, label, onSucceeded) => {
+    track(job, { label, onSucceeded })
+  }, [track])
+  const trackJobBatch = useCallback((jobs: DurableJobSummary[], label: string, onSucceeded?: () => void | Promise<void>) => {
+    trackBatch(jobs, { label, onSucceeded })
+  }, [trackBatch])
 
   const initialisedRef = useRef(false)
   const fetchHosts = useCallback(async () => {
@@ -1695,11 +1729,11 @@ export default function ProxmoxPage() {
     if (!confirm(`Remove host "${host.name}"? This will not affect Proxmox itself.`)) return
     setDeleting(host.id)
     try {
-      await api.proxmox.deleteHost(host.id)
-      notify.success(`Host "${host.name}" removed`)
-      const remaining = hosts.filter(h => h.id !== host.id)
-      setHosts(remaining)
-      if (activeHostId === host.id) setActiveHostId(remaining.length > 0 ? remaining[0].id : null)
+      const { job } = await api.proxmox.deleteHost(host.id)
+      trackJob(job, `Remove ${host.name}`, async () => {
+        if (activeHostId === host.id) initialisedRef.current = false
+        await fetchHosts()
+      })
     } catch (err) { notify.error(err instanceof ApiClientError ? err.message : 'Failed to remove host') }
     finally { setDeleting(null) }
   }
@@ -1707,6 +1741,8 @@ export default function ProxmoxPage() {
   const activeHost = hosts.find(h => h.id === activeHostId) ?? null
 
   return (
+    <ProxmoxJobContext.Provider value={trackJob}>
+    <ProxmoxBatchJobContext.Provider value={trackJobBatch}>
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 88px)', gap: 12 }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -1789,7 +1825,16 @@ export default function ProxmoxPage() {
         </div>
       </div>
 
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
+      {batchJobs.length > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          {batchLabel}: {batchJobs.filter(job => !['awaiting_approval', 'queued', 'running'].includes(job.state)).length}/{batchJobs.length} finished{batchTracking ? '…' : ''}
+        </div>
+      )}
+
       {showAddModal && <AddHostModal onClose={() => setShowAddModal(false)} onAdded={fetchHosts} />}
     </div>
+    </ProxmoxBatchJobContext.Provider>
+    </ProxmoxJobContext.Provider>
   )
 }

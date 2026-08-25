@@ -489,16 +489,16 @@ export const api = {
       }),
     getProxmoxConfig: () => request<import('./types').ProxmoxConfig | null>('/api/vms/proxmox/config'),
     setProxmoxConfig: (cfg: import('./types').ProxmoxConfig) =>
-      request<{ ok: boolean }>('/api/vms/proxmox/config', {
+      request<import('./types').DurableJobResponse>('/api/vms/proxmox/config', {
         method: 'POST', body: JSON.stringify(cfg),
       }),
     listProxmox: () => request<import('./types').ProxmoxVmsResponse>('/api/vms/proxmox/vms'),
     proxmoxAction: (vmid: number, kind: string, node: string, action: string) =>
-      request<{ ok: boolean; message?: string }>('/api/vms/proxmox/action', {
+      request<import('./types').DurableJobResponse>('/api/vms/proxmox/action', {
         method: 'POST', body: JSON.stringify({ vmid, kind, node, action }),
       }),
     testProxmox: () =>
-      request<{ ok: boolean; nodes?: string[]; message?: string }>('/api/vms/proxmox/test', { method: 'POST' }),
+      request<import('./types').DurableJobResponse>('/api/vms/proxmox/test', { method: 'POST' }),
   },
 
   mods: {
@@ -548,32 +548,32 @@ export const api = {
   proxmox: {
     listHosts:  () => request<import('./types').ProxmoxHost[]>('/api/proxmox/hosts'),
     addHost:    (data: import('./types').AddHostRequest) =>
-      request<{ ok: boolean }>('/api/proxmox/hosts', { method: 'POST', body: JSON.stringify(data) }),
+      request<import('./types').DurableJobResponse>('/api/proxmox/hosts', { method: 'POST', body: JSON.stringify(data) }),
     deleteHost: (id: string) =>
-      request<{ ok: boolean }>(`/api/proxmox/hosts/${id}`, { method: 'DELETE' }),
+      request<import('./types').DurableJobResponse>(`/api/proxmox/hosts/${id}`, { method: 'DELETE' }),
     getNodes:   (hostId: string) => request<import('./types').PveNode[]>(`/api/proxmox/${hostId}/nodes`),
     getVms:     (hostId: string) => request<import('./types').PveVm[]>(`/api/proxmox/${hostId}/vms`),
     getStorage: (hostId: string) => request<import('./types').PveStorage[]>(`/api/proxmox/${hostId}/storage`),
     getTasks:   (hostId: string) => request<import('./types').PveTask[]>(`/api/proxmox/${hostId}/tasks`),
-    vmAction:     (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot' | 'reset' | 'suspend' | 'resume') =>
-      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
+    vmAction:     (hostId: string, vmid: number, action: 'start' | 'stop' | 'shutdown' | 'reboot' | 'reset' | 'suspend' | 'resume') =>
+      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
     vmActionPlan: (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot' | 'reset' | 'suspend') =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST', body: JSON.stringify({ dry_run: true }) }),
     getSnapshots: (hostId: string, vmid: number, kind: 'qemu' | 'lxc') =>
       request<import('./types').PveSnapshot[]>(`/api/proxmox/${hostId}/vms/${vmid}/snapshots?kind=${kind}`),
     createSnapshot: (hostId: string, vmid: number, name: string, desc: string) =>
-      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
+      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
     createSnapshotPlan: (hostId: string, vmid: number, name: string, desc: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc, dry_run: true }) }),
     deleteSnapshot: (hostId: string, vmid: number, snapname: string) =>
-      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
+      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
     deleteSnapshotPlan: (hostId: string, vmid: number, snapname: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE', body: JSON.stringify({ dry_run: true }) }),
     rollbackSnapshot: (hostId: string, vmid: number, snapname: string) =>
-      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
+      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
     rollbackSnapshotPlan: (hostId: string, vmid: number, snapname: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST', body: JSON.stringify({ dry_run: true }) }),
@@ -586,7 +586,7 @@ export const api = {
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus, dry_run: true }) }),
     diskPassthrough: (hostId: string, vmid: number, diskPath: string, bus: string) =>
-      request<{ ok: boolean }>(`/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus }) }),
+      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus }) }),
 
     // Storage content browser
     getStorageContent: (hostId: string, node: string, storage: string) =>
@@ -596,7 +596,7 @@ export const api = {
         `/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content?volid=${encodeURIComponent(volid)}`,
         { method: 'DELETE', body: JSON.stringify({ dry_run: true }) }),
     deleteStorageContent: (hostId: string, node: string, storage: string, volid: string) =>
-      request<{ ok: boolean; task: string }>(
+      request<import('./types').DurableJobResponse>(
         `/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content?volid=${encodeURIComponent(volid)}`,
         { method: 'DELETE', body: JSON.stringify({ dry_run: false }) }),
 
@@ -609,13 +609,13 @@ export const api = {
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/nodes/${node}/disks/wipe`, { method: 'POST', body: JSON.stringify({ disk, dry_run: true }) }),
     wipeDisk: (hostId: string, node: string, disk: string) =>
-      request<{ ok: boolean; task: string }>(
+      request<import('./types').DurableJobResponse>(
         `/api/proxmox/${hostId}/nodes/${node}/disks/wipe`, { method: 'POST', body: JSON.stringify({ disk }) }),
     initDiskPlan: (hostId: string, node: string, disk: string, fstype: string, name: string, raidlevel?: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/nodes/${node}/disks/init`, { method: 'POST', body: JSON.stringify({ disk, fstype, name, raidlevel, dry_run: true }) }),
     initDisk: (hostId: string, node: string, disk: string, fstype: string, name: string, raidlevel?: string) =>
-      request<{ ok: boolean; task: string }>(
+      request<import('./types').DurableJobResponse>(
         `/api/proxmox/${hostId}/nodes/${node}/disks/init`, { method: 'POST', body: JSON.stringify({ disk, fstype, name, raidlevel }) }),
   },
 
@@ -623,7 +623,7 @@ export const api = {
     deployToLxc: (hostId: string, req: {
       node: string; hostname: string; ostemplate: string; compose_yaml: string;
       cores?: number; memory?: number; storage?: string; disk_gb?: number;
-    }) => request<{ vmid: string; hostname: string; node: string; bootstrap_script: string }>(
+    }) => request<import('./types').DurableJobResponse>(
       `/api/proxmox/${hostId}/lxc/deploy`, { method: 'POST', body: JSON.stringify(req) }),
   },
 

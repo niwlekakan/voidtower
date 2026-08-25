@@ -11,6 +11,7 @@ pub mod contracts;
 pub mod events;
 pub mod invocation;
 pub mod jobs;
+pub mod proxmox_adoption;
 pub mod registry;
 pub mod resources;
 pub mod runtime;

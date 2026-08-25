@@ -32,6 +32,11 @@ export interface DurableJobSummary {
   action: string
   state: DurableJobState
   approval_id: string | null
+  progress_current: number
+  progress_total: number
+  progress_message: string | null
+  result: unknown | null
+  error: { code: string; message: string; retryable: boolean; job_id: string | null } | null
 }
 
 export interface DurableJobResponse {

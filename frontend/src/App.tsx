@@ -48,7 +48,11 @@ import PluginsPage from '@/pages/Plugins'
 import PluginPage from '@/pages/PluginPage'
 import CustomTabView from '@/pages/CustomTabView'
 import NotFoundPage from '@/pages/NotFound'
+import JobsPage from '@/pages/Jobs'
+import ApprovalsPage from '@/pages/Approvals'
 import { useNavConfigStore } from '@/store/navConfig'
+import RequireRole from '@/auth/RequireRole'
+import { ADMIN_ROLES, OPERATOR_ROLES } from '@/auth/roles'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { status } = useAuthStore()
@@ -171,6 +175,10 @@ export default function App() {
             <Route path="automation"      element={<AutomationPage />} />
             <Route path="firewall"        element={<FirewallPage />} />
             <Route path="timeline"       element={<TimelinePage />} />
+            <Route path="jobs"           element={<RequireRole allowed={OPERATOR_ROLES}><JobsPage /></RequireRole>} />
+            <Route path="jobs/:id"       element={<RequireRole allowed={OPERATOR_ROLES}><JobsPage /></RequireRole>} />
+            <Route path="approvals"      element={<RequireRole allowed={ADMIN_ROLES}><ApprovalsPage /></RequireRole>} />
+            <Route path="approvals/:id"  element={<RequireRole allowed={ADMIN_ROLES}><ApprovalsPage /></RequireRole>} />
             <Route path="secrets"        element={<SecretsPage />} />
             <Route path="capabilities"  element={<CapabilitiesPage />} />
             <Route path="diagnostics"   element={<DiagnosticsPage />} />

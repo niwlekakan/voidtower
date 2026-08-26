@@ -57,3 +57,21 @@ pub(crate) async fn user_with_session(pool: &SqlitePool) -> String {
         .unwrap()
         .id
 }
+
+pub(crate) async fn user_with_role_session(pool: &SqlitePool, role: &str) -> String {
+    let user_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, role, created_at, updated_at) \
+         VALUES (?, ?, 'x', ?, 0, 0)",
+    )
+    .bind(&user_id)
+    .bind(format!("test-{role}-{user_id}"))
+    .bind(role)
+    .execute(pool)
+    .await
+    .unwrap();
+    crate::auth::create_session(pool, &user_id, None, None)
+        .await
+        .unwrap()
+        .id
+}

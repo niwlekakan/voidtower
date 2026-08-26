@@ -6,6 +6,8 @@ import { useAiosStore } from '@/aios/store/aios'
 import type { PresetName } from '@/aios/store/aios'
 import { PRESET_LIST } from '@/aios/AiosPresets'
 import type { DeviceTier } from '@/aios/hooks/useDeviceTier'
+import { useAuthStore } from '@/store/auth'
+import { roleAllowed } from '@/auth/roles'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -34,13 +36,14 @@ function fuzzyMatch(item: DockItem, query: string): boolean {
 
 // ── AiosCommandBar ────────────────────────────────────────────────────────────
 
-export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOpen: _onOpen, onOdysseus: _onOdysseus }: AiosCommandBarProps) {
+export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOpen, onOdysseus: _onOdysseus }: AiosCommandBarProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const { openPanel, activeWorkspace, panels, focusPanel, applyPreset } = useAiosStore()
+  const role = useAuthStore((state) => state.user?.role)
 
   const isPhone  = tier === 'phone'
   const isTv     = tier === 'tv' || tier === 'kiosk'
@@ -64,8 +67,8 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
   const results: DockItem[] = useMemo(() => (
     (isOdysseus || isEmbed || isPreset)
       ? []
-      : DOCK_ITEMS.filter((item) => fuzzyMatch(item, query)).slice(0, 8)
-  ), [isOdysseus, isEmbed, isPreset, query])
+      : DOCK_ITEMS.filter((item) => (!item.roles || roleAllowed(role, item.roles)) && fuzzyMatch(item, query)).slice(0, 8)
+  ), [isOdysseus, isEmbed, isPreset, query, role])
 
   // ── Open panel helper ──────────────────────────────────────────────────────
 
@@ -140,9 +143,10 @@ export default function AiosCommandBar({ tier, dockH = 56, statusBarH = 28, onOp
     const targetLabel = label ?? results[selected]?.label ?? target
     if (!target) return
 
-    doOpenPanel(target, targetLabel)
+    if (onOpen) onOpen(target)
+    else doOpenPanel(target, targetLabel)
     setOpen(false); setQuery(''); setSelected(0)
-  }, [query, isEmbed, isOdysseus, isPreset, presetResults, results, selected, doOpenPanel, panels, focusPanel, applyPreset, _onOdysseus])
+  }, [query, isEmbed, isOdysseus, isPreset, presetResults, results, selected, doOpenPanel, panels, focusPanel, applyPreset, onOpen, _onOdysseus])
 
   // ── Keyboard shortcut ─────────────────────────────────────────────────────
 

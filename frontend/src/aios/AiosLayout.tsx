@@ -1,5 +1,6 @@
-import { useEffect, useCallback, Component, useState } from 'react'
+import { useEffect, useCallback, Component, useRef, useState } from 'react'
 import type { ReactNode, ErrorInfo } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { LayoutGrid } from 'lucide-react'
 import { useMetrics } from '@/hooks/useMetrics'
 import { useAiosStore } from '@/aios/store/aios'
@@ -81,6 +82,8 @@ import NativeSettingsPanel     from '@/aios/panels/settings'
 import NativeStudioPanel       from '@/aios/panels/studio'
 import NativeAgentsPanel       from '@/aios/panels/agents'
 import NativeTabsPanel         from '@/aios/panels/tabs'
+import NativeJobsPanel         from '@/aios/panels/jobs'
+import NativeApprovalsPanel    from '@/aios/panels/approvals'
 
 // ── Error boundary — prevents one bad panel from blanking the whole page ─────
 
@@ -137,6 +140,8 @@ const NATIVE_PANEL_REGISTRY: Record<string, React.ComponentType> = {
   studio:       NativeStudioPanel,
   agents:       NativeAgentsPanel,
   tabs:         NativeTabsPanel,
+  jobs:         NativeJobsPanel,
+  approvals:    NativeApprovalsPanel,
 }
 
 const PANEL_REGISTRY: Record<string, React.ComponentType> = {
@@ -309,6 +314,9 @@ function defaultGeometry(
 
 export default function AiosLayout() {
   useMetrics()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const bridgedPath = useRef('')
   const user = useAuthStore((s) => s.user)
   const tier = useDeviceTier()
   const {
@@ -349,6 +357,20 @@ export default function AiosLayout() {
       ...geo,
     })
   }, [workspacePanels, focusPanel, openPanel, tier, activeWorkspace, isPhone, statusBarH, dockH, dockLeft])
+
+  useEffect(() => {
+    const match = location.pathname.match(/^\/(jobs|approvals)(?:\/|$)/)
+    if (!match || bridgedPath.current === location.pathname) return
+    bridgedPath.current = location.pathname
+    openApp(match[1])
+  }, [location.pathname, openApp])
+
+  const openFromNavigation = useCallback((key: string) => {
+    if ((key === 'jobs' || key === 'approvals') && !location.pathname.startsWith(`/${key}`)) {
+      navigate(`/${key}`)
+    }
+    openApp(key)
+  }, [location.pathname, navigate, openApp])
 
   const openOdysseus = useCallback((query?: string) => {
     const existing = panels.find((p) => p.component === 'odysseus')
@@ -559,14 +581,14 @@ export default function AiosLayout() {
         tier={tier}
         dockH={dockH}
         statusBarH={statusBarH}
-        onOpen={openApp}
+        onOpen={openFromNavigation}
       />
 
       <AiosCommandBar
         tier={tier}
         statusBarH={statusBarH}
         dockH={dockH}
-        onOpen={openApp}
+        onOpen={openFromNavigation}
         onOdysseus={openOdysseus}
       />
 

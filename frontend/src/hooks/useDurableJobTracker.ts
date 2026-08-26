@@ -2,15 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/api/client'
 import type { DurableJobState, DurableJobSummary } from '@/api/types'
 import { notify } from '@/store/notifications'
+import { ACTIVE_JOB_STATES, jobStateLabel, jobStateTone } from '@/operations/state'
 
 const POLL_MILLIS = 2_000
 const FOREGROUND_LIMIT_MILLIS = 20 * 60_000
 
-const FOLLOWED_STATES: ReadonlySet<DurableJobState> = new Set([
-  'awaiting_approval',
-  'queued',
-  'running',
-])
+const FOLLOWED_STATES: ReadonlySet<DurableJobState> = ACTIVE_JOB_STATES
 
 export type DurableJobTone = 'info' | 'success' | 'warning' | 'error'
 
@@ -32,31 +29,12 @@ interface CompletionCallbacks {
 }
 
 export function durableJobStateLabel(state: DurableJobState): string {
-  switch (state) {
-    case 'awaiting_approval': return 'awaiting approval'
-    case 'queued': return 'queued'
-    case 'running': return 'running'
-    case 'succeeded': return 'succeeded'
-    case 'failed': return 'failed'
-    case 'cancelled': return 'cancelled'
-    case 'needs_attention': return 'needs attention'
-    case 'rejected': return 'rejected'
-    case 'expired': return 'expired'
-  }
+  return jobStateLabel(state).toLowerCase()
 }
 
 export function durableJobTone(state: DurableJobState): DurableJobTone {
-  switch (state) {
-    case 'succeeded': return 'success'
-    case 'failed':
-    case 'rejected': return 'error'
-    case 'awaiting_approval':
-    case 'cancelled':
-    case 'needs_attention':
-    case 'expired': return 'warning'
-    case 'queued':
-    case 'running': return 'info'
-  }
+  const tone = jobStateTone(state)
+  return tone === 'muted' ? 'warning' : tone
 }
 
 function announceTerminal(label: string, job: DurableJobSummary) {

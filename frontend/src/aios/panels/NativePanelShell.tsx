@@ -69,7 +69,14 @@ export default function NativePanelShell({
 
 export function NativeRow({ children, style, onClick }: { children: React.ReactNode; style?: React.CSSProperties; onClick?: () => void }) {
   return (
-    <div onClick={onClick} style={{
+    <div onClick={onClick} role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onClick()
+        }
+      } : undefined}
+      style={{
       display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px',
       borderBottom: '1px solid var(--border-subtle)', ...style,
     }}>{children}</div>

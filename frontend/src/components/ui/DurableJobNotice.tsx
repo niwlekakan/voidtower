@@ -1,4 +1,5 @@
 import { Loader2 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { DurableJobSummary } from '@/api/types'
 import { durableJobStateLabel, durableJobTone } from '@/hooks/useDurableJobTracker'
 
@@ -27,7 +28,10 @@ export default function DurableJobNotice({
     >
       {tracking && <Loader2 size={12} className="animate-spin" />}
       <span>
-        {label}: {durableJobStateLabel(job.state)} · job <code>{job.id.slice(0, 8)}</code>
+        {label}: {durableJobStateLabel(job.state)} · job{' '}
+        <Link to={`/jobs/${encodeURIComponent(job.id)}`} className="font-mono underline decoration-dotted underline-offset-2 hover:opacity-80" title={`Open durable job ${job.id}`}>
+          {job.id.slice(0, 8)}
+        </Link>
       </span>
     </div>
   )

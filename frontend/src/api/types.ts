@@ -27,20 +27,109 @@ export type DurableJobState =
   | 'rejected'
   | 'expired'
 
-export interface DurableJobSummary {
+export type DurableActorType =
+  | 'human'
+  | 'api_token'
+  | 'automation'
+  | 'plugin'
+  | 'node'
+  | 'ai'
+  | 'system'
+
+export interface DurableResourceRef {
+  id: string
+  kind: string
+  display_name: string
+  revision: number
+}
+
+export interface DurableActorRef {
+  actor_type: DurableActorType
+  id: string | null
+  source: string | null
+}
+
+export interface DurablePlanChange {
+  label: string
+  value: string
+}
+
+export interface DurablePlannedStep {
+  kind: string
+  name: string
+  retry_class: string
+  recovery_class: string
+}
+
+export interface DurableOperationPlan {
+  schema_version: number
+  title: string
+  risk: string
+  changes: DurablePlanChange[]
+  preview: string | null
+  external_fingerprint: string
+  steps: DurablePlannedStep[]
+}
+
+export interface DurableOperationError {
+  code: string
+  message: string
+  retryable: boolean
+  job_id: string | null
+}
+
+export interface DurableJob {
   id: string
   action: string
+  resource: DurableResourceRef
+  actor: DurableActorRef
+  ingress: string
   state: DurableJobState
   approval_id: string | null
   progress_current: number
   progress_total: number
   progress_message: string | null
+  plan: DurableOperationPlan
   result: unknown | null
-  error: { code: string; message: string; retryable: boolean; job_id: string | null } | null
+  error: DurableOperationError | null
+  submitted_at: number
+  started_at: number | null
+  finished_at: number | null
+  updated_at: number
 }
 
+export type DurableJobSummary = DurableJob
+
 export interface DurableJobResponse {
-  job: DurableJobSummary
+  job: DurableJob
+}
+
+export interface DurableJobListResponse {
+  jobs: DurableJob[]
+}
+
+export type DurableApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'stale'
+
+export interface DurableApproval {
+  id: string
+  job_id: string
+  requirement: string
+  reason: string
+  status: DurableApprovalStatus
+  expires_at: number
+  decided_by: string | null
+  decision_comment: string | null
+  requested_at: number
+  decided_at: number | null
+  updated_at: number
+}
+
+export interface DurableApprovalResponse {
+  approval: DurableApproval
+}
+
+export interface DurableApprovalListResponse {
+  approvals: DurableApproval[]
 }
 
 export interface VoidTowerUpdateInfo {

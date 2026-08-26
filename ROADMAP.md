@@ -31,13 +31,13 @@ approved documents take precedence.
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
 | **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
 | **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
-| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. The 48-route compatibility boundary, reusable App Vault/webhook callers, public asynchronous contract, and source-enforced cross-domain bypass closure are complete. Shared Jobs/Approvals UX and durable SSE remain. |
+| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. The 48-route compatibility boundary, reusable App Vault/webhook callers, public asynchronous contract, source-enforced cross-domain bypass closure, and shared Tower/Void Jobs and Approvals workflows are complete. Durable SSE remains. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
 
 ### Current execution order
 
 1. **Completed:** **D0-01/D0-02** established numbered, fail-fast schema migrations.
-2. Finish **J0-01/J0-03**: land shared Jobs/Approvals UX, then cursor-resumable durable SSE on the canonical mutation API.
+2. Finish **J0-01/J0-03**: land cursor-resumable durable SSE on the canonical mutation API.
 3. Land the CMDB/Asset Registry on those contracts.
 4. Implement the local `vt-agent`, then secure remote enrollment and managed-cluster operation.
 5. Add placement-driven Docker/App Vault and VM/LXC workflows, including full Proxmox and managed community-script integration.
@@ -52,7 +52,7 @@ pipeline, durable jobs, audit history, or redaction rules.
 J0 has a complete execution kernel, production worker/reconciler lifecycle, six-domain
 compatibility adoption, source-enforced bypass closure, and a public asynchronous contract. It is
 not yet the only production mutation model because explicitly inventoried domains do not have
-matching durable actions. Shared frontend job/approval workflows and durable SSE still remain.
+matching durable actions. Cursor-resumable durable SSE still remains.
 “Runtime complete” therefore does not mean “J0 complete.”
 
 | Workstream | Status | Evidence / remaining work |
@@ -64,11 +64,11 @@ matching durable actions. Shared frontend job/approval workflows and durable SSE
 | Canonical mutation API | **Done** | All 51 durable actions are available through strict typed advisory-plan and durable-submit routes with server-derived actor, ingress, plan, risk, retry/recovery, concurrency, capability/resource validation, Voidwatch policy, scoped full-intent idempotency, stable bearer identity, bounded/redacted errors, and fail-closed role/scope/AI exposure. Authenticated job cancellation delegates only to the durable worker cancellation transaction. |
 | Compatibility routes and CLI | **Done (production)** | All durable branches mapped by the 48 route keys across App Vault exposure, Odysseus container webhooks, Containers/Compose apply, Firewall, Proxy, Backups, Updates, and Proxmox observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Backup mutation CLI commands submit and wait through the same typed boundary, and scheduled restore tests use a system actor plus deterministic window idempotency. Main and native six-domain surfaces follow submitted jobs locally and refresh only after terminal success. Informational reads, legacy service/automation webhook branches, and ephemeral Proxmox VNC ticket creation remain intentionally synchronous. |
 | Durable event delivery | **Partial** | Durable event history and ordered cursors exist. `/api/events/stream` still polls metrics and systemd rather than streaming the durable log with `Last-Event-ID`; `/api/integrations/events` is not yet a cursor-compatible alias; deduplicated alert/service transitions are not fully converged. |
-| Shared frontend Jobs/Approvals UX | **Missing** | All shipped six-domain main/native surfaces now have page-local typed job following, including bounded Proxmox batch tracking, but there are no shared Jobs or Approvals pages, cross-domain job progress/detail flow, or cursor recovery. Remaining `ChangePlanModal` callers outside the adopted six-domain paths still represent the legacy dry-run/direct-execute pattern. |
+| Shared frontend Jobs/Approvals UX | **Done (bounded polling)** | Tower and Void Mode provide role-filtered shared Jobs and Approvals workflows, canonical deep links, safe complete detail, queued/running cancellation, and exact immutable approval decisions. Page-local trackers retain terminal-success provider refresh ownership. Cursor recovery remains in the durable SSE workstream. |
 | Bypass closure and public contract | **Done (production)** | The 48 adopted route keys, provider execution boundaries, reusable App Vault exposure and container webhook callers, read-only open-UI projection, frontend job following, and exact deferred exception ledger are source-enforced. The public API documents acceptance, idempotency, job states, approval/cancellation semantics, errors, redaction, and synchronous exceptions. |
 
-The next publishable J0 checkpoint adds shared Jobs/Approvals navigation and decision workflows;
-cursor-resumable durable SSE follows on the same event and job contracts.
+The next publishable J0 checkpoint adds cursor-resumable durable SSE on the same event and job
+contracts.
 
 ---
 

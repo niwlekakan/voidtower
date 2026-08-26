@@ -5,6 +5,7 @@ import { useSidebarPrefsStore, SIDEBAR_ANIMATION_OPTIONS, SIDEBAR_PLACEMENT_OPTI
 import { ICON_MAP } from '@/aios/AiosDock'
 import { ICON_REGISTRY, ICON_NAMES } from '@/components/ui/iconRegistry'
 import { useAuthStore } from '@/store/auth'
+import { operationNavItemAllowed } from '@/auth/roles'
 
 function InstanceDefaultControl() {
   const currentUser = useAuthStore((s) => s.user)
@@ -133,6 +134,7 @@ function SidebarAnimationPicker() {
 }
 
 export default function NavigationTab() {
+  const role = useAuthStore((state) => state.user?.role)
   const { items, setItems, resetItems, navGroups, setNavGroups, resetNavGroups } = useNavConfigStore()
   const [list, setList] = useState<NavItem[]>(() => resolvedNavItems(items))
   const [groups, setGroups] = useState<StoredNavGroup[]>(() => resolvedNavGroups(navGroups))
@@ -247,7 +249,7 @@ export default function NavigationTab() {
       <InstanceDefaultControl />
 
       {groups.map((group, gi) => {
-        const groupItems = group.itemIds.map(id => navMap[id]).filter((it): it is NavItem => !!it)
+        const groupItems = group.itemIds.map(id => navMap[id]).filter((it): it is NavItem => !!it && operationNavItemAllowed(it.id, role))
         return (
           <div key={group.id}
             draggable

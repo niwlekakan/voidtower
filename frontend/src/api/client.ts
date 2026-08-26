@@ -741,8 +741,31 @@ export const api = {
   },
 
   operationJobs: {
+    list: (limit = 50) =>
+      request<import('./types').DurableJobListResponse>(`/api/jobs?limit=${encodeURIComponent(limit)}`),
     get: (id: string) =>
-      request<import('./types').DurableJobResponse>(`/api/jobs/${id}`),
+      request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}`),
+    cancel: (id: string) =>
+      request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  },
+
+  approvals: {
+    list: (params: { status?: import('./types').DurableApprovalStatus; limit?: number } = {}) => {
+      const query = new URLSearchParams()
+      if (params.status) query.set('status', params.status)
+      query.set('limit', String(params.limit ?? 50))
+      return request<import('./types').DurableApprovalListResponse>(`/api/approvals?${query}`)
+    },
+    get: (id: string) =>
+      request<import('./types').DurableApprovalResponse>(`/api/approvals/${encodeURIComponent(id)}`),
+    approve: (id: string, comment?: string) =>
+      request<import('./types').DurableJobResponse>(`/api/approvals/${encodeURIComponent(id)}/approve`, {
+        method: 'POST', body: JSON.stringify({ comment: comment?.trim() || null }),
+      }),
+    reject: (id: string, comment?: string) =>
+      request<import('./types').DurableJobResponse>(`/api/approvals/${encodeURIComponent(id)}/reject`, {
+        method: 'POST', body: JSON.stringify({ comment: comment?.trim() || null }),
+      }),
   },
 
   systemUpdate: {

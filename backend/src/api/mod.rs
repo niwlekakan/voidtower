@@ -72,6 +72,8 @@ pub mod nav_config;
 pub mod network;
 pub mod node_enroll;
 mod operation_adoption;
+#[cfg(test)]
+mod operation_workflows_tests;
 pub mod plugins;
 pub mod policy;
 pub mod proxmox;

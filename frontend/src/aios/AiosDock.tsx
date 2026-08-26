@@ -4,12 +4,15 @@ import {
   HardDrive, Network, Terminal, ClipboardList, Settings,
   Lock, BrainCircuit, FolderOpen, Globe, Cpu, Stethoscope,
   KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, Palette,
-  ArrowUpCircle, PlugZap, Puzzle, Bot, MoreHorizontal, Activity, LayoutPanelTop,
+  ArrowUpCircle, PlugZap, Puzzle, Bot, MoreHorizontal, Activity, LayoutPanelTop, ListChecks, ShieldCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAiosStore } from '@/aios/store/aios'
 import type { DeviceTier } from '@/aios/hooks/useDeviceTier'
 import { useNavConfigStore, resolvedNavItems } from '@/store/navConfig'
+import { useAuthStore } from '@/store/auth'
+import type { Role } from '@/api/types'
+import { ADMIN_ROLES, OPERATOR_ROLES, roleAllowed } from '@/auth/roles'
 
 // ── Nav items — mirrors NAV_GROUPS from Sidebar but flattened ─────────────────
 
@@ -20,6 +23,7 @@ interface DockItem {
   aiLevel?: 'native' | 'aware' | 'ready'
   /** Primary items are always prominent; secondary items are visually lighter */
   primary?: boolean
+  roles?: readonly Role[]
 }
 
 // Phone dock shows only these 5 keys + a "+more" button
@@ -51,6 +55,8 @@ const DOCK_ITEMS: DockItem[] = [
   { key: 'secrets',      icon: KeyRound,        label: 'Secrets'      },
   { key: 'audit',        icon: ClipboardList,   label: 'Audit Log'    },
   { key: 'automation',   icon: Zap,             label: 'Automation'   },
+  { key: 'jobs',         icon: ListChecks,      label: 'Jobs',         roles: OPERATOR_ROLES },
+  { key: 'approvals',    icon: ShieldCheck,     label: 'Approvals',    roles: ADMIN_ROLES },
   { key: 'agents',       icon: Activity,        label: 'Agents'       },
   { key: 'tabs',         icon: LayoutPanelTop,  label: 'Custom Tabs'  },
   { key: 'tags',         icon: Tag,             label: 'Tags'         },
@@ -117,6 +123,7 @@ export default function AiosDock({
   const { panels, activeWorkspace, openPanel, focusPanel, restorePanel } = useAiosStore()
   const [tooltip, setTooltip] = useState<string | null>(null)
   const navConfigItems = useNavConfigStore((s) => s.items)
+  const role = useAuthStore((s) => s.user?.role)
   const navResolved = resolvedNavItems(navConfigItems)
   const navMap = Object.fromEntries(navResolved.map((n) => [n.id, n]))
 
@@ -257,6 +264,7 @@ export default function AiosDock({
   // Apply nav config: filter hidden items and apply label overrides
   const applyNavConfig = (items: DockItem[]): DockItem[] =>
     items
+      .filter((d) => !d.roles || roleAllowed(role, d.roles))
       .filter((d) => navMap[d.key]?.visible !== false)
       .map((d) => ({ ...d, label: navMap[d.key]?.label ?? d.label }))
 

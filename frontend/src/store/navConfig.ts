@@ -40,6 +40,8 @@ export const DEFAULT_NAV_ITEMS: NavItem[] = [
   { id: 'secrets',      label: 'Secrets',      visible: true },
   { id: 'audit',        label: 'Audit Log',    visible: true },
   { id: 'automation',   label: 'Automation',   visible: true },
+  { id: 'jobs',         label: 'Jobs',         visible: true },
+  { id: 'approvals',    label: 'Approvals',    visible: true },
   { id: 'tags',         label: 'Tags',         visible: true },
   { id: 'integrations', label: 'Integrations', visible: true },
   { id: 'updates',      label: 'Updates',      visible: true },
@@ -57,7 +59,7 @@ export const DEFAULT_NAV_GROUPS: StoredNavGroup[] = [
   { id: 'network',   label: 'Network',   itemIds: ['network', 'proxies', 'wireguard', 'firewall'] },
   { id: 'data',      label: 'Data',      itemIds: ['storage', 'backups', 'files'] },
   { id: 'security',  label: 'Security',  itemIds: ['security', 'secrets', 'audit'] },
-  { id: 'ops',       label: 'Ops',       itemIds: ['automation', 'terminal', 'tags'] },
+  { id: 'ops',       label: 'Ops',       itemIds: ['jobs', 'approvals', 'automation', 'terminal', 'tags'] },
   { id: 'system',    label: 'System',    itemIds: ['integrations', 'updates', 'mods', 'customization', 'settings'] },
 ]
 
@@ -146,5 +148,16 @@ export function resolvedNavItems(items: NavItem[]): NavItem[] {
  * Returns effective nav groups. If navGroups is empty (never configured), returns DEFAULT_NAV_GROUPS.
  */
 export function resolvedNavGroups(navGroups: StoredNavGroup[]): StoredNavGroup[] {
-  return navGroups.length > 0 ? navGroups : DEFAULT_NAV_GROUPS
+  if (navGroups.length === 0) return DEFAULT_NAV_GROUPS
+  const resolved = navGroups.map(group => ({ ...group, itemIds: [...group.itemIds] }))
+  const assigned = new Set(resolved.flatMap(group => group.itemIds))
+  for (const defaultGroup of DEFAULT_NAV_GROUPS) {
+    const missing = defaultGroup.itemIds.filter(id => !assigned.has(id))
+    if (missing.length === 0) continue
+    const existing = resolved.find(group => group.id === defaultGroup.id)
+    if (existing) existing.itemIds.push(...missing)
+    else resolved.push({ ...defaultGroup, itemIds: missing })
+    missing.forEach(id => assigned.add(id))
+  }
+  return resolved
 }

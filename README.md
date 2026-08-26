@@ -154,6 +154,12 @@ job reaches a conclusive state. Canonical submissions require `Idempotency-Key`;
 routes generate a request-scoped key for older clients. See the [API reference](docs/api.md#durable-operations)
 for planning, approvals, cancellation, replay, errors, and the explicitly synchronous exceptions.
 
+Owner, admin, and operator sessions can inspect the newest durable records in the shared Jobs
+workflow in Tower or Void Mode; owner and admin sessions can review and decide the exact immutable
+records in Approvals. These views use bounded, visibility-aware HTTP polling until cursor-resumable
+durable SSE lands. Cancellation remains limited to queued/running jobs, and no UI action retries or
+resubmits automatically.
+
 ---
 
 ## Voidwatch — AI ops integration

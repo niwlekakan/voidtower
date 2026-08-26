@@ -11,6 +11,7 @@ import Button from '@/components/ui/Button'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
 import DurableJobNotice from '@/components/ui/DurableJobNotice'
 import { useDurableJobBatchTracker, useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import { Link } from 'react-router-dom'
 
 type ProxmoxJobTracker = (
   job: DurableJobSummary,
@@ -1829,6 +1830,9 @@ export default function ProxmoxPage() {
       {batchJobs.length > 0 && (
         <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
           {batchLabel}: {batchJobs.filter(job => !['awaiting_approval', 'queued', 'running'].includes(job.state)).length}/{batchJobs.length} finished{batchTracking ? '…' : ''}
+          <span className="ml-2 inline-flex flex-wrap gap-1.5">
+            {batchJobs.map(job => <Link key={job.id} to={`/jobs/${encodeURIComponent(job.id)}`} className="font-mono underline decoration-dotted underline-offset-2" style={{ color: 'var(--accent-primary)' }}>{job.id.slice(0, 8)}</Link>)}
+          </span>
         </div>
       )}
 

@@ -658,4 +658,42 @@ mod tests {
             assert!(source.contains("DurableJobNotice"), "{name} does not expose job state");
         }
     }
+
+    #[test]
+    fn shared_jobs_and_approvals_surfaces_are_source_enforced() {
+        let app = include_str!("../../../frontend/src/App.tsx");
+        for route in [
+            "path=\"jobs\"",
+            "path=\"jobs/:id\"",
+            "path=\"approvals\"",
+            "path=\"approvals/:id\"",
+        ] {
+            assert!(app.contains(route), "missing shared operation route {route}");
+        }
+        assert!(app.contains("allowed={OPERATOR_ROLES}"));
+        assert!(app.contains("allowed={ADMIN_ROLES}"));
+
+        let sidebar = include_str!("../../../frontend/src/components/layout/Sidebar.tsx");
+        assert!(sidebar.contains("to: '/jobs'"));
+        assert!(sidebar.contains("roles: OPERATOR_ROLES"));
+        assert!(sidebar.contains("to: '/approvals'"));
+        assert!(sidebar.contains("roles: ADMIN_ROLES"));
+        assert!(sidebar.contains("roleAllowed(user?.role, item.roles)"));
+
+        let dock = include_str!("../../../frontend/src/aios/AiosDock.tsx");
+        assert!(dock.contains("key: 'jobs'"));
+        assert!(dock.contains("roles: OPERATOR_ROLES"));
+        assert!(dock.contains("key: 'approvals'"));
+        assert!(dock.contains("roles: ADMIN_ROLES"));
+        assert!(dock.contains("roleAllowed(role, d.roles)"));
+
+        let layout = include_str!("../../../frontend/src/aios/AiosLayout.tsx");
+        assert!(layout.contains("jobs:         NativeJobsPanel"));
+        assert!(layout.contains("approvals:    NativeApprovalsPanel"));
+        assert!(layout.contains("/^\\/(jobs|approvals)(?:\\/|$)/"));
+
+        let notice = include_str!("../../../frontend/src/components/ui/DurableJobNotice.tsx");
+        assert!(notice.contains("<Link"));
+        assert!(notice.contains("`/jobs/${encodeURIComponent(job.id)}`"));
+    }
 }

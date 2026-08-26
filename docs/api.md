@@ -61,9 +61,12 @@ branch returns `202 { "job": ... }`; a compatibility `dry_run: true` returns an 
 creates no job. App Vault/model Compose lifecycle, AI proxy-settings orchestration, service and
 arbitrary-automation webhook actions, and ephemeral Proxmox VNC ticket creation remain synchronous
 exceptions because they do not yet have matching durable actions. The current web clients follow
-submitted jobs locally; shared Jobs/Approvals navigation and cursor-resumable durable SSE are not
-yet shipped. `/api/events` exposes durable history, while `/api/events/stream` remains the legacy
-live stream.
+submitted jobs locally and link to shared job detail. Owner/admin/operator sessions can list and
+inspect the newest 50 jobs in Tower or Void Mode; cancellation is offered only for queued/running
+records. Owner/admin sessions can list and decide exact immutable approvals with an optional
+comment. These shared workflows use bounded, visibility-aware HTTP polling and never retry a
+mutation automatically. `/api/events` exposes durable history, while `/api/events/stream` remains
+the legacy live stream; cursor-resumable durable SSE is the remaining J0 delivery checkpoint.
 
 ---
 

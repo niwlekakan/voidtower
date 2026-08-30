@@ -65,8 +65,9 @@ submitted jobs locally and link to shared job detail. Owner/admin/operator sessi
 inspect the newest 50 jobs in Tower or Void Mode; cancellation is offered only for queued/running
 records. Owner/admin sessions can list and decide exact immutable approvals with an optional
 comment. These shared workflows use bounded, visibility-aware HTTP polling and never retry a
-mutation automatically. `/api/events` exposes durable history, while `/api/events/stream` remains
-the legacy live stream; cursor-resumable durable SSE is the remaining J0 delivery checkpoint.
+mutation automatically. `/api/events` exposes durable history; `/api/events/stream` and
+`/api/integrations/events` expose the same cursor-resumable durable SSE stream. Shared operation
+views use it only to invalidate authoritative HTTP reads and retain bounded polling as fallback.
 
 ---
 
@@ -85,6 +86,44 @@ GET  /api/auth/me
 GET /api/metrics/current
 GET /api/metrics/ws        WebSocket (1 s interval)
 ```
+
+## Durable events
+
+```
+GET /api/events                         Ordered retained history (`after`, `limit`)
+GET /api/events/stream                  Cursor-resumable SSE
+GET /api/integrations/events            Exact durable SSE alias
+GET /api/integrations/events/legacy     Deprecated transient metrics/audit feed
+```
+
+The durable stream accepts `after=<non-negative sequence>` and the standard `Last-Event-ID`
+header. If both are present, the greater value wins so reconnect cannot rewind. A connection with
+neither cursor starts at the current high-water mark; use `after=0` to request all retained events.
+
+After validating the cursor, the server emits:
+
+```text
+event: stream.ready
+data: {"cursor":42,"high_water":47}
+
+id: 43
+event: durable_event
+data: {"sequence":43,"event_id":"...","schema_version":1,"event_type":"job.running.v1",...}
+```
+
+`durable_event` data is the complete `EventEnvelopeV1`, and its SSE `id` always equals
+`sequence`. Delivery is ordered in bounded batches with bounded backpressure. Keepalive comments do
+not advance the cursor.
+
+If retained history cannot satisfy a cursor, or a sequence discontinuity is detected, the server
+emits `stream.gap` with `reason`, `requested_after`, `earliest_available`, and `latest_available`,
+then closes. Clients must refetch complete authoritative resources before reconnecting at a known
+high-water mark. They must never infer or replay a mutation from an event.
+
+Owner, admin, and operator sessions may connect. API tokens require `alerts:read`; browser
+`EventSource` clients may pass the token as `?token=` when they cannot set an Authorization header.
+Emergency disable rejects token-backed streams on either durable URL while leaving local session
+recovery available.
 
 ## Services
 
@@ -377,7 +416,8 @@ DELETE /api/integrations/tokens/:id
 GET  /api/integrations/odysseus/config
 POST /api/integrations/odysseus/config           { enabled?, mcp_enabled?, allowed_url?, webhook_secret?, emergency_disable? }
 GET  /api/integrations/odysseus/manifest
-GET  /api/integrations/events                    SSE stream
+GET  /api/integrations/events                    Durable cursor-resumable SSE alias
+GET  /api/integrations/events/legacy             Deprecated metrics/audit SSE
 POST /api/integrations/webhooks                  { automation_id?, action?, resource_id?, dry_run? }
 GET  /api/integrations/actions
 ```

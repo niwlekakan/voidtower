@@ -156,9 +156,10 @@ for planning, approvals, cancellation, replay, errors, and the explicitly synchr
 
 Owner, admin, and operator sessions can inspect the newest durable records in the shared Jobs
 workflow in Tower or Void Mode; owner and admin sessions can review and decide the exact immutable
-records in Approvals. These views use bounded, visibility-aware HTTP polling until cursor-resumable
-durable SSE lands. Cancellation remains limited to queued/running jobs, and no UI action retries or
-resubmits automatically.
+records in Approvals. These views use cursor-resumable durable SSE as an invalidation channel and
+retain bounded, visibility-aware HTTP polling whenever the stream is not proven ready and gap-free.
+Cancellation remains limited to queued/running jobs, and no UI action retries or resubmits
+automatically.
 
 ---
 

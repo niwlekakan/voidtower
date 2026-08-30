@@ -782,7 +782,7 @@ function SetupSection() {
         <li>Create an API token with the scopes Odysseus needs.</li>
         <li>In Odysseus settings, add VoidTower as a tool server with the token.</li>
         <li>Optionally configure the webhook secret so Odysseus can trigger automations.</li>
-        <li>Subscribe to the event stream for real-time alerts.</li>
+        <li>Subscribe to the durable event stream for resumable operation updates.</li>
       </ol>
       <div className="space-y-3">
         {snippets.map(s => (

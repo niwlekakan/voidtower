@@ -194,6 +194,23 @@ Authorization: Bearer <token>
 
 Returns a `text/event-stream` of infrastructure events in real time.
 
+The default stream now delivers the durable `EventEnvelopeV1` log. With no cursor it begins at the
+current high-water mark. Supply `after=<sequence>` for explicit retained replay (`after=0` for all
+retained history); reconnects may send `Last-Event-ID`. Each `durable_event` carries an SSE ID equal
+to its ordered database sequence. `stream.ready` confirms the selected cursor, while `stream.gap`
+requires a complete authoritative state refresh before reconnect.
+
+Events are notifications, not mutation commands or authoritative resource snapshots. A consumer
+must never replay an action after reconnect. Existing consumers of the old `metrics`, `alert`,
+`audit`, and `ping` shapes can migrate temporarily to:
+
+```
+GET /api/integrations/events/legacy
+Authorization: Bearer <token>
+```
+
+Both routes require `alerts:read`. Emergency disable rejects token-backed connections.
+
 ---
 
 ## Security Notes

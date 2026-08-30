@@ -31,13 +31,13 @@ approved documents take precedence.
 | **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
 | **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
 | **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
-| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **In progress** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, and the canonical plan/submit/cancel HTTP boundary are implemented. The 48-route compatibility boundary, reusable App Vault/webhook callers, public asynchronous contract, source-enforced cross-domain bypass closure, and shared Tower/Void Jobs and Approvals workflows are complete. Durable SSE remains. |
+| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **Done** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, the canonical plan/submit/cancel HTTP boundary, 48-route compatibility boundary, shared Tower/Void Jobs and Approvals workflows, and cursor-resumable durable SSE are implemented and source-enforced. |
 | **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
 
 ### Current execution order
 
 1. **Completed:** **D0-01/D0-02** established numbered, fail-fast schema migrations.
-2. Finish **J0-01/J0-03**: land cursor-resumable durable SSE on the canonical mutation API.
+2. **Completed:** **J0-01/J0-03** landed cursor-resumable durable SSE on the canonical mutation API.
 3. Land the CMDB/Asset Registry on those contracts.
 4. Implement the local `vt-agent`, then secure remote enrollment and managed-cluster operation.
 5. Add placement-driven Docker/App Vault and VM/LXC workflows, including full Proxmox and managed community-script integration.
@@ -52,8 +52,7 @@ pipeline, durable jobs, audit history, or redaction rules.
 J0 has a complete execution kernel, production worker/reconciler lifecycle, six-domain
 compatibility adoption, source-enforced bypass closure, and a public asynchronous contract. It is
 not yet the only production mutation model because explicitly inventoried domains do not have
-matching durable actions. Cursor-resumable durable SSE still remains.
-“Runtime complete” therefore does not mean “J0 complete.”
+matching durable actions. Cursor-resumable durable SSE now completes the shared J0 contract.
 
 | Workstream | Status | Evidence / remaining work |
 |---|---|---|
@@ -63,12 +62,11 @@ matching durable actions. Cursor-resumable durable SSE still remains.
 | Docker Compose safety boundary | **Done (production)** | Compose planning uses controlled immutable artifacts, rollback preparation, bounded/redacted provider output, and no-replay reconciliation. The compatibility apply route now binds the observed config path, stages idempotency-stable artifacts, and submits the canonical durable job; it never executes Compose itself. Pause/unpause were explicitly removed from J0 scope because no registered or legacy action existed. |
 | Canonical mutation API | **Done** | All 51 durable actions are available through strict typed advisory-plan and durable-submit routes with server-derived actor, ingress, plan, risk, retry/recovery, concurrency, capability/resource validation, Voidwatch policy, scoped full-intent idempotency, stable bearer identity, bounded/redacted errors, and fail-closed role/scope/AI exposure. Authenticated job cancellation delegates only to the durable worker cancellation transaction. |
 | Compatibility routes and CLI | **Done (production)** | All durable branches mapped by the 48 route keys across App Vault exposure, Odysseus container webhooks, Containers/Compose apply, Firewall, Proxy, Backups, Updates, and Proxmox observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Backup mutation CLI commands submit and wait through the same typed boundary, and scheduled restore tests use a system actor plus deterministic window idempotency. Main and native six-domain surfaces follow submitted jobs locally and refresh only after terminal success. Informational reads, legacy service/automation webhook branches, and ephemeral Proxmox VNC ticket creation remain intentionally synchronous. |
-| Durable event delivery | **Partial** | Durable event history and ordered cursors exist. `/api/events/stream` still polls metrics and systemd rather than streaming the durable log with `Last-Event-ID`; `/api/integrations/events` is not yet a cursor-compatible alias; deduplicated alert/service transitions are not fully converged. |
-| Shared frontend Jobs/Approvals UX | **Done (bounded polling)** | Tower and Void Mode provide role-filtered shared Jobs and Approvals workflows, canonical deep links, safe complete detail, queued/running cancellation, and exact immutable approval decisions. Page-local trackers retain terminal-success provider refresh ownership. Cursor recovery remains in the durable SSE workstream. |
+| Durable event delivery | **Done** | `/api/events/stream` and `/api/integrations/events` share one ordered `EventEnvelopeV1` stream with live-only startup, explicit replay, `Last-Event-ID`, bounded batches/backpressure, ready/gap control frames, role/scope enforcement, and authoritative recovery. The former integrations metrics/audit feed remains temporarily at `/api/integrations/events/legacy`. |
+| Shared frontend Jobs/Approvals UX | **Done** | Tower and Void Mode provide role-filtered shared Jobs and Approvals workflows, canonical deep links, safe complete detail, queued/running cancellation, and exact immutable approval decisions. Durable SSE invalidates authoritative reads; bounded polling resumes until each connection is ready and gap-free. Page-local trackers retain terminal-success provider refresh ownership. |
 | Bypass closure and public contract | **Done (production)** | The 48 adopted route keys, provider execution boundaries, reusable App Vault exposure and container webhook callers, read-only open-UI projection, frontend job following, and exact deferred exception ledger are source-enforced. The public API documents acceptance, idempotency, job states, approval/cancellation semantics, errors, redaction, and synchronous exceptions. |
 
-The next publishable J0 checkpoint adds cursor-resumable durable SSE on the same event and job
-contracts.
+The next foundation checkpoint lands the CMDB/Asset Registry on the completed J0 contracts.
 
 ---
 
@@ -102,7 +100,7 @@ Features confirmed present in the codebase (pages + API modules).
 | **Capabilities** | Detect installed tools (Docker, libvirt, WireGuard, restic, nginx, GPU) with version strings and install hints |
 | **Diagnostics** | 12 system health checks — config/data dirs, DB, frontend assets, disk space, Docker daemon, nginx config, port bind |
 | **Security** | Positive role guards; explicit route/session/bearer policy; one typed registry for all 327 routes and structured actions; fail-closed unknown metadata; scoped tokens; Voidwatch risk/approval metadata; session revocation; audit log |
-| **Integrations** | Scoped API tokens; Odysseus config (enable/disable, MCP toggle, webhook secret); legacy polling SSE plus durable event-history reads; webhook trigger; tool manifest at `/api/integrations/odysseus/manifest`. Cursor-resumable durable SSE remains in J0. |
+| **Integrations** | Scoped API tokens; Odysseus config (enable/disable, MCP toggle, webhook secret); cursor-resumable durable SSE plus an explicit deprecated transient feed; webhook trigger; tool manifest at `/api/integrations/odysseus/manifest`. |
 | **Themes** | 23 built-in themes (`frontend/src/theme/themes.ts`) + live custom token editor (CSS variables), 14-param animation editor |
 | **Animated Backgrounds** | 8 canvas presets (Void, Grid, Aurora, Pulse, Noise, Hex, Hex Classic, Circuit) + 4 glass levels |
 | **Updates** | In-UI updater — Docker image check/apply; bare-metal pull/rebuild with rollback points; Odysseus update checks; OS package updates (apt/pacman/dnf). All update mutations submit durable jobs and the Updates/Settings screens follow their state locally. |
@@ -436,8 +434,10 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 
 - [x] Policy engine for Odysseus actions (see must-have #6 above) — done in P0: `voidwatch::evaluate()` gates MCP `tools/call` and Studio `mcp_invoke` the same way webhook-triggered automations already were, plus default-deny, mode ladder, and the irreversibility denylist on top.
 - [x] "Send to Odysseus" buttons — Done, in copy-to-clipboard form: `frontend/src/components/ui/SendToOdysseus.tsx`, wired into Alerts/Services/Containers. Not done: full context packaging with secret redaction (Odysseus has no `?prompt=` param to receive it directly) and extending the button to VMs/backup failures/security findings/log selections.
-- [ ] AI approval queue UI — the durable approval store and authenticated read/approve/reject APIs now exist, but AI ingress still needs canonical job submission and the frontend needs pending-action, immutable-plan, stale-plan, and decision UX. Time-limited approval and policy-authoring shortcuts remain later enhancements.
-- [ ] Full event stream subscriptions — durable history exists, while the current SSE path still polls legacy metrics/systemd state. J0 must add cursor-resumable durable SSE and the integrations compatibility alias; webhook outbound push and MCP resource/event support for agents follow.
+- [ ] Canonical AI approval ingress — the durable store and shared Tower/Void pending/history,
+  immutable-plan, stale-plan, and exact-decision UI now exist. AI ingress still needs canonical job
+  submission. Time-limited policy-authoring shortcuts remain later enhancements.
+- [x] Durable operation event subscriptions — the canonical and integrations SSE routes share ordered cursor-resumable history, and Jobs/Approvals use it as invalidation with bounded HTTP fallback. Webhook outbound push and MCP resource/event support for agents remain later work.
 - [ ] MCP tool-call audit trail — every `mcp::invoke_tool` call (direct MCP, or via Studio's `mcp_invoke`) should write an `audit::log` entry the same way `proxmox.vm.stop`/`proxmox.vm.snapshot` etc. already do, so "what did the AI actually run" is answerable from the Timeline without cross-referencing Odysseus's own logs.
 
 ### Developer experience
@@ -503,13 +503,13 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 | Scoped API token creation | Implemented |
 | Odysseus config UI (enable/disable, MCP toggle, webhook secret) | Implemented |
 | Tool manifest at `/api/integrations/odysseus/manifest` | Implemented |
-| SSE event stream (`/api/integrations/events`) | **Partial** — a legacy SSE endpoint exists and durable event history is queryable, but cursor-resumable durable-log streaming, `Last-Event-ID`, and compatibility-alias convergence remain in J0. |
+| SSE event stream (`/api/integrations/events`) | **Implemented** — exact alias of the cursor-resumable durable `EventEnvelopeV1` stream with `Last-Event-ID`, explicit replay, bounded delivery, and gap recovery. The former transient feed is deprecated at `/api/integrations/events/legacy`. |
 | Webhook bridge (inbound, HMAC-signed, triggers automations) | Implemented |
 | Emergency disable all AI access | Implemented |
 | MCP server (built-in, tool-serving) | **Implemented** — `backend/src/api/mcp.rs` (commit `3a23ed3`), real JSON-RPC SSE+message server at `/api/mcp` + `/api/mcp/message` with 13 tools (`list_nodes`, `get_node_metrics`, `list_containers`, `list_services`, `list_alerts`, `get_container_logs`, `list_routes`, `read_file`, `search_code`, `get_template`, `list_secrets`, `get_policy_rules`, `get_audit_log`). Studio's MCP tool panel (`studio::mcp_tools`/`mcp_invoke`) reuses the same tool set. |
 | App-specific MCP servers (standalone) | **Implemented** (`11bade2`) — `odysseus-mcp-servers/voidtower_server.py` expanded to 38 tools (proxy, firewall, VM lifecycle, App Vault deploy/undeploy, service logs, tags, status checks). 39 new per-app standalone Python MCP servers ship alongside it, one per App Vault catalog app, ~413 tools total. Each registers independently in Odysseus or any MCP client; see `docs/integrations/mcp-server.md`. |
 | "Send to Odysseus" buttons in UI | Implemented (copy-to-clipboard variant) — `SendToOdysseus.tsx`, wired into Alerts/Services/Containers; no full context-packaging-with-redaction yet |
-| AI approval queue / pending action UI | **Partial** — durable approval persistence and authenticated read/approve/reject APIs exist; canonical AI job submission and the shared frontend queue are not implemented. |
+| AI approval queue / pending action UI | **Partial** — durable persistence and the shared Tower/Void queue are implemented; canonical AI job submission remains. |
 | Event stream webhook outbound push | Not implemented — SSE only |
 | Per-Odysseus-action policy enforcement | Done (P0) — `voidwatch::evaluate()` is now the single choke point for MCP `tools/call`, Studio `mcp_invoke`, and webhook/automation actions; default-deny + mode ladder + irreversibility denylist all apply. Direct MCP/Studio tool calls no longer bypass policy. |
 | Odysseus integration events linked to timeline | Partial — audit log exists; no explicit Odysseus tagging |

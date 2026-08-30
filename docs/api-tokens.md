@@ -27,11 +27,16 @@ Pass the token as a Bearer header:
 Authorization: Bearer vt_<your_token>
 ```
 
-For the SSE event stream (`/api/integrations/events`), which can't set headers, pass it as a query parameter instead:
+For the durable SSE stream (`/api/integrations/events`, an alias of `/api/events/stream`), browser
+`EventSource` clients that cannot set headers may pass the token as a query parameter:
 
 ```
 GET /api/integrations/events?token=vt_<your_token>
 ```
+
+The default connection is live-only. Add `after=0` for complete retained replay or resume with
+`Last-Event-ID`. Tokens require `alerts:read`. The deprecated transient metrics/audit feed is at
+`/api/integrations/events/legacy` during migration.
 
 ---
 
@@ -153,5 +158,7 @@ Go to **Settings → Integrations → API Tokens** and click **Revoke** next to 
 - Tokens are stored as SHA-256 hashes — VoidTower cannot recover the plaintext value after creation
 - Token usage is tracked (`last_used_at` timestamp updated on each authenticated request)
 - All token creation and revocation events appear in the audit timeline
-- The SSE stream checks the emergency-disable flag — if Odysseus integration is emergency-disabled, `alerts:read` tokens cannot connect to `/api/integrations/events`
+- Durable and legacy SSE routes check the emergency-disable flag — when Odysseus is
+  emergency-disabled, `alerts:read` tokens cannot connect through either public durable URL or the
+  legacy integrations URL. Owner/admin/operator browser sessions retain local recovery access.
 - Scopes are enforced by a single middleware for every route a Bearer token can reach (not per-handler) — a route with no listed scope requirement is closed to tokens by default, not implicitly open

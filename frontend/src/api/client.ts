@@ -119,6 +119,13 @@ export const api = {
     },
   },
 
+  events: {
+    streamUrl: (after?: number) => {
+      const query = after === undefined ? '' : `?after=${encodeURIComponent(String(after))}`
+      return `${BASE}/api/events/stream${query}`
+    },
+  },
+
   services: {
     list:   () => request<import('./types').ServicesResponse>('/api/services'),
     get:    (name: string) => request<import('./types').ServiceInfo>(`/api/services/${name}`),

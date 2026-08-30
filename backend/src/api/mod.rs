@@ -58,6 +58,8 @@ pub mod demo_guard;
 pub mod diagnostics;
 pub mod disaster;
 pub mod events;
+#[cfg(test)]
+mod event_stream_tests;
 pub mod files;
 pub mod firewall;
 pub mod integrations;
@@ -394,7 +396,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/integrations/odysseus/config",         get(integrations::get_config).post(integrations::save_config))
         .route("/api/integrations/odysseus/manifest",       get(integrations::manifest))
         .route("/api/integrations/odysseus/theme",          get(integrations::sync_theme))
-        .route("/api/integrations/events",                  get(integrations::event_stream))
+        .route("/api/integrations/events",                  get(events::stream_handler))
+        .route("/api/integrations/events/legacy",           get(integrations::legacy_event_stream))
         .route("/api/integrations/webhooks",                post(integrations::webhook))
         .route("/api/integrations/actions",                 get(integrations::recent_actions))
         .route("/api/system/version",       get(system::version))

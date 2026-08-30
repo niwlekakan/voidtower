@@ -36,6 +36,12 @@ pub struct PendingEvent {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventBounds {
+    pub earliest: Option<i64>,
+    pub latest: i64,
+}
+
 pub async fn append(
     transaction: &mut Transaction<'_, Sqlite>,
     event: PendingEvent,
@@ -139,6 +145,17 @@ pub async fn list_after(pool: &SqlitePool, after: i64, limit: i64) -> Result<Vec
         .collect()
 }
 
+pub async fn bounds(pool: &SqlitePool) -> Result<EventBounds> {
+    let (earliest, latest): (Option<i64>, Option<i64>) =
+        sqlx::query_as("SELECT MIN(sequence), MAX(sequence) FROM events")
+            .fetch_one(pool)
+            .await?;
+    Ok(EventBounds {
+        earliest,
+        latest: latest.unwrap_or(0),
+    })
+}
+
 fn parse_actor_type(value: &str) -> super::contracts::ActorType {
     use super::contracts::ActorType;
     match value {
@@ -217,5 +234,64 @@ mod tests {
         let rest = list_after(&pool, first[1].sequence, 10).await.unwrap();
         assert_eq!(rest.len(), 1);
         assert!(rest[0].sequence > first[1].sequence);
+    }
+
+    #[tokio::test]
+    async fn bounds_cover_empty_populated_and_discontinuous_history() {
+        let pool = pool().await;
+        assert_eq!(
+            bounds(&pool).await.unwrap(),
+            EventBounds {
+                earliest: None,
+                latest: 0,
+            }
+        );
+
+        let mut transaction = pool.begin().await.unwrap();
+        for number in 1..=3 {
+            append(
+                &mut transaction,
+                PendingEvent {
+                    event_type: "test.bounds.v1".into(),
+                    actor: None,
+                    resource_id: None,
+                    job_id: None,
+                    approval_id: None,
+                    correlation_id: "test".into(),
+                    causation_id: None,
+                    payload: serde_json::json!({"number": number}),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        transaction.commit().await.unwrap();
+        assert_eq!(
+            bounds(&pool).await.unwrap(),
+            EventBounds {
+                earliest: Some(1),
+                latest: 3,
+            }
+        );
+
+        sqlx::query("DELETE FROM events WHERE sequence = 2")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            bounds(&pool).await.unwrap(),
+            EventBounds {
+                earliest: Some(1),
+                latest: 3,
+            }
+        );
+        let listed = list_after(&pool, 1, 10).await.unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
     }
 }

@@ -1257,7 +1257,7 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Get,
         "/api/events/stream",
-        SessionPolicy::Required(RoleTier::Session),
+        SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Scope("alerts:read"),
         RiskClass::Read,
@@ -1425,7 +1425,17 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Get,
         "/api/integrations/events",
-        SessionPolicy::Required(RoleTier::Session),
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Scope("alerts:read"),
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/integrations/events/legacy",
+        SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Scope("alerts:read"),
         RiskClass::Read,

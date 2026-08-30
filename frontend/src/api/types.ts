@@ -132,6 +132,35 @@ export interface DurableApprovalListResponse {
   approvals: DurableApproval[]
 }
 
+export interface DurableEventEnvelope {
+  sequence: number
+  event_id: string
+  schema_version: number
+  event_type: string
+  occurred_at: number
+  actor: DurableActorRef | null
+  resource_id: string | null
+  job_id: string | null
+  approval_id: string | null
+  correlation_id: string
+  causation_id: string | null
+  payload: unknown
+}
+
+export interface DurableEventStreamReady {
+  cursor: number
+  high_water: number
+}
+
+export type DurableEventGapReason = 'behind_retention' | 'future_cursor' | 'discontinuity' | 'invalid_frame'
+
+export interface DurableEventStreamGap {
+  reason: DurableEventGapReason
+  requested_after: number
+  earliest_available: number | null
+  latest_available: number
+}
+
 export interface VoidTowerUpdateInfo {
   mode: 'git' | 'docker'
   current_commit: string

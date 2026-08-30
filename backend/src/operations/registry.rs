@@ -696,4 +696,43 @@ mod tests {
         assert!(notice.contains("<Link"));
         assert!(notice.contains("`/jobs/${encodeURIComponent(job.id)}`"));
     }
+
+    #[test]
+    fn durable_event_delivery_and_shared_invalidations_are_source_enforced() {
+        let routes = include_str!("../api/mod.rs");
+        assert!(routes.contains(
+            ".route(\"/api/events/stream\", get(events::stream_handler))"
+        ));
+        assert!(routes.contains(
+            ".route(\"/api/integrations/events\",                  get(events::stream_handler))"
+        ));
+        assert!(routes.contains(
+            ".route(\"/api/integrations/events/legacy\",           get(integrations::legacy_event_stream))"
+        ));
+
+        let backend = include_str!("../api/events.rs");
+        for contract in [
+            "last-event-id",
+            "DELIVERY_BATCH_SIZE: i64 = 100",
+            ".event(\"stream.ready\")",
+            ".event(\"stream.gap\")",
+            ".event(\"durable_event\")",
+            ".id(envelope.sequence.to_string())",
+        ] {
+            assert!(backend.contains(contract), "missing durable stream contract {contract}");
+        }
+
+        let client = include_str!("../../../frontend/src/operations/durableEvents.ts");
+        assert!(client.contains("new EventSource(api.events.streamUrl(after)"));
+        assert!(client.contains("event.sequence !== lastSequence + 1"));
+
+        let hooks = include_str!("../../../frontend/src/hooks/useOperationRecords.ts");
+        assert_eq!(occurrences(hooks, "const eventPredicate ="), 4);
+        assert!(hooks.contains("event.job_id === id"));
+        assert!(hooks.contains("event.approval_id === id"));
+
+        let polling = include_str!("../../../frontend/src/hooks/useBoundedPolling.ts");
+        assert!(polling.contains("subscribeDurableEvents"));
+        assert!(polling.contains("streamReady = value !== null && transportReady"));
+    }
 }

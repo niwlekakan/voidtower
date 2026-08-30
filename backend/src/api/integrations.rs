@@ -6,7 +6,7 @@ use crate::{
     voidwatch, AppState,
 };
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::HeaderMap,
     response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response},
     Json,
@@ -590,7 +590,9 @@ pub async fn manifest(State(state): State<AppState>) -> Json<serde_json::Value> 
             "url": "/api/integrations/events",
             "auth": "?token=<api_token> or Authorization header",
             "required_scope": "alerts:read",
-            "events": ["metrics", "alert", "audit", "ping"]
+            "cursor": "after=<sequence> or Last-Event-ID",
+            "events": ["stream.ready", "durable_event", "stream.gap"],
+            "legacy_url": "/api/integrations/events/legacy"
         },
         "webhook": {
             "url": "/api/integrations/webhooks",
@@ -637,38 +639,58 @@ pub struct StreamQuery {
     pub token: Option<String>,
 }
 
-pub async fn event_stream(
+pub async fn legacy_event_stream(
     State(state): State<AppState>,
     jar: CookieJar,
     Query(q): Query<StreamQuery>,
     headers: HeaderMap,
+    token_context: Option<Extension<super::bearer_auth::AuthenticatedApiToken>>,
 ) -> Result<
     Sse<impl futures_util::Stream<Item = std::result::Result<Event, std::convert::Infallible>>>,
 > {
-    // Accept: session cookie, Authorization header, or ?token= query param (SSE can't set headers)
-    let authed = if let Some(raw) = q.token {
-        auth::validate_api_token(&state.db, &raw, "alerts:read")
-            .await
-            .is_ok()
+    // A middleware-authenticated Bearer token carries a temporary cookie, so its extension must
+    // be checked before genuine browser-session precedence.
+    let (authed, token_backed) = if token_context.is_some() {
+        let raw = headers
+            .get("Authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .unwrap_or("");
+        (
+            auth::validate_api_token(&state.db, raw, "alerts:read")
+                .await
+                .is_ok(),
+            true,
+        )
+    } else if let Some(sid) = jar.get("vt_session").map(|c| c.value().to_string()) {
+        match auth::validate_session(&state.db, &sid).await {
+            Ok(Some(user)) => {
+                super::role_guard::require_operator(&user)?;
+                (true, false)
+            }
+            _ => (false, false),
+        }
+    } else if let Some(raw) = q.token {
+        (
+            auth::validate_api_token(&state.db, &raw, "alerts:read")
+                .await
+                .is_ok(),
+            true,
+        )
     } else if let Some(hdr) = headers.get("Authorization") {
         let raw = hdr
             .to_str()
             .unwrap_or("")
             .trim_start_matches("Bearer ")
             .to_string();
-        auth::validate_api_token(&state.db, &raw, "alerts:read")
-            .await
-            .is_ok()
-    } else {
-        let sid = jar.get("vt_session").map(|c| c.value().to_string());
-        if let Some(sid) = sid {
-            auth::validate_session(&state.db, &sid)
+        (
+            auth::validate_api_token(&state.db, &raw, "alerts:read")
                 .await
-                .map(|u| u.is_some())
-                .unwrap_or(false)
-        } else {
-            false
-        }
+                .is_ok(),
+            true,
+        )
+    } else {
+        (false, false)
     };
 
     if !authed {
@@ -676,7 +698,7 @@ pub async fn event_stream(
     }
 
     // Check emergency disable
-    if get_setting(&state, "odysseus.emergency_disabled").await == "true" {
+    if token_backed && get_setting(&state, "odysseus.emergency_disabled").await == "true" {
         return Err(AppError::FeatureUnavailable(
             "AI access is emergency-disabled".into(),
         ));

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -16,6 +16,47 @@ pub struct AuditEntry {
     pub request_id: Option<String>,
     pub details: Option<String>,
     pub source: Option<String>,
+}
+
+pub struct PendingAudit<'a> {
+    pub user_id: Option<&'a str>,
+    pub actor_type: &'a str,
+    pub action: &'a str,
+    pub resource_type: Option<&'a str>,
+    pub resource_id: Option<&'a str>,
+    pub outcome: &'a str,
+    pub ip_address: Option<&'a str>,
+    pub request_id: Option<&'a str>,
+    pub details: Option<&'a str>,
+    pub source: Option<&'a str>,
+}
+
+pub async fn append(
+    transaction: &mut Transaction<'_, Sqlite>,
+    pending: PendingAudit<'_>,
+) -> anyhow::Result<String> {
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO audit_log \
+         (id, timestamp, user_id, actor_type, action, resource_type, resource_id, outcome, \
+          ip_address, request_id, details, source) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(unix_now())
+    .bind(pending.user_id)
+    .bind(pending.actor_type)
+    .bind(pending.action)
+    .bind(pending.resource_type)
+    .bind(pending.resource_id)
+    .bind(pending.outcome)
+    .bind(pending.ip_address)
+    .bind(pending.request_id)
+    .bind(pending.details)
+    .bind(pending.source)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(id)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -3,6 +3,9 @@ use sqlx::SqlitePool;
 
 pub(crate) async fn run(pool: &SqlitePool) -> Result<()> {
     let mut transaction = pool.begin().await?;
+    crate::cmdb::catalog::seed(&mut transaction, unix_now())
+        .await
+        .context("failed to seed CMDB catalogs")?;
     seed_default_policy_rules(&mut transaction).await?;
     crate::voidwatch::allowlist_seed::seed_default_allowlist_if_empty_on(&mut transaction)
         .await

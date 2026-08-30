@@ -113,7 +113,120 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![(1, true), (2, true)]);
+        assert_eq!(versions, vec![(1, true), (2, true), (3, true)]);
+    }
+
+    #[tokio::test]
+    async fn cmdb_schema_keeps_resource_uuid_canonical_and_strong_identity_unique() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+        let now = 1_i64;
+
+        sqlx::query(
+            "INSERT INTO cmdb_classes \
+             (key, label, is_builtin, enabled, created_at, updated_at) \
+             VALUES ('hw', 'Hardware', 1, 1, ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cmdb_types \
+             (key, class_key, label, is_builtin, enabled, created_at, updated_at) \
+             VALUES ('hdd', 'hw', 'Hard disk', 1, 1, ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let missing_resource = sqlx::query(
+            "INSERT INTO cmdb_assets \
+             (resource_id, asset_id, class_key, type_key, created_at, updated_at) \
+             VALUES ('missing', 'VT-hw-hdd-0000', 'hw', 'hdd', ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await;
+        assert!(missing_resource.is_err());
+
+        for (resource_id, asset_id) in [
+            ("resource-a", "VT-hw-hdd-0001"),
+            ("resource-b", "VT-hw-hdd-0002"),
+        ] {
+            sqlx::query(
+                "INSERT INTO resources \
+                 (id, kind, display_name, lifecycle_state, revision, created_at, updated_at) \
+                 VALUES (?, 'physical_disk', ?, 'active', 0, ?, ?)",
+            )
+            .bind(resource_id)
+            .bind(asset_id)
+            .bind(now)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO cmdb_assets \
+                 (resource_id, asset_id, class_key, type_key, created_at, updated_at) \
+                 VALUES (?, ?, 'hw', 'hdd', ?, ?)",
+            )
+            .bind(resource_id)
+            .bind(asset_id)
+            .bind(now)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let duplicate_asset_id = sqlx::query(
+            "UPDATE cmdb_assets SET asset_id = 'VT-hw-hdd-0001' \
+             WHERE resource_id = 'resource-b'",
+        )
+        .execute(&pool)
+        .await;
+        assert!(duplicate_asset_id.is_err());
+
+        for (id, resource_id) in [("identity-a", "resource-a"), ("identity-b", "resource-b")] {
+            let inserted = sqlx::query(
+                "INSERT INTO cmdb_asset_identities \
+                 (id, resource_id, identity_kind, normalized_value, confidence, source, \
+                  first_seen_at, last_seen_at) \
+                 VALUES (?, ?, 'wwn', '5000c500abcd1234', 'strong', 'test', ?, ?)",
+            )
+            .bind(id)
+            .bind(resource_id)
+            .bind(now)
+            .bind(now)
+            .execute(&pool)
+            .await;
+            if resource_id == "resource-a" {
+                inserted.unwrap();
+            } else {
+                assert!(inserted.is_err());
+            }
+        }
+
+        for (id, resource_id) in [("serial-a", "resource-a"), ("serial-b", "resource-b")] {
+            sqlx::query(
+                "INSERT INTO cmdb_asset_identities \
+                 (id, resource_id, identity_kind, normalized_value, confidence, source, \
+                  first_seen_at, last_seen_at) \
+                 VALUES (?, ?, 'serial', 'shared-serial', 'weak', 'test', ?, ?)",
+            )
+            .bind(id)
+            .bind(resource_id)
+            .bind(now)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
     }
 
     #[tokio::test]
@@ -391,7 +504,7 @@ mod tests {
                 .fetch_one(&first)
                 .await
                 .unwrap();
-        assert_eq!(versions, 2);
+        assert_eq!(versions, 3);
         first.close().await;
         second.close().await;
     }

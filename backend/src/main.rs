@@ -6,6 +6,7 @@ mod auth;
 mod automation;
 mod backups;
 mod cluster;
+pub mod cmdb;
 mod config;
 mod containers;
 mod db;

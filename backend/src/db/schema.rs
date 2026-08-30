@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 pub(crate) const BASELINE_SQL: &str = include_str!("../../migrations/0001_current_baseline.sql");
 pub(crate) const OPERATIONS_SQL: &str =
     include_str!("../../migrations/0002_operation_contracts.sql");
+pub(crate) const CMDB_SQL: &str = include_str!("../../migrations/0003_cmdb_asset_registry.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColumnShape {
@@ -172,6 +173,10 @@ async fn canonical_schema() -> Result<SchemaShape> {
         .execute(&mut connection)
         .await
         .context("failed to construct canonical schema from operation-contract migration")?;
+    sqlx::query(CMDB_SQL)
+        .execute(&mut connection)
+        .await
+        .context("failed to construct canonical schema from CMDB migration")?;
     inspect_schema(&mut connection).await
 }
 

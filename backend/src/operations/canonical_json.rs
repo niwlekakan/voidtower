@@ -6,9 +6,7 @@ use sha2::{Digest, Sha256};
 pub const MAX_PERSISTED_JSON_BYTES: usize = 64 * 1024;
 
 pub fn to_canonical_string<T: Serialize>(value: &T) -> Result<String> {
-    let value = serde_json::to_value(value)?;
-    let canonical = canonicalize(value);
-    let encoded = serde_json::to_string(&canonical)?;
+    let encoded = encode_canonical(value)?;
     if encoded.len() > MAX_PERSISTED_JSON_BYTES {
         bail!(
             "serialized operation payload exceeds {} bytes",
@@ -18,8 +16,29 @@ pub fn to_canonical_string<T: Serialize>(value: &T) -> Result<String> {
     Ok(encoded)
 }
 
+pub fn to_canonical_string_with_limit<T: Serialize>(
+    value: &T,
+    maximum_bytes: usize,
+) -> Result<String> {
+    let encoded = encode_canonical(value)?;
+    if encoded.len() > maximum_bytes {
+        bail!("serialized JSON exceeds {maximum_bytes} bytes");
+    }
+    Ok(encoded)
+}
+
+fn encode_canonical<T: Serialize>(value: &T) -> Result<String> {
+    let value = serde_json::to_value(value)?;
+    serde_json::to_string(&canonicalize(value)).map_err(Into::into)
+}
+
 pub fn digest<T: Serialize>(value: &T) -> Result<String> {
     let encoded = to_canonical_string(value)?;
+    Ok(hex::encode(Sha256::digest(encoded.as_bytes())))
+}
+
+pub fn digest_with_limit<T: Serialize>(value: &T, maximum_bytes: usize) -> Result<String> {
+    let encoded = to_canonical_string_with_limit(value, maximum_bytes)?;
     Ok(hex::encode(Sha256::digest(encoded.as_bytes())))
 }
 
@@ -55,5 +74,11 @@ mod tests {
     fn oversized_payload_is_rejected() {
         let payload = "x".repeat(MAX_PERSISTED_JSON_BYTES);
         assert!(to_canonical_string(&payload).is_err());
+    }
+
+    #[test]
+    fn callers_can_choose_a_larger_explicit_bound() {
+        let payload = "x".repeat(MAX_PERSISTED_JSON_BYTES);
+        assert!(digest_with_limit(&payload, MAX_PERSISTED_JSON_BYTES * 2).is_ok());
     }
 }

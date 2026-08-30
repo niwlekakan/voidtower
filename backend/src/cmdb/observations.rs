@@ -26,6 +26,7 @@ const MAX_ENTITY_TYPE_LEN: usize = 64;
 const MAX_COLLECTOR_VERSION_LEN: usize = 64;
 const MAX_PLATFORM_LEN: usize = 32;
 const MAX_WRITE_ATTEMPTS: usize = 4;
+const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_JSON_DEPTH: usize = 8;
 const MAX_JSON_VALUES: usize = 256;
 const MAX_JSON_COLLECTION_LEN: usize = 128;
@@ -1188,7 +1189,9 @@ async fn ingest_once(
         ));
     }
 
-    let snapshot_fingerprint = canonical_json::digest(&input.snapshot)?;
+    let snapshot_fingerprint =
+        canonical_json::digest_with_limit(&input.snapshot, MAX_SNAPSHOT_BYTES)
+            .map_err(|error| ObservationError::Invalid(error.to_string()))?;
     let mut transaction = pool.begin().await?;
     let trusted = source_trust(
         &mut transaction,

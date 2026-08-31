@@ -53,6 +53,7 @@ pub mod automation;
 pub mod backups;
 pub mod bearer_auth;
 pub mod capabilities;
+pub mod cmdb;
 pub mod containers;
 pub mod demo_guard;
 pub mod diagnostics;
@@ -340,12 +341,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wireguard", get(wireguard::list))
         .route("/api/wireguard/peers", post(wireguard::add_peer))
         .route("/api/wireguard/peers/:id", delete(wireguard::delete_peer))
+        // Canonical CMDB asset API
+        .route("/api/cmdb/assets", get(cmdb::assets::list).post(cmdb::assets::create).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
+        .route("/api/cmdb/assets/:selector", get(cmdb::assets::get))
+        .route("/api/cmdb/assets/:selector/rename", post(cmdb::assets::rename))
+        .route("/api/cmdb/assets/:selector/retirement", post(cmdb::assets::retirement))
         // Fleet node enrollment (phones/tablets/pis joining over WireGuard)
         .route("/api/nodes/pairing-code", post(node_enroll::create_pairing_code))
         .route("/api/nodes/enroll",       post(node_enroll::enroll))
         .route("/api/nodes",              get(node_enroll::list))
         .route("/api/nodes/:id",          delete(node_enroll::delete_node))
         .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat))
+        .route("/api/nodes/:id/inventory", post(cmdb::inventory::upload).layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024)))
         // Self-hosting hub: per-member app access / storage / custom-deploy
         .route("/api/members", get(members::list_members))
         .route("/api/members/me/access", get(members::get_my_access))

@@ -3735,6 +3735,12 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
+    route_metadata!(Get, "/api/cmdb/assets", SessionPolicy::Required(RoleTier::Operator), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Read, ApprovalPolicy::NotApplicable, AiExposure::None),
+    route_metadata!(Post, "/api/cmdb/assets", SessionPolicy::Required(RoleTier::Admin), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Mutate, ApprovalPolicy::RiskLadder, AiExposure::None),
+    route_metadata!(Get, "/api/cmdb/assets/:selector", SessionPolicy::Required(RoleTier::Operator), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Read, ApprovalPolicy::NotApplicable, AiExposure::None),
+    route_metadata!(Post, "/api/cmdb/assets/:selector/rename", SessionPolicy::Required(RoleTier::Admin), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Mutate, ApprovalPolicy::RiskLadder, AiExposure::None),
+    route_metadata!(Post, "/api/cmdb/assets/:selector/retirement", SessionPolicy::Required(RoleTier::Admin), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Mutate, ApprovalPolicy::RiskLadder, AiExposure::None),
+    route_metadata!(Post, "/api/nodes/:id/inventory", SessionPolicy::HandlerManaged, CredentialPolicy::NodeToken, BearerPolicy::Denied, RiskClass::Mutate, ApprovalPolicy::NotApplicable, AiExposure::None),
 ];
 macro_rules! action_metadata {
     ($name:literal, $ingresses:expr, $kind:expr, $risk:expr, $approval:expr) => {

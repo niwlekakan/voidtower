@@ -301,6 +301,7 @@ pub async fn heartbeat(
     headers: HeaderMap,
     Json(req): Json<HeartbeatRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    verify_node_token(state.clone(), node_id.clone(), headers.clone()).await?;
     let raw_token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -336,4 +337,10 @@ pub async fn heartbeat(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub(crate) async fn verify_node_token(state: crate::AppState, node_id: String, headers: axum::http::HeaderMap) -> crate::error::Result<()> {
+    let raw = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).map(str::trim).ok_or(crate::error::AppError::Unauthorized)?;
+    let matched: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = ? AND token_hash = ? AND approved = 1 AND agent_capable = 1").bind(node_id).bind(crate::api::integrations::sha256_hex(raw)).fetch_one(&state.db).await.map_err(|e| crate::error::AppError::Internal(e.into()))?;
+    if matched == 0 { Err(crate::error::AppError::Unauthorized) } else { Ok(()) }
 }

@@ -53,9 +53,14 @@ pub struct EnrollRequest {
     pub device_type: String,
     #[serde(default)]
     pub agent_capable: bool,
+    #[serde(default = "default_provision_wireguard")]
+    pub provision_wireguard: bool,
 }
 fn default_device_type() -> String {
     "other".to_string()
+}
+fn default_provision_wireguard() -> bool {
+    true
 }
 
 #[derive(Serialize)]
@@ -180,23 +185,43 @@ pub async fn enroll(
         .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("pairing code owner no longer exists")))?;
 
-    let wg_result = crate::api::wireguard::add_peer_core(
-        &state,
-        &owner,
-        &req.display_name,
-        "wg0",
-        None,
-    )
-    .await?;
-
-    let wg_peer_id = wg_result.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let wg_public_key = wg_result.get("public_key").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let client_config = wg_result.get("client_config").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let warnings: Vec<String> = wg_result
-        .get("warnings")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
+    let (wg_peer_id, wg_public_key, client_config, warnings) = if req.provision_wireguard {
+        let wg_result = crate::api::wireguard::add_peer_core(
+            &state,
+            &owner,
+            &req.display_name,
+            "wg0",
+            None,
+        )
+        .await?;
+        let peer_id = wg_result
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let public_key = wg_result
+            .get("public_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let client_config = wg_result
+            .get("client_config")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let warnings = wg_result
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (peer_id, public_key, client_config, warnings)
+    } else {
+        (None, String::new(), String::new(), Vec::new())
+    };
 
     let node_id = Uuid::new_v4().to_string();
     let node_token_raw = generate_api_token();
@@ -210,7 +235,7 @@ pub async fn enroll(
     .bind(&req.display_name)
     .bind(&req.device_type)
     .bind(&owner.id)
-    .bind(&wg_peer_id)
+    .bind(wg_peer_id.as_deref())
     .bind(&wg_public_key)
     .bind(&node_token_hash)
     .bind(req.agent_capable)
@@ -343,4 +368,100 @@ pub(crate) async fn verify_node_token(state: crate::AppState, node_id: String, h
     let raw = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).map(str::trim).ok_or(crate::error::AppError::Unauthorized)?;
     let matched: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = ? AND token_hash = ? AND approved = 1 AND agent_capable = 1").bind(node_id).bind(crate::api::integrations::sha256_hex(raw)).fetch_one(&state.db).await.map_err(|e| crate::error::AppError::Internal(e.into()))?;
     if matched == 0 { Err(crate::error::AppError::Unauthorized) } else { Ok(()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::mcp::test_support;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header, Request, StatusCode},
+    };
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    async fn pairing_code(db: &sqlx::SqlitePool, raw: &str) {
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, role, created_at, updated_at) \
+             VALUES ('enroll-owner', 'enroll-owner', 'x', 'owner', 0, 0)",
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO node_pairing_codes \
+             (id, token_hash, created_by, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(sha256_hex(raw))
+        .bind("enroll-owner")
+        .bind(unix_now() + PAIRING_CODE_TTL_SECS)
+        .bind(unix_now())
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn omitted_wireguard_request_preserves_legacy_provisioning_default() {
+        let request: EnrollRequest = serde_json::from_value(json!({
+            "pairing_code": "pairing-code",
+            "display_name": "legacy-client"
+        }))
+        .unwrap();
+
+        assert!(request.provision_wireguard);
+    }
+
+    #[tokio::test]
+    async fn explicit_false_enrolls_without_wireguard_state() {
+        let db = test_support::setup_db().await;
+        pairing_code(&db, "no-wireguard-code").await;
+        let app = crate::api::router(test_support::build(db.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/enroll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "pairing_code": "no-wireguard-code",
+                            "display_name": "lan-agent",
+                            "device_type": "pi",
+                            "agent_capable": true,
+                            "provision_wireguard": false
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["wg_client_config"], "");
+        assert_eq!(body["warnings"], json!([]));
+
+        let (wg_peer_id, wg_public_key): (Option<String>, String) = sqlx::query_as(
+            "SELECT wg_peer_id, wg_public_key FROM nodes WHERE id = ?",
+        )
+        .bind(body["node_id"].as_str().unwrap())
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(wg_peer_id, None);
+        assert!(wg_public_key.is_empty());
+
+        let peer_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wireguard_peers")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(peer_count, 0);
+    }
 }

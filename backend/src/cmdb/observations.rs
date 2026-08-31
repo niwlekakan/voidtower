@@ -1367,6 +1367,24 @@ pub async fn get_observation(
         .await?)
 }
 
+pub async fn list_by_asset(
+    pool: &SqlitePool,
+    resource_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<ObservationRecord>> {
+    let sql = format!(
+        "{OBSERVATION_SELECT} WHERE resource_id = ? \
+         ORDER BY last_seen_at DESC, id DESC LIMIT ? OFFSET ?"
+    );
+    Ok(sqlx::query_as(&sql)
+        .bind(resource_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?)
+}
+
 async fn observation_in(
     transaction: &mut Transaction<'_, Sqlite>,
     observation_id: &str,

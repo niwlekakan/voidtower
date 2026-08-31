@@ -138,6 +138,8 @@ const NUMBER_FIELDS: &[&str] = &[
     "vmid",
     "exported_at",
     "parallel",
+    "number_width",
+    "starting_number",
 ];
 const BOOL_FIELDS: &[&str] = &[
     "enabled",

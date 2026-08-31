@@ -145,6 +145,65 @@ pub async fn list_after(pool: &SqlitePool, after: i64, limit: i64) -> Result<Vec
         .collect()
 }
 
+pub async fn list_for_resource(
+    pool: &SqlitePool,
+    resource_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<EventEnvelopeV1>> {
+    let rows: Vec<EventRow> = sqlx::query_as(
+        "SELECT sequence, event_id, schema_version, event_type, occurred_at, actor_type, \
+                actor_id, actor_source, resource_id, job_id, approval_id, correlation_id, \
+                causation_id, payload_json FROM events WHERE resource_id = ? \
+         ORDER BY sequence DESC LIMIT ? OFFSET ?",
+    )
+    .bind(resource_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(
+            |(
+                sequence,
+                event_id,
+                schema_version,
+                event_type,
+                occurred_at,
+                actor_type,
+                actor_id,
+                actor_source,
+                resource_id,
+                job_id,
+                approval_id,
+                correlation_id,
+                causation_id,
+                payload_json,
+            )| {
+                Ok(EventEnvelopeV1 {
+                    sequence,
+                    event_id,
+                    schema_version: u16::try_from(schema_version)?,
+                    event_type,
+                    occurred_at,
+                    actor: actor_type.map(|actor_type| ActorRef {
+                        actor_type: parse_actor_type(&actor_type),
+                        id: actor_id,
+                        source: actor_source,
+                    }),
+                    resource_id,
+                    job_id,
+                    approval_id,
+                    correlation_id,
+                    causation_id,
+                    payload: serde_json::from_str(&payload_json)?,
+                })
+            },
+        )
+        .collect()
+}
+
 pub async fn bounds(pool: &SqlitePool) -> Result<EventBounds> {
     let (earliest, latest): (Option<i64>, Option<i64>) =
         sqlx::query_as("SELECT MIN(sequence), MAX(sequence) FROM events")

@@ -58,9 +58,9 @@ pub mod containers;
 pub mod demo_guard;
 pub mod diagnostics;
 pub mod disaster;
-pub mod events;
 #[cfg(test)]
 mod event_stream_tests;
+pub mod events;
 pub mod files;
 pub mod firewall;
 pub mod integrations;
@@ -342,10 +342,25 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wireguard/peers", post(wireguard::add_peer))
         .route("/api/wireguard/peers/:id", delete(wireguard::delete_peer))
         // Canonical CMDB asset API
-        .route("/api/cmdb/assets", get(cmdb::assets::list).post(cmdb::assets::create).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
+        .route("/api/cmdb/assets", get(cmdb::assets::list).post(cmdb::assets::create).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
         .route("/api/cmdb/assets/:selector", get(cmdb::assets::get))
-        .route("/api/cmdb/assets/:selector/rename", post(cmdb::assets::rename))
-        .route("/api/cmdb/assets/:selector/retirement", post(cmdb::assets::retirement))
+        .route("/api/cmdb/assets/:selector/rename", post(cmdb::assets::rename).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/assets/:selector/retirement", post(cmdb::assets::retirement).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/assets/:selector/history", get(cmdb::records::history))
+        .route("/api/cmdb/assets/:selector/observations", get(cmdb::records::observations))
+        .route("/api/cmdb/assets/:selector/relationships", get(cmdb::relationships::list).post(cmdb::relationships::create).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/relationships/:id", delete(cmdb::relationships::end))
+        .route("/api/cmdb/classes", get(cmdb::catalogs::list_classes).post(cmdb::catalogs::create_class).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/classes/:key", patch(cmdb::catalogs::update_class).delete(cmdb::catalogs::delete_class).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/types", get(cmdb::catalogs::list_types).post(cmdb::catalogs::create_type).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/types/:key", patch(cmdb::catalogs::update_type).delete(cmdb::catalogs::delete_type).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/locations", get(cmdb::locations::list).post(cmdb::locations::create).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/locations/:id", patch(cmdb::locations::update).delete(cmdb::locations::delete).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/discoveries", get(cmdb::discoveries::list))
+        .route("/api/cmdb/discoveries/:id/register", post(cmdb::discoveries::register).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/discoveries/:id/link", post(cmdb::discoveries::link).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/discoveries/:id/ignore", post(cmdb::discoveries::ignore).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/settings", get(cmdb::settings::get).patch(cmdb::settings::update).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
         // Fleet node enrollment (phones/tablets/pis joining over WireGuard)
         .route("/api/nodes/pairing-code", post(node_enroll::create_pairing_code))
         .route("/api/nodes/enroll",       post(node_enroll::enroll))

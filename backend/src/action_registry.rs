@@ -1531,11 +1531,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
         AiExposure::Callable,
-        [
-            "container.start",
-            "container.stop",
-            "container.restart",
-        ]
+        ["container.start", "container.stop", "container.restart",]
     ),
     route_metadata!(
         Get,
@@ -3735,12 +3731,296 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(Get, "/api/cmdb/assets", SessionPolicy::Required(RoleTier::Operator), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Read, ApprovalPolicy::NotApplicable, AiExposure::None),
-    route_metadata!(Post, "/api/cmdb/assets", SessionPolicy::Required(RoleTier::Admin), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Mutate, ApprovalPolicy::RiskLadder, AiExposure::None),
-    route_metadata!(Get, "/api/cmdb/assets/:selector", SessionPolicy::Required(RoleTier::Operator), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Read, ApprovalPolicy::NotApplicable, AiExposure::None),
-    route_metadata!(Post, "/api/cmdb/assets/:selector/rename", SessionPolicy::Required(RoleTier::Admin), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Mutate, ApprovalPolicy::RiskLadder, AiExposure::None),
-    route_metadata!(Post, "/api/cmdb/assets/:selector/retirement", SessionPolicy::Required(RoleTier::Admin), CredentialPolicy::SessionCookie, BearerPolicy::Denied, RiskClass::Mutate, ApprovalPolicy::RiskLadder, AiExposure::None),
-    route_metadata!(Post, "/api/nodes/:id/inventory", SessionPolicy::HandlerManaged, CredentialPolicy::NodeToken, BearerPolicy::Denied, RiskClass::Mutate, ApprovalPolicy::NotApplicable, AiExposure::None),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/assets",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets/:selector",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/assets/:selector/rename",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/assets/:selector/retirement",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/classes",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/classes",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Patch,
+        "/api/cmdb/classes/:key",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/cmdb/classes/:key",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/types",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/types",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Patch,
+        "/api/cmdb/types/:key",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/cmdb/types/:key",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/locations",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/locations",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Patch,
+        "/api/cmdb/locations/:id",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/cmdb/locations/:id",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets/:selector/history",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets/:selector/observations",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets/:selector/relationships",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/assets/:selector/relationships",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/cmdb/relationships/:id",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/discoveries",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/discoveries/:id/register",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/discoveries/:id/link",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/discoveries/:id/ignore",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/settings",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Patch,
+        "/api/cmdb/settings",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/nodes/:id/inventory",
+        SessionPolicy::HandlerManaged,
+        CredentialPolicy::NodeToken,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
 ];
 macro_rules! action_metadata {
     ($name:literal, $ingresses:expr, $kind:expr, $risk:expr, $approval:expr) => {
@@ -4559,8 +4839,16 @@ mod tests {
     fn proxmox_compatibility_matrix_is_exact_and_never_weakens_action_policy() {
         let expected: HashSet<(&str, &str, Vec<&str>)> = HashSet::from([
             ("POST", "/api/proxmox/hosts", vec!["proxmox.host.create"]),
-            ("DELETE", "/api/proxmox/hosts/:host_id", vec!["proxmox.host.delete"]),
-            ("POST", "/api/vms/proxmox/config", vec!["proxmox.host.configure"]),
+            (
+                "DELETE",
+                "/api/proxmox/hosts/:host_id",
+                vec!["proxmox.host.delete"],
+            ),
+            (
+                "POST",
+                "/api/vms/proxmox/config",
+                vec!["proxmox.host.configure"],
+            ),
             ("POST", "/api/vms/proxmox/test", vec!["proxmox.host.test"]),
             (
                 "POST",
@@ -4574,28 +4862,98 @@ mod tests {
                     "proxmox.guest.resume",
                 ],
             ),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/start", vec!["proxmox.guest.start"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/stop", vec!["proxmox.guest.stop"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/shutdown", vec!["proxmox.guest.shutdown"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/reboot", vec!["proxmox.guest.reboot"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/reset", vec!["proxmox.guest.reset"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/suspend", vec!["proxmox.guest.suspend"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/resume", vec!["proxmox.guest.resume"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/snapshot", vec!["proxmox.snapshot.create"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/rollback/:snapname", vec!["proxmox.snapshot.rollback"]),
-            ("DELETE", "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname", vec!["proxmox.snapshot.delete"]),
-            ("POST", "/api/proxmox/:host_id/vms/:vmid/disk-passthrough", vec!["proxmox.disk.attach"]),
-            ("POST", "/api/proxmox/:host_id/lxc/deploy", vec!["proxmox.lxc.deploy"]),
-            ("POST", "/api/proxmox/:host_id/nodes/:node/storage/:storage/content", vec!["proxmox.storage.upload"]),
-            ("DELETE", "/api/proxmox/:host_id/nodes/:node/storage/:storage/content", vec!["proxmox.storage.delete"]),
-            ("POST", "/api/proxmox/:host_id/nodes/:node/disks/wipe", vec!["proxmox.disk.wipe"]),
-            ("POST", "/api/proxmox/:host_id/nodes/:node/disks/init", vec!["proxmox.disk.initialize"]),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/start",
+                vec!["proxmox.guest.start"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/stop",
+                vec!["proxmox.guest.stop"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/shutdown",
+                vec!["proxmox.guest.shutdown"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/reboot",
+                vec!["proxmox.guest.reboot"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/reset",
+                vec!["proxmox.guest.reset"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/suspend",
+                vec!["proxmox.guest.suspend"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/resume",
+                vec!["proxmox.guest.resume"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/snapshot",
+                vec!["proxmox.snapshot.create"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/rollback/:snapname",
+                vec!["proxmox.snapshot.rollback"],
+            ),
+            (
+                "DELETE",
+                "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",
+                vec!["proxmox.snapshot.delete"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/disk-passthrough",
+                vec!["proxmox.disk.attach"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/lxc/deploy",
+                vec!["proxmox.lxc.deploy"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
+                vec!["proxmox.storage.upload"],
+            ),
+            (
+                "DELETE",
+                "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
+                vec!["proxmox.storage.delete"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/nodes/:node/disks/wipe",
+                vec!["proxmox.disk.wipe"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/nodes/:node/disks/init",
+                vec!["proxmox.disk.initialize"],
+            ),
         ]);
 
         let actual: HashSet<(&str, &str, Vec<&str>)> = ROUTES
             .iter()
             .filter(|route| route.path.contains("proxmox") && !route.canonical_actions.is_empty())
-            .map(|route| (route.method.as_str(), route.path, route.canonical_actions.to_vec()))
+            .map(|route| {
+                (
+                    route.method.as_str(),
+                    route.path,
+                    route.canonical_actions.to_vec(),
+                )
+            })
             .collect();
         assert_eq!(actual, expected);
 
@@ -4603,7 +4961,11 @@ mod tests {
             .iter()
             .flat_map(|(_, _, actions)| actions.iter().copied())
             .collect();
-        assert_eq!(actions.len(), 20, "the compatibility matrix must cover exactly 20 actions");
+        assert_eq!(
+            actions.len(),
+            20,
+            "the compatibility matrix must cover exactly 20 actions"
+        );
 
         fn risk_rank(risk: RiskClass) -> u8 {
             match risk {

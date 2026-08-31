@@ -1,56 +1,18 @@
+use super::support::{self, Access};
 use crate::{
-    auth,
     cmdb::{assets as service, contracts::AssetRecord},
     error::{AppError, Result},
-    operations::contracts::{ActorRef, ActorType},
     AppState,
 };
 use axum::{
-    extract::{Path, Query, State},
+    body::Bytes,
+    extract::{rejection::BytesRejection, Path, State},
+    http::Uri,
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use serde_json::Value;
-
-const MAX_LIMIT: i64 = 200;
-
-async fn user(state: &AppState, jar: &CookieJar, admin: bool) -> Result<auth::User> {
-    let sid = jar
-        .get("vt_session")
-        .map(|c| c.value().to_owned())
-        .ok_or(AppError::Unauthorized)?;
-    let u = auth::validate_session(&state.db, &sid)
-        .await
-        .map_err(AppError::Internal)?
-        .ok_or(AppError::Unauthorized)?;
-    let allowed = if admin {
-        matches!(u.role.as_str(), "owner" | "admin")
-    } else {
-        matches!(u.role.as_str(), "owner" | "admin" | "operator")
-    };
-    if !allowed {
-        return Err(AppError::Forbidden);
-    }
-    Ok(u)
-}
-
-fn context(user: &auth::User) -> service::MutationContext {
-    MutationContextBuilder::build(user)
-}
-struct MutationContextBuilder;
-impl MutationContextBuilder {
-    fn build(user: &auth::User) -> service::MutationContext {
-        service::MutationContext {
-            actor: ActorRef {
-                actor_type: ActorType::Human,
-                id: Some(user.id.clone()),
-                source: Some("cmdb_api".into()),
-            },
-            correlation_id: uuid::Uuid::new_v4().to_string(),
-        }
-    }
-}
 
 fn domain_error(error: anyhow::Error) -> AppError {
     let message = error.to_string();
@@ -77,17 +39,10 @@ fn default_limit() -> i64 {
     100
 }
 
-pub async fn list(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Query(q): Query<ListQuery>,
-) -> Result<Json<Value>> {
-    user(&state, &jar, false).await?;
-    if q.limit < 1 || q.limit > MAX_LIMIT || q.offset < 0 {
-        return Err(AppError::BadRequest(
-            "limit must be 1..200 and offset must be non-negative".into(),
-        ));
-    }
+pub async fn list(State(state): State<AppState>, jar: CookieJar, uri: Uri) -> Result<Json<Value>> {
+    support::require_user(&state, &jar, Access::Read).await?;
+    let q: ListQuery = support::parse_query(&uri)?;
+    support::validate_page(q.limit, q.offset)?;
     let rows = service::list(&state.db, q.limit, q.offset)
         .await
         .map_err(domain_error)?;
@@ -101,7 +56,7 @@ pub async fn get(
     jar: CookieJar,
     Path(selector): Path<String>,
 ) -> Result<Json<AssetRecord>> {
-    user(&state, &jar, false).await?;
+    support::require_user(&state, &jar, Access::Read).await?;
     let record = service::get(&state.db, &selector)
         .await
         .map_err(domain_error)?
@@ -137,12 +92,10 @@ pub struct CreateRequest {
 pub async fn create(
     State(state): State<AppState>,
     jar: CookieJar,
-    req: Option<Json<CreateRequest>>,
+    body: std::result::Result<Bytes, BytesRejection>,
 ) -> Result<Json<AssetRecord>> {
-    let u = user(&state, &jar, true).await?;
-    let req = req
-        .ok_or(AppError::BadRequest("request body is required".into()))?
-        .0;
+    let u = support::require_user(&state, &jar, Access::Write).await?;
+    let req: CreateRequest = support::parse_json(body)?;
     let input = service::CreateAssetInput {
         class_key: req.class_key,
         type_key: req.type_key,
@@ -157,7 +110,7 @@ pub async fn create(
         metadata: req.metadata,
         notes: req.notes,
     };
-    let record = service::create_manual(&state.db, input, context(&u))
+    let record = service::create_manual(&state.db, input, support::mutation_context(&u))
         .await
         .map_err(domain_error)?;
     Ok(Json(record))
@@ -172,12 +125,10 @@ pub async fn rename(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(selector): Path<String>,
-    req: Option<Json<RenameRequest>>,
+    body: std::result::Result<Bytes, BytesRejection>,
 ) -> Result<Json<AssetRecord>> {
-    let u = user(&state, &jar, true).await?;
-    let req = req
-        .ok_or(AppError::BadRequest("request body is required".into()))?
-        .0;
+    let u = support::require_user(&state, &jar, Access::Write).await?;
+    let req: RenameRequest = support::parse_json(body)?;
     if req.expected_revision < 0 {
         return Err(AppError::BadRequest(
             "expected_revision must be non-negative".into(),
@@ -188,7 +139,7 @@ pub async fn rename(
         &selector,
         &req.asset_id,
         req.expected_revision,
-        context(&u),
+        support::mutation_context(&u),
     )
     .await
     .map_err(domain_error)?;
@@ -204,18 +155,16 @@ pub async fn retirement(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(selector): Path<String>,
-    req: Option<Json<RetirementRequest>>,
+    body: std::result::Result<Bytes, BytesRejection>,
 ) -> Result<Json<AssetRecord>> {
-    let u = user(&state, &jar, true).await?;
-    let req = req
-        .ok_or(AppError::BadRequest("request body is required".into()))?
-        .0;
+    let u = support::require_user(&state, &jar, Access::Write).await?;
+    let req: RetirementRequest = support::parse_json(body)?;
     let record = service::set_retired(
         &state.db,
         &selector,
         req.retired,
         req.expected_revision,
-        context(&u),
+        support::mutation_context(&u),
     )
     .await
     .map_err(domain_error)?;

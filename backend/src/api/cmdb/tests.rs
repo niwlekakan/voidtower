@@ -1,0 +1,943 @@
+use crate::{
+    api::mcp::test_support,
+    cmdb::{
+        assets::{self, CreateAssetInput, MutationContext},
+        observations::ObservationRecord,
+    },
+    operations::contracts::{ActorRef, ActorType},
+};
+use axum::{
+    body::{to_bytes, Body},
+    http::{header, Method, Request, StatusCode},
+    response::Response,
+};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use sqlx::SqlitePool;
+use tower::ServiceExt;
+
+async fn setup() -> (SqlitePool, axum::Router) {
+    let db = test_support::setup_db().await;
+    let mut transaction = db.begin().await.unwrap();
+    crate::cmdb::catalog::seed(&mut transaction, 1)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    let app = crate::api::router(test_support::build(db.clone()));
+    (db, app)
+}
+
+async fn session(db: &SqlitePool, role: &str) -> String {
+    test_support::user_with_role_session(db, role).await
+}
+
+async fn bearer_token(db: &SqlitePool) -> String {
+    let user_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, role, created_at, updated_at) \
+         VALUES (?, ?, 'x', 'owner', 0, 0)",
+    )
+    .bind(&user_id)
+    .bind(format!("cmdb-token-{user_id}"))
+    .execute(db)
+    .await
+    .unwrap();
+    let raw = format!("vt_cmdb_{}", uuid::Uuid::new_v4().simple());
+    let mut hash = Sha256::new();
+    hash.update(raw.as_bytes());
+    sqlx::query(
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, created_at) \
+         VALUES (?, ?, 'cmdb-test', ?, '[\"admin:write\"]', 0)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(user_id)
+    .bind(hex::encode(hash.finalize()))
+    .execute(db)
+    .await
+    .unwrap();
+    raw
+}
+
+fn request(method: Method, uri: &str, session: Option<&str>, body: Option<Value>) -> Request<Body> {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(session) = session {
+        builder = builder.header(header::COOKIE, format!("vt_session={session}"));
+    }
+    if body.is_some() {
+        builder = builder.header(header::CONTENT_TYPE, "application/json");
+    }
+    builder
+        .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+        .unwrap()
+}
+
+async fn send(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    session: Option<&str>,
+    body: Option<Value>,
+) -> Response {
+    app.clone()
+        .oneshot(request(method, uri, session, body))
+        .await
+        .unwrap()
+}
+
+async fn send_raw(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    session: Option<&str>,
+    body: impl Into<Body>,
+) -> Response {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(session) = session {
+        builder = builder.header(header::COOKIE, format!("vt_session={session}"));
+    }
+    app.clone()
+        .oneshot(builder.body(body.into()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn json_body(response: Response) -> Value {
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+async fn assert_error(response: Response, status: StatusCode, code: &str) -> Value {
+    assert_eq!(response.status(), status);
+    let body = json_body(response).await;
+    assert_eq!(body["error"]["code"], code);
+    assert!(body["error"]["message"].as_str().is_some());
+    body
+}
+
+fn context() -> MutationContext {
+    MutationContext {
+        actor: ActorRef {
+            actor_type: ActorType::Human,
+            id: Some("test-owner".into()),
+            source: Some("cmdb_api_test".into()),
+        },
+        correlation_id: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+async fn asset(
+    db: &SqlitePool,
+    class_key: &str,
+    type_key: &str,
+    name: &str,
+) -> crate::cmdb::contracts::AssetRecord {
+    assets::create_manual(
+        db,
+        CreateAssetInput {
+            class_key: class_key.into(),
+            type_key: type_key.into(),
+            name: name.into(),
+            friendly_name: None,
+            description: None,
+            manufacturer: None,
+            model: None,
+            serial_number: None,
+            part_number: None,
+            location_id: None,
+            metadata: json!({}),
+            notes: String::new(),
+        },
+        context(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn insert_discovery(
+    db: &SqlitePool,
+    source_resource_id: &str,
+    fingerprint: &str,
+    entity_key: &str,
+) -> ObservationRecord {
+    let snapshot_row_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO cmdb_inventory_snapshots \
+         (id, source_resource_id, node_id, snapshot_id, schema_version, collector_version, platform, \
+          collected_at, received_at, state, fingerprint, result_json) \
+         VALUES (?, ?, NULL, ?, 1, 'test', 'linux', 10, 10, 'completed', ?, '{}')",
+    )
+    .bind(&snapshot_row_id)
+    .bind(source_resource_id)
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(format!("snapshot-{fingerprint}"))
+    .execute(db)
+    .await
+    .unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO cmdb_observations \
+         (id, resource_id, source_resource_id, snapshot_row_id, provider, scope_key, entity_key, \
+          entity_type, schema_version, identity_json, attributes_json, runtime_json, health_json, \
+          provider_observed_at, received_at, first_seen_at, last_seen_at, state, fingerprint) \
+         VALUES (?, NULL, ?, ?, 'manual_test', 'test', ?, 'physical_disk', 1, \
+                 ?, \
+                 '{\"model\":\"Review Disk\",\"rotation\":true}', '{}', '{}', 10, 10, 10, 10, \
+                 'review', ?)",
+    )
+    .bind(&id)
+    .bind(source_resource_id)
+    .bind(&snapshot_row_id)
+    .bind(entity_key)
+    .bind(
+        serde_json::to_string(&json!([{
+            "kind": "serial_model",
+            "value": format!("test-identity-{entity_key}"),
+            "confidence": "strong"
+        }]))
+        .unwrap(),
+    )
+    .bind(fingerprint)
+    .execute(db)
+    .await
+    .unwrap();
+    crate::cmdb::observations::get_observation(db, &id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn cmdb_routes_enforce_operator_reads_admin_writes_and_fail_closed() {
+    let (db, app) = setup().await;
+    let operator = session(&db, "operator").await;
+    let admin = session(&db, "admin").await;
+    let member = session(&db, "member").await;
+    let unknown = session(&db, "future_role").await;
+
+    assert_eq!(
+        send(
+            &app,
+            Method::GET,
+            "/api/cmdb/classes",
+            Some(&operator),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    for denied in [Some(member.as_str()), Some(unknown.as_str()), None] {
+        let expected = if denied.is_some() {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::UNAUTHORIZED
+        };
+        assert_eq!(
+            send(&app, Method::GET, "/api/cmdb/classes", denied, None)
+                .await
+                .status(),
+            expected
+        );
+    }
+    assert_eq!(
+        send(
+            &app,
+            Method::POST,
+            "/api/cmdb/classes",
+            Some(&operator),
+            Some(json!({"key":"lab","label":"Lab"})),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            &app,
+            Method::POST,
+            "/api/cmdb/classes",
+            Some(&admin),
+            Some(json!({"key":"lab","label":"Lab"})),
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn cmdb_routes_deny_bearer_credentials_and_bound_mutation_bodies() {
+    let (db, app) = setup().await;
+    let admin = session(&db, "admin").await;
+    let token = bearer_token(&db).await;
+
+    let bearer_only = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/cmdb/classes")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_error(bearer_only, StatusCode::FORBIDDEN, "insufficient_scope").await;
+
+    let malformed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/cmdb/classes")
+                .header(header::COOKIE, format!("vt_session={admin}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_error(malformed, StatusCode::BAD_REQUEST, "bad_request").await;
+
+    let oversized = json!({"key":"large","label":"x".repeat(65_537)}).to_string();
+    let too_large = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/cmdb/classes")
+                .header(header::COOKIE, format!("vt_session={admin}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(oversized))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_error(
+        too_large,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn every_cmdb_list_rejects_out_of_range_pagination() {
+    let (db, app) = setup().await;
+    let operator = session(&db, "operator").await;
+    for path in [
+        "/api/cmdb/classes?limit=0",
+        "/api/cmdb/types?limit=201",
+        "/api/cmdb/locations?offset=-1",
+        "/api/cmdb/discoveries?limit=0",
+        "/api/cmdb/assets/missing/history?limit=201",
+        "/api/cmdb/assets/missing/observations?offset=-1",
+        "/api/cmdb/assets/missing/relationships?limit=0",
+    ] {
+        assert_error(
+            send(&app, Method::GET, path, Some(&operator), None).await,
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn every_cmdb_list_maps_malformed_pagination_after_authentication() {
+    let (db, app) = setup().await;
+    let operator = session(&db, "operator").await;
+    for path in [
+        "/api/cmdb/assets?limit=invalid",
+        "/api/cmdb/classes?limit=invalid",
+        "/api/cmdb/types?offset=invalid",
+        "/api/cmdb/locations?limit=invalid",
+        "/api/cmdb/discoveries?offset=invalid",
+        "/api/cmdb/assets/missing/history?limit=invalid",
+        "/api/cmdb/assets/missing/observations?offset=invalid",
+        "/api/cmdb/assets/missing/relationships?limit=invalid",
+    ] {
+        assert_error(
+            send(&app, Method::GET, path, Some(&operator), None).await,
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        )
+        .await;
+        assert_error(
+            send(&app, Method::GET, path, None, None).await,
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn asset_mutations_map_malformed_and_oversized_bodies_after_authentication() {
+    let (db, app) = setup().await;
+    let admin = session(&db, "admin").await;
+    let routes = [
+        "/api/cmdb/assets",
+        "/api/cmdb/assets/missing/rename",
+        "/api/cmdb/assets/missing/retirement",
+    ];
+
+    for route in routes {
+        assert_error(
+            send_raw(&app, Method::POST, route, Some(&admin), "{").await,
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        )
+        .await;
+        assert_error(
+            send_raw(&app, Method::POST, route, None, "{").await,
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+        )
+        .await;
+
+        let oversized = json!({"padding": "x".repeat(65_537)}).to_string();
+        assert_error(
+            send_raw(&app, Method::POST, route, Some(&admin), oversized.clone()).await,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+        )
+        .await;
+        assert_error(
+            send_raw(&app, Method::POST, route, None, oversized).await,
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn class_type_and_settings_happy_paths_are_audited_and_partial_updates_merge() {
+    let (db, app) = setup().await;
+    let admin = session(&db, "admin").await;
+
+    let class = send(
+        &app,
+        Method::POST,
+        "/api/cmdb/classes",
+        Some(&admin),
+        Some(json!({
+            "key":"lab",
+            "label":"Lab Equipment",
+            "description":"Custom equipment",
+            "enabled":true
+        })),
+    )
+    .await;
+    assert_eq!(class.status(), StatusCode::OK);
+    assert_eq!(json_body(class).await["key"], "lab");
+
+    let ty = send(
+        &app,
+        Method::POST,
+        "/api/cmdb/types",
+        Some(&admin),
+        Some(json!({
+            "key":"scope",
+            "class_key":"lab",
+            "label":"Oscilloscope",
+            "enabled":true
+        })),
+    )
+    .await;
+    assert_eq!(ty.status(), StatusCode::OK);
+    assert_eq!(json_body(ty).await["class_key"], "lab");
+
+    let patched = send(
+        &app,
+        Method::PATCH,
+        "/api/cmdb/types/scope",
+        Some(&admin),
+        Some(json!({"label":"Bench Oscilloscope","enabled":false})),
+    )
+    .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+    assert_eq!(json_body(patched).await["label"], "Bench Oscilloscope");
+    let cleared = send(
+        &app,
+        Method::PATCH,
+        "/api/cmdb/classes/lab",
+        Some(&admin),
+        Some(json!({"description":null})),
+    )
+    .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    assert!(json_body(cleared).await["description"].is_null());
+    assert_error(
+        send(
+            &app,
+            Method::POST,
+            "/api/cmdb/types",
+            Some(&admin),
+            Some(json!({"key":"ghost","class_key":"missing","label":"Ghost"})),
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "not_found",
+    )
+    .await;
+
+    let settings = send(&app, Method::GET, "/api/cmdb/settings", Some(&admin), None).await;
+    assert_eq!(settings.status(), StatusCode::OK);
+    let settings = json_body(settings).await;
+    assert_eq!(settings["prefix"], "VT");
+    let updated = send(
+        &app,
+        Method::PATCH,
+        "/api/cmdb/settings",
+        Some(&admin),
+        Some(json!({
+            "prefix":"LAB",
+            "separator":".",
+            "number_width":5,
+            "discovery_policy":"review_first"
+        })),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated = json_body(updated).await;
+    assert_eq!(updated["prefix"], "LAB");
+    assert_eq!(updated["separator"], ".");
+    assert_eq!(updated["template"], settings["template"]);
+    assert_eq!(updated["starting_number"], settings["starting_number"]);
+    assert_eq!(updated["counter_scope"], settings["counter_scope"]);
+    let partial = send(
+        &app,
+        Method::PATCH,
+        "/api/cmdb/settings",
+        Some(&admin),
+        Some(json!({"discovery_policy":"automatic"})),
+    )
+    .await;
+    assert_eq!(partial.status(), StatusCode::OK);
+    let partial = json_body(partial).await;
+    assert_eq!(partial["prefix"], "LAB");
+    assert_eq!(partial["discovery_policy"], "automatic");
+    assert_error(
+        send(
+            &app,
+            Method::PATCH,
+            "/api/cmdb/settings",
+            Some(&admin),
+            Some(json!({"template":"{prefix}-{unknown}-{number}"})),
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "bad_request",
+    )
+    .await;
+
+    assert_eq!(
+        send(
+            &app,
+            Method::DELETE,
+            "/api/cmdb/types/scope",
+            Some(&admin),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(
+            &app,
+            Method::DELETE,
+            "/api/cmdb/classes/lab",
+            Some(&admin),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE action LIKE 'cmdb.catalog.%' OR action = 'cmdb.settings.update'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(audits, 8);
+}
+
+#[tokio::test]
+async fn location_crud_and_conflicts_use_stable_public_envelopes() {
+    let (db, app) = setup().await;
+    let admin = session(&db, "admin").await;
+    let created = send(
+        &app,
+        Method::POST,
+        "/api/cmdb/locations",
+        Some(&admin),
+        Some(json!({"name":"Home","description":"Main site"})),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let root = json_body(created).await;
+    let root_id = root["id"].as_str().unwrap();
+    assert_eq!(root["path"], "Home");
+
+    assert_error(
+        send(
+            &app,
+            Method::POST,
+            "/api/cmdb/locations",
+            Some(&admin),
+            Some(json!({"name":"Home"})),
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "conflict",
+    )
+    .await;
+
+    let child = send(
+        &app,
+        Method::POST,
+        "/api/cmdb/locations",
+        Some(&admin),
+        Some(json!({"parent_id":root_id,"name":"Office"})),
+    )
+    .await;
+    assert_eq!(child.status(), StatusCode::OK);
+    let child = json_body(child).await;
+    let child_id = child["id"].as_str().unwrap();
+    assert_eq!(child["path"], "Home / Office");
+
+    let updated = send(
+        &app,
+        Method::PATCH,
+        &format!("/api/cmdb/locations/{child_id}"),
+        Some(&admin),
+        Some(json!({"parent_id":root_id,"name":"Studio","description":"Desk"})),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(json_body(updated).await["path"], "Home / Studio");
+    let cleared = send(
+        &app,
+        Method::PATCH,
+        &format!("/api/cmdb/locations/{child_id}"),
+        Some(&admin),
+        Some(json!({"description":null})),
+    )
+    .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    assert!(json_body(cleared).await["description"].is_null());
+
+    assert_error(
+        send(
+            &app,
+            Method::DELETE,
+            &format!("/api/cmdb/locations/{root_id}"),
+            Some(&admin),
+            None,
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "conflict",
+    )
+    .await;
+    assert_eq!(
+        send(
+            &app,
+            Method::DELETE,
+            &format!("/api/cmdb/locations/{child_id}"),
+            Some(&admin),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_error(
+        send(
+            &app,
+            Method::PATCH,
+            "/api/cmdb/locations/missing",
+            Some(&admin),
+            Some(json!({"name":"Missing"})),
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "not_found",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn relationships_resolve_public_selectors_retain_ended_rows_and_index_both_histories() {
+    let (db, app) = setup().await;
+    let admin = session(&db, "admin").await;
+    let operator = session(&db, "operator").await;
+    let source = asset(&db, "hw", "hdd", "Disk").await;
+    let destination = asset(&db, "sys", "host", "Host").await;
+    let old_source_id = source.asset_id.clone();
+    let renamed = assets::rename(
+        &db,
+        &source.resource_id,
+        "LAB-DISK-42",
+        source.revision,
+        context(),
+    )
+    .await
+    .unwrap();
+
+    let created = send(
+        &app,
+        Method::POST,
+        &format!("/api/cmdb/assets/{old_source_id}/relationships"),
+        Some(&admin),
+        Some(json!({
+            "destination_selector": destination.asset_id,
+            "type_key":"installed_in",
+            "metadata":{"bay":"B2"}
+        })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let relationship = json_body(created).await;
+    let relationship_id = relationship["id"].as_str().unwrap();
+    assert_eq!(relationship["source_resource_id"], renamed.resource_id);
+    assert_eq!(
+        relationship["destination_resource_id"],
+        destination.resource_id
+    );
+    assert_eq!(relationship["metadata"]["bay"], "B2");
+
+    let listed = send(
+        &app,
+        Method::GET,
+        &format!("/api/cmdb/assets/{old_source_id}/relationships?limit=20&offset=0"),
+        Some(&operator),
+        None,
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(listed).await["relationships"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let ended = send(
+        &app,
+        Method::DELETE,
+        &format!("/api/cmdb/relationships/{relationship_id}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(ended.status(), StatusCode::OK);
+    assert_eq!(json_body(ended).await["active"], false);
+    let persisted: (bool, Option<i64>) =
+        sqlx::query_as("SELECT active, ended_at FROM cmdb_relationships WHERE id = ?")
+            .bind(relationship_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(!persisted.0);
+    assert!(persisted.1.is_some());
+
+    for selector in [&old_source_id, &destination.asset_id] {
+        let history = send(
+            &app,
+            Method::GET,
+            &format!("/api/cmdb/assets/{selector}/history?limit=20&offset=0"),
+            Some(&operator),
+            None,
+        )
+        .await;
+        assert_eq!(history.status(), StatusCode::OK);
+        let history = json_body(history).await;
+        let types: Vec<&str> = history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event["event_type"].as_str())
+            .collect();
+        assert!(types.contains(&"cmdb.asset.relationship_started.v1"));
+        assert!(types.contains(&"cmdb.asset.relationship_ended.v1"));
+    }
+}
+
+#[tokio::test]
+async fn discovery_ignore_link_and_register_require_current_fingerprints_and_public_selectors() {
+    let (db, app) = setup().await;
+    let admin = session(&db, "admin").await;
+    let host = asset(&db, "sys", "host", "Source Host").await;
+    let target = asset(&db, "hw", "hdd", "Existing Disk").await;
+    let old_target_id = target.asset_id.clone();
+    assets::rename(
+        &db,
+        &target.resource_id,
+        "EXISTING-DISK",
+        target.revision,
+        context(),
+    )
+    .await
+    .unwrap();
+    let ignored = insert_discovery(&db, &host.resource_id, "ignore-fp", "ignore-disk").await;
+    let linked = insert_discovery(&db, &host.resource_id, "link-fp", "link-disk").await;
+    let registered = insert_discovery(&db, &host.resource_id, "register-fp", "register-disk").await;
+
+    assert_error(
+        send(
+            &app,
+            Method::POST,
+            &format!("/api/cmdb/discoveries/{}/ignore", ignored.id),
+            Some(&admin),
+            Some(json!({"expected_fingerprint":"stale","notes":"old view"})),
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "conflict",
+    )
+    .await;
+    let ignored_response = send(
+        &app,
+        Method::POST,
+        &format!("/api/cmdb/discoveries/{}/ignore", ignored.id),
+        Some(&admin),
+        Some(json!({"expected_fingerprint":ignored.fingerprint,"notes":"not ours"})),
+    )
+    .await;
+    assert_eq!(ignored_response.status(), StatusCode::OK);
+    assert_eq!(json_body(ignored_response).await["state"], "ignored");
+
+    let linked_response = send(
+        &app,
+        Method::POST,
+        &format!("/api/cmdb/discoveries/{}/link", linked.id),
+        Some(&admin),
+        Some(json!({
+            "expected_fingerprint":linked.fingerprint,
+            "asset_selector":old_target_id,
+            "notes":"same device"
+        })),
+    )
+    .await;
+    assert_eq!(linked_response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(linked_response).await["resource_id"],
+        target.resource_id
+    );
+
+    let registered_response = send(
+        &app,
+        Method::POST,
+        &format!("/api/cmdb/discoveries/{}/register", registered.id),
+        Some(&admin),
+        Some(json!({
+            "expected_fingerprint":registered.fingerprint,
+            "name":"Reviewed Disk","class_key":"hw","type_key":"hdd",
+            "notes":"approved"
+        })),
+    )
+    .await;
+    let registered_status = registered_response.status();
+    let registered_body = json_body(registered_response).await;
+    assert_eq!(registered_status, StatusCode::OK, "{registered_body}");
+    assert!(registered_body["resource_id"].is_string());
+
+    let list = send(
+        &app,
+        Method::GET,
+        "/api/cmdb/discoveries?limit=20&offset=0",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(list).await["discoveries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn observation_and_history_reads_resolve_retained_aliases_and_return_bounded_public_records()
+{
+    let (db, app) = setup().await;
+    let operator = session(&db, "operator").await;
+    let record = asset(&db, "hw", "hdd", "Observed Disk").await;
+    let retained_alias = record.asset_id.clone();
+    assets::rename(
+        &db,
+        &record.resource_id,
+        "OBSERVED-DISK",
+        record.revision,
+        context(),
+    )
+    .await
+    .unwrap();
+    let source = asset(&db, "sys", "host", "Observation Source").await;
+    let discovery = insert_discovery(&db, &source.resource_id, "observation-fp", "observed").await;
+    sqlx::query("UPDATE cmdb_observations SET resource_id = ?, state = 'online' WHERE id = ?")
+        .bind(&record.resource_id)
+        .bind(&discovery.id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let observations = send(
+        &app,
+        Method::GET,
+        &format!("/api/cmdb/assets/{retained_alias}/observations?limit=1&offset=0"),
+        Some(&operator),
+        None,
+    )
+    .await;
+    assert_eq!(observations.status(), StatusCode::OK);
+    let observations = json_body(observations).await;
+    assert_eq!(observations["resource_id"], record.resource_id);
+    assert_eq!(observations["observations"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        observations["observations"][0]["attributes"]["model"],
+        "Review Disk"
+    );
+    assert!(observations["observations"][0]
+        .get("attributes_json")
+        .is_none());
+
+    let history = send(
+        &app,
+        Method::GET,
+        &format!("/api/cmdb/assets/{retained_alias}/history?limit=1&offset=0"),
+        Some(&operator),
+        None,
+    )
+    .await;
+    assert_eq!(history.status(), StatusCode::OK);
+    let history = json_body(history).await;
+    assert_eq!(history["resource_id"], record.resource_id);
+    assert_eq!(history["events"].as_array().unwrap().len(), 1);
+
+    assert_error(
+        send(
+            &app,
+            Method::GET,
+            "/api/cmdb/assets/not-found/observations?limit=1&offset=0",
+            Some(&operator),
+            None,
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "not_found",
+    )
+    .await;
+}

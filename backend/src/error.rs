@@ -18,6 +18,8 @@ pub enum AppError {
     PolicyDenied(String),
     #[error("Bad request: {0}")]
     BadRequest(String),
+    #[error("Payload too large")]
+    PayloadTooLarge,
     #[error("Conflict: {0}")]
     Conflict(String),
     #[error("Feature unavailable: {0}")]
@@ -40,6 +42,11 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden", self.to_string()),
             AppError::PolicyDenied(m) => (StatusCode::FORBIDDEN, "policy_denied", m.clone()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone()),
+            AppError::PayloadTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                "Request body exceeds the allowed size".to_string(),
+            ),
             AppError::Conflict(m) => (StatusCode::CONFLICT, "conflict", m.clone()),
             AppError::FeatureUnavailable(m) => (
                 StatusCode::SERVICE_UNAVAILABLE,

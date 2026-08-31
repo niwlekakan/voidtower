@@ -38,7 +38,7 @@ impl From<anyhow::Error> for LocationError {
 
 pub type Result<T> = std::result::Result<T, LocationError>;
 
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, sqlx::FromRow)]
 pub struct LocationRecord {
     pub id: String,
     pub parent_id: Option<String>,

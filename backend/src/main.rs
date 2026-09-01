@@ -1,3 +1,4 @@
+mod agent;
 mod ai;
 mod alerts;
 mod api;
@@ -78,9 +79,13 @@ struct Cli {
     #[arg(long, short = 'c')]
     config: Option<PathBuf>,
 
-    /// Run in agent mode (no UI, exposes agent API only)
+    /// Run in agent mode (outbound heartbeat only; no controller services)
     #[arg(long)]
     agent: bool,
+
+    /// Persistent agent state path (used with --agent)
+    #[arg(long, default_value = "/var/lib/voidtower/agent/state.json")]
+    agent_state: PathBuf,
 
     /// Disable TLS even if configured
     #[arg(long)]
@@ -116,6 +121,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Manage the outbound inventory agent
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommand,
+    },
     /// Manage user accounts
     User {
         #[command(subcommand)]
@@ -126,6 +136,69 @@ enum Command {
         #[command(subcommand)]
         action: BackupCommand,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum AgentCommand {
+    /// Enroll this outbound agent with a VoidTower controller
+    Enroll {
+        #[arg(long)]
+        server_url: String,
+        #[arg(long, allow_hyphen_values = true)]
+        pairing_code: PairingCode,
+        #[arg(long)]
+        display_name: String,
+        #[arg(long, default_value = "other")]
+        device_type: String,
+        #[arg(long)]
+        ca_path: Option<PathBuf>,
+        #[arg(long, default_value_t = false)]
+        provision_wireguard: bool,
+        #[arg(long, default_value = "/var/lib/voidtower/agent/state.json")]
+        state_path: PathBuf,
+    },
+}
+
+#[derive(Clone)]
+struct PairingCode(String);
+
+impl std::str::FromStr for PairingCode {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        // Credential validation happens after Clap parsing so Clap never echoes an
+        // invalid pairing code as part of a value-parser diagnostic.
+        Ok(Self(value.to_string()))
+    }
+}
+
+impl std::fmt::Debug for PairingCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[REDACTED]")
+    }
+}
+
+impl PairingCode {
+    fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupPath {
+    AgentEnrollment,
+    AgentRuntime,
+    Controller,
+}
+
+fn startup_path(cli: &Cli) -> StartupPath {
+    if matches!(cli.command, Some(Command::Agent { .. })) {
+        StartupPath::AgentEnrollment
+    } else if cli.agent {
+        StartupPath::AgentRuntime
+    } else {
+        StartupPath::Controller
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -203,7 +276,55 @@ enum BackupCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+
+    match startup_path(&cli) {
+        StartupPath::AgentEnrollment => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "info".into()),
+                )
+                .init();
+            let Some(Command::Agent {
+                action:
+                    AgentCommand::Enroll {
+                        server_url,
+                        pairing_code,
+                        display_name,
+                        device_type,
+                        ca_path,
+                        provision_wireguard,
+                        state_path,
+                    },
+            }) = cli.command.take()
+            else {
+                unreachable!("startup path guarantees agent enrollment");
+            };
+            agent::enroll(agent::EnrollmentOptions {
+                server_url,
+                pairing_code: pairing_code.into_inner(),
+                display_name,
+                device_type,
+                ca_path,
+                provision_wireguard,
+                state_path,
+            })
+            .await?;
+            return Ok(());
+        }
+        StartupPath::AgentRuntime => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "info".into()),
+                )
+                .init();
+            agent::run(cli.agent_state.clone()).await?;
+            return Ok(());
+        }
+        StartupPath::Controller => {}
+    }
 
     let mut cfg = config::Config::load(cli.config.as_deref())?;
     if let Some(b) = cli.bind {
@@ -211,9 +332,6 @@ async fn main() -> Result<()> {
     }
     if let Some(p) = cli.port {
         cfg.port = p;
-    }
-    if cli.agent {
-        cfg.agent_mode = true;
     }
 
     tracing_subscriber::fmt()
@@ -849,6 +967,9 @@ fn is_valid_role(role: &str) -> bool {
 
 async fn run_command(pool: &SqlitePool, cfg: &config::Config, command: Command) -> Result<()> {
     match command {
+        Command::Agent { .. } => {
+            anyhow::bail!("agent commands run before controller initialization")
+        }
         Command::User { action } => run_user_command(pool, action).await,
         Command::Backup { action } => run_backup_command(pool, cfg, action).await,
     }
@@ -1195,6 +1316,94 @@ mod lifecycle_tests {
         atomic::{AtomicBool, Ordering},
         Arc,
     };
+
+    #[test]
+    fn agent_enroll_cli_defaults_to_no_wireguard_and_uses_state_override() {
+        let cli = Cli::try_parse_from([
+            "voidtower",
+            "agent",
+            "enroll",
+            "--server-url",
+            "https://controller.example.test",
+            "--pairing-code",
+            "temporary-pairing-credential-123",
+            "--display-name",
+            "lab-node",
+            "--state-path",
+            "/tmp/voidtower-agent-state.json",
+        ])
+        .unwrap();
+
+        let debug = format!("{cli:?}");
+        assert!(!debug.contains("temporary-pairing-credential-123"));
+        assert!(debug.contains("[REDACTED]"));
+        assert_eq!(startup_path(&cli), StartupPath::AgentEnrollment);
+        let Some(Command::Agent {
+            action:
+                AgentCommand::Enroll {
+                    provision_wireguard,
+                    state_path,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("agent enroll command not parsed");
+        };
+        assert!(!provision_wireguard);
+        assert_eq!(state_path, PathBuf::from("/tmp/voidtower-agent-state.json"));
+    }
+
+    #[test]
+    fn oversized_pairing_code_is_never_echoed_by_cli_diagnostics() {
+        let credential = "Q".repeat(4097);
+        let cli = Cli::try_parse_from([
+            "voidtower",
+            "agent",
+            "enroll",
+            "--server-url",
+            "https://controller.example.test",
+            "--pairing-code",
+            credential.as_str(),
+            "--display-name",
+            "lab-node",
+        ])
+        .unwrap();
+        let debug = format!("{cli:?}");
+        assert!(!debug.contains(&credential));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn hyphen_prefixed_pairing_code_is_parsed_as_a_redacted_value() {
+        let credential = "--PAIRING_SECRET_VALUE";
+        let cli = Cli::try_parse_from([
+            "voidtower",
+            "agent",
+            "enroll",
+            "--server-url",
+            "https://controller.example.test",
+            "--pairing-code",
+            credential,
+            "--display-name",
+            "lab-node",
+        ])
+        .unwrap();
+        let debug = format!("{cli:?}");
+        assert!(!debug.contains(credential));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn agent_flag_selects_runtime_before_controller_startup() {
+        let cli = Cli::try_parse_from([
+            "voidtower",
+            "--agent",
+            "--agent-state",
+            "/tmp/agent-state.json",
+        ])
+        .unwrap();
+        assert_eq!(startup_path(&cli), StartupPath::AgentRuntime);
+    }
 
     #[tokio::test]
     async fn listener_binding_failure_does_not_start_operation_runtime() {

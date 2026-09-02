@@ -139,7 +139,7 @@ This matrix is a source review, not a permanent claim. Re-run the source-truth r
 | Mobile client | `implemented` | `mobile/src/` and Expo package | No test/lint/type-check/build qualification scripts, version negotiation, supported-server matrix, or store/device runtime evidence. Exclude from 1.0 unless qualified. |
 | Desktop shell | `implemented` as source/build configuration | Tauri dependencies and desktop workflow | No current install/upgrade/runtime evidence. Exclude from 1.0 unless qualified. |
 | Release artifacts | `implemented` as workflow | `.github/workflows/release.yml` | A workflow definition is not an artifact result. Install, first-start, upgrade, recovery, and architecture-specific evidence remain blocked. |
-| Repository truth/hygiene | `blocked` | CI and `scripts/check-repository-hygiene.sh` exist | The hygiene check currently reports pre-existing forbidden tracked internal paths, and a deterministic source-truth report must become the standard entry gate. |
+| Repository truth/hygiene | `unit-verified` | Repository-native `scripts/repo_truth.py`; deterministic CLI fixtures; CI entry gate; repository hygiene and schema ownership checks | R0-02 still needs the clean-checkout release-candidate gate runner and evidence manifest. Historical internal files removed from tracking remain available locally under the ignored `docs/internal/` tree and in Git history. |
 
 ## 6. Dependency graph
 
@@ -273,7 +273,7 @@ Required work:
 
 ### R0-01 — Deterministic test/hygiene baseline and source-truth report
 
-**Readiness:** `READY NOW`
+**Readiness:** `COMPLETED` — repository-native report, deterministic fixture tests, CI entry gate, and green hygiene baseline established by this slice
 **Goal/user outcome:** a new contributor can run one credential-safe command and know the exact repository state, source inventory, applicable gates, and current blockers before changing code.
 
 **Likely files/modules:** project skill linked `scripts/repo_truth.py`; `scripts/check-repository-hygiene.sh`; `.github/workflows/ci.yml`; `backend/tests/golden_path.rs`; tracked authority docs only when a generated claim changes.
@@ -300,7 +300,7 @@ Required work:
 
 ### M1-01 — Canonical standalone-MCP mutation adapter and correct VM scope
 
-**Readiness:** `READY AFTER R0-01`
+**Readiness:** `READY NOW` — R0-01 is green; this is the next dependency-ordered slice
 **Goal/user outcome:** a standalone MCP caller can request an approved VoidTower mutation and receive the canonical immutable plan/job/approval result; a read-only VM token can never control a VM.
 
 **Likely files/modules:** `odysseus-mcp-servers/voidtower_server.py`; a new focused Python test module under `odysseus-mcp-servers/tests/`; `backend/src/action_registry.rs`; `backend/src/api/actions.rs`; `backend/src/operations/invocation.rs`; `backend/src/api/scope_bypass_tests.rs`; `docs/integrations/mcp-server.md`; `docs/api-tokens.md`.

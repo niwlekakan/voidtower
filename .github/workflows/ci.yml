@@ -17,6 +17,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Test deterministic repository truth
+        run: python3 scripts/test_repo_truth.py -v
+      - name: Derive credential-safe repository truth
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/repo_truth.py --repo . --json --check --base "$BASE_COMMIT" --head "$HEAD_COMMIT"
       - name: Reject internal, sensitive, and generated tracked files
         run: bash scripts/check-repository-hygiene.sh
       - name: Scan Git history for secrets

@@ -56,8 +56,9 @@ The default Hermes profile must remain the sticky default unless the operator ex
 
 The profile's `SOUL.md` will establish the following behavior:
 
-- current source and executable evidence outrank roadmap prose;
-- the newest dated handoff and its approved design/plan outrank older handoffs;
+- current source and executable evidence establish present behavior and maturity;
+- tracked `docs/development-plan.md` governs dependency order, acceptance criteria, and release gates;
+- the newest dated local handoff and its approved design provide continuity but do not replace the tracked plan;
 - exactly one bounded implementation slice is active at a time;
 - test-first development occurs at a public seam;
 - provider/destructive mutations must use the canonical operation path;
@@ -142,6 +143,8 @@ Create a `voidtower-slice` bundle for the standard implementation set.
 
 Update stale resume language so it always selects the newest dated handoff and does not name the completed 2026-08-31 API slice as current. Add evidence classifications and the canonical convergence priority.
 
+`AGENTS.md` is currently ignored by repository policy, so it is portable local continuity guidance rather than durable tracked authority. Any sequencing, acceptance, or release-governance change expressed there must also be represented in tracked `docs/development-plan.md` or `ROADMAP.md`; do not force-add it or change ignore policy as part of this workflow.
+
 ### 9.2 ROADMAP.md
 
 Replace the stale top-level 1.0 status with an evidence-based roadmap that:
@@ -157,7 +160,7 @@ Legacy backlog sections may remain only when clearly marked historical.
 
 ### 9.3 Development plan
 
-Create a dependency-ordered implementation plan under `docs/internal/plans/`. Each slice must specify:
+Create and maintain the dependency-ordered implementation plan at tracked path `docs/development-plan.md`. Dated handoffs under ignored local paths may aid continuity, but they cannot be the sole tracked development authority. Each slice must specify:
 
 - goal and user-visible outcome;
 - architectural invariants;
@@ -171,11 +174,11 @@ Create a dependency-ordered implementation plan under `docs/internal/plans/`. Ea
 
 ### 9.4 Historical task state
 
-Treat `.devteam/active/` as historical unless the newest handoff explicitly reactivates an entry. Do not delete historical evidence. Add a clear status note or index so stale cards cannot override the dated handoff.
+Treat `.devteam/active/` as historical unless both the newest handoff explicitly reactivates an entry and tracked `docs/development-plan.md` includes it in the dependency-ready slice. The ignored `.devteam/` tree and its local status index preserve continuity evidence but can never be the sole tracked authority. Do not force-add, delete, or rewrite historical evidence; stale cards cannot override current authority.
 
 ## 10. Standard slice workflow
 
-1. Read `AGENTS.md`, `ROADMAP.md`, the newest handoff, and its approved design/plan.
+1. Read `AGENTS.md`, tracked `docs/development-plan.md`, `ROADMAP.md`, the newest local handoff, and its approved design.
 2. Run the source-truth script and inspect the relevant source/tests.
 3. Select exactly one dependency-ready slice.
 4. Write or update a bounded slice plan with acceptance criteria and non-goals.
@@ -217,7 +220,7 @@ The optimized development workflow is complete when a fresh `voidtower-dev` prof
 
 1. open the VoidTower project without manual directory reconstruction;
 2. load the current project skill and standard bundle;
-3. identify the newest handoff and dependency-ready slice;
+3. identify the dependency-ready slice from the tracked plan and reconcile it with the newest local handoff;
 4. produce a source-derived repository truth report;
 5. preserve canonical resource, policy, approval, job, audit, event, and node-authentication invariants;
 6. execute a test-first slice with focused and full gates;

@@ -1,76 +1,59 @@
 # VoidTower Roadmap
 
-VoidTower is a self-hosted infrastructure command tower — control plane, app catalog, AI-ops integration, and automation in one local-first platform.
+VoidTower is a local-first infrastructure control plane. The current product target is a deterministic, self-hosted, **web-first 1.0** whose administrative behavior remains useful without AI providers or external cloud services.
+
+## Roadmap authority
+
+`docs/development-plan.md` is the tracked execution authority for dependency-ready slices, acceptance criteria, and release gates. This roadmap states tracked product direction, phase order, and the evidence labels below; it does not override current source, executable evidence, or the tracked plan. An ignored local `AGENTS.md` may mirror portable contributor guidance, but it is not the sole tracked authority.
+
+Mutable inventories such as route metadata, structured actions, built-in or standalone MCP tools, App Vault manifests, migrations, tests, and package versions must be derived from current source by the repository truth tooling. They are not maintained as current totals in this roadmap.
+
+## Current product boundary
+
+The project is **pre-1.0**. Source presence or an old completion note does not establish runtime or release support.
+
+The 1.0 target is:
+
+- a secure, recoverable web control plane with deterministic local operation;
+- one canonical resource, action, policy, approval, durable-job, audit, and event model for every supported mutation ingress;
+- authenticated managed-node inventory with bounded collectors and CMDB reconciliation;
+- encrypted provider-secret resolution without plaintext credential duplication;
+- stable versioned external-client contracts; and
+- named, reproducible installation, startup, upgrade/recovery, security, and release evidence for supported platforms.
+
+Current boundaries that must remain explicit:
+
+- Existing AI policy hooks and approval surfaces do **not** prove globally converged AI mutation or policy enforcement. AI, MCP, webhook, automation, CLI, and compatibility writes must each converge on the canonical durable boundary before the path is supported.
+- Plugin manifests, iframe surfaces, or app-specific server source do **not** establish production executable-plugin support. Executable plugins remain experimental/deferred until sandboxing, lifecycle, update, security, and release gates are verified.
+- The outbound agent foundation does not include shipped inventory collectors. Linux collection and authenticated reconciliation remain planned work; Windows requires a separate contract and supported-target gate.
+- Desktop and mobile source trees do not imply a unified release. The web client is first; desktop and mobile remain experimental until independently packaged and release-qualified against stable backend contracts.
+- Voice and broad household-service integrations remain deferred until identity, consent, privacy, resource-grant, and canonical-mutation boundaries are verified.
+
+## Current execution order
+
+Execution follows the dependency phases in `docs/development-plan.md`. Within each phase, work only the first dependency-ready bounded slice and preserve its explicit non-goals.
+
+1. **Phase 0 — Product truth and release determinism:** source-derived repository truth, test/hygiene baselines, evidence classification, and reproducible release gates.
+2. **Phase 1 — Canonical mutation intake:** converge standalone MCP, AI, webhook, automation, CLI, and compatibility mutation paths on typed actions, policy/approval, durable jobs, audit, and events; close bypasses and scope errors.
+3. **Phase 2 — Secret-manager convergence:** resolve AI-provider and integration credentials through encrypted storage with bounded access, rotation/revocation behavior, and redaction evidence.
+4. **Phase 3 — Linux collector and CMDB reconciliation:** define the platform-neutral collector contract, implement bounded Linux host/disk observations, then add authenticated upload, identity matching, and reconciliation.
+5. **Phase 4 — Windows contract gate:** implement and verify Windows collection, state protection, packaging prerequisites, and supported-target behavior without weakening the shared contract.
+6. **Phase 5 — Household authorization and privacy:** establish household identity, consent, privacy boundaries, and explicit resource grants before broader household automation.
+7. **Phase 6 — Versioned clients and qualified releases:** stabilize external APIs and client contracts, qualify the web experience first, then evaluate desktop, mobile, voice, plugins, and broader household surfaces independently.
+
+The tracked plan decides the active slice. A newer local dated handoff may provide continuity and implementation evidence, but it cannot become the sole tracked authority or reorder these phases by itself.
+
+## Release evidence
+
+Use the labels in `docs/development-plan.md`: **`implemented`**, **`unit-verified`**, **`integration-verified`**, **`runtime-verified`**, **`release-qualified`**, and **`blocked`**. “Historical” describes authority, not maturity. A 1.0 claim requires the tracked plan's complete release gates, including produced artifacts and named-platform install/startup/upgrade or recovery evidence. Filtered, ignored, mocked, source-only, or documentation-only checks cannot be promoted to runtime or release evidence.
 
 ---
 
-## VoidTower 1.0 Delivery Status — 2026-08-25
+# Legacy roadmap archive
 
-The current 1.0 scope is larger than the legacy phase/backlog sections below. This roadmap
-summarizes the public product boundary and its dependency-ordered work packages.
+**Everything below this boundary is a preserved historical snapshot and is non-authoritative.** It may contain stale statuses, mutable hard-coded counts, old next-slice statements, or capabilities that were never runtime- or release-qualified. Do not use any statement below as current product truth, execution priority, or release evidence; verify it against current source and `docs/development-plan.md`. Historical content is retained for provenance rather than deleted.
 
-VoidTower 1.0 requires all three product pillars together:
-
-1. A secure, recoverable infrastructure control plane and managed-node cluster.
-2. A distinct household experience across web, desktop, phone, and tablet.
-3. AI, automation, plugin, reporting, and explanation contracts across every applicable domain.
-
-The release is still **pre-1.0**. Existing feature presence is not considered release evidence until
-the relevant contract, integration, failure, provider/hardware, recovery, and client gates pass.
-The legacy sections below remain useful as feature inventory and backlog history; where they
-conflict with this dated status or the approved design and implementation plan, the dated and
-approved documents take precedence.
-
-### Foundation progress
-
-| Work package | Status | Evidence / remaining work |
-|---|---|---|
-| **R0-01 — Reconcile audited worktree** | **Partial** | The real Docker/App Vault/restic golden-path harness and CI job landed. Remaining architecture claims must be verified against source and executable checks. |
-| **S0-01 — Positive session-role authorization** | **Done** | Low-trust denylist-style guards were replaced with positive role checks and exhaustive real-router probes. |
-| **S0-02 — Authenticated host-detail routes** | **Done** | Previously unintended public host/model routes now have explicit session and bearer behavior covered by regression tests. |
-| **S0-03 — Route/action registry convergence** | **Done** | PR [#20](https://github.com/niwlekakan/voidtower/pull/20) established one typed registry for all 327 mounted routes and every structured action, including session, credential, bearer, risk, approval, and AI-exposure metadata. Missing metadata fails tests or fails closed. |
-| **V0-01 — Complete golden-path CI** | **Done** | PR [#21](https://github.com/niwlekakan/voidtower/pull/21) established the main verification gates; repository hygiene and secret scanning are also enforced. Administrators are covered; force-push and deletion are disabled. |
-| **D0-01/D0-02 — Numbered migrations** | **Done** | The exact live schema is frozen as SQLx baseline `0001`; legacy databases receive a protected pre-migration backup, transactional normalization, semantic schema/integrity validation, and checksum-verified tracking. Schema ownership and fresh/legacy/incompatible/concurrent paths are enforced in CI. |
-| **J0-01/J0-03 — Shared resource, capability, durable operation, approval, and event contracts** | **Done** | Persistence, immutable planning, production worker/recovery lifecycle, approvals, durable history, all 51 six-domain runtime adapter actions, the canonical plan/submit/cancel HTTP boundary, 48-route compatibility boundary, shared Tower/Void Jobs and Approvals workflows, and cursor-resumable durable SSE are implemented and source-enforced. |
-| **HH-01 — Household identity and naming** | **Ready for parallel discovery** | Define the permanent household-facing brand and vocabulary; “homeOS” is rejected as generic and unsuitable. This discovery must not bypass foundation dependencies. |
-
-### Current execution order
-
-1. **Completed:** **D0-01/D0-02** established numbered, fail-fast schema migrations.
-2. **Completed:** **J0-01/J0-03** landed cursor-resumable durable SSE on the canonical mutation API.
-3. Land the CMDB/Asset Registry on those contracts.
-4. Implement the local `vt-agent`, then secure remote enrollment and managed-cluster operation.
-5. Add placement-driven Docker/App Vault and VM/LXC workflows, including full Proxmox and managed community-script integration.
-6. Deliver household, AI, automation, plugin, and smartphone/tablet vertical slices on the same policy/job/resource model.
-7. Complete recovery, upgrade, security, hardware/provider, mobile, and release qualification before calling the product 1.0.
-
-No new remote-execution or AI-mutation path may bypass the typed action registry, policy/approval
-pipeline, durable jobs, audit history, or redaction rules.
-
-### J0 durable-operation adoption
-
-J0 has a complete execution kernel, production worker/reconciler lifecycle, six-domain
-compatibility adoption, source-enforced bypass closure, and a public asynchronous contract. It is
-not yet the only production mutation model because explicitly inventoried domains do not have
-matching durable actions. Cursor-resumable durable SSE now completes the shared J0 contract.
-
-| Workstream | Status | Evidence / remaining work |
-|---|---|---|
-| Resource/capability contracts and persistence | **Done** | Stable resource UUIDs, scoped aliases, revisions, capability availability, immutable jobs/steps/attempts, approvals, and versioned durable events are owned by numbered migration `0002`. |
-| Worker and recovery lifecycle | **Done (production)** | Startup validates bounded operator settings and all runtime adapters, expires approvals, and recovers leases before claims. Fixed workers and a separate reconciler renew leases, periodically recover later-expiring orphan work, serialize SQLite transition writes, preserve safe cancellation checkpoints, and stop new claims while graceful shutdown joins in-flight persistence within a configured bound. |
-| Six-domain runtime adapters | **Done (staged)** | Containers, Firewall, Proxy, Updates, Backups, and Proxmox cover all 51 declared durable actions. The staged adapter registry now validates as complete. |
-| Docker Compose safety boundary | **Done (production)** | Compose planning uses controlled immutable artifacts, rollback preparation, bounded/redacted provider output, and no-replay reconciliation. The compatibility apply route now binds the observed config path, stages idempotency-stable artifacts, and submits the canonical durable job; it never executes Compose itself. Pause/unpause were explicitly removed from J0 scope because no registered or legacy action existed. |
-| Canonical mutation API | **Done** | All 51 durable actions are available through strict typed advisory-plan and durable-submit routes with server-derived actor, ingress, plan, risk, retry/recovery, concurrency, capability/resource validation, Voidwatch policy, scoped full-intent idempotency, stable bearer identity, bounded/redacted errors, and fail-closed role/scope/AI exposure. Authenticated job cancellation delegates only to the durable worker cancellation transaction. |
-| Compatibility routes and CLI | **Done (production)** | All durable branches mapped by the 48 route keys across App Vault exposure, Odysseus container webhooks, Containers/Compose apply, Firewall, Proxy, Backups, Updates, and Proxmox observe canonical resources/capabilities and return durable jobs without provider mutation in their handlers. Backup mutation CLI commands submit and wait through the same typed boundary, and scheduled restore tests use a system actor plus deterministic window idempotency. Main and native six-domain surfaces follow submitted jobs locally and refresh only after terminal success. Informational reads, legacy service/automation webhook branches, and ephemeral Proxmox VNC ticket creation remain intentionally synchronous. |
-| Durable event delivery | **Done** | `/api/events/stream` and `/api/integrations/events` share one ordered `EventEnvelopeV1` stream with live-only startup, explicit replay, `Last-Event-ID`, bounded batches/backpressure, ready/gap control frames, role/scope enforcement, and authoritative recovery. The former integrations metrics/audit feed remains temporarily at `/api/integrations/events/legacy`. |
-| Shared frontend Jobs/Approvals UX | **Done** | Tower and Void Mode provide role-filtered shared Jobs and Approvals workflows, canonical deep links, safe complete detail, queued/running cancellation, and exact immutable approval decisions. Durable SSE invalidates authoritative reads; bounded polling resumes until each connection is ready and gap-free. Page-local trackers retain terminal-success provider refresh ownership. |
-| Bypass closure and public contract | **Done (production)** | The 48 adopted route keys, provider execution boundaries, reusable App Vault exposure and container webhook callers, read-only open-UI projection, frontend job following, and exact deferred exception ledger are source-enforced. The public API documents acceptance, idempotency, job states, approval/cancellation semantics, errors, redaction, and synchronous exceptions. |
-
-The next foundation checkpoint lands the CMDB/Asset Registry on the completed J0 contracts.
-
----
-
-## Current State (what ships today)
+## Current State (what ships today) — Historical snapshot (non-authoritative)
 
 Features confirmed present in the codebase (pages + API modules).
 
@@ -109,7 +92,7 @@ Features confirmed present in the codebase (pages + API modules).
 
 ---
 
-## Must-Have Before Public Release
+## Must-Have Before Public Release — Historical snapshot (non-authoritative)
 
 These 10 items are the non-negotiable baseline for a credible first public release. Their status
 is verified against source and executable checks. Several legacy implementations ship today but
@@ -130,7 +113,7 @@ are still being hardened onto the shared J0 contracts.
 
 ---
 
-## Phase 4 — Planned (from original spec)
+## Phase 4 — Planned (from original spec) — Historical snapshot (non-authoritative)
 
 | Item | Status |
 |---|---|
@@ -144,7 +127,7 @@ are still being hardened onto the shared J0 contracts.
 
 ---
 
-## Phase 5 — AI Living Desktop
+## Phase 5 — AI Living Desktop — Historical snapshot (non-authoritative)
 
 These items transform VoidTower from an admin panel into a true local-first AI operating system. They build on the existing Void Mode shell and Odysseus voidlink integration.
 
@@ -318,7 +301,7 @@ Full Proxmox Virtual Environment management built into VoidTower — on par with
 
 ---
 
-## Self-Hosted Email Service
+## Self-Hosted Email Service — Historical snapshot (non-authoritative)
 
 Not started — nothing in `app-vault/apps/`, `backend/src/api/`, or the proxy system today is mail-specific. New section, added 2026-06-24 at user request. Mail is a different risk class from everything else in App Vault: a misconfigured deploy doesn't just break a container, it gets the host's IP blacklisted or silently drops outbound mail with no error visible to the user. The plan below is written to surface that risk up front rather than ship a one-click "Deploy Email Server" button that quietly fails in production.
 
@@ -347,7 +330,7 @@ Not started — nothing in `app-vault/apps/`, `backend/src/api/`, or the proxy s
 
 ---
 
-## Self-Hosted Home Hub — Cloud-Service Replacement Wishlist
+## Self-Hosted Home Hub — Cloud-Service Replacement Wishlist — Historical snapshot (non-authoritative)
 
 Nice-to-haves, not commitments — lower priority than Phase 5, Proxmox, and Email above. The vision: a household runs its entire digital life through VoidTower instead of scattering it across Google/Apple/Meta/cloud SaaS, with Odysseus/Studio as the AI glue rather than a separate cloud assistant. Every item below should slot into an existing VoidTower pattern (App Vault YAML catalog, Tags, Alerts, Dashboard widgets, RBAC) rather than inventing a parallel subsystem — that's called out per item. None of this is started; nothing below should be read as "in progress."
 
@@ -411,7 +394,7 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 
 ---
 
-## Feature Backlog (roughly prioritized)
+## Feature Backlog (roughly prioritized) — Historical snapshot (non-authoritative)
 
 ### Infrastructure intelligence
 
@@ -465,7 +448,7 @@ The biggest synergy item here — VoidTower already has every primitive a fully 
 
 ---
 
-## App Vault — Planned Apps
+## App Vault — Planned Apps — Historical snapshot (non-authoritative)
 
 **Corrected count: 54 apps present** (`ls app-vault/apps/*.yml | wc -l`). The original "already in vault" list also self-contradicted the table below — it listed `jitsi` and `matrix-synapse` as already present while the planned-apps table *also* listed "Matrix / Synapse" and "Jitsi" as not-yet-added. Both are removed from the planned table below since they're confirmed present.
 
@@ -494,7 +477,7 @@ A full Servarr media-management stack (`bazarr`, `flaresolverr`, `gluetun`, `see
 
 ---
 
-## Odysseus Integration Gaps
+## Odysseus Integration Gaps — Historical snapshot (non-authoritative)
 
 What the spec requires vs what `backend/src/api/integrations.rs` actually implements.
 
@@ -517,7 +500,7 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 
 ---
 
-## Known Issues / Tech Debt
+## Known Issues / Tech Debt — Historical snapshot (non-authoritative)
 
 - **Pi-hole pinned to v5** — ~~`2024.07.0`, v6 changed config format~~ Done — `app-vault/apps/pihole.yml` now deploys `pihole/pihole:latest` (v6) with inline comments documenting the v5→v6 env-var migration (`WEBPASSWORD`→`FTLCONF_webserver_api_password`, etc.)
 - **Odysseus/Ollama dual-deploy port conflict** — ~~still open~~ Done (`ddde48e`) — `app-vault/apps/ollama.yml`/`odysseus.yml` set `system_conflict_check: ollama`/`odysseus`; `apps::deploy` (`backend/src/api/apps.rs:845-861`) checks for the matching `/var/lib/voidtower/.{key}-system-installed` marker before deploying and returns a `BadRequest` with the port conflict and `systemctl stop/disable` instructions if found.
@@ -533,7 +516,7 @@ What the spec requires vs what `backend/src/api/integrations.rs` actually implem
 
 ---
 
-## Not Planned
+## Not Planned — Historical snapshot (non-authoritative)
 
 - **More themes** — Odysseus ROADMAP: "I prob shouldnt add more themes"; same applies to VoidTower. Already has 23 built-in themes (`frontend/src/theme/themes.ts`) — this is "stop adding," not "none exist yet"
 - **iPhone / iOS VM** — no legal option exists; Corellium is paid/enterprise only; not in scope

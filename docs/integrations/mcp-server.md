@@ -167,19 +167,19 @@ Then in Open WebUI, for each server:
 
 | Tool | Scopes needed | Description |
 |---|---|---|
-| `vt_control_service` | `services:restart` | Start, stop, restart, enable, or disable a systemd service |
-| `vt_control_container` | `containers:restart` | Start, stop, restart, or remove a Docker container |
-| `vt_control_app` | `apps:restart` | Start, stop, restart, or redeploy a deployed App Vault app |
-| `vt_update_app_compose` | `apps:deploy` | Replace the Docker Compose file for a deployed app |
-| `vt_deploy_app` | `apps:deploy` | Deploy an app from the App Vault catalog (supports `env_overrides`) |
-| `vt_remove_app` | `apps:deploy` | Remove a deployed app (config only — data on disk is not deleted) |
-| `vt_toggle_proxy` | `proxy:manage` | Enable or disable an nginx proxy rule |
-| `vt_create_proxy` | `proxy:manage` | Create a new nginx reverse proxy rule |
-| `vt_run_backup` | `backups:run` | Trigger an immediate backup for a backup job |
-| `vt_run_automation_job` | `automation:run` | Trigger an automation job and wait for output |
-| `vt_control_vm` | `vms:read` | Start, stop, reboot, or shutdown a Proxmox VM or LXC |
-| `vt_acknowledge_alert` | `alerts:ack` | Acknowledge an active alert |
-| `vt_resolve_alert` | `alerts:ack` | Mark an alert as resolved |
+| `vt_control_vm` | `vms:control` | Plan and submit start, stop, reboot, or shutdown for a Proxmox guest identified by canonical `resources.id` |
+
+`vt_control_vm` is the only standalone mutation tool currently advertised. It calls the canonical
+action plan and submit endpoints and requires a caller-generated UUID `request_id`. Reuse that ID
+only to retry the same intended operation; changed intent with the same ID conflicts, while a later
+equivalent operation needs a new ID. The tool returns the canonical plan, durable job, approval ID,
+and derived deterministic idempotency key. If submit transport fails, the outcome is reported as
+ambiguous; query `GET /api/jobs/by-idempotency/<idempotency_key>` with the same bearer
+credential before retrying with the same `request_id`. The lookup is actor-scoped, re-authorizes the
+job's typed action, and does not expose another token's jobs. Earlier direct
+service, container, app, proxy, backup,
+automation, and alert mutation tools are intentionally unavailable until each has a typed canonical
+adapter.
 
 ---
 
@@ -197,14 +197,11 @@ proxy:read  tags:read  vms:read  secrets:list
 For full control:
 
 ```
-metrics:read  services:read  services:restart
-containers:read  containers:logs  containers:restart
-apps:read  apps:deploy  apps:restart
-backups:read  backups:run
-alerts:read  alerts:ack
-automation:read  automation:run
+metrics:read  services:read
+containers:read  containers:logs
+apps:read  backups:read  alerts:read  automation:read
 timeline:read  network:read  storage:read  diagnostics:read
-proxy:read  proxy:manage  tags:read  vms:read  secrets:list
+proxy:read  tags:read  vms:read  vms:control  secrets:list
 ```
 
 See [docs/api-tokens.md](../api-tokens.md) for how to create a token with these scopes, including the

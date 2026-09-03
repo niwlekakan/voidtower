@@ -343,6 +343,16 @@ pub const ROUTES: &[RouteMetadata] = &[
     ),
     route_metadata!(
         Get,
+        "/api/jobs/by-idempotency/:key",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::ActionScoped,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::Callable
+    ),
+    route_metadata!(
+        Get,
         "/api/jobs/:id",
         SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
@@ -4648,33 +4658,41 @@ pub const ACTIONS: &[ActionMetadata] = &[
         ApprovalPolicy::RiskLadder
     ),
     durable_read_job!("proxmox.host.test", "proxmox_host", "proxmox"),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxmox.guest.start",
         "proxmox_guest",
         "proxmox",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "vms:control"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxmox.guest.stop",
         "proxmox_guest",
         "proxmox",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "vms:control"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxmox.guest.shutdown",
         "proxmox_guest",
         "proxmox",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "vms:control"
     ),
-    durable_mutation!(
+    durable_scoped_mutation!(
         "proxmox.guest.reboot",
         "proxmox_guest",
         "proxmox",
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "vms:control"
     ),
     durable_mutation!(
         "proxmox.guest.reset",
@@ -4999,6 +5017,35 @@ mod tests {
     }
 
     #[test]
+    fn standalone_vm_lifecycle_actions_have_exact_machine_scope() {
+        for name in [
+            "proxmox.guest.start",
+            "proxmox.guest.stop",
+            "proxmox.guest.reboot",
+            "proxmox.guest.shutdown",
+        ] {
+            let metadata = action(name).expect("standalone VM action must be registered");
+            assert_eq!(metadata.canonical_session_role, Some(RoleTier::Admin));
+            assert_eq!(
+                metadata.canonical_bearer,
+                BearerPolicy::Scope("vms:control")
+            );
+            assert_eq!(metadata.ai_exposure, AiExposure::Callable);
+            assert_eq!(metadata.execution, ActionExecution::DurableJob);
+        }
+
+        for name in [
+            "proxmox.guest.reset",
+            "proxmox.guest.suspend",
+            "proxmox.guest.resume",
+        ] {
+            let metadata = action(name).expect("legacy VM action must remain registered");
+            assert_eq!(metadata.canonical_bearer, BearerPolicy::Denied);
+            assert_eq!(metadata.ai_exposure, AiExposure::None);
+        }
+    }
+
+    #[test]
     fn session_policy_and_credential_kind_are_consistent() {
         for metadata in ROUTES {
             let consistent = matches!(
@@ -5054,6 +5101,7 @@ mod tests {
                 ("POST", "/api/resources/:id/actions/:action"),
                 ("POST", "/api/resources/:id/actions/:action/plan"),
                 ("POST", "/api/jobs/:id/cancel"),
+                ("GET", "/api/jobs/by-idempotency/:key"),
             ]),
             "only canonical handlers that enforce selected-action metadata may bypass static scope enforcement"
         );

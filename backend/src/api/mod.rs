@@ -162,6 +162,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/resources/:id/actions/:action/plan", post(actions::plan).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         .route("/api/resources/:id/actions/:action", post(actions::submit).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         .route("/api/jobs", get(jobs::list))
+        .route("/api/jobs/by-idempotency/:key", get(jobs::get_by_idempotency))
         .route("/api/jobs/:id", get(jobs::get))
         .route("/api/jobs/:id/cancel", post(jobs::cancel))
         .route("/api/approvals", get(approvals::list))

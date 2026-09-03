@@ -55,6 +55,25 @@ pub async fn list(
     Ok(Json(serde_json::json!({"jobs": jobs})))
 }
 
+pub async fn get_by_idempotency(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    token: Option<Extension<AuthenticatedApiToken>>,
+    Path(key): Path<String>,
+) -> std::result::Result<Json<serde_json::Value>, CanonicalApiError> {
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
+    invocation::validate_idempotency_key(&key)?;
+    let job = jobs::get_by_idempotency(&state.db, &credential.idempotency_scope(), &key)
+        .await
+        .map_err(|_| CanonicalApiError::internal())?
+        .ok_or_else(CanonicalApiError::job_not_found)?;
+    let action = crate::api::mcp::action_registry::action(&job.action)
+        .ok_or_else(CanonicalApiError::forbidden)?;
+    invocation::authorize_action(action, &credential)?;
+    Ok(Json(serde_json::json!({"job": job})))
+}
+
 pub async fn get(
     State(state): State<AppState>,
     jar: CookieJar,

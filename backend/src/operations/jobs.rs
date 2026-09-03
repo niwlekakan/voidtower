@@ -326,6 +326,24 @@ pub async fn get(pool: &SqlitePool, job_id: &str) -> Result<Option<JobSummaryV1>
     row.map(row_to_summary).transpose()
 }
 
+pub async fn get_by_idempotency(
+    pool: &SqlitePool,
+    scope: &str,
+    key: &str,
+) -> Result<Option<JobSummaryV1>> {
+    let job_id: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM jobs WHERE idempotency_scope = ? AND idempotency_key = ?",
+    )
+    .bind(scope)
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
+    match job_id {
+        Some(job_id) => get(pool, &job_id).await,
+        None => Ok(None),
+    }
+}
+
 pub async fn list(pool: &SqlitePool, limit: i64) -> Result<Vec<JobSummaryV1>> {
     let ids: Vec<String> =
         sqlx::query_scalar("SELECT id FROM jobs ORDER BY submitted_at DESC, id DESC LIMIT ?")

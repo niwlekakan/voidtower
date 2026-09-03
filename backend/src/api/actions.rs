@@ -311,6 +311,10 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct VmHttpAdapter {
+        calls: Arc<AtomicUsize>,
+    }
+
     #[async_trait]
     impl OperationAdapter for HttpAdapter {
         fn key(&self) -> &'static str {
@@ -347,6 +351,52 @@ mod tests {
 
         async fn external_fingerprint(&self, _request: &PlanRequest) -> Result<String> {
             Ok("container-running-false".into())
+        }
+
+        async fn execute_step(&self, _request: StepRequest) -> Result<StepOutcome> {
+            unreachable!()
+        }
+
+        async fn reconcile(&self, _request: StepRequest) -> Result<ReconcileOutcome> {
+            unreachable!()
+        }
+    }
+
+    #[async_trait]
+    impl OperationAdapter for VmHttpAdapter {
+        fn key(&self) -> &'static str {
+            "proxmox"
+        }
+
+        fn actions(&self) -> &[&'static str] {
+            &[
+                "proxmox.guest.start",
+                "proxmox.guest.stop",
+                "proxmox.guest.reboot",
+                "proxmox.guest.shutdown",
+            ]
+        }
+
+        async fn plan(&self, request: PlanRequest) -> Result<OperationPlanV1> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(OperationPlanV1 {
+                schema_version: 1,
+                title: format!("{} web-100", request.action),
+                risk: "mutate".into(),
+                changes: vec![],
+                preview: None,
+                external_fingerprint: "guest-stopped".into(),
+                steps: vec![PlannedStepV1 {
+                    kind: "execute".into(),
+                    name: "Apply guest lifecycle action".into(),
+                    retry_class: "never".into(),
+                    recovery_class: "reconcile".into(),
+                }],
+            })
+        }
+
+        async fn external_fingerprint(&self, _request: &PlanRequest) -> Result<String> {
+            Ok("guest-stopped".into())
         }
 
         async fn execute_step(&self, _request: StepRequest) -> Result<StepOutcome> {
@@ -800,5 +850,165 @@ mod tests {
         assert_eq!(denied_replay.status(), StatusCode::FORBIDDEN);
         assert_eq!(json(denied_replay).await["error"]["job_id"], denied_job_id);
         assert_eq!(calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn vm_read_scope_is_denied_before_planning_and_vm_control_submits_canonical_job() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let _session = crate::api::mcp::test_support::user_with_session(&db).await;
+        let resource = resources::observe(
+            &db,
+            ObserveResource {
+                kind: "proxmox_guest",
+                display_name: "web-100",
+                node_id: None,
+                provider: Some("proxmox"),
+                namespace: "proxmox.guest",
+                scope_key: "host-1/pve",
+                alias: "qemu:100",
+            },
+            None,
+            "setup-vm",
+        )
+        .await
+        .unwrap();
+        resources::set_capability(
+            &db,
+            &resource.id,
+            "proxmox.guest.start",
+            CapabilityAvailability::Available,
+            None,
+            None,
+            "setup-vm-capability",
+        )
+        .await
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = AdapterRegistry::new();
+        registry
+            .register(Arc::new(VmHttpAdapter {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        let mut state = crate::api::mcp::test_support::build(db.clone());
+        state.operation_adapters = Arc::new(registry);
+        let app = crate::api::router(state);
+        insert_token(&db, "vm-read", "u1", "vt_vm_read", &["vms:read"]).await;
+        insert_token(&db, "vm-control", "u1", "vt_vm_control", &["vms:control"]).await;
+        insert_token(
+            &db,
+            "vm-control-other",
+            "u1",
+            "vt_vm_control_other",
+            &["vms:control"],
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO voidwatch_default_allowlist \
+             (id, actor_type, action, resource_type, created_at) \
+             VALUES ('vm-control-allow', 'api_token', 'proxmox.guest.start', 'proxmox_guest', 0)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let base = format!("/api/resources/{}/actions/proxmox.guest.start", resource.id);
+
+        let read_only = app
+            .clone()
+            .oneshot(bearer_request(
+                &base,
+                "vt_vm_read",
+                r#"{"input":{}}"#,
+                Some("mcp-vm-start"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(read_only.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json(read_only).await["error"]["code"], "insufficient_scope");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let accepted = app
+            .clone()
+            .oneshot(bearer_request(
+                &base,
+                "vt_vm_control",
+                r#"{"input":{}}"#,
+                Some("mcp-vm-start"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+        let accepted = json(accepted).await;
+        assert_eq!(accepted["job"]["action"], "proxmox.guest.start");
+        assert_eq!(accepted["job"]["resource"]["id"], resource.id);
+        assert_eq!(accepted["job"]["actor"]["id"], "vm-control");
+        let job_id = accepted["job"]["id"].as_str().unwrap();
+        let event_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events \
+             WHERE job_id = ? AND correlation_id = ? AND resource_id = ?",
+        )
+        .bind(job_id)
+        .bind(job_id)
+        .bind(&resource.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(event_count, 2);
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_log \
+             WHERE request_id = ? AND resource_id = ? AND action = 'proxmox.guest.start'",
+        )
+        .bind(job_id)
+        .bind(&resource.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(audit_count, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let recovered = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/jobs/by-idempotency/mcp-vm-start")
+                    .header(header::AUTHORIZATION, "Bearer vt_vm_control")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered.status(), StatusCode::OK);
+        assert_eq!(json(recovered).await["job"]["id"], job_id);
+
+        let other_actor = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/jobs/by-idempotency/mcp-vm-start")
+                    .header(header::AUTHORIZATION, "Bearer vt_vm_control_other")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_actor.status(), StatusCode::NOT_FOUND);
+
+        let conflict = app
+            .oneshot(bearer_request(
+                &base,
+                "vt_vm_control",
+                r#"{"input":{"unexpected":true}}"#,
+                Some("mcp-vm-start"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json(conflict).await["error"]["code"],
+            "idempotency_conflict"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

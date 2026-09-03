@@ -76,6 +76,7 @@ The default connection is live-only. Add `after=0` for complete retained replay 
 | `alerts:ack` | Acknowledge or resolve alerts |
 | `automation:run` | Trigger an automation job |
 | `proxy:manage` | Add, toggle, and reload nginx proxy rules |
+| `vms:control` | Start, stop, reboot, and shut down Proxmox guests through canonical durable actions |
 
 ---
 
@@ -95,7 +96,7 @@ diagnostics:read  proxy:read  tags:read
 Add to the baseline above:
 
 ```
-services:restart  containers:restart  apps:restart  backups:run  automation:run
+services:restart  containers:restart  apps:restart  backups:run  automation:run  vms:control
 ```
 
 ### Read-only monitoring script

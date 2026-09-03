@@ -300,7 +300,7 @@ Required work:
 
 ### M1-01 — Canonical standalone-MCP mutation adapter and correct VM scope
 
-**Readiness:** `READY NOW` — R0-01 is green; this is the next dependency-ordered slice
+**Readiness:** `COMPLETED 2026-09-03` — integration-verified at the real Axum auth/action router boundary with a fake non-mutating VM adapter; the standalone MCP mutation client is unit-verified and its stdio server startup/tool surface is runtime-smoke-verified. No live provider mutation was performed, so this slice is not release-qualified.
 **Goal/user outcome:** a standalone MCP caller can request an approved VoidTower mutation and receive the canonical immutable plan/job/approval result; a read-only VM token can never control a VM.
 
 **Likely files/modules:** `odysseus-mcp-servers/voidtower_server.py`; a new focused Python test module under `odysseus-mcp-servers/tests/`; `backend/src/action_registry.rs`; `backend/src/api/actions.rs`; `backend/src/operations/invocation.rs`; `backend/src/api/scope_bypass_tests.rs`; `docs/integrations/mcp-server.md`; `docs/api-tokens.md`.
@@ -310,7 +310,7 @@ Required work:
 **Acceptance criteria:**
 
 - every in-scope standalone VoidTower MCP mutation resolves a canonical `resource_id` and typed action, then calls plan/submit rather than a provider or legacy execution API;
-- equivalent intent uses deterministic, bounded idempotency; replay returns the same job and changed intent conflicts;
+- a caller-generated operation `request_id` produces a deterministic bounded idempotency key: reusing it for the same intent replays the job, reusing it for changed intent conflicts, and a new ID permits a later equivalent operation;
 - `vms:read` permits listing only; `vms:control` is required for VM lifecycle mutation and is registered/tested consistently;
 - action exposure is explicit per action and fails closed; no global bearer or AI enablement;
 - responses expose stable plan/job/approval/error contracts and redact raw provider bodies;
@@ -321,7 +321,7 @@ Required work:
 
 **Recovery:** no MCP retry after an ambiguous transport result without querying by idempotency/job. Existing direct routes remain only as compatibility shims during the slice and are removed from the standalone adapter after parity. If scope migration would strand tokens, add an explicit bounded compatibility migration; never treat `vms:read` as temporary write permission.
 
-**Completion evidence:** Python adapter tests plus real-router Rust authorization/invocation tests; full backend gates; a runtime smoke against a built local server with a fake/non-mutating adapter; audit/event/job records linked by correlation ID.
+**Completion evidence:** 31 Python adapter/source-enforcement/runtime-boundary tests pass for exact canonical routes, operation-scoped deterministic idempotency, actor-scoped recovery lookup, strict typed-response validation, stable/redacted success and error responses, submit ambiguity, explicit tool classification, and real MCP stdio-to-HTTP transport. Real-router Rust tests prove `vms:read` denial before planning, `vms:control` acceptance, same-key changed-intent conflict before another adapter call, same-actor idempotency lookup with cross-token isolation, and correlated durable job/event/audit records. Full backend tests and Clippy, repository checks, focused Rustfmt, and diff checks pass. The runtime-boundary test calls `vt_control_vm` across a fake non-mutating HTTP boundary with exactly one plan and one submit; a separate MCP stdio smoke confirms 29 advertised tools with disabled legacy mutations absent. Exact commands and limitations are recorded in the dated M1-01 handoff.
 
 **Next dependency:** M1-02 machine-ingress convergence and S2-01.
 

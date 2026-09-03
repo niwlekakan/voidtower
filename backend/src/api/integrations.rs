@@ -62,6 +62,10 @@ pub const ALL_SCOPES: &[(&str, &str)] = &[
         "List secret names and descriptions (values never returned)",
     ),
     ("vms:read", "List KVM and Proxmox virtual machines"),
+    (
+        "vms:control",
+        "Start, stop, reboot and shut down Proxmox guests",
+    ),
     ("tags:read", "List resource tags"),
 ];
 
@@ -1199,6 +1203,17 @@ mod tests {
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn vm_control_scope_is_advertised_for_token_minting() {
+        let Json(payload) = scopes_list().await;
+        let scopes = payload["scopes"].as_array().unwrap();
+
+        assert!(scopes.iter().any(|scope| {
+            scope["name"] == "vms:control"
+                && scope["description"] == "Start, stop, reboot and shut down Proxmox guests"
+        }));
     }
 
     /// Reproduces the pre-P0-01 bypass: `automation_id`-triggered jobs ran regardless

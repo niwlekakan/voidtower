@@ -1,6 +1,7 @@
 use crate::{
     auth, containers,
     error::AppError,
+    operations::invocation::{self, CredentialContext},
     services,
     voidwatch::{self, ActionKind, Actor, ActorKind, Resource},
     AppState,
@@ -101,13 +102,14 @@ async fn get_setting(state: &AppState, key: &str) -> String {
         .unwrap_or_default()
 }
 
-async fn check_mcp_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    // Check mcp_enabled setting
+async fn check_mcp_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<CredentialContext, StatusCode> {
     if get_setting(state, "odysseus.mcp_enabled").await != "true" {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Require a valid Bearer token
     let raw_token = headers
         .get("Authorization")
         .and_then(|v| v.to_str().ok())
@@ -115,11 +117,29 @@ async fn check_mcp_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Sta
         .map(str::trim)
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    auth::validate_api_token_any(&state.db, raw_token)
+    let identity = auth::validate_api_token_identity(&state.db, raw_token)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let scopes = auth::token_scopes(&state.db, raw_token)
+        .await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let user = auth::find_user_by_id(&state.db, &identity.user_id)
+        .await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if user
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= crate::unix_now())
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
 
-    Ok(())
+    Ok(CredentialContext::Mcp {
+        token_id: identity.token_id,
+        user_id: identity.user_id,
+        role: user.role,
+        scopes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -153,21 +173,24 @@ pub async fn message_handler(
     headers: HeaderMap,
     Json(req): Json<JsonRpcRequest>,
 ) -> (StatusCode, Json<JsonRpcResponse>) {
-    if let Err(status) = check_mcp_auth(&state, &headers).await {
-        let code = if status == StatusCode::UNAUTHORIZED {
-            -32001
-        } else {
-            -32003
-        };
-        let msg = if status == StatusCode::UNAUTHORIZED {
-            "Unauthorized"
-        } else {
-            "MCP is not enabled"
-        };
-        return (status, Json(err_response(req.id, code, msg)));
-    }
+    let credential = match check_mcp_auth(&state, &headers).await {
+        Ok(credential) => credential,
+        Err(status) => {
+            let code = if status == StatusCode::UNAUTHORIZED {
+                -32001
+            } else {
+                -32003
+            };
+            let msg = if status == StatusCode::UNAUTHORIZED {
+                "Unauthorized"
+            } else {
+                "MCP is not enabled"
+            };
+            return (status, Json(err_response(req.id, code, msg)));
+        }
+    };
 
-    let resp = dispatch(&state, req).await;
+    let resp = dispatch_with_context(&state, req, credential).await;
     (StatusCode::OK, Json(resp))
 }
 
@@ -175,22 +198,38 @@ pub async fn message_handler(
 // Dispatch
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 async fn dispatch(state: &AppState, req: JsonRpcRequest) -> JsonRpcResponse {
+    dispatch_with_context(
+        state,
+        req,
+        CredentialContext::Mcp {
+            token_id: "[REDACTED]".into(),
+            user_id: "test-user".into(),
+            role: "owner".into(),
+            scopes: vec![
+                "metrics:read".into(),
+                "containers:read".into(),
+                "containers:logs".into(),
+                "services:read".into(),
+                "alerts:read".into(),
+                "files:read".into(),
+            ],
+        },
+    )
+    .await
+}
+
+async fn dispatch_with_context(
+    state: &AppState,
+    req: JsonRpcRequest,
+    credential: CredentialContext,
+) -> JsonRpcResponse {
     let id = req.id.clone();
     match req.method.as_str() {
         "initialize" => handle_initialize(id),
         "tools/list" => handle_tools_list(id),
-        "tools/call" => {
-            handle_tools_call(
-                state,
-                id,
-                req.params,
-                Actor {
-                    kind: ActorKind::ApiToken,
-                },
-            )
-            .await
-        }
+        "tools/call" => handle_tools_call(state, id, req.params, credential).await,
         _ => err_response(id, -32601, "Method not found"),
     }
 }
@@ -306,7 +345,7 @@ async fn handle_tools_call(
     state: &AppState,
     id: Option<Value>,
     params: Value,
-    actor: Actor,
+    credential: CredentialContext,
 ) -> JsonRpcResponse {
     let tool_name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n.to_string(),
@@ -317,7 +356,7 @@ async fn handle_tools_call(
         .cloned()
         .unwrap_or(serde_json::json!({}));
 
-    let result = invoke_tool(state, actor, &tool_name, args).await;
+    let result = invoke_tool(state, credential, &tool_name, args).await;
 
     match result {
         Ok(text) => ok_response(
@@ -509,10 +548,22 @@ fn tool_action_kind(name: &str) -> ActionKind {
 /// session-authenticated Studio panel (`api/studio.rs`'s `mcp_invoke`).
 pub async fn invoke_tool(
     state: &AppState,
-    actor: Actor,
+    credential: CredentialContext,
     name: &str,
     args: Value,
 ) -> std::result::Result<String, String> {
+    let metadata = action_registry::action(name).ok_or_else(|| format!("Unknown tool: {name}"))?;
+    invocation::authorize_action(metadata, &credential).map_err(|error| error.to_string())?;
+
+    let actor = match credential {
+        CredentialContext::Mcp { .. } => Actor {
+            kind: ActorKind::ApiToken,
+        },
+        CredentialContext::Studio { .. } => Actor {
+            kind: ActorKind::User,
+        },
+        _ => return Err("The tool is not available from this ingress".to_string()),
+    };
     let verdict = voidwatch::evaluate(
         &state.db,
         actor,
@@ -565,8 +616,48 @@ pub async fn invoke_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
-    /// Realistic secret shapes an AI-reachable tool output must never leak,
+    #[tokio::test]
+    async fn mcp_rejects_an_expired_token_owner_before_dispatch() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let now = crate::unix_now();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, role, expires_at, created_at, updated_at) \
+             VALUES ('expired-user', 'expired', 'x', 'owner', ?, 0, 0)",
+        )
+        .bind(now - 1)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let raw_token = "[REDACTED]";
+        let token_hash = hex::encode(sha2::Sha256::digest(raw_token.as_bytes()));
+        sqlx::query(
+            "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at) \
+             VALUES ('expired-token', 'expired-user', 'mcp', ?, '[\\\"alerts:read\\\"]', ?, 0)",
+        )
+        .bind(token_hash)
+        .bind(now + 3600)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.mcp_enabled', 'true', ?)",
+        )
+        .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let state = crate::api::mcp::test_support::build(pool);
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", "Bearer [REDACTED]".parse().unwrap());
+        assert_eq!(
+            check_mcp_auth(&state, &headers).await,
+            Err(StatusCode::UNAUTHORIZED)
+        );
+    }
+
     /// regardless of whether they're registered VoidTower secrets.
     fn secret_corpus() -> Vec<&'static str> {
         vec![

@@ -199,6 +199,21 @@ pub struct ActionMetadata {
     pub canonical_bearer: BearerPolicy,
 }
 
+impl ActionMetadata {
+    /// Scope required by the built-in MCP read surface. Keeping this mapping explicit prevents a
+    /// newly registered direct action from becoming callable merely by setting `AiExposure::Callable`.
+    pub fn mcp_scope(self) -> Option<&'static str> {
+        match self.name {
+            "get_node_metrics" | "list_nodes" => Some("metrics:read"),
+            "list_containers" => Some("containers:read"),
+            "get_container_logs" => Some("containers:logs"),
+            "list_services" => Some("services:read"),
+            "list_alerts" => Some("alerts:read"),
+            "get_template" | "list_routes" | "read_file" | "search_code" => Some("files:read"),
+            _ => None,
+        }
+    }
+}
 macro_rules! route_metadata {
     (
         $method:ident,
@@ -5228,6 +5243,20 @@ mod tests {
         assert!(
             missing.is_empty(),
             "dispatched MCP tools missing action metadata: {missing:?}"
+        );
+
+        let missing_scopes: Vec<&str> = dispatched
+            .iter()
+            .copied()
+            .filter(|name| {
+                action(name)
+                    .and_then(|metadata| metadata.mcp_scope())
+                    .is_none()
+            })
+            .collect();
+        assert!(
+            missing_scopes.is_empty(),
+            "dispatched MCP tools missing explicit scopes: {missing_scopes:?}"
         );
 
         let stale: Vec<&str> = ACTIONS

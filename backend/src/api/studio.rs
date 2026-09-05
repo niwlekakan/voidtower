@@ -1,7 +1,6 @@
 use crate::{
     auth,
     error::{AppError, Result},
-    voidwatch::{Actor, ActorKind},
     AppState,
 };
 use axum::{
@@ -699,11 +698,12 @@ pub async fn mcp_invoke(
     jar: CookieJar,
     Json(req): Json<McpInvokeRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
     match super::mcp::invoke_tool(
         &state,
-        Actor {
-            kind: ActorKind::User,
+        crate::operations::invocation::CredentialContext::Studio {
+            user_id: user.id,
+            role: user.role,
         },
         &req.name,
         req.arguments,

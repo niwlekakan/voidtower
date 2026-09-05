@@ -29,6 +29,16 @@ pub enum InvocationContext {
         role: String,
         scopes: Vec<String>,
     },
+    Mcp {
+        token_id: String,
+        user_id: String,
+        role: String,
+        scopes: Vec<String>,
+    },
+    Studio {
+        user_id: String,
+        role: String,
+    },
     LocalCli,
     Scheduler,
     Webhook {
@@ -120,11 +130,31 @@ pub fn authorize_action(
             .then_some(())
             .ok_or(InvocationError::AiExposureDenied);
     }
-    let required_role = action
-        .canonical_session_role
-        .ok_or(InvocationError::UnknownAction)?;
+    let required_role = match action.canonical_session_role {
+        Some(required_role) => required_role,
+        None => {
+            return match credential {
+                InvocationContext::Mcp { scopes, .. } => {
+                    let required_scope =
+                        action.mcp_scope().ok_or(InvocationError::UnknownAction)?;
+                    scopes
+                        .iter()
+                        .any(|scope| scope == required_scope)
+                        .then_some(())
+                        .ok_or(InvocationError::InsufficientScope)
+                }
+                InvocationContext::Studio { .. } if action.ai_exposure == AiExposure::Callable => {
+                    Ok(())
+                }
+                _ => Err(InvocationError::UnknownAction),
+            };
+        }
+    };
     let current_role = match credential {
-        InvocationContext::Session { role, .. } | InvocationContext::Bearer { role, .. } => role,
+        InvocationContext::Session { role, .. }
+        | InvocationContext::Bearer { role, .. }
+        | InvocationContext::Mcp { role, .. }
+        | InvocationContext::Studio { role, .. } => role,
         InvocationContext::LocalCli => "admin",
         InvocationContext::Scheduler => unreachable!("scheduler handled above"),
         InvocationContext::Webhook { .. } => unreachable!("webhook handled above"),
@@ -133,7 +163,9 @@ pub fn authorize_action(
         return Err(InvocationError::Forbidden);
     }
 
-    if let InvocationContext::Bearer { scopes, .. } = credential {
+    if let InvocationContext::Bearer { scopes, .. } | InvocationContext::Mcp { scopes, .. } =
+        credential
+    {
         if action.ai_exposure != AiExposure::Callable {
             return Err(InvocationError::AiExposureDenied);
         }
@@ -147,6 +179,10 @@ pub fn authorize_action(
                 return Err(InvocationError::AiExposureDenied);
             }
         }
+    } else if matches!(credential, InvocationContext::Studio { .. })
+        && action.ai_exposure != AiExposure::Callable
+    {
+        return Err(InvocationError::AiExposureDenied);
     }
     Ok(())
 }
@@ -172,6 +208,8 @@ impl InvocationContext {
     pub fn action_ingress(&self) -> ActionIngress {
         match self {
             Self::Session { .. } | Self::Bearer { .. } => ActionIngress::Http,
+            Self::Mcp { .. } => ActionIngress::Mcp,
+            Self::Studio { .. } => ActionIngress::Studio,
             Self::LocalCli => ActionIngress::LocalCli,
             Self::Scheduler => ActionIngress::Scheduler,
             Self::Webhook { .. } => ActionIngress::Webhook,
@@ -189,6 +227,16 @@ impl InvocationContext {
                 actor_type: ActorType::ApiToken,
                 id: Some(token_id.clone()),
                 source: Some("http_bearer".into()),
+            },
+            Self::Mcp { token_id, .. } => ActorRef {
+                actor_type: ActorType::ApiToken,
+                id: Some(token_id.clone()),
+                source: Some("mcp".into()),
+            },
+            Self::Studio { user_id, .. } => ActorRef {
+                actor_type: ActorType::Human,
+                id: Some(user_id.clone()),
+                source: Some("studio".into()),
             },
             Self::LocalCli => ActorRef {
                 actor_type: ActorType::System,
@@ -212,6 +260,8 @@ impl InvocationContext {
         match self {
             Self::Session { .. } => "http_session",
             Self::Bearer { .. } => "http_bearer",
+            Self::Mcp { .. } => "mcp",
+            Self::Studio { .. } => "studio",
             Self::LocalCli => "local_cli",
             Self::Scheduler => "scheduler",
             Self::Webhook { .. } => "webhook",
@@ -224,6 +274,8 @@ impl InvocationContext {
             Self::Bearer { token_id, .. } => {
                 format!("v1:http_bearer:api_token:{token_id}")
             }
+            Self::Mcp { token_id, .. } => format!("v1:mcp:api_token:{token_id}"),
+            Self::Studio { user_id, .. } => format!("v1:studio:human:{user_id}"),
             Self::LocalCli => "v1:local_cli:system:voidtower_cli".into(),
             Self::Scheduler => "v1:scheduler:system:backup_restore_test".into(),
             Self::Webhook { source_id } => format!("v1:webhook:automation:{source_id}"),
@@ -464,7 +516,8 @@ async fn derive_policy(
 ) -> SubmissionPolicy {
     let actor_kind = match credential {
         InvocationContext::Session { .. } => ActorKind::User,
-        InvocationContext::Bearer { .. } => ActorKind::ApiToken,
+        InvocationContext::Bearer { .. } | InvocationContext::Mcp { .. } => ActorKind::ApiToken,
+        InvocationContext::Studio { .. } => ActorKind::User,
         InvocationContext::LocalCli | InvocationContext::Scheduler => ActorKind::System,
         InvocationContext::Webhook { .. } => ActorKind::Automation,
     };
@@ -775,6 +828,55 @@ mod tests {
                 },
             ),
             Err(InvocationError::AiExposureDenied)
+        );
+    }
+
+    #[test]
+    fn machine_ingress_contexts_preserve_actor_and_idempotency_boundaries() {
+        let mcp = InvocationContext::Mcp {
+            token_id: "token-1".into(),
+            user_id: "owner-1".into(),
+            role: "owner".into(),
+            scopes: vec!["containers:restart".into()],
+        };
+        assert_eq!(mcp.action_ingress(), ActionIngress::Mcp);
+        assert_eq!(mcp.ingress(), "mcp");
+        assert_eq!(mcp.actor().actor_type, ActorType::ApiToken);
+        assert_eq!(mcp.actor().id.as_deref(), Some("token-1"));
+        assert_eq!(mcp.actor().source.as_deref(), Some("mcp"));
+        assert_eq!(mcp.idempotency_scope(), "v1:mcp:api_token:token-1");
+        let mcp_read = action_registry::action("list_alerts").unwrap();
+        assert_eq!(
+            authorize_action(mcp_read, &mcp),
+            Err(InvocationError::InsufficientScope)
+        );
+        let mcp_alerts = InvocationContext::Mcp {
+            token_id: "token-1".into(),
+            user_id: "owner-1".into(),
+            role: "owner".into(),
+            scopes: vec!["alerts:read".into()],
+        };
+        assert!(authorize_action(mcp_read, &mcp_alerts).is_ok());
+        assert_eq!(
+            authorize_action(action_registry::action("container.start").unwrap(), &mcp),
+            Err(InvocationError::IngressDenied)
+        );
+
+        let studio = InvocationContext::Studio {
+            user_id: "owner-1".into(),
+            role: "owner".into(),
+        };
+        assert_eq!(studio.action_ingress(), ActionIngress::Studio);
+        assert_eq!(studio.ingress(), "studio");
+        assert_eq!(studio.actor().actor_type, ActorType::Human);
+        assert_eq!(studio.actor().id.as_deref(), Some("owner-1"));
+        assert_eq!(studio.actor().source.as_deref(), Some("studio"));
+        assert_eq!(studio.idempotency_scope(), "v1:studio:human:owner-1");
+        let studio_read = action_registry::action("list_alerts").unwrap();
+        assert!(authorize_action(studio_read, &studio).is_ok());
+        assert_eq!(
+            authorize_action(action_registry::action("container.start").unwrap(), &studio),
+            Err(InvocationError::IngressDenied)
         );
     }
 

@@ -50,6 +50,14 @@ pub(crate) fn decrypt(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
 
 pub(crate) const MAX_SECRET_VALUE_BYTES: usize = 64 * 1024;
 
+const SUPPORTED_SECRET_PURPOSES: &[&str] = &[
+    "ai_provider",
+    "oidc_client",
+    "proxmox_api",
+    "proxmox_compatibility",
+    "proxy_basic_auth",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolveError {
     InvalidPurpose,
@@ -63,7 +71,7 @@ pub(crate) enum ResolveError {
 impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
-            Self::InvalidPurpose => "secret purpose is required",
+            Self::InvalidPurpose => "secret purpose is not supported",
             Self::Missing => "secret unavailable",
             Self::Disabled => "secret unavailable",
             Self::Corrupt => "secret unavailable",
@@ -83,7 +91,7 @@ pub(crate) async fn resolve(
     secret_id: &str,
     purpose: &str,
 ) -> std::result::Result<String, ResolveError> {
-    if purpose.trim().is_empty() {
+    if purpose.trim().is_empty() || !SUPPORTED_SECRET_PURPOSES.contains(&purpose) {
         return Err(ResolveError::InvalidPurpose);
     }
     let row: Option<(String, bool)> =
@@ -758,7 +766,10 @@ mod tests {
     //!   `encrypt()` failure branch are left unaudited for the same reason:
     //!   no secret exists yet at that point to attach a `resource_id` to.
 
-    use super::{decrypt, encrypt, migrate_legacy_provider_secrets, migrate_legacy_proxmox_token};
+    use super::{
+        decrypt, encrypt, migrate_legacy_provider_secrets, migrate_legacy_proxmox_token, resolve,
+        ResolveError,
+    };
     use axum::{
         body::Body,
         extract::connect_info::ConnectInfo,
@@ -980,6 +991,56 @@ mod tests {
                 .body(Body::from(b))
                 .unwrap(),
         )
+    }
+
+    #[tokio::test]
+    async fn resolver_rejects_unregistered_purpose_before_secret_access() {
+        let db = setup_db().await;
+        let secret_id = insert_secret(&db).await;
+
+        let error = resolve(&db, &[0u8; 32], &secret_id, "unregistered-purpose")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ResolveError::InvalidPurpose);
+        assert_eq!(error.to_string(), "secret purpose is not supported");
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolver_fails_closed_when_last_use_update_fails() {
+        let db = setup_db().await;
+        let secret_id = insert_secret(&db).await;
+        sqlx::query(
+            "CREATE TRIGGER fail_secret_last_used \
+             BEFORE UPDATE OF last_used_at ON secrets \
+             WHEN NEW.id = OLD.id \
+             BEGIN SELECT RAISE(ABORT, 'fixture last-use failure'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let error = resolve(&db, &[0u8; 32], &secret_id, "ai_provider")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ResolveError::Database);
+        assert_eq!(error.to_string(), "secret unavailable");
+        assert!(!error.to_string().contains("fixture last-use failure"));
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_none());
     }
 
     /// Baseline: confirms current behavior before any change in this task —

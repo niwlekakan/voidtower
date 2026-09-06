@@ -71,7 +71,7 @@ The shared AI redaction boundary now remains protective when secret usage bookke
 
 ## Repository state after delivery
 
-- **Branch/HEAD/ahead/behind:** `dev`, `804fcf45090c0c5ad5921696e3f1702525351a10`, ahead 50 / behind 0 relative to `origin/dev` before this handoff-only documentation commit.
+- **Branch/HEAD/ahead/behind:** `dev`, `9493dd5c4d5046a0b084591dcb2b03a952441636`, ahead 51 / behind 0 relative to `origin/dev` after the handoff documentation commit.
 - **Staged paths:** `backend/src/agent/mod.rs`, `backend/src/agent/state.rs`
 - **Modified paths:** `none`
 - **Remote publication:** `not pushed`

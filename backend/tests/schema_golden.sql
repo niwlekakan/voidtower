@@ -454,7 +454,8 @@ CREATE TABLE secrets (
             created_at  INTEGER NOT NULL,
             updated_at  INTEGER NOT NULL,
             last_used_at INTEGER
-        , version INTEGER NOT NULL DEFAULT 0)
+        , version INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0
+    CHECK (disabled IN (0, 1)))
 ;
 CREATE TABLE sessions (
             id          TEXT PRIMARY KEY,

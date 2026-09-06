@@ -113,7 +113,7 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![(1, true), (2, true), (3, true)]);
+        assert_eq!(versions, vec![(1, true), (2, true), (3, true), (4, true)]);
     }
 
     #[tokio::test]
@@ -504,7 +504,7 @@ mod tests {
                 .fetch_one(&first)
                 .await
                 .unwrap();
-        assert_eq!(versions, 3);
+        assert_eq!(versions, 4);
         first.close().await;
         second.close().await;
     }

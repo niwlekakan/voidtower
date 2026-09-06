@@ -10,6 +10,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 
 use crate::{
     audit, auth,
@@ -46,6 +47,161 @@ pub(crate) fn decrypt(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
     String::from_utf8(plaintext).map_err(Into::into)
 }
 
+pub(crate) const MAX_SECRET_VALUE_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolveError {
+    InvalidPurpose,
+    Missing,
+    Disabled,
+    Corrupt,
+    TooLarge,
+    Database,
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::InvalidPurpose => "secret purpose is required",
+            Self::Missing => "secret unavailable",
+            Self::Disabled => "secret unavailable",
+            Self::Corrupt => "secret unavailable",
+            Self::TooLarge => "secret unavailable",
+            Self::Database => "secret unavailable",
+        };
+        f.write_str(message)
+    }
+}
+
+/// Resolve one encrypted secret for an internal purpose without exposing its
+/// value in errors or logs. The plaintext exists only in the returned value
+/// and is bounded before it crosses the provider construction boundary.
+pub(crate) async fn resolve(
+    db: &SqlitePool,
+    key: &[u8; 32],
+    secret_id: &str,
+    purpose: &str,
+) -> std::result::Result<String, ResolveError> {
+    if purpose.trim().is_empty() {
+        return Err(ResolveError::InvalidPurpose);
+    }
+    let row: Option<(String, bool)> = sqlx::query_as(
+        "SELECT value_enc, disabled FROM secrets WHERE id = ?",
+    )
+    .bind(secret_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| ResolveError::Database)?;
+    let Some((value_enc, disabled)) = row else {
+        return Err(ResolveError::Missing);
+    };
+    if disabled {
+        return Err(ResolveError::Disabled);
+    }
+    let value = decrypt(key, &value_enc).map_err(|_| ResolveError::Corrupt)?;
+    if value.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(ResolveError::TooLarge);
+    }
+    sqlx::query("UPDATE secrets SET last_used_at = ? WHERE id = ?")
+        .bind(now_ts())
+        .bind(secret_id)
+        .execute(db)
+        .await
+        .map_err(|_| ResolveError::Database)?;
+    Ok(value)
+}
+
+/// Convert legacy AI-provider settings into encrypted secret references.
+///
+/// The whole conversion is transactional: plaintext settings are removed only
+/// after every affected provider points at its encrypted secret. A missing
+/// legacy value leaves the old reference intact but disables that provider so
+/// startup cannot silently activate an unusable credential.
+pub(crate) async fn migrate_legacy_provider_secrets(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+
+    let mut tx = db.begin().await?;
+    let providers: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, api_key_ref FROM ai_providers WHERE api_key_ref IS NOT NULL",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut migrated = HashMap::<String, String>::new();
+    let mut settings_to_delete = Vec::new();
+
+    for (provider_id, reference) in providers {
+        let is_canonical = uuid::Uuid::parse_str(&reference).is_ok()
+            && sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&reference)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some();
+        if is_canonical {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(&reference)
+                .execute(&mut *tx)
+                .await?;
+            continue;
+        }
+
+        let legacy_value: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                .bind(&reference)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(legacy_value) = legacy_value else {
+            sqlx::query("UPDATE ai_providers SET enabled = 0, updated_at = ? WHERE id = ?")
+                .bind(now_ts())
+                .bind(&provider_id)
+                .execute(&mut *tx)
+                .await?;
+            continue;
+        };
+
+        let secret_id = if let Some(existing) = migrated.get(&reference) {
+            existing.clone()
+        } else {
+            let secret_id = uuid::Uuid::new_v4().to_string();
+            let encrypted = encrypt(key, &legacy_value)?;
+            let now = now_ts();
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&secret_id)
+            .bind(format!("ai-provider-legacy-{secret_id}"))
+            .bind("Migrated AI-provider credential")
+            .bind(encrypted)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            migrated.insert(reference.clone(), secret_id.clone());
+            settings_to_delete.push(reference.clone());
+            secret_id
+        };
+
+        sqlx::query("UPDATE ai_providers SET api_key_ref = ?, updated_at = ? WHERE id = ?")
+            .bind(secret_id)
+            .bind(now_ts())
+            .bind(provider_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    for reference in settings_to_delete {
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(reference)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
 #[derive(Serialize)]
 pub struct SecretMeta {
     id: String,
@@ -55,6 +211,7 @@ pub struct SecretMeta {
     updated_at: i64,
     last_used_at: Option<i64>,
     version: i64,
+    disabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +231,7 @@ pub struct UpdateSecret {
     name: Option<String>,
     description: Option<String>,
     value: Option<String>,
+    disabled: Option<bool>,
 }
 
 pub async fn list(
@@ -82,8 +240,8 @@ pub async fn list(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
     auth_user(&state, &jar, false).await?;
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, Option<i64>, i64)>(
-        "SELECT id, name, description, created_at, updated_at, last_used_at, version FROM secrets ORDER BY name"
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, Option<i64>, i64, bool)>(
+        "SELECT id, name, description, created_at, updated_at, last_used_at, version, disabled FROM secrets ORDER BY name"
     ).fetch_all(&state.db).await.map_err(AppError::Database)?;
 
     // Item #7B: if the Bearer token has secret_ids restrictions, filter the list
@@ -93,7 +251,7 @@ pub async fn list(
         .into_iter()
         .filter(|(id, ..)| allowed.as_ref().map(|ids| ids.contains(id)).unwrap_or(true))
         .map(
-            |(id, name, description, created_at, updated_at, last_used_at, version)| SecretMeta {
+            |(id, name, description, created_at, updated_at, last_used_at, version, disabled)| SecretMeta {
                 id,
                 name,
                 description,
@@ -101,6 +259,7 @@ pub async fn list(
                 updated_at,
                 last_used_at,
                 version,
+                disabled,
             },
         )
         .collect();
@@ -170,6 +329,15 @@ pub async fn update(
     if body.description.is_some() {
         sqlx::query("UPDATE secrets SET description=?, updated_at=? WHERE id=?")
             .bind(&body.description)
+            .bind(now)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    if let Some(disabled) = body.disabled {
+        sqlx::query("UPDATE secrets SET disabled=?, updated_at=? WHERE id=?")
+            .bind(disabled)
             .bind(now)
             .bind(&id)
             .execute(&state.db)
@@ -473,7 +641,7 @@ mod tests {
     //!   `encrypt()` failure branch are left unaudited for the same reason:
     //!   no secret exists yet at that point to attach a `resource_id` to.
 
-    use super::encrypt;
+    use super::{decrypt, encrypt, migrate_legacy_provider_secrets};
     use axum::{
         body::Body,
         extract::connect_info::ConnectInfo,
@@ -884,5 +1052,70 @@ mod tests {
         );
         assert_eq!(good_rows[0].0, "success");
         assert_eq!(bad_rows[0].0, "internal_error");
+    }
+
+    #[tokio::test]
+    async fn legacy_provider_settings_migrate_once_and_missing_values_disable_safely() {
+        let db = setup_db().await;
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('legacy.ai.key', 'fixture-value', ?)",
+        )
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        for (id, reference) in [
+            ("provider-a", "legacy.ai.key"),
+            ("provider-b", "legacy.ai.key"),
+            ("provider-missing", "missing.ai.key"),
+        ] {
+            sqlx::query(
+                "INSERT INTO ai_providers \
+                 (id, kind, name, enabled, api_key_ref, priority, created_at, updated_at) \
+                 VALUES (?, 'openai', ?, 1, ?, 1, ?, ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(reference)
+            .bind(now)
+            .bind(now)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        migrate_legacy_provider_secrets(&db, &[0u8; 32]).await.unwrap();
+
+        let refs: Vec<(String, String, bool)> = sqlx::query_as(
+            "SELECT id, api_key_ref, enabled FROM ai_providers ORDER BY id",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert!(uuid::Uuid::parse_str(&refs[0].1).is_ok());
+        assert_eq!(refs[0].1, refs[1].1);
+        assert_eq!(refs[2].1, "missing.ai.key");
+        assert!(!refs[2].2);
+        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+            .bind(&refs[0].1)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(decrypt(&[0u8; 32], &encrypted).unwrap(), "fixture-value");
+        let remaining: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'legacy.ai.key'",
+        )
+        .fetch_optional(&db)
+        .await
+        .unwrap();
+        assert!(remaining.is_none());
+
+        migrate_legacy_provider_secrets(&db, &[0u8; 32]).await.unwrap();
+        let secret_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM secrets")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(secret_count, 1);
     }
 }

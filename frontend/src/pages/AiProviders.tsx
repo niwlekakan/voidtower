@@ -179,8 +179,8 @@ function AddProviderForm({ onCreated }: { onCreated: () => void }) {
 
             {needsKey && (
               <>
-                <Row label="API key settings key">
-                  <Input value={apiKeyRef} onChange={setApiKeyRef} placeholder={`ai.${kind}.key`} />
+                <Row label="Existing secret ID (optional)">
+                  <Input value={apiKeyRef} onChange={setApiKeyRef} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
                 </Row>
                 <Row label="API key value">
                   <Input value={apiKeyValue} onChange={setApiKeyValue} placeholder="sk-..." type="password" />
@@ -335,7 +335,7 @@ function ProviderCard({
               )}
               {provider.api_key_ref && (
                 <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                  API key ref: <span style={{ color: 'var(--text-secondary)' }}>{provider.api_key_ref}</span>
+                  API secret ID: <span style={{ color: 'var(--text-secondary)' }}>{provider.api_key_ref}</span>
                 </div>
               )}
 
@@ -459,7 +459,7 @@ export default function AiProvidersPage() {
           • Requests go to the <strong>lowest-priority</strong> enabled provider<br />
           • The ask popup lets users pin a specific provider per conversation<br />
           • Existing Odysseus integrations keep working as a built-in fallback<br />
-          • API key values are stored in the settings table under the key reference name
+          • API key values are encrypted in the secret manager and providers retain only the secret ID
         </div>
       </div>
     </div>

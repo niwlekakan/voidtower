@@ -51,7 +51,7 @@ pub async fn ask(
         ai_req.context = Some(serde_json::json!({ "provider_id": pid }));
     }
 
-    let orchestrator = AiOrchestrator::new(state.db.clone());
+    let orchestrator = AiOrchestrator::new(state.db.clone(), state.secrets_key.clone());
 
     // Try the multi-provider orchestrator first.
     // If no providers are configured, fall back to the legacy Odysseus path.

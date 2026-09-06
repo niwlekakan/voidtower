@@ -406,6 +406,7 @@ async fn main() -> Result<()> {
 
     // Database
     let pool = db::init_pool(&cfg.db_path()).await?;
+    api::secrets::migrate_legacy_provider_secrets(&pool, &secrets_key).await?;
     operations::registry::validate()?;
 
     // Re-log bootstrap token on every restart while setup is still pending.

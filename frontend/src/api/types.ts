@@ -919,6 +919,7 @@ export interface CreateAiProviderReq {
   name: string
   enabled?: boolean
   base_url?: string
+  /** Canonical `secrets.id`; never a settings key. */
   api_key_ref?: string
   api_key_value?: string
   model?: string
@@ -929,6 +930,7 @@ export interface UpdateAiProviderReq {
   name?: string
   enabled?: boolean
   base_url?: string
+  /** Canonical `secrets.id`; never a settings key. */
   api_key_ref?: string
   api_key_value?: string
   model?: string

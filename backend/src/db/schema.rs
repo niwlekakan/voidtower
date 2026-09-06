@@ -6,6 +6,8 @@ pub(crate) const BASELINE_SQL: &str = include_str!("../../migrations/0001_curren
 pub(crate) const OPERATIONS_SQL: &str =
     include_str!("../../migrations/0002_operation_contracts.sql");
 pub(crate) const CMDB_SQL: &str = include_str!("../../migrations/0003_cmdb_asset_registry.sql");
+pub(crate) const SECRET_MANAGER_SQL: &str =
+    include_str!("../../migrations/0004_secret_manager_convergence.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColumnShape {
@@ -177,6 +179,10 @@ async fn canonical_schema() -> Result<SchemaShape> {
         .execute(&mut connection)
         .await
         .context("failed to construct canonical schema from CMDB migration")?;
+    sqlx::query(SECRET_MANAGER_SQL)
+        .execute(&mut connection)
+        .await
+        .context("failed to construct canonical schema from secret-manager migration")?;
     inspect_schema(&mut connection).await
 }
 

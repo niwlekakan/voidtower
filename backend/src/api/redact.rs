@@ -52,7 +52,8 @@ const SECRET_KEYWORDS: &[&str] = &[
 /// Fetch and resolve every stored usable secret value, for use as a
 /// known-value redaction set. Missing, disabled, corrupt, oversized, and
 /// unavailable secrets are skipped — redaction must never fail (or panic) the
-/// response it's protecting.
+/// response it's protecting. Supported create, update, and migration paths
+/// reject oversized values before they enter the secrets store.
 pub async fn known_secret_values(state: &AppState) -> Vec<String> {
     let secret_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM secrets ORDER BY id")
         .fetch_all(&state.db)
@@ -423,5 +424,59 @@ mod tests {
         let redacted = redact_for_ai(&state, &text).await;
         assert!(!redacted.contains(secret_value));
         assert!(!redacted.contains("disabled-secret-value"));
+    }
+
+    /// Values above the storage bound are invalid secret records and must not
+    /// cross the resolver boundary into provider or redaction consumers.
+    #[tokio::test]
+    async fn known_secret_values_skips_oversized_secret_records() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let key: [u8; 32] = [9u8; 32];
+        let oversized = "x".repeat(crate::api::secrets::MAX_SECRET_VALUE_BYTES + 1);
+        let enc = crate::api::secrets::encrypt(&key, &oversized).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) VALUES ('s1', 'oversized', NULL, ?, 0, 0)",
+        )
+        .bind(enc)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut state = crate::api::mcp::test_support::build(pool);
+        state.secrets_key = std::sync::Arc::new(key);
+
+        assert!(known_secret_values(&state).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn known_secret_values_keeps_value_when_last_use_recording_fails() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let key: [u8; 32] = [9u8; 32];
+        let secret_value = "super-secret-last-use-failure-value";
+        let enc = crate::api::secrets::encrypt(&key, secret_value).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) VALUES ('s1', 'test', NULL, ?, 0, 0)",
+        )
+        .bind(enc)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_secret_last_used_redaction \
+             BEFORE UPDATE OF last_used_at ON secrets \
+             WHEN NEW.id = OLD.id \
+             BEGIN SELECT RAISE(ABORT, 'fixture last-use failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut state = crate::api::mcp::test_support::build(pool);
+        state.secrets_key = std::sync::Arc::new(key);
+
+        let values = known_secret_values(&state).await;
+        assert_eq!(values, vec![secret_value.to_string()]);
+        let redacted = redact_for_ai(&state, &format!("opaque output: {secret_value}")).await;
+        assert!(!redacted.contains(secret_value));
     }
 }

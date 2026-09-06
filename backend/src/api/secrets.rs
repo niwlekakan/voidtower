@@ -111,12 +111,17 @@ pub(crate) async fn resolve(
     if value.len() > MAX_SECRET_VALUE_BYTES {
         return Err(ResolveError::TooLarge);
     }
-    sqlx::query("UPDATE secrets SET last_used_at = ? WHERE id = ?")
+    let last_use_result = sqlx::query("UPDATE secrets SET last_used_at = ? WHERE id = ?")
         .bind(now_ts())
         .bind(secret_id)
         .execute(db)
-        .await
-        .map_err(|_| ResolveError::Database)?;
+        .await;
+    // Redaction must preserve a usable value even when its best-effort usage
+    // metadata cannot be persisted. Other consumers fail closed so they never
+    // receive a credential without successful last-use recording.
+    if purpose != "redaction" {
+        last_use_result.map_err(|_| ResolveError::Database)?;
+    }
     Ok(value)
 }
 
@@ -1035,6 +1040,34 @@ mod tests {
         assert_eq!(error, ResolveError::Database);
         assert_eq!(error.to_string(), "secret unavailable");
         assert!(!error.to_string().contains("fixture last-use failure"));
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_none());
+    }
+
+    /// Values above the storage bound are rejected before last-use recording.
+    #[tokio::test]
+    async fn resolver_rejects_oversized_secret_before_last_use_recording() {
+        let db = setup_db().await;
+        let secret_id = insert_secret(&db).await;
+        let oversized = "x".repeat(super::MAX_SECRET_VALUE_BYTES + 1);
+        let value_enc = encrypt(&[0u8; 32], &oversized).unwrap();
+        sqlx::query("UPDATE secrets SET value_enc = ? WHERE id = ?")
+            .bind(value_enc)
+            .bind(&secret_id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let error = resolve(&db, &[0u8; 32], &secret_id, "redaction")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ResolveError::TooLarge);
         let last_used_at: Option<i64> =
             sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
                 .bind(secret_id)

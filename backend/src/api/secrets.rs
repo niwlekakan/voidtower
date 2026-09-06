@@ -85,13 +85,12 @@ pub(crate) async fn resolve(
     if purpose.trim().is_empty() {
         return Err(ResolveError::InvalidPurpose);
     }
-    let row: Option<(String, bool)> = sqlx::query_as(
-        "SELECT value_enc, disabled FROM secrets WHERE id = ?",
-    )
-    .bind(secret_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|_| ResolveError::Database)?;
+    let row: Option<(String, bool)> =
+        sqlx::query_as("SELECT value_enc, disabled FROM secrets WHERE id = ?")
+            .bind(secret_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|_| ResolveError::Database)?;
     let Some((value_enc, disabled)) = row else {
         return Err(ResolveError::Missing);
     };
@@ -124,11 +123,10 @@ pub(crate) async fn migrate_legacy_provider_secrets(
     use std::collections::HashMap;
 
     let mut tx = db.begin().await?;
-    let providers: Vec<(String, String)> = sqlx::query_as(
-        "SELECT id, api_key_ref FROM ai_providers WHERE api_key_ref IS NOT NULL",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
+    let providers: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, api_key_ref FROM ai_providers WHERE api_key_ref IS NOT NULL")
+            .fetch_all(&mut *tx)
+            .await?;
     let mut migrated = HashMap::<String, String>::new();
     let mut settings_to_delete = Vec::new();
 
@@ -245,21 +243,23 @@ pub async fn list(
     ).fetch_all(&state.db).await.map_err(AppError::Database)?;
 
     // Item #7B: if the Bearer token has secret_ids restrictions, filter the list
-    let allowed = token_secret_ids(&state, &headers).await;
+    let allowed = token_secret_ids(&state, &headers).await?;
 
     let secrets: Vec<SecretMeta> = rows
         .into_iter()
         .filter(|(id, ..)| allowed.as_ref().map(|ids| ids.contains(id)).unwrap_or(true))
         .map(
-            |(id, name, description, created_at, updated_at, last_used_at, version, disabled)| SecretMeta {
-                id,
-                name,
-                description,
-                created_at,
-                updated_at,
-                last_used_at,
-                version,
-                disabled,
+            |(id, name, description, created_at, updated_at, last_used_at, version, disabled)| {
+                SecretMeta {
+                    id,
+                    name,
+                    description,
+                    created_at,
+                    updated_at,
+                    last_used_at,
+                    version,
+                    disabled,
+                }
             },
         )
         .collect();
@@ -278,6 +278,7 @@ pub async fn create(
     if body.value.is_empty() {
         return Err(AppError::BadRequest("value required".into()));
     }
+    validate_secret_value(&body.value)?;
     let enc = encrypt(&state.secrets_key, &body.value).map_err(AppError::Internal)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
@@ -307,6 +308,9 @@ pub async fn update(
 ) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
     let now = now_ts();
+    if let Some(value) = &body.value {
+        validate_secret_value(value)?;
+    }
     let mut tx = state.db.begin().await.map_err(AppError::Database)?;
     if let Some(v) = &body.value {
         let enc = encrypt(&state.secrets_key, v).map_err(AppError::Internal)?;
@@ -367,13 +371,12 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
-    let provider_refs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM ai_providers WHERE api_key_ref = ?",
-    )
-    .bind(&id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(AppError::Database)?;
+    let provider_refs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ai_providers WHERE api_key_ref = ?")
+            .bind(&id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(AppError::Database)?;
     if provider_refs > 0 {
         return Err(AppError::BadRequest(
             "secret is still referenced by an AI provider".into(),
@@ -408,7 +411,7 @@ pub async fn reveal(
     let user = auth_user(&state, &jar, true).await?;
 
     // Item #7B: enforce scoped token restriction
-    let allowed = token_secret_ids(&state, &headers).await;
+    let allowed = token_secret_ids(&state, &headers).await?;
     if let Some(ids) = &allowed {
         if !ids.contains(&id) {
             audit::log(
@@ -521,7 +524,10 @@ pub async fn rotate(
 
     // Use provided new_value or generate a random 32-byte hex value
     let new_value = match body.new_value {
-        Some(v) if !v.is_empty() => v,
+        Some(v) if !v.is_empty() => {
+            validate_secret_value(&v)?;
+            v
+        }
         _ => {
             let mut bytes = [0u8; 32];
             OsRng.fill_bytes(&mut bytes);
@@ -597,31 +603,49 @@ async fn auth_user(state: &AppState, jar: &CookieJar, require_admin: bool) -> Re
 async fn token_secret_ids(
     state: &AppState,
     headers: &HeaderMap,
-) -> Option<std::collections::HashSet<String>> {
+) -> Result<Option<std::collections::HashSet<String>>> {
     use sha2::{Digest, Sha256};
-    let raw_token = headers
-        .get(axum::http::header::AUTHORIZATION)?
+    let Some(header) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+    let raw_token = header
         .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")?
+        .map_err(|_| AppError::Forbidden)?
+        .strip_prefix("Bearer ")
+        .ok_or(AppError::Forbidden)?
         .trim();
+    if raw_token.is_empty() {
+        return Err(AppError::Forbidden);
+    }
 
     let mut h = Sha256::new();
     h.update(raw_token.as_bytes());
     let token_hash = hex::encode(h.finalize());
-
-    // fetch_optional returns Option<Option<String>> — outer = row found, inner = column value
     let row: Option<Option<String>> =
         sqlx::query_scalar("SELECT secret_ids FROM api_tokens WHERE token_hash = ?")
             .bind(&token_hash)
             .fetch_optional(&state.db)
             .await
-            .ok()?;
+            .map_err(AppError::Database)?;
+    let Some(secret_ids_json) = row else {
+        return Err(AppError::Unauthorized);
+    };
+    let Some(secret_ids_json) = secret_ids_json else {
+        return Ok(None);
+    };
+    let ids: Vec<String> =
+        serde_json::from_str(&secret_ids_json).map_err(|_| AppError::Forbidden)?;
+    Ok(Some(ids.into_iter().collect()))
+}
 
-    // If no row found, or column is NULL, the token has no restriction
-    let secret_ids_json = row??.to_string();
-    let ids: Vec<String> = serde_json::from_str(&secret_ids_json).ok()?;
-    Some(ids.into_iter().collect())
+fn validate_secret_value(value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(AppError::BadRequest("value required".into()));
+    }
+    if value.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(AppError::BadRequest("value exceeds size limit".into()));
+    }
+    Ok(())
 }
 
 fn now_ts() -> i64 {
@@ -1099,14 +1123,15 @@ mod tests {
             .unwrap();
         }
 
-        migrate_legacy_provider_secrets(&db, &[0u8; 32]).await.unwrap();
+        migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap();
 
-        let refs: Vec<(String, String, bool)> = sqlx::query_as(
-            "SELECT id, api_key_ref, enabled FROM ai_providers ORDER BY id",
-        )
-        .fetch_all(&db)
-        .await
-        .unwrap();
+        let refs: Vec<(String, String, bool)> =
+            sqlx::query_as("SELECT id, api_key_ref, enabled FROM ai_providers ORDER BY id")
+                .fetch_all(&db)
+                .await
+                .unwrap();
         assert!(uuid::Uuid::parse_str(&refs[0].1).is_ok());
         assert_eq!(refs[0].1, refs[1].1);
         assert_eq!(refs[2].1, "missing.ai.key");
@@ -1117,19 +1142,96 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(decrypt(&[0u8; 32], &encrypted).unwrap(), "fixture-value");
-        let remaining: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM settings WHERE key = 'legacy.ai.key'",
-        )
-        .fetch_optional(&db)
-        .await
-        .unwrap();
+        let remaining: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'legacy.ai.key'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
         assert!(remaining.is_none());
 
-        migrate_legacy_provider_secrets(&db, &[0u8; 32]).await.unwrap();
+        migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap();
         let secret_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM secrets")
             .fetch_one(&db)
             .await
             .unwrap();
         assert_eq!(secret_count, 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_token_secret_scope_fails_closed_before_reveal() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = insert_secret(&db).await;
+        let raw_token = format!("vt_malformed_{}", uuid::Uuid::new_v4().simple());
+        let mut hash = Sha256::new();
+        hash.update(raw_token.as_bytes());
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at, secret_ids)
+             VALUES (?, ?, 'malformed-scope-token', ?, '[\"secrets:list\"]', NULL, ?, '{not-json}')",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&admin)
+        .bind(hex::encode(hash.finalize()))
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+        let response = app
+            .oneshot(cookie_and_bearer_req(
+                "GET",
+                &format!("/api/secrets/{secret_id}/reveal"),
+                &session,
+                &raw_token,
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let rows = audit_rows(&db, "reveal_secret", &secret_id).await;
+        assert_eq!(
+            rows.len(),
+            0,
+            "malformed token must fail before secret lookup"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_rotation_is_rejected_without_replacing_last_good_value() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = insert_secret(&db).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let oversized = "x".repeat(super::MAX_SECRET_VALUE_BYTES + 1);
+        let response = app
+            .oneshot(cookie_req(
+                "POST",
+                &format!("/api/secrets/{secret_id}/rotate"),
+                &session,
+                Some(serde_json::json!({ "new_value": oversized })),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let (value_enc, version): (String, i64) =
+            sqlx::query_as("SELECT value_enc, version FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            decrypt(&[0u8; 32], &value_enc).unwrap(),
+            "super-secret-value"
+        );
+        assert_eq!(version, 0);
     }
 }

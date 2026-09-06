@@ -138,7 +138,6 @@ pub async fn local_action(
 
 const PX_HOST_KEY: &str = "proxmox_host";
 const PX_PORT_KEY: &str = "proxmox_port";
-const PX_TOKEN_KEY: &str = "proxmox_token";
 const PX_NODE_KEY: &str = "proxmox_node";
 const PX_VERIFY_KEY: &str = "proxmox_verify_ssl";
 const PX_TOKEN_SECRET_NAME: &str = "proxmox_legacy_token";
@@ -152,14 +151,16 @@ pub struct ProxmoxConfig {
     pub verify_ssl: bool,
 }
 
-async fn load_proxmox_config(state: &AppState) -> Option<ProxmoxConfig> {
+async fn load_proxmox_config(state: &AppState) -> Result<Option<ProxmoxConfig>> {
     let host: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
         .bind(PX_HOST_KEY)
         .fetch_optional(&state.db)
         .await
         .ok()
         .flatten();
-    let host = host?;
+    let Some(host) = host else {
+        return Ok(None);
+    };
     let port: u16 = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
         .bind(PX_PORT_KEY)
         .fetch_optional(&state.db)
@@ -168,22 +169,23 @@ async fn load_proxmox_config(state: &AppState) -> Option<ProxmoxConfig> {
         .flatten()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8006);
-    let token =
-        match sqlx::query_scalar::<_, String>("SELECT value_enc FROM secrets WHERE name = ?")
-            .bind(PX_TOKEN_SECRET_NAME)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten()
-        {
-            Some(value_enc) => crate::api::secrets::decrypt(&state.secrets_key, &value_enc).ok(),
-            None => sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-                .bind(PX_TOKEN_KEY)
-                .fetch_optional(&state.db)
-                .await
-                .ok()
-                .flatten(),
-        };
+    let token = match sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE name = ?")
+        .bind(PX_TOKEN_SECRET_NAME)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+    {
+        Some(secret_id) => crate::api::secrets::resolve(
+            &state.db,
+            &state.secrets_key,
+            &secret_id,
+            "proxmox_compatibility",
+        )
+        .await
+        .map_err(|error| AppError::BadRequest(format!("Proxmox secret unavailable: {error}")))?,
+        None => return Ok(None),
+    };
     let node: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
         .bind(PX_NODE_KEY)
         .fetch_optional(&state.db)
@@ -199,13 +201,13 @@ async fn load_proxmox_config(state: &AppState) -> Option<ProxmoxConfig> {
             .flatten()
             .map(|v| v == "true")
             .unwrap_or(false);
-    Some(ProxmoxConfig {
+    Ok(Some(ProxmoxConfig {
         host,
         port,
-        token: token.unwrap_or_default(),
+        token,
         node: node.unwrap_or_else(|| "pve".into()),
         verify_ssl,
-    })
+    }))
 }
 
 pub async fn get_proxmox_config(
@@ -213,7 +215,7 @@ pub async fn get_proxmox_config(
     jar: CookieJar,
 ) -> Result<Json<Option<ProxmoxConfig>>> {
     require_admin(&state, &jar).await?;
-    let mut config = load_proxmox_config(&state).await;
+    let mut config = load_proxmox_config(&state).await?;
     if let Some(value) = &mut config {
         value.token.clear();
     }
@@ -311,7 +313,7 @@ pub async fn list_proxmox(
 ) -> Result<Json<ProxmoxVmsResponse>> {
     require_admin(&state, &jar).await?;
     let cfg = load_proxmox_config(&state)
-        .await
+        .await?
         .ok_or_else(|| AppError::BadRequest("Proxmox not configured".into()))?;
 
     let client =
@@ -574,5 +576,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_proxmox_loader_uses_secret_resolver_and_ignores_plaintext_fallback() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool.clone());
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('proxmox_host', 'pve.internal', 1), ('proxmox_token', 'legacy-plaintext', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted =
+            crate::api::secrets::encrypt(&state.secrets_key, "canonical-token").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, 'proxmox_legacy_token', ?, 1, 1)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let config = load_proxmox_config(&state).await.unwrap().unwrap();
+        assert_eq!(config.token, "canonical-token");
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_some());
+
+        sqlx::query("UPDATE secrets SET disabled = 1 WHERE id = ?")
+            .bind(&secret_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(load_proxmox_config(&state).await.is_err());
     }
 }

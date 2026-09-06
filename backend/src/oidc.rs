@@ -69,12 +69,14 @@ pub async fn load_settings(db: &SqlitePool, secrets_key: &[u8; 32]) -> Result<Op
             _ => return Ok(None),
         };
 
-    let enc: Option<String> = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
-        .bind(&secret_id)
-        .fetch_optional(db)
-        .await?;
-    let Some(enc) = enc else { return Ok(None) };
-    let client_secret = crate::api::secrets::decrypt(secrets_key, &enc)?;
+    let client_secret =
+        match crate::api::secrets::resolve(db, secrets_key, &secret_id, "oidc_client").await {
+            Ok(value) => value,
+            Err(crate::api::secrets::ResolveError::Database) => {
+                return Err(anyhow!("OIDC client secret unavailable"));
+            }
+            Err(_) => return Ok(None),
+        };
 
     Ok(Some(OidcSettings {
         issuer_url,
@@ -252,4 +254,75 @@ pub fn map_role(groups: &[String], role_map: &HashMap<String, String>, default_r
         .find(|role| matched.contains(*role))
         .map(|role| role.to_string())
         .unwrap_or_else(|| default_role.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn setup_db() -> SqlitePool {
+        let path =
+            std::env::temp_dir().join(format!("voidtower-oidc-secret-{}.db", uuid::Uuid::new_v4()));
+        crate::db::init_pool(&path).await.unwrap()
+    }
+
+    async fn insert_oidc_config(db: &SqlitePool, secret_id: &str) {
+        sqlx::query(
+            "INSERT INTO oidc_config (id, enabled, issuer_url, client_id, client_secret_id, redirect_url) \
+             VALUES ('default', 1, 'https://issuer.example.test', 'client', ?, 'https://tower.example.test/callback')",
+        )
+        .bind(secret_id)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn oidc_settings_resolve_through_secret_manager_and_record_last_use() {
+        let db = setup_db().await;
+        let key = [7_u8; 32];
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted = crate::api::secrets::encrypt(&key, "oidc-client-secret").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, 'oidc-client', ?, 1, 1)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&db)
+        .await
+        .unwrap();
+        insert_oidc_config(&db, &secret_id).await;
+
+        let settings = load_settings(&db, &key).await.unwrap().unwrap();
+
+        assert_eq!(settings.client_secret, "oidc-client-secret");
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_some());
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn disabled_oidc_secret_fails_closed_without_returning_client_secret() {
+        let db = setup_db().await;
+        let key = [7_u8; 32];
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted = crate::api::secrets::encrypt(&key, "disabled-oidc-secret").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, disabled, created_at, updated_at) VALUES (?, 'disabled-oidc-client', ?, 1, 1, 1)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&db)
+        .await
+        .unwrap();
+        insert_oidc_config(&db, &secret_id).await;
+
+        assert!(load_settings(&db, &key).await.unwrap().is_none());
+        db.close().await;
+    }
 }

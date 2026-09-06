@@ -182,15 +182,15 @@ impl LocalProxyProvider {
         let Some(secret_id) = secret_id else {
             return Ok(None);
         };
-        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
-            .bind(secret_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .context("referenced basic-auth secret is not present")?;
-        Ok(Some(crate::api::secrets::decrypt(
+        let value = crate::api::secrets::resolve(
+            &self.pool,
             &self.secrets_key,
-            &encrypted,
-        )?))
+            secret_id,
+            "proxy_basic_auth",
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("basic-auth secret unavailable: {error}"))?;
+        Ok(Some(value))
     }
 
     async fn create(
@@ -1237,11 +1237,24 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let provider = LocalProxyProvider::new(pool, key);
+        let provider = LocalProxyProvider::new(pool.clone(), key);
         assert_eq!(
             provider.resolve_secret(Some(secret_id)).await.unwrap(),
             Some("known-secret-value".into())
         );
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_some());
+        sqlx::query("UPDATE secrets SET disabled = 1 WHERE id = ?")
+            .bind(secret_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(provider.resolve_secret(Some(secret_id)).await.is_err());
         assert!(provider
             .contains_known_secret(&["Bearer known-secret-value".into()])
             .await

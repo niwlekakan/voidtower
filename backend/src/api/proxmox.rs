@@ -24,21 +24,6 @@ use crate::{
 
 use super::operation_adoption::{self, CompatibilityResult};
 
-// ── crypto helper (same logic as api/secrets.rs) ─────────────────────────────
-
-fn decrypt_secret(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
-    let blob = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-        .map_err(|_| anyhow::anyhow!("base64 decode failed"))?;
-    anyhow::ensure!(blob.len() > 12, "ciphertext too short");
-    let (nonce_bytes, ciphertext) = blob.split_at(12);
-    let cipher = Aes256Gcm::new(key.into());
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| anyhow::anyhow!("decryption failed"))?;
-    String::from_utf8(plaintext).map_err(Into::into)
-}
-
 // ── auth helper ───────────────────────────────────────────────────────────────
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
@@ -209,17 +194,22 @@ async fn get_host_and_token(state: &AppState, host_id: &str) -> Result<HostInfo>
 
     let (url, node, _fingerprint) = row;
 
-    // token is stored encrypted in the secrets table under key proxmox_token_{host_id}
-    let secret_name = format!("proxmox_token_{}", host_id);
-    let enc_row = sqlx::query_as::<_, (String,)>("SELECT value_enc FROM secrets WHERE name = ?")
+    let secret_name = format!("proxmox_token_{host_id}");
+    let secret_id: String = sqlx::query_scalar("SELECT id FROM secrets WHERE name = ?")
         .bind(&secret_name)
         .fetch_optional(&state.db)
         .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::BadRequest(format!("No token configured for host {}", host_id)))?;
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::BadRequest(format!("No token configured for host {host_id}")))?;
 
-    let token = decrypt_secret(&state.secrets_key, &enc_row.0)
-        .map_err(|e| AppError::BadRequest(format!("Token decryption failed: {}", e)))?;
+    let token = crate::api::secrets::resolve(
+        &state.db,
+        &state.secrets_key,
+        &secret_id,
+        "proxmox_api",
+    )
+    .await
+    .map_err(|error| AppError::BadRequest(format!("Proxmox token unavailable: {error}")))?;
 
     Ok(HostInfo { url, node, token })
 }
@@ -1219,6 +1209,48 @@ mod tests {
     use axum_extra::extract::cookie::Cookie;
 
     #[tokio::test]
+    async fn host_token_loading_uses_secret_resolver_and_fails_closed_when_disabled() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool.clone());
+        let host_id = "host-loader-test";
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted = crate::api::secrets::encrypt(&state.secrets_key, "fixture-token").unwrap();
+        sqlx::query(
+            "INSERT INTO proxmox_hosts (id, name, url, node, fingerprint) VALUES (?, 'PVE', 'https://pve.internal:8006', 'pve', NULL)",
+        )
+        .bind(host_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+        )
+        .bind(&secret_id)
+        .bind(format!("proxmox_token_{host_id}"))
+        .bind(encrypted)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let loaded = get_host_and_token(&state, host_id).await.unwrap();
+        assert_eq!(loaded.token, "fixture-token");
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_some());
+
+        sqlx::query("UPDATE secrets SET disabled = 1 WHERE id = ?")
+            .bind(&secret_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(get_host_and_token(&state, host_id).await.is_err());
+    }
+
+    #[tokio::test]
     async fn host_creation_stages_the_token_and_only_submits_a_durable_job() {
         let pool = crate::api::mcp::test_support::setup_db().await;
         let session = crate::api::mcp::test_support::user_with_session(&pool).await;
@@ -1252,7 +1284,7 @@ mod tests {
             "SELECT value_enc FROM secrets WHERE name LIKE 'proxmox_staged_%'",
         ).fetch_one(&pool).await.unwrap();
         assert_eq!(
-            decrypt_secret(&state.secrets_key, &encrypted).unwrap(),
+            crate::api::secrets::decrypt(&state.secrets_key, &encrypted).unwrap(),
             "root@pam!voidtower=supersecret"
         );
     }

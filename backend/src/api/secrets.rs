@@ -56,6 +56,7 @@ const SUPPORTED_SECRET_PURPOSES: &[&str] = &[
     "proxmox_api",
     "proxmox_compatibility",
     "proxy_basic_auth",
+    "redaction",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

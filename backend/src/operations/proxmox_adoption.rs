@@ -114,13 +114,19 @@ impl HostProxmoxEvidenceProvider {
                 .fetch_optional(&self.pool)
                 .await?
                 .context("Proxmox host is not configured")?;
-        let value_enc: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE name = ?")
+        let secret_id: String = sqlx::query_scalar("SELECT id FROM secrets WHERE name = ?")
             .bind(format!("proxmox_token_{host_id}"))
             .fetch_optional(&self.pool)
             .await?
             .context("Proxmox host token is not configured")?;
-        let token = secrets::decrypt(&self.secrets_key, &value_enc)
-            .context("Proxmox host token decryption failed")?;
+        let token = secrets::resolve(
+            &self.pool,
+            &self.secrets_key,
+            &secret_id,
+            "proxmox_compatibility",
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("Proxmox host token unavailable: {error}"))?;
         Ok(HostAccess {
             id: host_id.into(),
             name,
@@ -146,18 +152,19 @@ impl HostProxmoxEvidenceProvider {
         let verify_ssl = setting(&self.pool, "proxmox_verify_ssl")
             .await?
             .is_some_and(|value| value == "true");
-        let token = match sqlx::query_scalar::<_, String>(
-            "SELECT value_enc FROM secrets WHERE name = 'proxmox_legacy_token'",
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        {
-            Some(value) => secrets::decrypt(&self.secrets_key, &value)
-                .context("legacy Proxmox token decryption failed")?,
-            None => setting(&self.pool, "proxmox_token")
+        let secret_id: String =
+            sqlx::query_scalar("SELECT id FROM secrets WHERE name = 'proxmox_legacy_token'")
+                .fetch_optional(&self.pool)
                 .await?
-                .context("legacy Proxmox token is not configured")?,
-        };
+                .context("legacy Proxmox token is not configured")?;
+        let token = secrets::resolve(
+            &self.pool,
+            &self.secrets_key,
+            &secret_id,
+            "proxmox_compatibility",
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("legacy Proxmox token unavailable: {error}"))?;
         Ok(HostAccess {
             id: LEGACY_HOST_ID.into(),
             name: "Legacy Proxmox".into(),

@@ -282,14 +282,21 @@ impl HttpProxmoxProvider {
                 .await?
                 .context("Proxmox host is not configured")?;
         let secret_name = format!("proxmox_token_{id}");
-        let (value_enc, version): (String, i64) =
-            sqlx::query_as("SELECT value_enc, version FROM secrets WHERE name = ?")
-                .bind(secret_name)
-                .fetch_optional(&self.pool)
-                .await?
-                .context("Proxmox host token is not configured")?;
-        let token = secrets::decrypt(&self.secrets_key, &value_enc)
-            .context("Proxmox token decryption failed")?;
+        let (secret_id, version): (String, i64) = sqlx::query_as(
+            "SELECT id, version FROM secrets WHERE name = ?",
+        )
+        .bind(secret_name)
+        .fetch_optional(&self.pool)
+        .await?
+        .context("Proxmox host token is not configured")?;
+        let token = secrets::resolve(
+            &self.pool,
+            &self.secrets_key,
+            &secret_id,
+            "proxmox_compatibility",
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("Proxmox host token unavailable: {error}"))?;
         Ok(HostAccess {
             id: id.into(),
             name: row.0,
@@ -321,24 +328,20 @@ impl HttpProxmoxProvider {
             .setting("proxmox_verify_ssl")
             .await?
             .is_some_and(|value| value == "true");
-        let encrypted: Option<(String, i64)> = sqlx::query_as(
-            "SELECT value_enc, version FROM secrets WHERE name = 'proxmox_legacy_token'",
+        let encrypted: (String, i64) =
+            sqlx::query_as("SELECT id, version FROM secrets WHERE name = 'proxmox_legacy_token'")
+                .fetch_optional(&self.pool)
+                .await?
+                .context("legacy Proxmox token is not configured")?;
+        let (secret_id, token_version) = encrypted;
+        let token = secrets::resolve(
+            &self.pool,
+            &self.secrets_key,
+            &secret_id,
+            "proxmox_compatibility",
         )
-        .fetch_optional(&self.pool)
-        .await?;
-        let (token, token_version) = match encrypted {
-            Some((value, version)) => (
-                secrets::decrypt(&self.secrets_key, &value)
-                    .context("legacy Proxmox token decryption failed")?,
-                version,
-            ),
-            None => (
-                self.setting("proxmox_token")
-                    .await?
-                    .context("legacy Proxmox token is not configured")?,
-                0,
-            ),
-        };
+        .await
+        .map_err(|error| anyhow::anyhow!("legacy Proxmox token unavailable: {error}"))?;
         Ok(HostAccess {
             id: LEGACY_HOST_ID.into(),
             name: "Legacy Proxmox".into(),
@@ -392,12 +395,20 @@ impl HttpProxmoxProvider {
     }
 
     async fn copy_token(&self, host_id: &str, secret_id: &str, description: &str) -> Result<()> {
-        let (value_enc, version): (String, i64) =
-            sqlx::query_as("SELECT value_enc, version FROM secrets WHERE id = ?")
-                .bind(secret_id)
-                .fetch_optional(&self.pool)
-                .await?
-                .context("token_secret_id does not reference a secret")?;
+        let version: i64 = sqlx::query_scalar("SELECT version FROM secrets WHERE id = ?")
+            .bind(secret_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .context("token_secret_id does not reference a secret")?;
+        let value = secrets::resolve(
+            &self.pool,
+            &self.secrets_key,
+            secret_id,
+            "proxmox_compatibility",
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("Proxmox token unavailable: {error}"))?;
+        let value_enc = secrets::encrypt(&self.secrets_key, &value)?;
         let now = crate::operations::unix_now();
         sqlx::query(
             "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at, version) \
@@ -417,13 +428,22 @@ impl HttpProxmoxProvider {
     ) -> Result<()> {
         let parsed = url.map(reqwest::Url::parse).transpose()?;
         let candidate: Option<(String, i64)> = match token_secret_id {
-            Some(secret_id) => Some(
-                sqlx::query_as("SELECT value_enc, version FROM secrets WHERE id = ?")
+            Some(secret_id) => {
+                let version: i64 = sqlx::query_scalar("SELECT version FROM secrets WHERE id = ?")
                     .bind(secret_id)
                     .fetch_optional(&self.pool)
                     .await?
-                    .context("token_secret_id does not reference a secret")?,
-            ),
+                    .context("token_secret_id does not reference a secret")?;
+                let value = secrets::resolve(
+                    &self.pool,
+                    &self.secrets_key,
+                    secret_id,
+                    "proxmox_compatibility",
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("Proxmox token unavailable: {error}"))?;
+                Some((secrets::encrypt(&self.secrets_key, &value)?, version))
+            }
             None => None,
         };
         let now = crate::operations::unix_now();

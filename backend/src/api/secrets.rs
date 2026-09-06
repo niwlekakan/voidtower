@@ -3,6 +3,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
+use anyhow::Context;
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -222,6 +223,58 @@ pub(crate) async fn migrate_legacy_provider_secrets(
         return Err(error);
     }
 
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Convert the legacy Proxmox API token setting into the encrypted secret
+/// record used by the compatibility adapter. Plaintext is removed only after
+/// an encrypted value is present and decryptable; any failure leaves the
+/// legacy setting available for operator recovery.
+pub(crate) async fn migrate_legacy_proxmox_token(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    let legacy_value: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'proxmox_token'")
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(legacy_value) = legacy_value else {
+        tx.commit().await?;
+        return Ok(());
+    };
+    anyhow::ensure!(!legacy_value.is_empty(), "legacy Proxmox token is empty");
+    anyhow::ensure!(
+        legacy_value.len() <= MAX_SECRET_VALUE_BYTES,
+        "legacy Proxmox token exceeds size limit"
+    );
+
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT value_enc FROM secrets WHERE name = 'proxmox_legacy_token'")
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some(value_enc) = existing {
+        decrypt(key, &value_enc).context("legacy Proxmox token decryption failed")?;
+    } else {
+        let now = now_ts();
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let value_enc = encrypt(key, &legacy_value)?;
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+             VALUES (?, 'proxmox_legacy_token', 'Legacy Proxmox API token', ?, ?, ?)",
+        )
+        .bind(secret_id)
+        .bind(value_enc)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query("DELETE FROM settings WHERE key = 'proxmox_token'")
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -705,7 +758,7 @@ mod tests {
     //!   `encrypt()` failure branch are left unaudited for the same reason:
     //!   no secret exists yet at that point to attach a `resource_id` to.
 
-    use super::{decrypt, encrypt, migrate_legacy_provider_secrets};
+    use super::{decrypt, encrypt, migrate_legacy_provider_secrets, migrate_legacy_proxmox_token};
     use axum::{
         body::Body,
         extract::connect_info::ConnectInfo,
@@ -1204,6 +1257,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(secret_count, 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_proxmox_token_migration_encrypts_and_removes_plaintext() {
+        let db_path = std::env::temp_dir().join(format!(
+            "voidtower-proxmox-secret-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::init_pool(&db_path).await.unwrap();
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('proxmox_token', 'proxmox-fixture-token', ?)",
+        )
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        migrate_legacy_proxmox_token(&db, &[0u8; 32]).await.unwrap();
+
+        let encrypted: String =
+            sqlx::query_scalar("SELECT value_enc FROM secrets WHERE name = 'proxmox_legacy_token'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            decrypt(&[0u8; 32], &encrypted).unwrap(),
+            "proxmox-fixture-token"
+        );
+        assert!(sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = 'proxmox_token'",
+        )
+        .fetch_optional(&db)
+        .await
+        .unwrap()
+        .is_none());
+
+        migrate_legacy_proxmox_token(&db, &[0u8; 32]).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM secrets WHERE name = 'proxmox_legacy_token'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            1
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn legacy_proxmox_token_migration_preserves_plaintext_on_failure() {
+        let db = setup_db().await;
+        let oversized = "x".repeat(super::MAX_SECRET_VALUE_BYTES + 1);
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('proxmox_token', ?, ?)")
+            .bind(&oversized)
+            .bind(unix_now())
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let error = migrate_legacy_proxmox_token(&db, &[0u8; 32])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds size limit"));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'proxmox_token'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            oversized
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM secrets WHERE name = 'proxmox_legacy_token'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

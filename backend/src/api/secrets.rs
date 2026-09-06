@@ -598,8 +598,9 @@ async fn auth_user(state: &AppState, jar: &CookieJar, require_admin: bool) -> Re
 }
 
 /// Item #7B: if the request carries a Bearer token that has `secret_ids` set,
-/// return Some(allowed_ids). Returns None when the token is unrestricted or
-/// the request is session-authenticated (no bearer token present).
+/// return Some(allowed_ids). A presented token with a missing or malformed
+/// secret scope fails closed; None is reserved for session-authenticated
+/// requests without a bearer token.
 async fn token_secret_ids(
     state: &AppState,
     headers: &HeaderMap,
@@ -631,7 +632,7 @@ async fn token_secret_ids(
         return Err(AppError::Unauthorized);
     };
     let Some(secret_ids_json) = secret_ids_json else {
-        return Ok(None);
+        return Err(AppError::Forbidden);
     };
     let ids: Vec<String> =
         serde_json::from_str(&secret_ids_json).map_err(|_| AppError::Forbidden)?;
@@ -764,6 +765,27 @@ mod tests {
         .bind(&hash)
         .bind(now)
         .bind(&secret_ids_json)
+        .execute(db)
+        .await
+        .unwrap();
+        raw
+    }
+
+    async fn insert_token_with_null_secret_scope(db: &SqlitePool, user_id: &str) -> String {
+        let raw = format!("vt_null_scope_{}", uuid::Uuid::new_v4().simple());
+        let mut h = Sha256::new();
+        h.update(raw.as_bytes());
+        let hash = hex::encode(h.finalize());
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at, secret_ids)
+             VALUES (?, ?, 'test-null-secret-scope-token', ?, '[]', NULL, ?, NULL)",
+        )
+        .bind(&id)
+        .bind(user_id)
+        .bind(&hash)
+        .bind(now)
         .execute(db)
         .await
         .unwrap();
@@ -1200,6 +1222,44 @@ mod tests {
             0,
             "malformed token must fail before secret lookup"
         );
+    }
+
+    #[tokio::test]
+    async fn null_token_secret_scope_fails_closed_before_list_or_reveal() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = insert_secret(&db).await;
+        let raw_token = insert_token_with_null_secret_scope(&db, &admin).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let list_response = app
+            .clone()
+            .oneshot(cookie_and_bearer_req(
+                "GET",
+                "/api/secrets",
+                &session,
+                &raw_token,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::FORBIDDEN);
+
+        let reveal_response = app
+            .oneshot(cookie_and_bearer_req(
+                "GET",
+                &format!("/api/secrets/{secret_id}/reveal"),
+                &session,
+                &raw_token,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reveal_response.status(), StatusCode::FORBIDDEN);
+        assert!(audit_rows(&db, "reveal_secret", &secret_id)
+            .await
+            .is_empty());
     }
 
     #[tokio::test]

@@ -130,71 +130,96 @@ pub(crate) async fn migrate_legacy_provider_secrets(
     let mut migrated = HashMap::<String, String>::new();
     let mut settings_to_delete = Vec::new();
 
-    for (provider_id, reference) in providers {
-        let is_canonical = uuid::Uuid::parse_str(&reference).is_ok()
-            && sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
-                .bind(&reference)
-                .fetch_optional(&mut *tx)
-                .await?
-                .is_some();
-        if is_canonical {
-            sqlx::query("DELETE FROM settings WHERE key = ?")
-                .bind(&reference)
+    let migration_result: anyhow::Result<()> = async {
+        for (provider_id, reference) in providers {
+            let is_canonical = uuid::Uuid::parse_str(&reference).is_ok()
+                && sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                    .bind(&reference)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .is_some();
+            if is_canonical {
+                sqlx::query("DELETE FROM settings WHERE key = ?")
+                    .bind(&reference)
+                    .execute(&mut *tx)
+                    .await?;
+                continue;
+            }
+
+            let legacy_value: Option<String> =
+                sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                    .bind(&reference)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            let Some(legacy_value) = legacy_value else {
+                sqlx::query("UPDATE ai_providers SET enabled = 0, updated_at = ? WHERE id = ?")
+                    .bind(now_ts())
+                    .bind(&provider_id)
+                    .execute(&mut *tx)
+                    .await?;
+                continue;
+            };
+
+            let secret_id = if let Some(existing) = migrated.get(&reference) {
+                existing.clone()
+            } else {
+                let secret_id = uuid::Uuid::new_v4().to_string();
+                let encrypted = encrypt(key, &legacy_value)?;
+                let now = now_ts();
+                sqlx::query(
+                    "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&secret_id)
+                .bind(format!("ai-provider-legacy-{secret_id}"))
+                .bind("Migrated AI-provider credential")
+                .bind(encrypted)
+                .bind(now)
+                .bind(now)
                 .execute(&mut *tx)
                 .await?;
-            continue;
+                migrated.insert(reference.clone(), secret_id.clone());
+                settings_to_delete.push(reference.clone());
+                secret_id
+            };
+
+            sqlx::query("UPDATE ai_providers SET api_key_ref = ?, updated_at = ? WHERE id = ?")
+                .bind(secret_id)
+                .bind(now_ts())
+                .bind(provider_id)
+                .execute(&mut *tx)
+                .await?;
         }
 
-        let legacy_value: Option<String> =
-            sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-                .bind(&reference)
-                .fetch_optional(&mut *tx)
-                .await?;
-        let Some(legacy_value) = legacy_value else {
-            sqlx::query("UPDATE ai_providers SET enabled = 0, updated_at = ? WHERE id = ?")
-                .bind(now_ts())
-                .bind(&provider_id)
+        for reference in settings_to_delete {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(reference)
                 .execute(&mut *tx)
                 .await?;
-            continue;
-        };
-
-        let secret_id = if let Some(existing) = migrated.get(&reference) {
-            existing.clone()
-        } else {
-            let secret_id = uuid::Uuid::new_v4().to_string();
-            let encrypted = encrypt(key, &legacy_value)?;
-            let now = now_ts();
-            sqlx::query(
-                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&secret_id)
-            .bind(format!("ai-provider-legacy-{secret_id}"))
-            .bind("Migrated AI-provider credential")
-            .bind(encrypted)
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
-            migrated.insert(reference.clone(), secret_id.clone());
-            settings_to_delete.push(reference.clone());
-            secret_id
-        };
-
-        sqlx::query("UPDATE ai_providers SET api_key_ref = ?, updated_at = ? WHERE id = ?")
-            .bind(secret_id)
-            .bind(now_ts())
-            .bind(provider_id)
-            .execute(&mut *tx)
-            .await?;
+        }
+        Ok(())
     }
+    .await;
 
-    for reference in settings_to_delete {
-        sqlx::query("DELETE FROM settings WHERE key = ?")
-            .bind(reference)
-            .execute(&mut *tx)
-            .await?;
+    if let Err(error) = migration_result {
+        // Dropping the open transaction rolls back any partial conversion before
+        // fail-closed recovery is persisted independently for every remaining
+        // legacy reference.
+        drop(tx);
+        sqlx::query(
+            "UPDATE ai_providers SET enabled = 0, updated_at = ? \
+             WHERE api_key_ref IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM secrets WHERE secrets.id = ai_providers.api_key_ref)",
+        )
+        .bind(now_ts())
+        .execute(db)
+        .await
+        .map_err(|disable_error| {
+            anyhow::anyhow!(
+                "legacy provider migration failed and fail-closed recovery did not commit: {disable_error}"
+            )
+        })?;
+        return Err(error);
     }
 
     tx.commit().await?;
@@ -1293,5 +1318,181 @@ mod tests {
             "super-secret-value"
         );
         assert_eq!(version, 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_provider_migration_is_fresh_restart_safe_and_fails_closed() {
+        let db_path = std::env::temp_dir().join(format!(
+            "voidtower-secret-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::init_pool(&db_path).await.unwrap();
+        let migration_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = 1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(migration_count, 4);
+
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) \
+             VALUES ('legacy.missing', 'must-remain-unread', ?)",
+        )
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_providers \
+             (id, kind, name, enabled, api_key_ref, priority, created_at, updated_at) \
+             VALUES ('provider-missing', 'openai', 'Missing legacy provider', 1, \
+                     'legacy.not-found', 1, ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let missing_state: (String, bool) = sqlx::query_as(
+            "SELECT api_key_ref, enabled FROM ai_providers WHERE id = 'provider-missing'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(missing_state.0, "legacy.not-found");
+        assert!(!missing_state.1);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'legacy.missing'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            "must-remain-unread"
+        );
+
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) \
+             VALUES ('legacy.failure', 'failure-fixture', ?), \
+                    ('legacy.good', 'good-fixture', ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        for (id, reference) in [
+            ("provider-failure", "legacy.failure"),
+            ("provider-good", "legacy.good"),
+        ] {
+            sqlx::query(
+                "INSERT INTO ai_providers \
+                 (id, kind, name, enabled, api_key_ref, priority, created_at, updated_at) \
+                 VALUES (?, 'openai', ?, 1, ?, 1, ?, ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(reference)
+            .bind(now)
+            .bind(now)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "CREATE TRIGGER fail_secret_provider_update \
+             BEFORE UPDATE OF api_key_ref ON ai_providers \
+             WHEN NEW.id = 'provider-failure' \
+             BEGIN SELECT RAISE(ABORT, 'fixture migration failure'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let migration_error = migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap_err();
+        assert!(migration_error
+            .to_string()
+            .contains("fixture migration failure"));
+        let failed_state: (String, bool) = sqlx::query_as(
+            "SELECT api_key_ref, enabled FROM ai_providers WHERE id = 'provider-failure'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(failed_state.0, "legacy.failure");
+        assert!(!failed_state.1);
+        let good_enabled: bool =
+            sqlx::query_scalar("SELECT enabled FROM ai_providers WHERE id = 'provider-good'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(!good_enabled);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'legacy.failure'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            "failure-fixture"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM secrets")
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            0
+        );
+
+        sqlx::query("DROP TRIGGER fail_secret_provider_update")
+            .execute(&db)
+            .await
+            .unwrap();
+        db.close().await;
+
+        let db = crate::db::init_pool(&db_path).await.unwrap();
+        migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let good_ref: String =
+            sqlx::query_scalar("SELECT api_key_ref FROM ai_providers WHERE id = 'provider-good'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(uuid::Uuid::parse_str(&good_ref).is_ok());
+        assert_eq!(
+            decrypt(
+                &[0u8; 32],
+                &sqlx::query_scalar::<_, String>("SELECT value_enc FROM secrets WHERE id = ?",)
+                    .bind(&good_ref)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap(),
+            "good-fixture"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM secrets")
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            2
+        );
+        assert!(sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = 'legacy.good'",
+        )
+        .fetch_optional(&db)
+        .await
+        .unwrap()
+        .is_none());
+        db.close().await;
+        let _ = std::fs::remove_file(&db_path);
     }
 }

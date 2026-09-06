@@ -706,14 +706,8 @@ impl ContainerAdapter {
     }
 
     async fn redact_provider_output(&self, output: &str) -> String {
-        let encrypted: Vec<String> = sqlx::query_scalar("SELECT value_enc FROM secrets")
-            .fetch_all(&self.pool)
-            .await
-            .unwrap_or_default();
-        let known_values: Vec<String> = encrypted
-            .into_iter()
-            .filter_map(|value| crate::api::secrets::decrypt(&self.secrets_key, &value).ok())
-            .collect();
+        let known_values =
+            crate::api::mcp::redact::known_secret_values_from(&self.pool, &self.secrets_key).await;
         crate::api::mcp::redact::redact(output, &known_values)
     }
 }
@@ -1787,7 +1781,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compose_provider_output_redacts_values_from_the_secret_store() {
+    async fn compose_provider_output_redacts_only_usable_secret_values() {
         let (adapter, _, _, _, _directory) = setup_compose().await;
         let secret_value = ["known", "fixture", "value"].join("-");
         let encrypted = crate::api::secrets::encrypt(&[0u8; 32], &secret_value).unwrap();
@@ -1799,11 +1793,56 @@ mod tests {
         .execute(&adapter.pool)
         .await
         .unwrap();
-        let safe = adapter
-            .redact_provider_output(&format!("provider echoed {secret_value}"))
-            .await;
+        let disabled_value = "disabled-compose-secret-value";
+        let disabled_encrypted = crate::api::secrets::encrypt(&[0u8; 32], disabled_value).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, disabled, created_at, updated_at) \
+             VALUES ('compose-disabled-fixture', 'compose-disabled-fixture', ?, 1, 0, 0)",
+        )
+        .bind(disabled_encrypted)
+        .execute(&adapter.pool)
+        .await
+        .unwrap();
+        let oversized_value = "x".repeat(crate::api::secrets::MAX_SECRET_VALUE_BYTES + 1);
+        let oversized_encrypted =
+            crate::api::secrets::encrypt(&[0u8; 32], &oversized_value).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) \
+             VALUES ('compose-oversized-fixture', 'compose-oversized-fixture', ?, 0, 0)",
+        )
+        .bind(oversized_encrypted)
+        .execute(&adapter.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) \
+             VALUES ('compose-corrupt-fixture', 'compose-corrupt-fixture', 'not-ciphertext', 0, 0)",
+        )
+        .execute(&adapter.pool)
+        .await
+        .unwrap();
+
+        let output = format!(
+            "provider echoed {secret_value}; disabled={disabled_value}; oversized={oversized_value}"
+        );
+        let safe = adapter.redact_provider_output(&output).await;
+
         assert!(!safe.contains(&secret_value));
+        assert!(safe.contains(disabled_value));
+        assert!(safe.contains(&oversized_value));
         assert!(safe.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn compose_provider_output_redaction_survives_secret_store_unavailability() {
+        let (adapter, _, _, _, _directory) = setup_compose().await;
+        adapter.pool.close().await;
+
+        let safe = adapter
+            .redact_provider_output("provider output remains bounded")
+            .await;
+
+        assert_eq!(safe, "provider output remains bounded");
     }
 
     #[tokio::test]

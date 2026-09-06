@@ -17,6 +17,7 @@
 //!    (hashes, UUIDs) is left alone.
 
 use crate::AppState;
+use sqlx::SqlitePool;
 
 const REDACTED: &str = "[REDACTED]";
 const REDACTED_PEM: &str = "[REDACTED PEM BLOCK]";
@@ -55,17 +56,21 @@ const SECRET_KEYWORDS: &[&str] = &[
 /// response it's protecting. Supported create, update, and migration paths
 /// reject oversized values before they enter the secrets store.
 pub async fn known_secret_values(state: &AppState) -> Vec<String> {
+    known_secret_values_from(&state.db, &state.secrets_key).await
+}
+
+/// Resolve every stored usable secret value for a non-AppState consumer.
+/// Missing, disabled, corrupt, oversized, and unavailable records are skipped
+/// so redaction never fails the response it protects.
+pub(crate) async fn known_secret_values_from(db: &SqlitePool, key: &[u8; 32]) -> Vec<String> {
     let secret_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM secrets ORDER BY id")
-        .fetch_all(&state.db)
+        .fetch_all(db)
         .await
         .unwrap_or_default();
 
     let mut values = Vec::new();
     for secret_id in secret_ids {
-        if let Ok(value) =
-            crate::api::secrets::resolve(&state.db, &state.secrets_key, &secret_id, "redaction")
-                .await
-        {
+        if let Ok(value) = crate::api::secrets::resolve(db, key, &secret_id, "redaction").await {
             values.push(value);
         }
     }

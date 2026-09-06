@@ -307,13 +307,14 @@ pub async fn update(
 ) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
     let now = now_ts();
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
     if let Some(v) = &body.value {
         let enc = encrypt(&state.secrets_key, v).map_err(AppError::Internal)?;
         sqlx::query("UPDATE secrets SET value_enc=?, updated_at=? WHERE id=?")
             .bind(&enc)
             .bind(now)
             .bind(&id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
     }
@@ -322,7 +323,7 @@ pub async fn update(
             .bind(n)
             .bind(now)
             .bind(&id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
     }
@@ -331,7 +332,7 @@ pub async fn update(
             .bind(&body.description)
             .bind(now)
             .bind(&id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
     }
@@ -340,10 +341,11 @@ pub async fn update(
             .bind(disabled)
             .bind(now)
             .bind(&id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
     }
+    tx.commit().await.map_err(AppError::Database)?;
     audit::log(
         &state.db,
         Some(&user.id),
@@ -365,6 +367,18 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
+    let provider_refs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ai_providers WHERE api_key_ref = ?",
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(AppError::Database)?;
+    if provider_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by an AI provider".into(),
+        ));
+    }
     sqlx::query("DELETE FROM secrets WHERE id=?")
         .bind(&id)
         .execute(&state.db)

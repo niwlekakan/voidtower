@@ -604,6 +604,7 @@ export interface SecretMeta {
   updated_at: number
   last_used_at: number | null
   version: number
+  disabled: boolean
 }
 
 export interface SecretsResponse { secrets: SecretMeta[] }

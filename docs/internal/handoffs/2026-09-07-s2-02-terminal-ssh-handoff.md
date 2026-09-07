@@ -4,7 +4,7 @@
 
 - **Repository:** `/home/elwla/Documents/voidtower_project_files_full/hive/voidtower`
 - **Branch:** `dev`
-- **Commit:** `f0e576c` (`[verified] migrate terminal SSH credentials to secret manager`)
+- **Commit:** `1879fca` (`[verified] migrate terminal SSH credentials to secret manager`)
 - **Tracked outcome:** S2-02 Legacy secret closure and rotation
 - **Bounded checkpoint:** terminal SSH password consumer migration and resolver closure
 - **Authority:** `docs/development-plan.md`; this checkpoint does not promote S2-02 as a whole until remaining supported consumers are closed.
@@ -16,10 +16,11 @@
 - Updated terminal SSH create/update handlers to write and rotate encrypted secret records instead of session ciphertext; the session stores only the secret reference.
 - Disabled or missing referenced secrets are treated as non-rotatable: password rotation creates a fresh UUID-backed active secret and updates the session reference, leaving the retired secret disabled.
 - SSH session update and deletion read and mutate session references within one transaction; deletion handles already-absent sessions without retiring a stale secret.
+- Generic secret deletion rejects secrets still referenced by terminal SSH sessions, preserving canonical references until the owning session retires them.
 - Added the `terminal_ssh` resolver purpose and routed SSH connection credential loading through the shared secret resolver.
 - SSH connections now fail closed for missing, disabled, corrupt, oversized, or unavailable credentials without exposing secret material or resolver details.
 - Updated schema canonicalization, golden schema, migration counts, and startup migration ordering.
-- Existing staged `backend/src/agent/mod.rs` and `backend/src/agent/state.rs` were preserved and were not included in commit `f0e576c`.
+- Existing staged `backend/src/agent/mod.rs` and `backend/src/agent/state.rs` were preserved and were not included in commit `1879fca`.
 
 ## Verification evidence
 
@@ -35,8 +36,9 @@ Post-commit batch result: every declared step passed.
 
 - `python scripts/repo_truth.py --repo . --json --check` — exit 0; source inventory passed.
 - `cargo test api::terminal::tests --all-features -- --nocapture` — exit 0; resolver state, handler storage/retirement, and disabled-secret replacement rotation tests passed.
-- `cargo test api::secrets::tests::legacy_ssh_password --all-features -- --nocapture` — exit 0; migration success/idempotence and failure-preservation tests passed.
-- `cargo test --all-targets --all-features` — exit 0; 463 unit tests and 2 integration tests passed.
+- `cargo test 'api::secrets::tests::legacy_ssh_password' --all-features -- --nocapture` — exit 0; migration success/idempotence and failure-preservation tests passed.
+- `cargo test api::secrets::tests::delete_rejects_secret_referenced_by_terminal_ssh_session --all-features -- --nocapture` — exit 0; referenced-secret deletion was rejected and the reference was preserved.
+- `cargo test --all-targets --all-features` — exit 0; 464 unit tests and 2 integration tests passed.
 - `cargo clippy --all-targets --all-features -- -D warnings` — exit 0.
 - `scripts/check-schema-migration-ownership.sh` — exit 0.
 - `git diff --check` — exit 0.
@@ -44,7 +46,7 @@ Post-commit batch result: every declared step passed.
 
 ## Evidence classification
 
-- **implemented:** commit `f0e576c`, migration/schema/startup and terminal consumer changes.
+- **implemented:** commit `1879fca`, migration/schema/startup and terminal consumer changes.
 - **unit-verified:** terminal resolver state matrix, handler create/rotate storage, legacy SSH migration idempotence and failure preservation.
 - **integration-verified:** all-targets backend tests, schema ownership, canonical schema golden test, clippy.
 - **runtime-verified:** `hermes verify --json --port 80` passed the Docker Compose startup and HTTP readiness probe (200); no live SSH target was available or contacted.

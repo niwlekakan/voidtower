@@ -275,7 +275,7 @@ pub async fn update_ssh_session(
             if let Some(secret_id) = existing.password_secret_id.as_deref() {
                 let encrypted = secrets::encrypt(&state.secrets_key, password).map_err(AppError::Internal)?;
                 let updated = sqlx::query(
-                    "UPDATE secrets SET value_enc=?, updated_at=?, version=version+1 WHERE id=?",
+                    "UPDATE secrets SET value_enc=?, updated_at=?, version=version+1 WHERE id=? AND disabled=0",
                 )
                 .bind(encrypted)
                 .bind(secrets::now_ts())
@@ -591,6 +591,52 @@ mod tests {
         .await
         .unwrap()
         .is_none());
+
+        sqlx::query("UPDATE secrets SET disabled = 1 WHERE id = ?")
+            .bind(&secret_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        let rotated_after_disable = update_ssh_session(
+            State(state.clone()),
+            jar.clone(),
+            Path(created.id.clone()),
+            Json(CreateSshSession {
+                label: "fixture-disabled-rotated".into(),
+                host: "192.0.2.12".into(),
+                port: Some(22),
+                username: "fixture-user".into(),
+                key_path: None,
+                password: Some("rotated-after-disable".into()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(rotated_after_disable.password_set);
+        let replacement_secret_id: String = sqlx::query_scalar(
+            "SELECT password_secret_id FROM ssh_sessions WHERE id = ?",
+        )
+        .bind(&created.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_ne!(replacement_secret_id, secret_id);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT disabled FROM secrets WHERE id = ?")
+                .bind(&replacement_secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            resolve_ssh_password(&db, &[0u8; 32], Some(&replacement_secret_id))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("rotated-after-disable")
+        );
 
         let _ = update_ssh_session(
             State(state.clone()),

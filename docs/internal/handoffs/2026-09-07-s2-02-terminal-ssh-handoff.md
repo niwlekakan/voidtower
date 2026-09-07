@@ -44,6 +44,7 @@ Post-commit batch result: every declared step passed.
 - `scripts/check-schema-migration-ownership.sh` — exit 0.
 - `git diff --check` — exit 0.
 - `hermes verify --json --port 80` — exit 0; detected Docker Compose build completed, the HTTP readiness probe returned status 200, and the stack was torn down cleanly.
+- Independent read-only security/correctness review of implementation commit `0db20ea` — passed; no security concerns or logic errors. Non-blocking suggestions were direct sshpass/PTY-failure regression coverage, encrypted-empty resolver rejection, and SSH port-bound validation.
 
 ## Evidence classification
 

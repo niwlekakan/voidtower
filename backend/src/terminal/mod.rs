@@ -120,7 +120,7 @@ impl AskpassFile {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+                file.set_permissions(std::fs::Permissions::from_mode(0o700))?;
             }
             Ok(())
         })();

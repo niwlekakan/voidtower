@@ -535,10 +535,17 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
+    let mut tx = state.db.begin().await?;
     let provider_refs: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM ai_providers WHERE api_key_ref = ?")
             .bind(&id)
-            .fetch_one(&state.db)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    let terminal_refs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ssh_sessions WHERE password_secret_id = ?")
+            .bind(&id)
+            .fetch_one(&mut *tx)
             .await
             .map_err(AppError::Database)?;
     if provider_refs > 0 {
@@ -546,11 +553,17 @@ pub async fn delete(
             "secret is still referenced by an AI provider".into(),
         ));
     }
+    if terminal_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by a terminal SSH session".into(),
+        ));
+    }
     sqlx::query("DELETE FROM secrets WHERE id=?")
         .bind(&id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
+    tx.commit().await.map_err(AppError::Database)?;
     audit::log(
         &state.db,
         Some(&user.id),
@@ -1248,6 +1261,66 @@ mod tests {
             "expected exactly one audit row, got {rows:?}"
         );
         assert_eq!(rows[0].0, "forbidden");
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_secret_referenced_by_terminal_ssh_session() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = "terminal-referenced-secret";
+        let now = unix_now();
+        let encrypted = encrypt(&[0u8; 32], "fixture-terminal-password").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(secret_id)
+        .bind("terminal-referenced-secret")
+        .bind(encrypted)
+        .bind(now)
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ssh_sessions (id, label, host, port, username, key_path, password_secret_id) \
+             VALUES ('terminal-referenced-session', 'fixture', '192.0.2.20', 22, 'fixture-user', NULL, ?)",
+        )
+        .bind(secret_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+        let response = app
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT password_secret_id FROM ssh_sessions WHERE id = ?",
+            )
+            .bind("terminal-referenced-session")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .as_deref(),
+            Some(secret_id)
+        );
     }
 
     /// Regression guard against double-logging (a call site duplicated by a

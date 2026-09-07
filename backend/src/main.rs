@@ -348,9 +348,12 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(&cfg.data_dir)?;
         let pool = db::init_pool(&cfg.db_path()).await?;
 
+        // Load or generate secrets encryption key only for exports; imports do
+        // not resolve secret values and preserve their existing behavior.
         if let Some(out_arg) = cli.export_config {
+            let secrets_key = load_or_create_secrets_key(&cfg)?;
             let path_opt = out_arg.as_deref();
-            api::disaster::cli_export(&pool, path_opt).await?;
+            api::disaster::cli_export(&pool, &secrets_key, path_opt).await?;
         } else if let Some(input_path) = cli.import_config {
             api::disaster::cli_import(&pool, &input_path).await?;
         }
@@ -378,7 +381,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Load or generate secrets encryption key
+    // Load or generate secrets encryption key for normal controller startup.
     let secrets_key = load_or_create_secrets_key(&cfg)?;
 
     // Bootstrap token

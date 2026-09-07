@@ -57,6 +57,7 @@ const SUPPORTED_SECRET_PURPOSES: &[&str] = &[
     "proxmox_compatibility",
     "proxy_basic_auth",
     "redaction",
+    "terminal_ssh",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +236,77 @@ pub(crate) async fn migrate_legacy_provider_secrets(
             )
         })?;
         return Err(error);
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Convert legacy SSH-session ciphertext into a canonical encrypted secret
+/// reference. The conversion is transactional and safe to rerun: the legacy
+/// column is cleared only after the secret record and reference are durable.
+pub(crate) async fn migrate_legacy_ssh_session_passwords(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    let sessions: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, password_enc, password_secret_id FROM ssh_sessions \
+         WHERE password_enc IS NOT NULL",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    for (session_id, legacy_ciphertext, existing_secret_id) in sessions {
+        let Some(legacy_ciphertext) = legacy_ciphertext else {
+            continue;
+        };
+        let legacy_value = decrypt(key, &legacy_ciphertext)
+            .map_err(|_| anyhow::anyhow!("legacy SSH password is unavailable"))?;
+        anyhow::ensure!(!legacy_value.is_empty(), "legacy SSH password is empty");
+        anyhow::ensure!(
+            legacy_value.len() <= MAX_SECRET_VALUE_BYTES,
+            "legacy SSH password exceeds size limit"
+        );
+
+        let secret_id: String = if let Some(secret_id) = existing_secret_id {
+            let value_enc: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("legacy SSH password reference is unavailable"))?;
+            let existing_value = decrypt(key, &value_enc)
+                .map_err(|_| anyhow::anyhow!("legacy SSH password reference is corrupt"))?;
+            anyhow::ensure!(
+                existing_value.len() <= MAX_SECRET_VALUE_BYTES,
+                "legacy SSH password reference exceeds size limit"
+            );
+            secret_id
+        } else {
+            let secret_id = uuid::Uuid::new_v4().to_string();
+            let value_enc = encrypt(key, &legacy_value)?;
+            let now = now_ts();
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+                 VALUES (?, ?, 'Migrated terminal SSH password', ?, ?, ?)",
+            )
+            .bind(&secret_id)
+            .bind(format!("terminal-ssh-password-{session_id}-{secret_id}"))
+            .bind(&value_enc)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            secret_id
+        };
+
+        sqlx::query(
+            "UPDATE ssh_sessions SET password_secret_id = ?, password_enc = NULL WHERE id = ?",
+        )
+        .bind(secret_id)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
     }
 
     tx.commit().await?;
@@ -741,7 +813,7 @@ fn validate_secret_value(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn now_ts() -> i64 {
+pub(crate) fn now_ts() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -773,7 +845,8 @@ mod tests {
     //!   no secret exists yet at that point to attach a `resource_id` to.
 
     use super::{
-        decrypt, encrypt, migrate_legacy_provider_secrets, migrate_legacy_proxmox_token, resolve,
+        decrypt, encrypt, migrate_legacy_provider_secrets, migrate_legacy_proxmox_token,
+        migrate_legacy_ssh_session_passwords, resolve,
         ResolveError,
     };
     use axum::{
@@ -1564,7 +1637,7 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
 
         let now = unix_now();
         sqlx::query(
@@ -1726,5 +1799,86 @@ mod tests {
         .is_none());
         db.close().await;
         let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn legacy_ssh_password_migrates_to_secret_reference_and_is_idempotent() {
+        let db = setup_db().await;
+        let session_id = "ssh-session-legacy-fixture";
+        let legacy_password = "legacy-ssh-password-fixture";
+        let legacy_ciphertext = encrypt(&[0u8; 32], legacy_password).unwrap();
+        sqlx::query(
+            "INSERT INTO ssh_sessions \
+             (id, label, host, port, username, key_path, password_enc) \
+             VALUES (?, 'legacy fixture', '192.0.2.10', 22, 'fixture-user', NULL, ?)",
+        )
+        .bind(session_id)
+        .bind(&legacy_ciphertext)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        migrate_legacy_ssh_session_passwords(&db, &[0u8; 32])
+            .await
+            .unwrap();
+
+        let (legacy_after, secret_id): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT password_enc, password_secret_id FROM ssh_sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(legacy_after.is_none());
+        let secret_id = secret_id.expect("migrated secret reference");
+        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(decrypt(&[0u8; 32], &encrypted).unwrap(), legacy_password);
+        assert_eq!(
+            resolve(&db, &[0u8; 32], &secret_id, "terminal_ssh")
+                .await
+                .unwrap(),
+            legacy_password
+        );
+
+        migrate_legacy_ssh_session_passwords(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let (_, reference_after): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT password_enc, password_secret_id FROM ssh_sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(reference_after.as_deref(), Some(secret_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn legacy_ssh_password_migration_preserves_ciphertext_on_failure() {
+        let db = setup_db().await;
+        sqlx::query(
+            "INSERT INTO ssh_sessions \
+             (id, label, host, port, username, key_path, password_enc) \
+             VALUES ('ssh-session-corrupt-fixture', 'corrupt fixture', '192.0.2.11', 22, 'fixture-user', NULL, 'not-ciphertext')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        assert!(migrate_legacy_ssh_session_passwords(&db, &[0u8; 32])
+            .await
+            .is_err());
+        let row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT password_enc, password_secret_id FROM ssh_sessions WHERE id = 'ssh-session-corrupt-fixture'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(row.0.as_deref(), Some("not-ciphertext"));
+        assert!(row.1.is_none());
     }
 }

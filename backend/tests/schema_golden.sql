@@ -481,7 +481,7 @@ CREATE TABLE ssh_sessions (
             key_path   TEXT,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
             last_used  INTEGER
-        , password_enc TEXT)
+        , password_enc TEXT, password_secret_id TEXT)
 ;
 CREATE TABLE status_checks (
             id          TEXT PRIMARY KEY,

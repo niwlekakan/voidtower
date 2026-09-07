@@ -8,6 +8,8 @@ pub(crate) const OPERATIONS_SQL: &str =
 pub(crate) const CMDB_SQL: &str = include_str!("../../migrations/0003_cmdb_asset_registry.sql");
 pub(crate) const SECRET_MANAGER_SQL: &str =
     include_str!("../../migrations/0004_secret_manager_convergence.sql");
+pub(crate) const TERMINAL_SSH_SQL: &str =
+    include_str!("../../migrations/0005_terminal_ssh_secret_reference.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColumnShape {
@@ -183,6 +185,10 @@ async fn canonical_schema() -> Result<SchemaShape> {
         .execute(&mut connection)
         .await
         .context("failed to construct canonical schema from secret-manager migration")?;
+    sqlx::query(TERMINAL_SSH_SQL)
+        .execute(&mut connection)
+        .await
+        .context("failed to construct canonical schema from terminal SSH migration")?;
     inspect_schema(&mut connection).await
 }
 

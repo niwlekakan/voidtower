@@ -445,20 +445,16 @@ impl ProxyProvider for LocalProxyProvider {
     }
 
     async fn contains_known_secret(&self, candidates: &[String]) -> Result<bool> {
-        let encrypted: Vec<String> = sqlx::query_scalar("SELECT value_enc FROM secrets")
-            .fetch_all(&self.pool)
-            .await?;
-        let mut known = Vec::new();
-        for value in encrypted {
-            let decrypted = crate::api::secrets::decrypt(&self.secrets_key, &value)
-                .context("cannot validate proxy input against the secret vault")?;
-            if decrypted.chars().count() >= 4 {
-                known.push(decrypted);
-            }
-        }
-        Ok(candidates
-            .iter()
-            .any(|candidate| known.iter().any(|secret| candidate.contains(secret))))
+        let known =
+            crate::api::mcp::redact::known_secret_values_from(&self.pool, &self.secrets_key).await;
+        ensure!(known.complete, "secret vault unavailable");
+        Ok(candidates.iter().any(|candidate| {
+            known
+                .values
+                .iter()
+                .filter(|secret| secret.chars().count() >= 4)
+                .any(|secret| candidate.contains(secret))
+        }))
     }
 }
 
@@ -1237,11 +1233,28 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) \
+             VALUES ('proxy-corrupt-fixture', 'proxy-corrupt-fixture', 'not-ciphertext', 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let oversized_value = "x".repeat(crate::api::secrets::MAX_SECRET_VALUE_BYTES + 1);
+        let oversized_encrypted = crate::api::secrets::encrypt(&key, &oversized_value).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) \
+             VALUES ('proxy-oversized-fixture', 'proxy-oversized-fixture', ?, 0, 0)",
+        )
+        .bind(oversized_encrypted)
+        .execute(&pool)
+        .await
+        .unwrap();
         let provider = LocalProxyProvider::new(pool.clone(), key);
-        assert_eq!(
-            provider.resolve_secret(Some(secret_id)).await.unwrap(),
-            Some("known-secret-value".into())
-        );
+        assert!(provider
+            .contains_known_secret(&["Bearer known-secret-value".into()])
+            .await
+            .unwrap());
         let last_used_at: Option<i64> =
             sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
                 .bind(secret_id)
@@ -1249,13 +1262,21 @@ mod tests {
                 .await
                 .unwrap();
         assert!(last_used_at.is_some());
+        assert!(!provider
+            .contains_known_secret(&["Bearer not-ciphertext".into()])
+            .await
+            .unwrap());
+        assert!(!provider
+            .contains_known_secret(&[format!("Bearer {oversized_value}")])
+            .await
+            .unwrap());
         sqlx::query("UPDATE secrets SET disabled = 1 WHERE id = ?")
             .bind(secret_id)
             .execute(&pool)
             .await
             .unwrap();
         assert!(provider.resolve_secret(Some(secret_id)).await.is_err());
-        assert!(provider
+        assert!(!provider
             .contains_known_secret(&["Bearer known-secret-value".into()])
             .await
             .unwrap());
@@ -1263,6 +1284,11 @@ mod tests {
             .contains_known_secret(&["SAMEORIGIN".into()])
             .await
             .unwrap());
+        pool.close().await;
+        assert!(provider
+            .contains_known_secret(&["Bearer known-secret-value".into()])
+            .await
+            .is_err());
     }
 
     #[tokio::test]

@@ -270,11 +270,14 @@ pub(crate) async fn migrate_legacy_ssh_session_passwords(
         );
 
         let secret_id: String = if let Some(secret_id) = existing_secret_id {
-            let value_enc: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
-                .bind(&secret_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("legacy SSH password reference is unavailable"))?;
+            let value_enc: String =
+                sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+                    .bind(&secret_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("legacy SSH password reference is unavailable")
+                    })?;
             let existing_value = decrypt(key, &value_enc)
                 .map_err(|_| anyhow::anyhow!("legacy SSH password reference is corrupt"))?;
             anyhow::ensure!(
@@ -548,6 +551,29 @@ pub async fn delete(
             .fetch_one(&mut *tx)
             .await
             .map_err(AppError::Database)?;
+    let oidc_refs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM oidc_config WHERE client_secret_id = ?")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    let proxmox_refs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM secrets
+         WHERE id = ?
+           AND (
+               (name = 'proxmox_legacy_token' AND EXISTS (
+                   SELECT 1 FROM settings WHERE key = 'proxmox_host'
+               ))
+               OR EXISTS (
+                   SELECT 1 FROM proxmox_hosts
+                   WHERE secrets.name = 'proxmox_token_' || proxmox_hosts.id
+               )
+           )",
+    )
+    .bind(&id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
     if provider_refs > 0 {
         return Err(AppError::BadRequest(
             "secret is still referenced by an AI provider".into(),
@@ -556,6 +582,16 @@ pub async fn delete(
     if terminal_refs > 0 {
         return Err(AppError::BadRequest(
             "secret is still referenced by a terminal SSH session".into(),
+        ));
+    }
+    if oidc_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by OIDC configuration".into(),
+        ));
+    }
+    if proxmox_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by Proxmox configuration".into(),
         ));
     }
     sqlx::query("DELETE FROM secrets WHERE id=?")
@@ -859,8 +895,7 @@ mod tests {
 
     use super::{
         decrypt, encrypt, migrate_legacy_provider_secrets, migrate_legacy_proxmox_token,
-        migrate_legacy_ssh_session_passwords, resolve,
-        ResolveError,
+        migrate_legacy_ssh_session_passwords, resolve, ResolveError,
     };
     use axum::{
         body::Body,
@@ -1663,6 +1698,191 @@ mod tests {
         assert!(audit_rows(&db, "reveal_secret", &secret_id)
             .await
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_secret_referenced_by_oidc_or_proxmox() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let oidc_secret_id = insert_secret(&db).await;
+        sqlx::query(
+            "INSERT INTO oidc_config (id, enabled, client_secret_id, updated_at) VALUES ('default', 1, ?, ?)",
+        )
+        .bind(&oidc_secret_id)
+        .bind(unix_now())
+        .execute(&db)
+        .await
+        .unwrap();
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let oidc_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{oidc_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(oidc_response.status(), StatusCode::BAD_REQUEST);
+        let oidc_body = axum::body::to_bytes(oidc_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&oidc_body).contains("super-secret-value"));
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&oidc_secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT client_secret_id FROM oidc_config WHERE id = 'default'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .as_deref(),
+            Some(oidc_secret_id.as_str())
+        );
+
+        sqlx::query("UPDATE oidc_config SET client_secret_id = NULL WHERE id = 'default'")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO proxmox_hosts (id, name, url, node) VALUES ('fixture', 'Fixture', 'https://192.0.2.30:8006', 'pve')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let proxmox_secret_id = insert_secret(&db).await;
+        sqlx::query("UPDATE secrets SET name = ? WHERE id = ?")
+            .bind("proxmox_token_fixture")
+            .bind(&proxmox_secret_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        let proxmox_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{proxmox_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(proxmox_response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&proxmox_secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let orphaned_proxmox_name_id = insert_secret(&db).await;
+        sqlx::query("UPDATE secrets SET name = ? WHERE id = ?")
+            .bind("proxmox_token_orphan")
+            .bind(&orphaned_proxmox_name_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        let orphaned_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{orphaned_proxmox_name_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(orphaned_response.status(), StatusCode::OK);
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&orphaned_proxmox_name_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let legacy_proxmox_secret_id = insert_secret(&db).await;
+        sqlx::query("UPDATE secrets SET name = ? WHERE id = ?")
+            .bind("proxmox_legacy_token")
+            .bind(&legacy_proxmox_secret_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+            .bind("proxmox_host")
+            .bind("192.0.2.31")
+            .bind(unix_now())
+            .execute(&db)
+            .await
+            .unwrap();
+        let legacy_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{legacy_proxmox_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(legacy_response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&legacy_proxmox_secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        sqlx::query("DELETE FROM settings WHERE key = 'proxmox_host'")
+            .execute(&db)
+            .await
+            .unwrap();
+        let legacy_deleted_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{legacy_proxmox_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(legacy_deleted_response.status(), StatusCode::OK);
+
+        let unreferenced_secret_id = insert_secret(&db).await;
+        let deleted_response = app
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{unreferenced_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(deleted_response.status(), StatusCode::OK);
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&unreferenced_secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -708,7 +708,10 @@ impl ContainerAdapter {
     async fn redact_provider_output(&self, output: &str) -> String {
         let known_values =
             crate::api::mcp::redact::known_secret_values_from(&self.pool, &self.secrets_key).await;
-        crate::api::mcp::redact::redact(output, &known_values)
+        if !known_values.complete {
+            return crate::api::mcp::redact::REDACTION_UNAVAILABLE.to_string();
+        }
+        crate::api::mcp::redact::redact(output, &known_values.values)
     }
 }
 
@@ -1842,7 +1845,7 @@ mod tests {
             .redact_provider_output("provider output remains bounded")
             .await;
 
-        assert_eq!(safe, "provider output remains bounded");
+        assert_eq!(safe, crate::api::mcp::redact::REDACTION_UNAVAILABLE);
     }
 
     #[tokio::test]

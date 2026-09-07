@@ -21,6 +21,16 @@ use sqlx::SqlitePool;
 
 const REDACTED: &str = "[REDACTED]";
 const REDACTED_PEM: &str = "[REDACTED PEM BLOCK]";
+pub(crate) const REDACTION_UNAVAILABLE: &str = "[REDACTION_UNAVAILABLE]";
+
+/// The known-value set is complete only when the store and every resolution
+/// query were available. Expected unusable records remain skipped without
+/// making the whole set unavailable.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct KnownSecretValues {
+    pub(crate) values: Vec<String>,
+    pub(crate) complete: bool,
+}
 
 /// Secret values shorter than this are skipped during known-value redaction — a
 /// short value (e.g. a placeholder "x" someone stored) would otherwise blow away
@@ -51,30 +61,40 @@ const SECRET_KEYWORDS: &[&str] = &[
 ];
 
 /// Fetch and resolve every stored usable secret value, for use as a
-/// known-value redaction set. Missing, disabled, corrupt, oversized, and
-/// unavailable secrets are skipped — redaction must never fail (or panic) the
-/// response it's protecting. Supported create, update, and migration paths
-/// reject oversized values before they enter the secrets store.
-pub async fn known_secret_values(state: &AppState) -> Vec<String> {
+/// known-value redaction set. Missing, disabled, corrupt, and oversized records
+/// are skipped. Database failures mark the set incomplete so callers protecting
+/// provider output can fail closed. Supported create, update, and migration
+/// paths reject oversized values before they enter the secrets store.
+pub(crate) async fn known_secret_values(state: &AppState) -> KnownSecretValues {
     known_secret_values_from(&state.db, &state.secrets_key).await
 }
 
 /// Resolve every stored usable secret value for a non-AppState consumer.
-/// Missing, disabled, corrupt, oversized, and unavailable records are skipped
-/// so redaction never fails the response it protects.
-pub(crate) async fn known_secret_values_from(db: &SqlitePool, key: &[u8; 32]) -> Vec<String> {
-    let secret_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM secrets ORDER BY id")
+/// Expected unusable records are skipped. Database failures mark the set
+/// incomplete so callers protecting provider output can fail closed.
+pub(crate) async fn known_secret_values_from(db: &SqlitePool, key: &[u8; 32]) -> KnownSecretValues {
+    let secret_ids: Vec<String> = match sqlx::query_scalar("SELECT id FROM secrets ORDER BY id")
         .fetch_all(db)
         .await
-        .unwrap_or_default();
+    {
+        Ok(ids) => ids,
+        Err(_) => return KnownSecretValues::default(),
+    };
 
     let mut values = Vec::new();
     for secret_id in secret_ids {
-        if let Ok(value) = crate::api::secrets::resolve(db, key, &secret_id, "redaction").await {
-            values.push(value);
+        match crate::api::secrets::resolve(db, key, &secret_id, "redaction").await {
+            Ok(value) => values.push(value),
+            Err(crate::api::secrets::ResolveError::Database) => {
+                return KnownSecretValues::default();
+            }
+            Err(_) => {}
         }
     }
-    values
+    KnownSecretValues {
+        values,
+        complete: true,
+    }
 }
 
 /// Replace every verbatim occurrence of a known secret value with `[REDACTED]`.
@@ -100,7 +120,10 @@ pub fn redact(text: &str, known_values: &[String]) -> String {
 /// looks up the current known-secret-value set and applies the full pipeline.
 pub async fn redact_for_ai(state: &AppState, text: &str) -> String {
     let known = known_secret_values(state).await;
-    redact(text, &known)
+    if !known.complete {
+        return REDACTION_UNAVAILABLE.to_string();
+    }
+    redact(text, &known.values)
 }
 
 /// Heuristic redaction of secret-shaped substrings (see module docs).
@@ -408,7 +431,8 @@ mod tests {
         state.secrets_key = std::sync::Arc::new(key);
 
         let values = known_secret_values(&state).await;
-        assert_eq!(values, vec![secret_value.to_string()]);
+        assert_eq!(values.values, vec![secret_value.to_string()]);
+        assert!(values.complete);
         let last_used_at: Option<i64> =
             sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = 's1'")
                 .fetch_one(&pool)
@@ -450,7 +474,9 @@ mod tests {
         let mut state = crate::api::mcp::test_support::build(pool);
         state.secrets_key = std::sync::Arc::new(key);
 
-        assert!(known_secret_values(&state).await.is_empty());
+        let result = known_secret_values(&state).await;
+        assert!(result.values.is_empty());
+        assert!(result.complete);
     }
 
     #[tokio::test]
@@ -480,7 +506,8 @@ mod tests {
         state.secrets_key = std::sync::Arc::new(key);
 
         let values = known_secret_values(&state).await;
-        assert_eq!(values, vec![secret_value.to_string()]);
+        assert_eq!(values.values, vec![secret_value.to_string()]);
+        assert!(values.complete);
         let redacted = redact_for_ai(&state, &format!("opaque output: {secret_value}")).await;
         assert!(!redacted.contains(secret_value));
     }

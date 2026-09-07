@@ -264,11 +264,10 @@ pub async fn update_ssh_session(
 ) -> Result<Json<SshSessionOut>> {
     require_operator(&state, &jar).await?;
     let port = req.port.unwrap_or(22);
+    let mut tx = state.db.begin().await?;
     let existing = sqlx::query_as::<_, SshSession>(
         "SELECT id, label, host, port, username, key_path, password_secret_id, created_at, last_used FROM ssh_sessions WHERE id = ?"
-    ).bind(&id).fetch_optional(&state.db).await?.ok_or(AppError::NotFound)?;
-
-    let mut tx = state.db.begin().await?;
+    ).bind(&id).fetch_optional(&mut *tx).await?.ok_or(AppError::NotFound)?;
     let password_secret_id = match req.password.as_deref() {
         Some(password) if !password.is_empty() => {
             validate_ssh_password(password)?;
@@ -352,18 +351,22 @@ pub async fn delete_ssh_session(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     require_operator(&state, &jar).await?;
+    let mut tx = state.db.begin().await?;
     let password_secret_id = sqlx::query_scalar::<_, Option<String>>(
         "SELECT password_secret_id FROM ssh_sessions WHERE id = ?",
     )
     .bind(&id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?
     .flatten();
-    let mut tx = state.db.begin().await?;
-    sqlx::query("DELETE FROM ssh_sessions WHERE id = ?")
+    let deleted = sqlx::query("DELETE FROM ssh_sessions WHERE id = ?")
         .bind(&id)
         .execute(&mut *tx)
         .await?;
+    if deleted.rows_affected() == 0 {
+        tx.commit().await?;
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
     if let Some(secret_id) = password_secret_id {
         sqlx::query("UPDATE secrets SET disabled = 1, updated_at = ?, version = version + 1 WHERE id = ?")
             .bind(secrets::now_ts())

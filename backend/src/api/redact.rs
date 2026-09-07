@@ -23,19 +23,14 @@ const REDACTED: &str = "[REDACTED]";
 const REDACTED_PEM: &str = "[REDACTED PEM BLOCK]";
 pub(crate) const REDACTION_UNAVAILABLE: &str = "[REDACTION_UNAVAILABLE]";
 
-/// The known-value set is complete only when the store and every resolution
-/// query were available. Expected unusable records remain skipped without
-/// making the whole set unavailable.
+/// The known-value set is complete when the store query succeeds and every
+/// usable record was resolved. Export callers use the strict variant below,
+/// which also treats unusable records as incomplete.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct KnownSecretValues {
     pub(crate) values: Vec<String>,
     pub(crate) complete: bool,
 }
-
-/// Secret values shorter than this are skipped during known-value redaction — a
-/// short value (e.g. a placeholder "x" someone stored) would otherwise blow away
-/// unrelated short substrings throughout the response.
-const MIN_KNOWN_VALUE_LEN: usize = 6;
 
 const SECRET_KEYWORDS: &[&str] = &[
     "password",
@@ -60,19 +55,40 @@ const SECRET_KEYWORDS: &[&str] = &[
     "credential",
 ];
 
-/// Fetch and resolve every stored usable secret value, for use as a
-/// known-value redaction set. Missing, disabled, corrupt, and oversized records
-/// are skipped. Database failures mark the set incomplete so callers protecting
-/// provider output can fail closed. Supported create, update, and migration
-/// paths reject oversized values before they enter the secrets store.
+/// Fetch and resolve every stored usable secret value for the shared
+/// AI/provider redaction set. Expected unusable records are skipped; database
+/// failures still mark the set incomplete so callers can fail closed.
 pub(crate) async fn known_secret_values(state: &AppState) -> KnownSecretValues {
     known_secret_values_from(&state.db, &state.secrets_key).await
 }
 
 /// Resolve every stored usable secret value for a non-AppState consumer.
-/// Expected unusable records are skipped. Database failures mark the set
-/// incomplete so callers protecting provider output can fail closed.
 pub(crate) async fn known_secret_values_from(db: &SqlitePool, key: &[u8; 32]) -> KnownSecretValues {
+    collect_known_secret_values(db, key, false).await
+}
+
+/// Fetch and resolve every canonical secret for configuration export. Any
+/// unusable record makes the inventory incomplete because the export may contain
+/// stale plaintext copies that cannot be safely checked.
+pub(crate) async fn known_secret_values_for_export(
+    state: &AppState,
+) -> KnownSecretValues {
+    known_secret_values_for_export_from(&state.db, &state.secrets_key).await
+}
+
+/// Non-AppState form of the strict export inventory.
+pub(crate) async fn known_secret_values_for_export_from(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> KnownSecretValues {
+    collect_known_secret_values(db, key, true).await
+}
+
+async fn collect_known_secret_values(
+    db: &SqlitePool,
+    key: &[u8; 32],
+    fail_on_unusable: bool,
+) -> KnownSecretValues {
     let secret_ids: Vec<String> = match sqlx::query_scalar("SELECT id FROM secrets ORDER BY id")
         .fetch_all(db)
         .await
@@ -84,10 +100,13 @@ pub(crate) async fn known_secret_values_from(db: &SqlitePool, key: &[u8; 32]) ->
     let mut values = Vec::new();
     for secret_id in secret_ids {
         match crate::api::secrets::resolve(db, key, &secret_id, "redaction").await {
-            Ok(value) => values.push(value),
+            Ok(value) if !value.is_empty() => values.push(value),
+            Ok(_) if fail_on_unusable => return KnownSecretValues::default(),
+            Ok(_) => {},
             Err(crate::api::secrets::ResolveError::Database) => {
                 return KnownSecretValues::default();
             }
+            Err(_) if fail_on_unusable => return KnownSecretValues::default(),
             Err(_) => {}
         }
     }
@@ -101,10 +120,10 @@ pub(crate) async fn known_secret_values_from(db: &SqlitePool, key: &[u8; 32]) ->
 pub fn redact_known_values(text: &str, known_values: &[String]) -> String {
     let mut out = text.to_string();
     for value in known_values {
-        if value.len() < MIN_KNOWN_VALUE_LEN {
+        if value.is_empty() {
             continue;
         }
-        if out.contains(value.as_str()) {
+        if value.len() >= 6 && out.contains(value.as_str()) {
             out = out.replace(value.as_str(), REDACTED);
         }
     }
@@ -114,6 +133,17 @@ pub fn redact_known_values(text: &str, known_values: &[String]) -> String {
 /// Full redaction pipeline: known values first, then pattern heuristics.
 pub fn redact(text: &str, known_values: &[String]) -> String {
     redact_patterns(&redact_known_values(text, known_values))
+}
+
+/// Export redaction includes exact canonical values regardless of length.
+pub fn redact_export(text: &str, known_values: &[String]) -> String {
+    let mut out = text.to_string();
+    for value in known_values {
+        if !value.is_empty() && out.contains(value.as_str()) {
+            out = out.replace(value.as_str(), REDACTED);
+        }
+    }
+    redact_patterns(&out)
 }
 
 /// Convenience wrapper for call sites that only have `state` and the raw text —
@@ -395,6 +425,17 @@ mod tests {
         let text = "the value ab appears here and there, ab, ab";
         let out = redact_known_values(text, &known);
         assert_eq!(out, text);
+    }
+
+    #[test]
+    fn redact_export_redacts_short_canonical_secrets() {
+        let known = vec!["ab".to_string()];
+        let text = "the value ab appears here and there, ab, ab";
+        let out = redact_export(text, &known);
+        assert_eq!(
+            out,
+            "the value [REDACTED] appears here and there, [REDACTED], [REDACTED]"
+        );
     }
 
     #[tokio::test]

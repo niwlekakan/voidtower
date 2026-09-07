@@ -36,7 +36,7 @@ async fn require_owner(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
 }
 
 fn redact_export_text(value: &str, known_values: &[String]) -> String {
-    crate::api::mcp::redact::redact(value, known_values)
+    crate::api::mcp::redact::redact_export(value, known_values)
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ pub async fn export_config(
     jar: CookieJar,
 ) -> Result<Response> {
     require_owner(&state, &jar).await?;
-    let known_secrets = crate::api::mcp::redact::known_secret_values(&state).await;
+    let known_secrets = crate::api::mcp::redact::known_secret_values_for_export(&state).await;
     if !known_secrets.complete {
         return Err(AppError::Internal(anyhow::anyhow!("secret vault unavailable")));
     }
@@ -505,7 +505,8 @@ pub async fn cli_export(
     secrets_key: &[u8; 32],
     output_path: Option<&str>,
 ) -> anyhow::Result<()> {
-    let known_secrets = crate::api::mcp::redact::known_secret_values_from(pool, secrets_key).await;
+    let known_secrets =
+        crate::api::mcp::redact::known_secret_values_for_export_from(pool, secrets_key).await;
     anyhow::ensure!(known_secrets.complete, "secret vault unavailable");
 
     let instance_name: String = sqlx::query_scalar(
@@ -676,7 +677,7 @@ mod tests {
     async fn config_export_redacts_canonical_secret_values_from_stored_configuration() {
         let db = crate::api::mcp::test_support::setup_db().await;
         let session = crate::api::mcp::test_support::user_with_role_session(&db, "owner").await;
-        let secret_value = "export-sentinel-secret-value";
+        let secret_value = "q7";
         let encrypted = crate::api::secrets::encrypt(&[0u8; 32], secret_value).unwrap();
         sqlx::query(
             "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES ('export-secret', 'export fixture', ?, 0, 0)",
@@ -715,5 +716,32 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "export response: {body}");
         assert!(!body.contains(secret_value));
         assert!(body.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn config_export_fails_closed_when_a_canonical_secret_cannot_be_resolved() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "owner").await;
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES ('corrupt-export-secret', 'corrupt export fixture', 'not-ciphertext', 0, 0)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let app = crate::api::router(crate::api::mcp::test_support::build(db));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/disaster/export-config")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

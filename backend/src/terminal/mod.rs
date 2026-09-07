@@ -4,6 +4,33 @@ use futures_util::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn askpass_file_is_owner_only_and_cleaned_on_early_return() {
+        let dir = std::env::temp_dir().join(format!("voidtower-askpass-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let result = (|| -> Result<PathBuf> {
+            let askpass = AskpassFile::create_at(&dir, "redacted-test-fixture")?;
+            let path = askpass.path().to_path_buf();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o700);
+            }
+            anyhow::bail!("simulated SSH spawn failure")
+        })();
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -63,6 +90,57 @@ fn default_path() -> String {
     match std::env::var("PATH") {
         Ok(p) if !p.is_empty() => p,
         _ => base.into(),
+    }
+}
+
+struct AskpassFile {
+    path: PathBuf,
+}
+
+impl AskpassFile {
+    fn create(password: &str) -> Result<Self> {
+        Self::create_at(&std::env::temp_dir(), password)
+    }
+
+    fn create_at(directory: &Path, password: &str) -> Result<Self> {
+        let path = directory.join(format!(".vt-askpass-{}.sh", uuid::Uuid::new_v4()));
+        let safe_password = password.replace('\'', "'\\''");
+        let script = format!("#!/bin/sh\nprintf '%s' '{}'\n", safe_password);
+
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o700).custom_flags(nix::libc::O_NOFOLLOW);
+        }
+        let mut file = options.open(&path)?;
+        let write_result = (|| -> std::io::Result<()> {
+            file.write_all(script.as_bytes())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error.into());
+        }
+
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for AskpassFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -167,25 +245,11 @@ async fn run_ssh(
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
 
-    let askpass_path: Option<String> = if let Some(ref pw) = password {
-        let path = format!("/tmp/.vt-askpass-{}.sh", uuid::Uuid::new_v4());
-        let safe_pw = pw.replace('\'', "'\\''");
-        let script = format!("#!/bin/sh\nprintf '%s' '{}'\n", safe_pw);
-        if std::fs::write(&path, &script).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
-            }
-            Some(path)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     let use_sshpass = password.is_some() && which_bin("sshpass");
+    let askpass_file = match password.as_deref() {
+        Some(pw) if !use_sshpass => Some(AskpassFile::create(pw)?),
+        _ => None,
+    };
 
     let mut cmd = if use_sshpass {
         let mut c = CommandBuilder::new("sshpass");
@@ -209,9 +273,9 @@ async fn run_ssh(
             "-p", &port.to_string(),
         ]);
         if let Some(ref kp) = key_path { c.args(["-i", kp]); }
-        if let Some(ref ap) = askpass_path {
+        if let Some(askpass) = askpass_file.as_ref() {
             c.args(["-o", "BatchMode=no"]);
-            c.env("SSH_ASKPASS", ap);
+            c.env("SSH_ASKPASS", askpass.path());
             c.env("SSH_ASKPASS_REQUIRE", "force");
             c.env("DISPLAY", ":0");
         }
@@ -221,17 +285,15 @@ async fn run_ssh(
 
     cmd.env("TERM", "xterm-256color");
     cmd.env("PATH", default_path());
-    if let Some(ref pw) = password {
-        cmd.env("SSHPASS", pw);
+    if use_sshpass {
+        if let Some(ref pw) = password {
+            cmd.env("SSHPASS", pw);
+        }
     }
 
     let _child = pair.slave.spawn_command(cmd)?;
 
-    let result = run_pty_loop(socket, pair).await;
-    if let Some(path) = askpass_path {
-        let _ = std::fs::remove_file(&path);
-    }
-    result
+    run_pty_loop(socket, pair).await
 }
 
 fn which_bin(name: &str) -> bool {

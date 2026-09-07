@@ -210,6 +210,7 @@ impl ActionMetadata {
             "list_services" => Some("services:read"),
             "list_alerts" => Some("alerts:read"),
             "get_template" | "list_routes" | "read_file" | "search_code" => Some("files:read"),
+            "container.start" => Some("containers:restart"),
             _ => None,
         }
     }
@@ -4217,6 +4218,36 @@ macro_rules! durable_webhook_scoped_mutation {
     };
 }
 
+macro_rules! durable_mcp_scoped_mutation {
+    (
+        $name:literal,
+        $resource_kind:literal,
+        $adapter_key:literal,
+        $risk:expr,
+        $approval:expr,
+        $session_role:expr,
+        $scope:literal
+    ) => {
+        durable_action_metadata!(
+            $name,
+            HTTP_WEBHOOK_MCP_STUDIO,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Mutating,
+            $risk,
+            $approval,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Never,
+            1,
+            RecoveryClass::Reconcile,
+            $session_role,
+            BearerPolicy::Scope($scope),
+            AiExposure::Callable
+        )
+    };
+}
+
 macro_rules! durable_read_job {
     ($name:literal, $resource_kind:literal, $adapter_key:literal) => {
         durable_action_metadata!(
@@ -4242,6 +4273,12 @@ macro_rules! durable_read_job {
 const MCP_AND_STUDIO: &[ActionIngress] = &[ActionIngress::Mcp, ActionIngress::Studio];
 const HTTP: &[ActionIngress] = &[ActionIngress::Http];
 const HTTP_AND_WEBHOOK: &[ActionIngress] = &[ActionIngress::Http, ActionIngress::Webhook];
+const HTTP_WEBHOOK_MCP_STUDIO: &[ActionIngress] = &[
+    ActionIngress::Http,
+    ActionIngress::Webhook,
+    ActionIngress::Mcp,
+    ActionIngress::Studio,
+];
 const HTTP_AND_LOCAL_CLI: &[ActionIngress] = &[ActionIngress::Http, ActionIngress::LocalCli];
 const HTTP_LOCAL_CLI_AND_SCHEDULER: &[ActionIngress] = &[
     ActionIngress::Http,
@@ -4253,10 +4290,9 @@ const WEBHOOK_AUTOMATION: &[ActionIngress] = &[ActionIngress::Webhook, ActionIng
 const INTERNAL: &[ActionIngress] = &[ActionIngress::Internal];
 
 pub const ACTIONS: &[ActionMetadata] = &[
-    // MCP tools are operationally read-only: `ActionKind::Read` makes approval inapplicable and
-    // causes `evaluate` to return before consulting risk. Their risk fields deliberately retain the
-    // previous `for_action` fallthrough (`Irreversible`) so S0-03 does not smuggle in a risk
-    // reclassification. A future risk cleanup needs its own policy authorization.
+    // MCP tools are read-only by default. Explicit durable exceptions carry their own action
+    // metadata, scope, approval, and canonical invocation path; no tool becomes callable merely by
+    // setting `AiExposure::Callable`.
     action_metadata!(
         "automation.run",
         WEBHOOK_AUTOMATION,
@@ -4372,7 +4408,7 @@ pub const ACTIONS: &[ActionMetadata] = &[
     // Durable HTTP operations. These names are resource-qualified so jobs, capabilities, audit
     // records, and events never need the compatibility route or request shape to disambiguate an
     // action.
-    durable_webhook_scoped_mutation!(
+    durable_mcp_scoped_mutation!(
         "container.start",
         "container",
         "containers",

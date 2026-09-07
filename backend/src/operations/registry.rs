@@ -552,11 +552,17 @@ mod tests {
         for name in ["container.start", "container.stop", "container.restart"] {
             let action = action_registry::action(name).expect("container action metadata");
             assert_eq!(action.execution, ActionExecution::DurableJob, "{name}");
-            assert_eq!(
-                action.ingresses,
-                &[ActionIngress::Http, ActionIngress::Webhook],
-                "{name}"
-            );
+            let expected_ingresses = if name == "container.start" {
+                &[
+                    ActionIngress::Http,
+                    ActionIngress::Webhook,
+                    ActionIngress::Mcp,
+                    ActionIngress::Studio,
+                ][..]
+            } else {
+                &[ActionIngress::Http, ActionIngress::Webhook][..]
+            };
+            assert_eq!(action.ingresses, expected_ingresses, "{name}");
         }
 
         let integrations = include_str!("../api/integrations.rs");

@@ -295,6 +295,19 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                     }
                 },
                 {
+                    "name": "container.start",
+                    "description": "Start an existing canonical container resource through the durable operation boundary",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "resource_id": { "type": "string" },
+                            "request_id": { "type": "string", "description": "Stable idempotency key for this intent" }
+                        },
+                        "required": ["resource_id", "request_id"],
+                        "additionalProperties": false
+                    }
+                },
+                {
                     "name": "list_routes",
                     "description": "List all registered VoidTower API routes",
                     "inputSchema": { "type": "object", "properties": {} }
@@ -536,6 +549,34 @@ pub fn tools_json() -> Value {
         .unwrap_or(serde_json::json!({"tools":[]}))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContainerStartArgs {
+    resource_id: String,
+    request_id: String,
+}
+
+async fn tool_container_start(
+    state: &AppState,
+    credential: &CredentialContext,
+    args: Value,
+) -> Result<String, String> {
+    let args: ContainerStartArgs = serde_json::from_value(args)
+        .map_err(|error| format!("Invalid container.start arguments: {error}"))?;
+    let job = invocation::submit(
+        &state.db,
+        &state.operation_adapters,
+        credential,
+        &args.resource_id,
+        "container.start",
+        serde_json::json!({}),
+        &args.request_id,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    serde_json::to_string(&job).map_err(|error| error.to_string())
+}
+
 fn tool_action_kind(name: &str) -> ActionKind {
     match action_registry::action(name).map(|metadata| metadata.kind) {
         Some(RegistryActionKind::Read) => ActionKind::Read,
@@ -555,40 +596,42 @@ pub async fn invoke_tool(
     let metadata = action_registry::action(name).ok_or_else(|| format!("Unknown tool: {name}"))?;
     invocation::authorize_action(metadata, &credential).map_err(|error| error.to_string())?;
 
-    let actor = match credential {
-        CredentialContext::Mcp { .. } => Actor {
-            kind: ActorKind::ApiToken,
-        },
-        CredentialContext::Studio { .. } => Actor {
-            kind: ActorKind::User,
-        },
-        _ => return Err("The tool is not available from this ingress".to_string()),
-    };
-    let verdict = voidwatch::evaluate(
-        &state.db,
-        actor,
-        tool_action_kind(name),
-        name,
-        Resource {
-            resource_type: "mcp_tool",
-            resource_id: name,
-        },
-    )
-    .await;
+    if metadata.execution != action_registry::ActionExecution::DurableJob {
+        let actor = match &credential {
+            CredentialContext::Mcp { .. } => Actor {
+                kind: ActorKind::ApiToken,
+            },
+            CredentialContext::Studio { .. } => Actor {
+                kind: ActorKind::User,
+            },
+            _ => return Err("The tool is not available from this ingress".to_string()),
+        };
+        let verdict = voidwatch::evaluate(
+            &state.db,
+            actor,
+            tool_action_kind(name),
+            name,
+            Resource {
+                resource_type: "mcp_tool",
+                resource_id: name,
+            },
+        )
+        .await;
 
-    match verdict {
-        // MCP tool resources are always classified `"mcp_tool"` (never one of
-        // `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES`), so `AllowRequireSnapshot`
-        // isn't reachable here today — handled structurally anyway rather than assumed,
-        // same reasoning as the registry's currently read-only MCP action inventory.
-        voidwatch::Verdict::Allow | voidwatch::Verdict::AllowRequireSnapshot(_) => {}
-        voidwatch::Verdict::RequireApproval(reason) => {
-            return Err(format!("Requires approval: {reason}"))
+        match verdict {
+            // Direct MCP tools are still gated by the shared AI-context policy. Durable actions
+            // skip this synthetic mcp_tool evaluation because invocation::submit evaluates policy
+            // against the canonical resource and persists its approval outcome with the job.
+            voidwatch::Verdict::Allow | voidwatch::Verdict::AllowRequireSnapshot(_) => {}
+            voidwatch::Verdict::RequireApproval(reason) => {
+                return Err(format!("Requires approval: {reason}"))
+            }
+            voidwatch::Verdict::Deny(reason) => return Err(format!("Denied by policy: {reason}")),
         }
-        voidwatch::Verdict::Deny(reason) => return Err(format!("Denied by policy: {reason}")),
     }
 
     let result = match name {
+        "container.start" => tool_container_start(state, &credential, args).await,
         "list_nodes" => tool_list_nodes(state).await,
         "get_node_metrics" => tool_get_node_metrics(state).await,
         "list_containers" => tool_list_containers().await,
@@ -616,7 +659,265 @@ pub async fn invoke_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use async_trait::async_trait;
     use sha2::Digest;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct PlanningAdapter {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl crate::operations::adapters::OperationAdapter for PlanningAdapter {
+        fn key(&self) -> &'static str {
+            "containers"
+        }
+
+        fn actions(&self) -> &[&'static str] {
+            &["container.start"]
+        }
+
+        async fn plan(
+            &self,
+            request: crate::operations::adapters::PlanRequest,
+        ) -> Result<crate::operations::contracts::OperationPlanV1> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::operations::contracts::OperationPlanV1 {
+                schema_version: 1,
+                title: "Start container".into(),
+                risk: "mutate".into(),
+                changes: vec![],
+                preview: None,
+                external_fingerprint: "provider-state-1".into(),
+                steps: vec![crate::operations::contracts::PlannedStepV1 {
+                    kind: "execute".into(),
+                    name: format!("{} {}", request.action, request.resource.display_name),
+                    retry_class: "never".into(),
+                    recovery_class: "reconcile".into(),
+                }],
+            })
+        }
+
+        async fn external_fingerprint(
+            &self,
+            _request: &crate::operations::adapters::PlanRequest,
+        ) -> Result<String> {
+            Ok("provider-state-1".into())
+        }
+
+        async fn execute_step(
+            &self,
+            _request: crate::operations::adapters::StepRequest,
+        ) -> Result<crate::operations::adapters::StepOutcome> {
+            unreachable!()
+        }
+
+        async fn reconcile(
+            &self,
+            _request: crate::operations::adapters::StepRequest,
+        ) -> Result<crate::operations::adapters::ReconcileOutcome> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn container_start_is_an_explicit_typed_tool() {
+        let tools = tools_json();
+        let tool_names = tools["tools"]
+            .as_array()
+            .expect("MCP tools must be an array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(tool_names.contains(&"container.start"));
+
+        let action = action_registry::action("container.start").expect("registered action");
+        assert!(action
+            .ingresses
+            .contains(&action_registry::ActionIngress::Mcp));
+        assert!(action
+            .ingresses
+            .contains(&action_registry::ActionIngress::Studio));
+        assert_eq!(action.mcp_scope(), Some("containers:restart"));
+    }
+
+    #[tokio::test]
+    async fn container_start_rejects_insufficient_scope_before_resource_lookup() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Mcp {
+            token_id: "token-1".into(),
+            user_id: "test-user".into(),
+            role: "owner".into(),
+            scopes: vec!["containers:read".into()],
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "container.start",
+            serde_json::json!({
+                "resource_id": "missing-resource",
+                "request_id": "mcp-start-denied"
+            }),
+        )
+        .await
+        .expect_err("wrong MCP scope must fail before lookup");
+        assert_eq!(error, "the API token scope does not permit this action");
+    }
+
+    #[tokio::test]
+    async fn container_start_rejects_unknown_arguments() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Studio {
+            user_id: "studio-user".into(),
+            role: "owner".into(),
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "container.start",
+            serde_json::json!({
+                "resource_id": "missing-resource",
+                "request_id": "studio-start-invalid",
+                "provider_token": "must-not-be-accepted"
+            }),
+        )
+        .await
+        .expect_err("typed tool must reject unknown fields");
+        assert!(error.starts_with("Invalid container.start arguments:"));
+    }
+
+    #[tokio::test]
+    async fn container_start_submits_a_durable_job_and_replays_idempotently() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let resource = crate::operations::resources::observe(
+            &pool,
+            crate::operations::resources::ObserveResource {
+                kind: "container",
+                display_name: "web",
+                node_id: None,
+                provider: Some("docker"),
+                namespace: "test.container",
+                scope_key: "local",
+                alias: "web",
+            },
+            None,
+            "mcp-test",
+        )
+        .await
+        .unwrap();
+        crate::operations::resources::set_capability(
+            &pool,
+            &resource.id,
+            "container.start",
+            crate::operations::contracts::CapabilityAvailability::Available,
+            None,
+            None,
+            "mcp-test-capability",
+        )
+        .await
+        .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut adapters = crate::operations::adapters::AdapterRegistry::new();
+        adapters
+            .register(Arc::new(PlanningAdapter {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        let mut state = crate::api::mcp::test_support::build(pool.clone());
+        state.operation_adapters = Arc::new(adapters);
+        let credential = CredentialContext::Mcp {
+            token_id: "token-1".into(),
+            user_id: "test-user".into(),
+            role: "owner".into(),
+            scopes: vec!["containers:restart".into()],
+        };
+        let args = serde_json::json!({
+            "resource_id": resource.id,
+            "request_id": "mcp-start-replay-1"
+        });
+
+        let first: Value = serde_json::from_str(
+            &invoke_tool(&state, credential.clone(), "container.start", args.clone())
+                .await
+                .expect("canonical submit should create a job"),
+        )
+        .unwrap();
+        let second: Value = serde_json::from_str(
+            &invoke_tool(&state, credential, "container.start", args)
+                .await
+                .expect("same intent should replay the existing job"),
+        )
+        .unwrap();
+
+        assert_eq!(first["id"], second["id"]);
+        assert_eq!(first["action"], "container.start");
+        assert_eq!(first["ingress"], "mcp");
+        let persisted_key: String =
+            sqlx::query_scalar("SELECT idempotency_key FROM jobs WHERE id = ?")
+                .bind(first["id"].as_str().expect("job id"))
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(persisted_key, "mcp-start-replay-1");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn container_start_uses_canonical_invocation_errors() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Mcp {
+            token_id: "token-1".into(),
+            user_id: "test-user".into(),
+            role: "owner".into(),
+            scopes: vec!["containers:restart".into()],
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "container.start",
+            serde_json::json!({
+                "resource_id": "missing-resource",
+                "request_id": "mcp-start-1"
+            }),
+        )
+        .await
+        .expect_err("missing canonical resource must fail closed");
+        assert_eq!(error, "resource not found");
+    }
+
+    #[tokio::test]
+    async fn container_start_uses_canonical_invocation_for_studio() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Studio {
+            user_id: "studio-user".into(),
+            role: "owner".into(),
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "container.start",
+            serde_json::json!({
+                "resource_id": "missing-resource",
+                "request_id": "studio-start-1"
+            }),
+        )
+        .await
+        .expect_err("missing canonical resource must fail closed");
+        assert_eq!(error, "resource not found");
+    }
 
     #[tokio::test]
     async fn mcp_rejects_an_expired_token_owner_before_dispatch() {

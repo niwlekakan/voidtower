@@ -857,9 +857,8 @@ mod tests {
             scopes: vec!["alerts:read".into()],
         };
         assert!(authorize_action(mcp_read, &mcp_alerts).is_ok());
-        assert_eq!(
-            authorize_action(action_registry::action("container.start").unwrap(), &mcp),
-            Err(InvocationError::IngressDenied)
+        assert!(
+            authorize_action(action_registry::action("container.start").unwrap(), &mcp).is_ok()
         );
 
         let studio = InvocationContext::Studio {
@@ -874,9 +873,8 @@ mod tests {
         assert_eq!(studio.idempotency_scope(), "v1:studio:human:owner-1");
         let studio_read = action_registry::action("list_alerts").unwrap();
         assert!(authorize_action(studio_read, &studio).is_ok());
-        assert_eq!(
-            authorize_action(action_registry::action("container.start").unwrap(), &studio),
-            Err(InvocationError::IngressDenied)
+        assert!(
+            authorize_action(action_registry::action("container.start").unwrap(), &studio).is_ok()
         );
     }
 

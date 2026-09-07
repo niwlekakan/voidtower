@@ -60,6 +60,7 @@ Post-commit batch result: every declared step passed.
 - SSH private-key paths remain path references consumed by the existing terminal implementation; this checkpoint closes password credentials only.
 - No live provider/SSH session was executed.
 - The pre-existing staged agent changes remain in the worktree and must not be reset, cleaned, unstaged, or included in future commits without their owner’s direction.
+- `cargo fmt --all -- --check` remains non-green because of pre-existing repository-wide formatting drift, including older formatting in `backend/src/terminal/mod.rs`; the file was not wholesale reformatted to avoid unrelated churn.
 
 ## Next dependency-ready slice
 

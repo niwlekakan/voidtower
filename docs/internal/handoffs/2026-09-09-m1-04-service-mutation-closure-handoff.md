@@ -1,7 +1,7 @@
 # VoidTower Slice Handoff
 
 - **Date:** 2026-09-09
-- **Status:** integration-verified
+- **Status:** unit-verified
 - **Tracked plan slice:** `M1-04 Compatibility bypass closure` — `docs/development-plan.md` line 418. This bounded follow-up closes the remaining service compatibility mutation paths after the prior Libvirt closure.
 - **Branch and commit:** `dev`, `4f17a4c302fff16112bd6dda00969f1d856f3cc9`, `[verified] Close service mutation compatibility bypasses`
 
@@ -32,25 +32,25 @@
 - **Checkpoint results:**
   - `contract-red`: **unit-verified** — with an explicit allow rule, the pre-change webhook test reached the legacy helper and returned the environment-dependent `systemd is not available on this system` error, proving the test exercised the old provider path.
   - `fail-closed-implementation`: **implemented** — service API and webhook now return `FeatureUnavailable`; `run_service_action` was removed; source search found no `run_service_action` reference or service mutation `systemctl` call in the affected path.
-  - `focused-regression`: **integration-verified** — service module: 1 passed; integration module: 6 passed; the new service webhook and service API tests both passed.
-  - `final-gates`: **integration-verified** — batch runner report passed all six recorded steps; full backend targets passed 486 tests plus 2 golden-path tests; clippy passed with `-D warnings`; schema ownership passed.
+  - `focused-regression`: **unit-verified** — service module: 1 passed; integration module: 6 passed; the new service webhook and service API tests both passed.
+  - `final-gates`: **unit-verified** — batch runner report passed all six recorded steps; full backend targets passed 486 tests plus 2 golden-path tests; clippy passed with `-D warnings`; schema ownership passed.
 - **Automation manifest/report:** `docs/internal/evidence/2026-09-09-m1-04-service-mutation-closure/batch.json`; `docs/internal/evidence/2026-09-09-m1-04-service-mutation-closure/final-report/evidence.json`.
 
 | Command | Exit | Exact result | Evidence label |
 |---|---:|---|---|
 | `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest cargo test api::integrations::tests::service_webhook_mutation_fails_closed_until_canonical_adapter_exists --all-features -- --nocapture` (pre-change RED) | 101 | Test reached legacy service helper and failed on `systemd is not available on this system` | unit-verified |
-| `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest cargo test api::services::tests --all-features -- --nocapture` | 0 | 1 passed, 0 failed | integration-verified |
-| `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest cargo test api::integrations::tests --all-features -- --nocapture` | 0 | 6 passed, 0 failed | integration-verified |
-| `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest cargo test --all-targets --all-features` | 0 | 486 unit tests passed; 2 golden-path tests passed; example target had 0 tests | integration-verified |
+| `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest cargo test api::services::tests --all-features -- --nocapture` | 0 | 1 passed, 0 failed | unit-verified |
+| `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest cargo test api::integrations::tests --all-features -- --nocapture` | 0 | 6 passed, 0 failed | unit-verified |
+| `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest cargo test --all-targets --all-features` | 0 | 486 unit tests passed; 2 golden-path tests passed; example target had 0 tests | unit-verified |
 | `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest sh -c 'rustup component add clippy >/dev/null 2>&1 && cargo clippy --all-targets --all-features -- -D warnings'` | 0 | Clippy finished with no warnings/errors | integration-verified |
 | `scripts/check-schema-migration-ownership.sh` | 0 | Schema migration ownership check passed | implemented |
 | `git diff HEAD^ HEAD --check` | 0 | No whitespace errors | implemented |
 | `python scripts/repo_truth.py --repo . --json --check` | 0 | Passed; two post-commit runs had identical output | implemented |
 | `python /tmp/voidtower_added_scan.py` over the staged slice diff | 0 | Empty findings for hardcoded-secret assignments, shell injection, eval/exec, unsafe pickle, and formatted SQL | implemented |
-| `python /home/elwla/.hermes/profiles/voidtower-dev/skills/software-development/voidtower-dev/scripts/slice_batch.py --repo . --manifest docs/internal/evidence/2026-09-09-m1-04-service-mutation-closure/batch.json --output docs/internal/evidence/2026-09-09-m1-04-service-mutation-closure/final-report` | 0 | Source truth, focused services, focused integrations, full backend tests, schema ownership, and diff check all passed | integration-verified |
+| `python /home/elwla/.hermes/profiles/voidtower-dev/skills/software-development/voidtower-dev/scripts/slice_batch.py --repo . --manifest docs/internal/evidence/2026-09-09-m1-04-service-mutation-closure/batch.json --output docs/internal/evidence/2026-09-09-m1-04-service-mutation-closure/final-report` | 0 | Source truth, focused services, focused integrations, full backend tests, schema ownership, and diff check all passed | unit-verified |
 | `docker run --rm -v "$PWD:/workspace" -w /workspace/backend rust:latest sh -c 'rustup component add rustfmt >/dev/null 2>&1 && cargo fmt --all -- --check'` | 1 | Repository-wide rustfmt reported pre-existing drift in unrelated `backend/src/ai/*` files; no slice source was modified by the check | blocked |
 
-- **Independent review:** reviewer `sa-0-43c03ead` returned `passed=true`; security concerns `[]`; logic errors `[]`. The reviewer confirmed both legacy service mutation paths fail closed before systemd/provider execution and that unrelated staged paths were preserved. Non-blocking suggestions: add router-level 503 assertions, annotate that the evidence report captures the pre-commit run at `0dc2be21`, and reconsider advertising `services:restart` while the adapter is unavailable. These do not change the current fail-closed acceptance result.
+- **Independent review:** reviewer `sa-0-43c03ead` returned `passed=true`; security concerns `[]`; logic errors `[]`. The reviewer confirmed both legacy service mutation paths fail closed before systemd/provider execution and that unrelated staged paths were preserved. Non-blocking suggestions: add router-level 503 assertions and reconsider advertising `services:restart` while the adapter is unavailable. The evidence report now captures the post-implementation source state at `4f17a4c`; the pre-change provider-path failure remains recorded in the handoff’s RED command.
 - **Security/redaction review:** `/tmp/voidtower_added_scan.py` over the staged slice diff exited 0 with all five finding classes empty. No credentials were read or persisted.
 - **Not run:** live systemd service mutation, canonical service adapter workflow, external-provider runtime qualification, and release qualification. Repository-wide formatting remains blocked by unrelated pre-existing drift.
 

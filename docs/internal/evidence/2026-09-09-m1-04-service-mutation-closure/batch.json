@@ -18,7 +18,7 @@
       ],
       "timeout_seconds": 900,
       "continue_on_failure": false,
-      "declared_label": "integration-verified"
+      "declared_label": "unit-verified"
     },
     {
       "id": "focused-integrations",
@@ -29,7 +29,7 @@
       ],
       "timeout_seconds": 900,
       "continue_on_failure": false,
-      "declared_label": "integration-verified"
+      "declared_label": "unit-verified"
     },
     {
       "id": "full-backend-tests",
@@ -40,7 +40,7 @@
       ],
       "timeout_seconds": 900,
       "continue_on_failure": false,
-      "declared_label": "integration-verified"
+      "declared_label": "unit-verified"
     },
     {
       "id": "schema-ownership",

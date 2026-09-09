@@ -571,6 +571,34 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn local_libvirt_mutation_route_rejects_unauthenticated_call() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::{header, Request, StatusCode},
+        };
+        use tower::ServiceExt;
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/vms/local/action")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"fixture-vm","action":"start"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["error"]["code"], "unauthorized");
+    }
+
     #[test]
     fn local_libvirt_mutation_handler_has_no_provider_execution_path() {
         let source = include_str!("vms.rs");

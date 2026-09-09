@@ -16,7 +16,11 @@ use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use serde::Serialize;
 use sqlx::SqlitePool;
-use std::time::Duration;
+use std::{
+    process::Stdio,
+    sync::Arc,
+    time::Duration,
+};
 
 const ACTION: &str = "automation.run";
 const RESOURCE_KIND: &str = "automation_job";
@@ -43,11 +47,22 @@ struct AutomationSnapshot<'a> {
 
 pub struct AutomationAdapter {
     pool: SqlitePool,
+    secrets_key: Option<Arc<[u8; 32]>>,
 }
 
 impl AutomationAdapter {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            secrets_key: None,
+        }
+    }
+
+    pub fn with_secrets_key(pool: SqlitePool, secrets_key: Arc<[u8; 32]>) -> Self {
+        Self {
+            pool,
+            secrets_key: Some(secrets_key),
+        }
     }
 
     async fn record(&self, resource_id: &str) -> Result<AutomationRecord> {
@@ -161,6 +176,19 @@ impl OperationAdapter for AutomationAdapter {
             "automation timeout is outside the supported bound"
         );
 
+        let current_fingerprint = Self::fingerprint(&record)?;
+        let planned_fingerprint: Option<String> =
+            sqlx::query_scalar("SELECT external_fingerprint FROM jobs WHERE id = ?")
+                .bind(&request.job_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        if let Some(planned_fingerprint) = planned_fingerprint {
+            ensure!(
+                planned_fingerprint == current_fingerprint,
+                "automation plan is stale; refusing to execute changed command"
+            );
+        }
+
         let inserted = sqlx::query(
             "INSERT INTO automation_runs (id, job_id, started_at, status, output)
              VALUES (?, ?, ?, 'running', '') ON CONFLICT(id) DO NOTHING",
@@ -193,12 +221,17 @@ impl OperationAdapter for AutomationAdapter {
         }
 
         let timeout = Duration::from_secs(record.timeout_secs as u64);
-        let mut command = tokio::process::Command::new("bash");
+        let mut command = tokio::process::Command::new("setsid");
         command
+            .arg("bash")
             .arg("-c")
             .arg(&record.command)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let command_result = tokio::time::timeout(timeout, command.output()).await;
+        let child = command.spawn().context("failed to spawn automation process")?;
+        let pid = child.id();
+        let command_result = tokio::time::timeout(timeout, child.wait_with_output()).await;
         let (status, exit_code, output) = match command_result {
             Ok(Ok(output)) => {
                 let exit_code = output.status.code().map(i64::from);
@@ -208,14 +241,22 @@ impl OperationAdapter for AutomationAdapter {
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
                 );
-                (status, exit_code, bounded_output(&combined))
+                (status, exit_code, self.redact_output(&combined).await)
             }
-            Ok(Err(error)) => ("failure", None, bounded_output(&format!("automation execution failed: {error}"))),
-            Err(_) => (
-                "timeout",
+            Ok(Err(error)) => (
+                "failure",
                 None,
-                format!("automation timed out after {} seconds", record.timeout_secs),
+                self.redact_output(&format!("automation execution failed: {error}"))
+                    .await,
             ),
+            Err(_) => {
+                terminate_process_group(pid);
+                (
+                    "timeout",
+                    None,
+                    format!("automation timed out after {} seconds", record.timeout_secs),
+                )
+            }
         };
         sqlx::query(
             "UPDATE automation_runs SET finished_at=?, status=?, exit_code=?, output=? WHERE id=?",
@@ -265,6 +306,32 @@ impl OperationAdapter for AutomationAdapter {
 }
 
 impl AutomationAdapter {
+    fn fingerprint(record: &AutomationRecord) -> Result<String> {
+        let command_digest = canonical_json::digest(&record.command)?;
+        let snapshot = AutomationSnapshot {
+            id: &record.id,
+            name: &record.name,
+            command_digest,
+            timeout_secs: record.timeout_secs,
+            enabled: record.enabled,
+        };
+        canonical_json::digest(&snapshot)
+    }
+
+    async fn redact_output(&self, value: &str) -> String {
+        let redacted = if let Some(key) = &self.secrets_key {
+            let known = crate::api::mcp::redact::known_secret_values_from(&self.pool, key).await;
+            if !known.complete {
+                crate::api::mcp::redact::REDACTION_UNAVAILABLE.to_owned()
+            } else {
+                crate::api::mcp::redact::redact(value, &known.values)
+            }
+        } else {
+            crate::api::mcp::redact::redact_patterns(value)
+        };
+        redacted.chars().take(MAX_OUTPUT_CHARS).collect()
+    }
+
     async fn reconcile_existing_run(&self, run_id: &str) -> Result<ReconcileOutcome> {
         let row: Option<(String, Option<i64>, String)> = sqlx::query_as(
             "SELECT status, exit_code, output FROM automation_runs WHERE id = ?",
@@ -284,7 +351,7 @@ impl AutomationAdapter {
                     "automation_run_id": run_id,
                     "status": status,
                     "exit_code": exit_code,
-                    "output": bounded_output(&output),
+                    "output": self.redact_output(&output).await,
                 }),
             }),
             "failure" | "timeout" => Ok(ReconcileOutcome::Failed {
@@ -298,12 +365,18 @@ impl AutomationAdapter {
     }
 }
 
-fn bounded_output(value: &str) -> String {
-    crate::api::mcp::redact::redact_patterns(value)
-        .chars()
-        .take(MAX_OUTPUT_CHARS)
-        .collect()
+#[cfg(unix)]
+fn terminate_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-(pid as i32)),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
 }
+
+#[cfg(not(unix))]
+fn terminate_process_group(_pid: Option<u32>) {}
 
 fn risk_name(risk: RiskClass) -> &'static str {
     match risk {
@@ -449,5 +522,28 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(run_count, 2);
+    }
+
+    #[tokio::test]
+    async fn exact_stored_secret_is_redacted_from_output() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let key = [7u8; 32];
+        let secret = "automation-secret-value";
+        let encrypted = crate::api::secrets::encrypt(&key, secret).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+             VALUES ('automation-secret', 'automation-secret', NULL, ?, 0, 0)",
+        )
+        .bind(encrypted)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let adapter = AutomationAdapter::with_secrets_key(pool, Arc::new(key));
+        let output = adapter
+            .redact_output(&format!("command output: {secret}"))
+            .await;
+        assert!(!output.contains(secret));
+        assert!(output.contains("[REDACTED]"));
     }
 }

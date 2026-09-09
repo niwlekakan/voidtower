@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::HeaderMap,
     response::Response,
     Json,
@@ -138,6 +138,26 @@ pub(crate) async fn resolve_run_resource(
     .await
     .map_err(AppError::Database)?
     .ok_or(AppError::NotFound)?;
+    let existing = crate::operations::resources::resolve_alias(
+        &state.db,
+        "automation.job",
+        "local",
+        automation_id,
+    )
+    .await
+    .map_err(AppError::Internal)?;
+    if existing.is_some() {
+        return super::operation_adoption::resolve_available(
+            state,
+            credential,
+            "automation_job",
+            "automation.job",
+            "local",
+            automation_id,
+            &[ACTION],
+        )
+        .await;
+    }
     super::operation_adoption::observe_available(
         state,
         credential,
@@ -160,13 +180,14 @@ pub async fn run_now(
     jar: CookieJar,
     Path(id): Path<String>,
     headers: HeaderMap,
+    token: Option<Extension<super::bearer_auth::AuthenticatedApiToken>>,
 ) -> super::operation_adoption::CompatibilityResult<Response> {
-    let user = require_user(&state, &jar).await?;
-    super::role_guard::require_operator(&user)?;
-    let credential = CredentialContext::Session {
-        user_id: user.id,
-        role: user.role,
-    };
+    let credential = super::actions::credential(
+        &state,
+        &jar,
+        token.map(|Extension(token)| token),
+    )
+    .await?;
     let resource = resolve_run_resource(&state, &credential, &id).await?;
     super::operation_adoption::submit(
         &state,
@@ -219,22 +240,7 @@ pub async fn run_scheduled_jobs(state: &AppState) {
         if !is_due(schedule, job.last_run_at, ts) {
             continue;
         }
-        let resource = match super::operation_adoption::observe_available(
-            state,
-            &credential,
-            super::operation_adoption::CompatibilityResource {
-                kind: "automation_job",
-                display_name: &job.name,
-                node_id: None,
-                provider: Some("local"),
-                namespace: "automation.job",
-                scope_key: "local",
-                alias: &job.id,
-            },
-            &["automation.run"],
-        )
-        .await
-        {
+        let resource = match resolve_run_resource(state, &credential, &job.id).await {
             Ok(resource) => resource,
             Err(error) => {
                 tracing::warn!(job_id = %job.id, error = ?error, "scheduled automation observation failed");

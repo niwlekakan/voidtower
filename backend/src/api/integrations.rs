@@ -786,7 +786,7 @@ pub async fn legacy_event_stream(
 // Webhook receiver (Odysseus → VoidTower)
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct WebhookReq {
     pub automation_id: Option<String>,
     /// Structured action: "container.restart" | "container.start" | "container.stop"
@@ -871,17 +871,27 @@ pub async fn webhook(
 
     let dry_run = req.dry_run.unwrap_or(false);
 
-    if let Some(automation_id) = req.automation_id {
+    if let Some(ref automation_id) = req.automation_id {
         let credential = CredentialContext::Webhook {
             source_id: "odysseus".into(),
         };
         let resource = super::automation::resolve_run_resource(
             &state,
             &credential,
-            &automation_id,
+            automation_id,
         )
         .await?;
         let input = serde_json::json!({});
+        let idempotency_key = headers
+            .get("Idempotency-Key")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "webhook-{}",
+                    sha256_hex(&serde_json::to_string(&req).unwrap_or_default())
+                )
+            });
         if dry_run {
             let prepared = super::operation_adoption::prepare(
                 &state,
@@ -900,13 +910,13 @@ pub async fn webhook(
             }))
             .into_response());
         }
-        return super::operation_adoption::submit(
+        return super::operation_adoption::submit_with_key(
             &state,
             &credential,
             &resource.id,
             "automation.run",
             input,
-            &headers,
+            &idempotency_key,
         )
         .await;
     }

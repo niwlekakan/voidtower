@@ -174,6 +174,10 @@ pub(crate) async fn resolve_available(
     if resource.kind != expected_kind {
         return Err(InvocationError::ResourceKindMismatch.into());
     }
+    let resource = resources::get_active(&state.db, &resource.id)
+        .await
+        .map_err(|error| CompatibilityError::Legacy(AppError::Internal(error)))?
+        .ok_or(InvocationError::ResourceNotFound)?;
     let correlation_id = uuid::Uuid::new_v4().to_string();
     for action in actions {
         resources::set_capability(

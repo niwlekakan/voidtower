@@ -111,7 +111,10 @@ impl AdapterRegistry {
         data_dir: std::path::PathBuf,
     ) -> Result<Self> {
         let mut registry = Self::new();
-        registry.register(Arc::new(automation::AutomationAdapter::new(pool.clone())))?;
+        registry.register(Arc::new(automation::AutomationAdapter::with_secrets_key(
+            pool.clone(),
+            secrets_key.clone(),
+        )))?;
         registry.register(Arc::new(backups::BackupsAdapter::new(pool.clone())))?;
         registry.register(Arc::new(containers::ContainerAdapter::new(
             pool.clone(),

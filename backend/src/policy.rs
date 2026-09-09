@@ -128,27 +128,6 @@ fn matches_field(rule_val: &str, request_val: &str) -> bool {
 #[derive(Clone)]
 pub struct ApiTokenActor;
 
-/// Axum extractor that reads `true` when the request came via API token.
-/// Returns `false` (never fails) for normal session-cookie requests.
-pub struct MaybeTokenActor(pub bool);
-
-#[async_trait::async_trait]
-impl<S> axum::extract::FromRequestParts<S> for MaybeTokenActor
-where
-    S: Send + Sync,
-{
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> std::result::Result<Self, Self::Rejection> {
-        Ok(MaybeTokenActor(
-            parts.extensions.get::<ApiTokenActor>().is_some(),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

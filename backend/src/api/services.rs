@@ -1,18 +1,15 @@
 use crate::{
-    audit,
     auth,
     error::{AppError, Result},
-    policy::{self, MaybeTokenActor},
     services::{self, ServiceAction, ServiceInfo},
     AppState,
 };
 use axum::{
-    extract::{ConnectInfo, Path, State},
+    extract::{Path, State},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 
 #[derive(Serialize)]
 pub struct ServicesResponse {
@@ -65,41 +62,18 @@ pub async fn get(
 pub async fn action(
     State(state): State<AppState>,
     jar: CookieJar,
-    MaybeTokenActor(is_token): MaybeTokenActor,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(name): Path<String>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
 
-    // Require at least operator role for mutations
+    // Require at least operator role for mutations.
     super::role_guard::require_operator(&user)?;
 
-    let action_str = format!("{:?}", req.action).to_lowercase();
-
-    if is_token {
-        if let policy::PolicyVerdict::Deny(reason) =
-            policy::check(&state.db, "api_token", &action_str, "service", &name).await
-        {
-            return Err(AppError::PolicyDenied(reason));
-        }
-    }
-    services::run_service_action(&name, req.action)
-        .map_err(AppError::Internal)?;
-
-    audit::log(
-        &state.db,
-        Some(&user.id),
-        "human",
-        &format!("service.{}", action_str),
-        Some("service"),
-        Some(&name),
-        "success",
-        Some(&addr.ip().to_string()),
-        None,
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    let _ = (name, req.action);
+    Err(AppError::FeatureUnavailable(
+        "service mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn logs(
@@ -122,4 +96,33 @@ async fn require_user(state: &AppState, jar: &CookieJar) -> Result<crate::auth::
         .await
         .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum_extra::extract::cookie::Cookie;
+
+    #[tokio::test]
+    async fn service_mutation_fails_closed_until_canonical_adapter_exists() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let jar = CookieJar::new().add(Cookie::new("vt_session", session));
+
+        let result = action(
+            State(state),
+            jar,
+            Path("fixture.service".into()),
+            Json(ActionRequest {
+                action: ServiceAction::Start,
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(AppError::FeatureUnavailable(ref message)) if message.contains("canonical operation")),
+            "service mutation must fail closed instead of executing systemctl: {result:?}"
+        );
+    }
 }

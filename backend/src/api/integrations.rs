@@ -2,7 +2,7 @@ use crate::{
     audit, auth,
     error::{AppError, Result},
     operations::invocation::CredentialContext,
-    services::{self, ServiceAction},
+    services::ServiceAction,
     voidwatch, AppState,
 };
 use axum::{
@@ -1012,6 +1012,16 @@ pub async fn webhook(
             return Err(AppError::PolicyDenied(reason.to_string()).into());
         }
 
+        // Service actions remain unsupported until a canonical operation adapter can
+        // resolve the service resource and submit an immutable durable plan. Never
+        // execute the legacy systemd helper from this compatibility ingress path.
+        if service_action.is_some() {
+            return Err(AppError::FeatureUnavailable(
+                "service webhook actions require a canonical operation adapter".into(),
+            )
+            .into());
+        }
+
         audit::log_sourced(
             &state.db,
             None,
@@ -1025,13 +1035,6 @@ pub async fn webhook(
             Some("odysseus"),
         )
         .await;
-
-        if !dry_run {
-            if let Some(sa) = service_action {
-                services::run_service_action(&resource_id, sa)
-                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
-            }
-        }
 
         return Ok(Json(serde_json::json!({
             "ok": true,
@@ -1126,6 +1129,8 @@ pub async fn recent_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
+    use crate::api::operation_adoption::CompatibilityError;
     use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
     async fn setup_db() -> SqlitePool {
@@ -1218,6 +1223,53 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "an allowlisted action must still run");
+    }
+
+    #[tokio::test]
+    async fn service_webhook_mutation_fails_closed_until_canonical_adapter_exists() {
+        let pool = setup_db().await;
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES
+             ('odysseus.enabled', 'true', 0),
+             ('odysseus.webhook_secret', 'fixture-secret', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO policy_rules (id, name, actor_type, action, resource_type, resource_tag, effect, priority, enabled, created_at)
+             VALUES ('allow-service-start', 'test allow', 'automation', 'start', 'service', NULL, 'allow', 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_static("Bearer fixture-secret"),
+        );
+        let result = webhook(
+            State(crate::api::mcp::test_support::build(pool)),
+            headers,
+            Json(WebhookReq {
+                automation_id: None,
+                action: Some("service.start".into()),
+                resource_id: Some("fixture.service".into()),
+                dry_run: Some(false),
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(CompatibilityError::Legacy(AppError::FeatureUnavailable(ref message)))
+                    if message.contains("canonical operation")
+            ),
+            "service webhook mutation must fail closed instead of executing systemctl: {result:?}"
+        );
     }
 
     /// Deferred legacy webhook mutations still fail closed for every non-`Allow` verdict.

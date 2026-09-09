@@ -22,7 +22,7 @@ use sqlx::{Sqlite, Transaction};
 ///   `derive_automation_policy_action` for the reverse mapping back to the bare
 ///   action name `policy::check` is actually called with.
 /// - `api_token`: `audit_log` never records whether a container/service action came
-///   from a token (`MaybeTokenActor` is a per-request marker, not a persisted
+///   from a token (the bearer middleware marker is per-request, not a persisted
 ///   column), so mining it would either fabricate a signal or silently miss one.
 ///   Instead this grandfathers the exhaustive, currently-reachable action set for
 ///   the two handlers that call `policy::check(..., "api_token", ...)` today

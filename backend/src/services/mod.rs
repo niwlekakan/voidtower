@@ -114,36 +114,6 @@ pub fn get_service(name: &str) -> Result<Option<ServiceInfo>> {
     }))
 }
 
-pub fn run_service_action(name: &str, action: ServiceAction) -> Result<()> {
-    if !is_systemd_available() {
-        return Err(anyhow::anyhow!("systemd is not available on this system"));
-    }
-
-    let unit = if name.ends_with(".service") {
-        name.to_string()
-    } else {
-        format!("{}.service", name)
-    };
-
-    let cmd = match action {
-        ServiceAction::Start => "start",
-        ServiceAction::Stop => "stop",
-        ServiceAction::Restart => "restart",
-        ServiceAction::Enable => "enable",
-        ServiceAction::Disable => "disable",
-    };
-
-    let output = Command::new("systemctl")
-        .args([cmd, &unit])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("systemctl {} failed: {}", cmd, stderr));
-    }
-    Ok(())
-}
-
 pub fn get_service_logs(name: &str, lines: usize) -> Result<Vec<String>> {
     if !is_systemd_available() {
         return Ok(vec![]);

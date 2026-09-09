@@ -19,6 +19,7 @@ pub struct AdapterMetadata {
 }
 
 pub const ADAPTERS: &[AdapterMetadata] = &[
+    AdapterMetadata { key: "automation" },
     AdapterMetadata { key: "backups" },
     AdapterMetadata { key: "containers" },
     AdapterMetadata { key: "firewall" },
@@ -31,6 +32,7 @@ pub const ADAPTERS: &[AdapterMetadata] = &[
 /// and the ephemeral Proxmox VNC-ticket route are intentionally absent.
 const ADOPTED_ROUTES: &[(HttpMethod, &str)] = &[
     (HttpMethod::Post, "/api/apps/:project_name/expose"),
+    (HttpMethod::Post, "/api/automation/:id/run"),
     (HttpMethod::Post, "/api/backups"),
     (HttpMethod::Delete, "/api/backups/:id"),
     (HttpMethod::Post, "/api/backups/:id/check"),
@@ -452,7 +454,7 @@ mod tests {
     #[test]
     fn operation_registry_is_complete_and_consistent() {
         validate().expect("operation registry should be valid");
-        assert_eq!(ADOPTED_ROUTES.len(), 48, "the adopted route inventory drifted");
+        assert_eq!(ADOPTED_ROUTES.len(), 49, "the adopted route inventory drifted");
     }
 
     #[test]
@@ -461,7 +463,7 @@ mod tests {
             .iter()
             .filter(|action| action.execution == ActionExecution::DurableJob)
             .collect();
-        assert_eq!(durable.len(), 51, "the J0 durable action inventory drifted");
+        assert_eq!(durable.len(), 52, "the J0 durable action inventory drifted");
 
         for action in durable {
             assert!(
@@ -543,7 +545,10 @@ mod tests {
             !action.name.starts_with("backup.") && action.execution == ActionExecution::DurableJob
         }) {
             assert!(!action.ingresses.contains(&ActionIngress::LocalCli));
-            assert!(!action.ingresses.contains(&ActionIngress::Scheduler));
+            assert!(
+                !action.ingresses.contains(&ActionIngress::Scheduler)
+                    || action.name == "automation.run"
+            );
         }
     }
 

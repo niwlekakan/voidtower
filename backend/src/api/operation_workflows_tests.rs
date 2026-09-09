@@ -35,6 +35,21 @@ async fn json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body).unwrap()
 }
 
+fn automation_run_request(
+    session: &str,
+    automation_id: &str,
+    idempotency_key: &str,
+) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/automation/{automation_id}/run"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, format!("vt_session={session}"))
+        .header("Idempotency-Key", idempotency_key)
+        .body(Body::empty())
+        .unwrap()
+}
+
 async fn submit_job(
     db: &SqlitePool,
     suffix: &str,
@@ -260,4 +275,83 @@ async fn real_router_approvals_use_admin_allowlist_and_reject_exact_record() {
         .await
         .unwrap();
     assert_eq!(repeat.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn automation_run_uses_canonical_job_and_replays_by_idempotency_key() {
+    let db = test_support::setup_db().await;
+    sqlx::query(
+        "INSERT INTO automation_jobs \
+         (id, name, command, enabled, timeout_secs, created_at, updated_at) \
+         VALUES ('automation-1', 'Safe automation', 'printf canonical', 1, 30, 0, 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let session = test_support::user_with_role_session(&db, "operator").await;
+    let app = crate::api::router(test_support::build(db.clone()));
+
+    let first = app
+        .clone()
+        .oneshot(automation_run_request(
+            &session,
+            "automation-1",
+            "automation-run-1",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first_body = json(first).await;
+    assert_eq!(first_body["job"]["action"], "automation.run");
+    assert_eq!(first_body["job"]["resource"]["kind"], "automation_job");
+    assert_eq!(first_body["job"]["actor"]["actor_type"], "human");
+
+    let repeat = app
+        .oneshot(automation_run_request(
+            &session,
+            "automation-1",
+            "automation-run-1",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(repeat.status(), StatusCode::ACCEPTED);
+    let repeat_body = json(repeat).await;
+    assert_eq!(repeat_body["job"]["id"], first_body["job"]["id"]);
+
+    let run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM automation_runs")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(run_count, 0, "the HTTP seam must enqueue, not execute inline");
+}
+
+#[tokio::test]
+async fn automation_scheduler_submits_canonical_job_and_replays_current_slot() {
+    let db = test_support::setup_db().await;
+    sqlx::query(
+        "INSERT INTO automation_jobs \
+         (id, name, command, schedule, enabled, timeout_secs, created_at, updated_at) \
+         VALUES ('scheduled-1', 'Scheduled automation', 'printf scheduled', '@minutely', 1, 30, 0, 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let state = test_support::build(db.clone());
+
+    super::automation::run_scheduled_jobs(&state).await;
+    super::automation::run_scheduled_jobs(&state).await;
+
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs j JOIN resources r ON r.id = j.resource_id \
+         WHERE j.action = 'automation.run' AND r.kind = 'automation_job'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(queued, 1, "the scheduler must replay the current slot");
+    let run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM automation_runs")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(run_count, 0, "the scheduler must enqueue, not execute inline");
 }

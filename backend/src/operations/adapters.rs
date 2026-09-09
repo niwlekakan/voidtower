@@ -12,6 +12,7 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use std::{collections::HashMap, fmt, sync::Arc};
 
+pub mod automation;
 pub mod backups;
 pub mod containers;
 pub mod firewall;
@@ -110,6 +111,7 @@ impl AdapterRegistry {
         data_dir: std::path::PathBuf,
     ) -> Result<Self> {
         let mut registry = Self::new();
+        registry.register(Arc::new(automation::AutomationAdapter::new(pool.clone())))?;
         registry.register(Arc::new(backups::BackupsAdapter::new(pool.clone())))?;
         registry.register(Arc::new(containers::ContainerAdapter::new(
             pool.clone(),

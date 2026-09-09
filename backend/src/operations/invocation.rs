@@ -964,7 +964,7 @@ mod tests {
             .iter()
             .filter(|action| action.execution == ActionExecution::DurableJob)
             .collect();
-        assert_eq!(durable.len(), 51);
+        assert_eq!(durable.len(), 52);
         for action in durable {
             let required = action.canonical_session_role.unwrap();
             let allowed_role = match required {

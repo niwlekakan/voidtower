@@ -119,7 +119,6 @@ pub enum ActionIngress {
     Mcp,
     Studio,
     Webhook,
-    Automation,
     Internal,
 }
 
@@ -1028,7 +1027,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/automation/:id/run",
         SessionPolicy::Required(RoleTier::Operator),
@@ -1036,7 +1035,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("automation:run"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::Callable,
+        ["automation.run"]
     ),
     route_metadata!(
         Get,
@@ -4273,6 +4273,11 @@ macro_rules! durable_read_job {
 const MCP_AND_STUDIO: &[ActionIngress] = &[ActionIngress::Mcp, ActionIngress::Studio];
 const HTTP: &[ActionIngress] = &[ActionIngress::Http];
 const HTTP_AND_WEBHOOK: &[ActionIngress] = &[ActionIngress::Http, ActionIngress::Webhook];
+const HTTP_WEBHOOK_AND_SCHEDULER: &[ActionIngress] = &[
+    ActionIngress::Http,
+    ActionIngress::Webhook,
+    ActionIngress::Scheduler,
+];
 const HTTP_WEBHOOK_MCP_STUDIO: &[ActionIngress] = &[
     ActionIngress::Http,
     ActionIngress::Webhook,
@@ -4286,19 +4291,28 @@ const HTTP_LOCAL_CLI_AND_SCHEDULER: &[ActionIngress] = &[
     ActionIngress::Scheduler,
 ];
 const WEBHOOK: &[ActionIngress] = &[ActionIngress::Webhook];
-const WEBHOOK_AUTOMATION: &[ActionIngress] = &[ActionIngress::Webhook, ActionIngress::Automation];
 const INTERNAL: &[ActionIngress] = &[ActionIngress::Internal];
 
 pub const ACTIONS: &[ActionMetadata] = &[
     // MCP tools are read-only by default. Explicit durable exceptions carry their own action
     // metadata, scope, approval, and canonical invocation path; no tool becomes callable merely by
     // setting `AiExposure::Callable`.
-    action_metadata!(
+    durable_action_metadata!(
         "automation.run",
-        WEBHOOK_AUTOMATION,
+        HTTP_WEBHOOK_AND_SCHEDULER,
+        "automation_job",
+        "automation",
         ActionKind::Mutating,
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        "automation.run.input.v1",
+        "automation.run.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Scope("automation:run"),
+        AiExposure::Callable
     ),
     action_metadata!(
         "get_container_logs",
@@ -5343,10 +5357,7 @@ mod tests {
 
         let stale: Vec<&str> = ACTIONS
             .iter()
-            .filter(|metadata| {
-                metadata.ingresses.contains(&ActionIngress::Webhook)
-                    || metadata.ingresses.contains(&ActionIngress::Automation)
-            })
+            .filter(|metadata| metadata.ingresses.contains(&ActionIngress::Webhook))
             .map(|metadata| metadata.name)
             .filter(|name| !action_names.contains(name))
             .collect();

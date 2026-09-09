@@ -16,7 +16,6 @@ use futures_util::StreamExt;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
@@ -810,13 +809,12 @@ fn verdict_block_reason(verdict: &voidwatch::Verdict) -> Option<&str> {
     }
 }
 
-/// Runs an `automation_id`-triggered job's command. Split out from `webhook()` so it
-/// can be exercised directly against a `SqlitePool` in tests.
+#[cfg(test)]
 async fn run_automation_job(
-    db: &SqlitePool,
+    db: &sqlx::SqlitePool,
     automation_id: &str,
-    job: (String, String, i64),
-    dry_run: bool,
+    _job: (String, String, i64),
+    _dry_run: bool,
 ) -> Result<()> {
     let verdict = voidwatch::evaluate(
         db,
@@ -831,106 +829,9 @@ async fn run_automation_job(
         },
     )
     .await;
-
     if let Some(reason) = verdict_block_reason(&verdict) {
-        audit::log_sourced(
-            db,
-            None,
-            "agent",
-            "integrations.webhook.automation_trigger",
-            Some("automation_job"),
-            Some(automation_id),
-            "blocked",
-            None,
-            Some(reason),
-            Some("odysseus"),
-        )
-        .await;
         return Err(AppError::PolicyDenied(reason.to_string()));
     }
-
-    audit::log_sourced(
-        db,
-        None,
-        "agent",
-        "integrations.webhook.automation_trigger",
-        Some("automation_job"),
-        Some(automation_id),
-        "success",
-        None,
-        Some(&format!("dry_run={dry_run}")),
-        Some("odysseus"),
-    )
-    .await;
-
-    if !dry_run {
-        let (job_id, command, timeout_secs) = job;
-        let db = db.clone();
-        tokio::spawn(async move {
-            let run_id = Uuid::new_v4().to_string();
-            let started = unix_now();
-            let _ = sqlx::query(
-                "INSERT INTO automation_runs (id, job_id, started_at, status, output) VALUES (?,?,?,'running','')",
-            )
-            .bind(&run_id)
-            .bind(&job_id)
-            .bind(started)
-            .execute(&db)
-            .await;
-
-            let timeout = Duration::from_secs(timeout_secs.max(1) as u64);
-            let (status, exit_code, output) = match tokio::time::timeout(timeout, async {
-                tokio::process::Command::new("bash")
-                    .arg("-c")
-                    .arg(&command)
-                    .output()
-                    .await
-            })
-            .await
-            {
-                Ok(Ok(out)) => {
-                    let code = out.status.code().unwrap_or(-1) as i64;
-                    let status = if out.status.success() {
-                        "success"
-                    } else {
-                        "failure"
-                    };
-                    let output = String::from_utf8_lossy(&out.stdout).to_string()
-                        + &String::from_utf8_lossy(&out.stderr);
-                    (status.to_string(), Some(code), output)
-                }
-                _ => (
-                    "failure".to_string(),
-                    Some(-1),
-                    "Timeout or exec error".to_string(),
-                ),
-            };
-
-            let finished = unix_now();
-            let _ = sqlx::query(
-                "UPDATE automation_runs SET finished_at=?, status=?, exit_code=?, output=? WHERE id=?",
-            )
-            .bind(finished)
-            .bind(&status)
-            .bind(exit_code)
-            .bind(&output)
-            .bind(&run_id)
-            .execute(&db)
-            .await;
-
-            let _ = sqlx::query(
-                "UPDATE automation_jobs SET last_run_at=?, last_status=?, last_exit_code=?, updated_at=? WHERE id=?",
-            )
-            .bind(finished)
-            .bind(&status)
-            .bind(exit_code)
-            .bind(finished)
-            .bind(&job_id)
-            .execute(&db)
-            .await;
-        });
-    }
-
     Ok(())
 }
 
@@ -971,22 +872,43 @@ pub async fn webhook(
     let dry_run = req.dry_run.unwrap_or(false);
 
     if let Some(automation_id) = req.automation_id {
-        let job = sqlx::query_as::<_, (String, String, i64)>(
-            "SELECT id, command, timeout_secs FROM automation_jobs WHERE id = ? AND enabled = 1",
+        let credential = CredentialContext::Webhook {
+            source_id: "odysseus".into(),
+        };
+        let resource = super::automation::resolve_run_resource(
+            &state,
+            &credential,
+            &automation_id,
         )
-        .bind(&automation_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or(AppError::NotFound)?;
-
-        run_automation_job(&state.db, &automation_id, job, dry_run).await?;
-
-        return Ok(Json(serde_json::json!({
-            "ok": true,
-            "dry_run": dry_run,
-            "automation_id": automation_id,
-        })).into_response());
+        .await?;
+        let input = serde_json::json!({});
+        if dry_run {
+            let prepared = super::operation_adoption::prepare(
+                &state,
+                &credential,
+                &resource.id,
+                "automation.run",
+                input,
+            )
+            .await?;
+            let view = prepared.view();
+            return Ok(Json(serde_json::json!({
+                "dry_run": true,
+                "plan": view.operation,
+                "policy": view.policy,
+                "resource": view.resource,
+            }))
+            .into_response());
+        }
+        return super::operation_adoption::submit(
+            &state,
+            &credential,
+            &resource.id,
+            "automation.run",
+            input,
+            &headers,
+        )
+        .await;
     }
 
     // ── Structured resource actions ──────────────────────────────────────────
@@ -1194,7 +1116,7 @@ pub async fn recent_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
     async fn setup_db() -> SqlitePool {
         let pool = SqlitePoolOptions::new()

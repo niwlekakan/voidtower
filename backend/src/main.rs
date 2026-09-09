@@ -611,12 +611,12 @@ async fn main() -> Result<()> {
     });
 
     // Spawn automation job scheduler (checks every 60s)
-    let auto_pool = pool.clone();
+    let auto_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
-            api::automation::run_scheduled_jobs(&auto_pool).await;
+            api::automation::run_scheduled_jobs(&auto_state).await;
         }
     });
 

@@ -1,10 +1,20 @@
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    http::HeaderMap,
+    response::Response,
+    Json,
+};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::{audit, auth, error::{AppError, Result}, AppState};
+use crate::{
+    audit,
+    auth,
+    error::{AppError, Result},
+    operations::invocation::CredentialContext,
+    AppState,
+};
 
 fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
@@ -113,35 +123,60 @@ pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Pat
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn run_now(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub(crate) async fn resolve_run_resource(
+    state: &AppState,
+    credential: &CredentialContext,
+    automation_id: &str,
+) -> super::operation_adoption::CompatibilityResult<crate::operations::contracts::ResourceRef> {
+    const ACTION: &str = "automation.run";
+    super::operation_adoption::authorize(credential, ACTION)?;
+    let name: String = sqlx::query_scalar(
+        "SELECT name FROM automation_jobs WHERE id = ? AND enabled = 1",
+    )
+    .bind(automation_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or(AppError::NotFound)?;
+    super::operation_adoption::observe_available(
+        state,
+        credential,
+        super::operation_adoption::CompatibilityResource {
+            kind: "automation_job",
+            display_name: &name,
+            node_id: None,
+            provider: Some("local"),
+            namespace: "automation.job",
+            scope_key: "local",
+            alias: automation_id,
+        },
+        &[ACTION],
+    )
+    .await
+}
+
+pub async fn run_now(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> super::operation_adoption::CompatibilityResult<Response> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
-
-    let job = sqlx::query_as::<_, AutomationJob>(
-        "SELECT id, name, description, command, schedule, enabled, timeout_secs,
-                last_run_at, last_status, last_exit_code, created_at, updated_at
-         FROM automation_jobs WHERE id=?"
-    ).bind(&id).fetch_optional(&state.db).await.map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
-
-    let run_id = Uuid::new_v4().to_string();
-    let started = now();
-    sqlx::query("INSERT INTO automation_runs (id, job_id, started_at, status, output) VALUES (?,?,?,'running','')")
-        .bind(&run_id).bind(&id).bind(started).execute(&state.db).await.map_err(AppError::Database)?;
-
-    let (status, exit_code, output) = execute_job(&job).await;
-    let finished = now();
-
-    sqlx::query("UPDATE automation_runs SET finished_at=?, status=?, exit_code=?, output=? WHERE id=?")
-        .bind(finished).bind(&status).bind(exit_code).bind(&output).bind(&run_id)
-        .execute(&state.db).await.map_err(AppError::Database)?;
-
-    sqlx::query("UPDATE automation_jobs SET last_run_at=?, last_status=?, last_exit_code=?, updated_at=? WHERE id=?")
-        .bind(finished).bind(&status).bind(exit_code).bind(finished).bind(&id)
-        .execute(&state.db).await.map_err(AppError::Database)?;
-
-    audit::log(&state.db, Some(&user.id), "human", "run_automation_job", Some("automation_job"), Some(&id), &status, None, Some(&job.name)).await;
-
-    Ok(Json(serde_json::json!({ "run_id": run_id, "status": status, "exit_code": exit_code, "output": output })))
+    let credential = CredentialContext::Session {
+        user_id: user.id,
+        role: user.role,
+    };
+    let resource = resolve_run_resource(&state, &credential, &id).await?;
+    super::operation_adoption::submit(
+        &state,
+        &credential,
+        &resource.id,
+        "automation.run",
+        serde_json::json!({}),
+        &headers,
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -160,57 +195,87 @@ pub async fn runs(State(state): State<AppState>, jar: CookieJar, Path(id): Path<
     Ok(Json(serde_json::json!({ "runs": runs })))
 }
 
-async fn execute_job(job: &AutomationJob) -> (String, Option<i64>, String) {
-    let timeout = std::time::Duration::from_secs(job.timeout_secs.max(1) as u64);
-    let result = tokio::time::timeout(timeout, async {
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&job.command)
-            .output()
-            .await
-    }).await;
-
-    match result {
-        Ok(Ok(out)) => {
-            let code = out.status.code().map(|c| c as i64);
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            let combined = if stderr.is_empty() { stdout } else { format!("{}{}", stdout, stderr) };
-            let status = if out.status.success() { "success" } else { "failed" };
-            (status.into(), code, combined)
-        }
-        Ok(Err(e)) => ("failed".into(), None, format!("Failed to spawn: {e}")),
-        Err(_) => ("timeout".into(), None, format!("Timed out after {}s", job.timeout_secs)),
-    }
-}
-
-/// Called from the scheduler loop in main.rs
-pub async fn run_scheduled_jobs(pool: &SqlitePool) {
+/// Called from the scheduler loop in main.rs. Scheduled automation is submitted through the
+/// same canonical resource/action/job boundary as HTTP and webhook ingress; the worker owns command
+/// execution and durable run-state updates.
+pub async fn run_scheduled_jobs(state: &AppState) {
     let ts = now();
     let Ok(jobs) = sqlx::query_as::<_, AutomationJob>(
         "SELECT id, name, description, command, schedule, enabled, timeout_secs,
                 last_run_at, last_status, last_exit_code, created_at, updated_at
-         FROM automation_jobs WHERE enabled = 1 AND schedule IS NOT NULL"
-    ).fetch_all(pool).await else { return };
+         FROM automation_jobs WHERE enabled = 1 AND schedule IS NOT NULL",
+    )
+    .fetch_all(&state.db)
+    .await
+    else {
+        return;
+    };
 
+    let credential = CredentialContext::Scheduler;
     for job in jobs {
-        let Some(ref sched) = job.schedule else { continue };
-        if !is_due(sched, job.last_run_at, ts) { continue }
-
-        let run_id = Uuid::new_v4().to_string();
-        let started = now();
-        let _ = sqlx::query("INSERT INTO automation_runs (id, job_id, started_at, status, output) VALUES (?,?,?,'running','')")
-            .bind(&run_id).bind(&job.id).bind(started).execute(pool).await;
-
-        let (status, exit_code, output) = execute_job(&job).await;
-        let finished = now();
-
-        let _ = sqlx::query("UPDATE automation_runs SET finished_at=?, status=?, exit_code=?, output=? WHERE id=?")
-            .bind(finished).bind(&status).bind(exit_code).bind(&output).bind(&run_id).execute(pool).await;
-
-        let _ = sqlx::query("UPDATE automation_jobs SET last_run_at=?, last_status=?, last_exit_code=?, updated_at=? WHERE id=?")
-            .bind(finished).bind(&status).bind(exit_code).bind(finished).bind(&job.id).execute(pool).await;
+        let Some(schedule) = job.schedule.as_deref() else {
+            continue;
+        };
+        if !is_due(schedule, job.last_run_at, ts) {
+            continue;
+        }
+        let resource = match super::operation_adoption::observe_available(
+            state,
+            &credential,
+            super::operation_adoption::CompatibilityResource {
+                kind: "automation_job",
+                display_name: &job.name,
+                node_id: None,
+                provider: Some("local"),
+                namespace: "automation.job",
+                scope_key: "local",
+                alias: &job.id,
+            },
+            &["automation.run"],
+        )
+        .await
+        {
+            Ok(resource) => resource,
+            Err(error) => {
+                tracing::warn!(job_id = %job.id, error = ?error, "scheduled automation observation failed");
+                continue;
+            }
+        };
+        let slot = schedule_slot(schedule, ts);
+        let idempotency_key = format!("schedule-{}-{slot}", job.id);
+        if let Err(error) = super::operation_adoption::submit_with_key(
+            state,
+            &credential,
+            &resource.id,
+            "automation.run",
+            serde_json::json!({}),
+            &idempotency_key,
+        )
+        .await
+        {
+            tracing::warn!(job_id = %job.id, error = ?error, "scheduled automation submission failed");
+        }
     }
+}
+
+fn schedule_slot(schedule: &str, now_ts: i64) -> i64 {
+    let interval = match schedule.trim() {
+        "@minutely" => 60,
+        "@hourly" => 3600,
+        "@daily" | "@midnight" => 86400,
+        "@weekly" => 86400 * 7,
+        "@monthly" => 86400 * 30,
+        value if value.starts_with("*/") => value
+            .split_whitespace()
+            .next()
+            .and_then(|part| part.strip_prefix("*/"))
+            .and_then(|minutes| minutes.parse::<i64>().ok())
+            .filter(|minutes| (1..=1440).contains(minutes))
+            .map(|minutes| minutes * 60)
+            .unwrap_or(60),
+        _ => 60,
+    };
+    now_ts / interval
 }
 
 /// Simple cron-style check: supports "@hourly", "@daily", "@weekly", and "*/N min" patterns.

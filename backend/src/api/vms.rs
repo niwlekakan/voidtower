@@ -99,6 +99,7 @@ pub async fn list_local(
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)] // Retained request shape for the disabled legacy mutation route.
 pub struct LocalActionRequest {
     pub name: String,
     pub action: String,
@@ -107,31 +108,12 @@ pub struct LocalActionRequest {
 pub async fn local_action(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<LocalActionRequest>,
+    Json(_req): Json<LocalActionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let virsh_cmd = match req.action.as_str() {
-        "start" => "start",
-        "shutdown" => "shutdown",
-        "reboot" => "reboot",
-        "suspend" => "suspend",
-        "resume" => "resume",
-        "destroy" => "destroy",
-        _ => return Err(AppError::BadRequest("unknown action".into())),
-    };
-    let out = std::process::Command::new("virsh")
-        .args([virsh_cmd, &req.name])
-        .output()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if out.status.success() {
-        Ok(Json(serde_json::json!({ "ok": true, "message": stdout })))
-    } else {
-        Ok(Json(
-            serde_json::json!({ "ok": false, "message": if stderr.is_empty() { stdout } else { stderr } }),
-        ))
-    }
+    Err(AppError::FeatureUnavailable(
+        "local libvirt mutations require a canonical operation adapter".into(),
+    ))
 }
 
 // ── Proxmox ───────────────────────────────────────────────────────────────────
@@ -530,6 +512,79 @@ mod tests {
         .unwrap();
         assert!(!input.contains("supersecret"));
         assert!(input.contains("token_secret_id"));
+    }
+
+    #[tokio::test]
+    async fn local_libvirt_mutation_fails_closed_until_canonical_adapter_exists() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let jar = CookieJar::new().add(Cookie::new("vt_session", session));
+
+        let result = local_action(
+            State(state),
+            jar,
+            Json(LocalActionRequest {
+                name: "fixture-vm".into(),
+                action: "start".into(),
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(AppError::FeatureUnavailable(ref message)) if message.contains("canonical operation")),
+            "local libvirt mutation must fail closed instead of executing virsh: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_libvirt_mutation_route_returns_stable_feature_error() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::{header, Request, StatusCode},
+        };
+        use tower::ServiceExt;
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/vms/local/action")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"fixture-vm","action":"start"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "local libvirt mutations require a canonical operation adapter"
+        );
+    }
+
+    #[test]
+    fn local_libvirt_mutation_handler_has_no_provider_execution_path() {
+        let source = include_str!("vms.rs");
+        let start = source
+            .find("pub async fn local_action")
+            .expect("local_action handler must exist");
+        let tail = &source[start..];
+        let end = tail
+            .find("// ── Proxmox")
+            .expect("local_action section must end before Proxmox handlers");
+        let body = &tail[..end];
+        assert!(!body.contains("Command::new(\"virsh\")"));
+        assert!(!body.contains("process::Command"));
+        assert!(body.contains("FeatureUnavailable"));
     }
 
     #[test]

@@ -38,10 +38,12 @@ All commands were run from `/home/elwla/Documents/voidtower_project_files_full/h
   - **implemented**: no whitespace errors.
 - `python scripts/repo_truth.py --repo . --json --check`
   - **implemented**: source inventory check passed; it remains source evidence only.
+- `hermes verify --json --port 80`
+  - **runtime-verified**: Compose startup completed, nginx readiness returned HTTP 200, and teardown completed cleanly.
 
 ## Review disposition
 
-The independent review was fail-closed. Its stale-snapshot claim that the scheduler still executed commands inline does not apply to the current tree; the scheduler had already been routed through durable submission. The valid findings were addressed above. Runtime verification, external-provider verification, and release qualification remain unavailable because no live server, worker, or Odysseus node was started.
+The independent review was fail-closed. Its stale-snapshot claim that the scheduler still executed commands inline does not apply to the current tree; the scheduler had already been routed through durable submission. The valid findings were addressed above. Runtime verification is limited to packaged container startup/readiness. No external provider or Odysseus-node workflow was exercised, so release qualification remains unclaimed.
 
 ## Commit boundary
 

@@ -3,7 +3,7 @@
 - **Date:** 2026-09-11
 - **Status:** integration-verified
 - **Tracked plan slice:** M1-04 — Compatibility bypass closure.
-- **Branch and commit:** `dev`, `7b4859b8c6c7d43e132e9a68d79eac1af54aa981`, `[verified] close AI proxy settings compatibility mutation`.
+- **Branch and commit:** `dev`; slice commit `7b4859b8c6c7d43e132e9a68d79eac1af54aa981` (`[verified] close AI proxy settings compatibility mutation`); handoff commit `71663bef7385e697dc6f45f2a7e617c9c13f0535` (`docs: record settings compatibility closure handoff`).
 
 ## Outcome
 
@@ -41,6 +41,7 @@ The selected `POST /api/settings/ai-url` compatibility mutation now authenticate
   - Manifest: `docs/internal/evidence/2026-09-11-m1-04-settings-ai-proxy-closure/batch.json`
   - Post-commit report: `docs/internal/evidence/2026-09-11-m1-04-settings-ai-proxy-closure/post-commit-report/evidence.json`
   - Source-truth output: `docs/internal/evidence/2026-09-11-m1-04-settings-ai-proxy-closure/source-truth.json`
+  - Final post-handoff source-truth output: `docs/internal/evidence/2026-09-11-m1-04-settings-ai-proxy-closure/final-source-truth.json`
   - Independent reviewer transcript: `/home/elwla/.hermes/profiles/voidtower-dev/cache/delegation/live/deleg_49122e9a/task-0.log`
 
 | Command | Exit | Exact result | Evidence label |
@@ -68,9 +69,9 @@ The selected `POST /api/settings/ai-url` compatibility mutation now authenticate
 
 ## Repository state after delivery
 
-- **Branch/HEAD/ahead/behind:** `dev` / `7b4859b8c6c7d43e132e9a68d79eac1af54aa981` / ahead 90 / behind 0.
+- **Branch/HEAD/ahead/behind:** `dev` / `71663bef7385e697dc6f45f2a7e617c9c13f0535` / ahead 91 / behind 0.
 - **Staged paths:** `backend/src/agent/mod.rs`, `backend/src/agent/state.rs`.
-- **Modified paths:** none at the code-commit boundary.
+- **Modified paths:** none.
 - **Remote publication:** not pushed.
 
 ## Next bounded slice

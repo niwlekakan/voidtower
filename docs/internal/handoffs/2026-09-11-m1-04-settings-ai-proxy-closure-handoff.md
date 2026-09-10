@@ -3,7 +3,7 @@
 - **Date:** 2026-09-11
 - **Status:** integration-verified
 - **Tracked plan slice:** M1-04 — Compatibility bypass closure.
-- **Branch and commit:** `dev`; slice commit `7b4859b8c6c7d43e132e9a68d79eac1af54aa981` (`[verified] close AI proxy settings compatibility mutation`); handoff commit `71663bef7385e697dc6f45f2a7e617c9c13f0535` (`docs: record settings compatibility closure handoff`).
+- **Branch and commit:** `dev`; slice commit `7b4859b8c6c7d43e132e9a68d79eac1af54aa981` (`[verified] close AI proxy settings compatibility mutation`). Handoff documentation is committed separately after the slice.
 
 ## Outcome
 
@@ -69,7 +69,7 @@ The selected `POST /api/settings/ai-url` compatibility mutation now authenticate
 
 ## Repository state after delivery
 
-- **Branch/HEAD/ahead/behind:** `dev` / `71663bef7385e697dc6f45f2a7e617c9c13f0535` / ahead 91 / behind 0.
+- **Branch/HEAD/ahead/behind:** at the code-commit boundary, `dev` / `7b4859b8c6c7d43e132e9a68d79eac1af54aa981` / ahead 90 / behind 0; the final post-handoff HEAD and staged paths are recorded in `final-source-truth.json`.
 - **Staged paths:** `backend/src/agent/mod.rs`, `backend/src/agent/state.rs`.
 - **Modified paths:** none.
 - **Remote publication:** not pushed.

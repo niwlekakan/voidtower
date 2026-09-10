@@ -290,6 +290,7 @@ pub async fn get_notifications(
     })))
 }
 
+#[allow(dead_code)] // retained as the request contract for the future canonical adapter
 #[derive(Deserialize)]
 pub struct SetNotificationsReq {
     pub ntfy_url:        Option<String>,
@@ -300,34 +301,15 @@ pub struct SetNotificationsReq {
 pub async fn set_notifications(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<SetNotificationsReq>,
+    Json(_req): Json<SetNotificationsReq>,
 ) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-
-    let save = |key: &'static str, val: Option<String>| async move {
-        // can't capture state easily in async closure — return the pair
-        (key, val)
-    };
-
-    for (key, val) in [
-        (NOTIF_NTFY_URL_KEY, req.ntfy_url),
-        (NOTIF_DISCORD_KEY,  req.discord_webhook),
-        (NOTIF_SLACK_KEY,    req.slack_webhook),
-    ] {
-        let _ = save(key, val.clone()).await;
-        match val.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(v) => { db_set(&state, key, v).await?; }
-            None    => { db_delete(&state, key).await?; }
-        }
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "settings.notifications.set",
-        Some("settings"), None, "success", None, None,
-    ).await;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    require_admin(&state, &jar).await?;
+    Err(AppError::FeatureUnavailable(
+        "notification webhook settings require a canonical operation adapter".into(),
+    ))
 }
 
+#[allow(dead_code)] // retained as the request contract for the future canonical adapter
 #[derive(Deserialize)]
 pub struct TestNotificationReq {
     pub channel: String, // "ntfy" | "discord" | "slack"
@@ -336,52 +318,12 @@ pub struct TestNotificationReq {
 pub async fn test_notification(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<TestNotificationReq>,
+    Json(_req): Json<TestNotificationReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    let title   = "VoidTower test notification";
-    let message = "Webhook is working correctly.";
-
-    let result = match req.channel.as_str() {
-        "ntfy" => {
-            let url = db_get(&state, NOTIF_NTFY_URL_KEY).await
-                .ok_or_else(|| AppError::BadRequest("ntfy URL not configured".into()))?;
-            let client = reqwest::Client::new();
-            client.post(&url)
-                .header("Title", title)
-                .body(message)
-                .send().await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
-        "discord" => {
-            let url = db_get(&state, NOTIF_DISCORD_KEY).await
-                .ok_or_else(|| AppError::BadRequest("Discord webhook not configured".into()))?;
-            let client = reqwest::Client::new();
-            client.post(&url)
-                .json(&serde_json::json!({ "content": format!("**{title}**\n{message}") }))
-                .send().await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
-        "slack" => {
-            let url = db_get(&state, NOTIF_SLACK_KEY).await
-                .ok_or_else(|| AppError::BadRequest("Slack webhook not configured".into()))?;
-            let client = reqwest::Client::new();
-            client.post(&url)
-                .json(&serde_json::json!({ "text": format!("*{title}*\n{message}") }))
-                .send().await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
-        _ => return Err(AppError::BadRequest("Unknown channel".into())),
-    };
-
-    match result {
-        Ok(_)    => Ok(Json(serde_json::json!({ "ok": true }))),
-        Err(msg) => Ok(Json(serde_json::json!({ "ok": false, "error": msg }))),
-    }
+    Err(AppError::FeatureUnavailable(
+        "notification test delivery requires a canonical operation adapter".into(),
+    ))
 }
 
 #[cfg(test)]
@@ -462,6 +404,154 @@ mod tests {
             serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
                 .unwrap();
         assert_eq!(payload["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn notifications_settings_mutation_fails_closed_without_persisting() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+        )
+        .bind("notif_discord_webhook")
+        .bind("http://127.0.0.1:1/original")
+        .bind(0_i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool.clone()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/notifications")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "ntfy_url": null,
+                            "discord_webhook": "http://127.0.0.1:1/replacement",
+                            "slack_webhook": null
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "notification webhook settings require a canonical operation adapter"
+        );
+
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'notif_discord_webhook'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored.as_deref(), Some("http://127.0.0.1:1/original"));
+    }
+
+    #[tokio::test]
+    async fn notification_test_fails_closed_before_outbound_delivery() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+        )
+        .bind("notif_discord_webhook")
+        .bind("http://127.0.0.1:1/provider")
+        .bind(0_i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/notifications/test")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"channel": "discord"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "notification test delivery requires a canonical operation adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_mutations_reject_unauthenticated_calls_before_feature_boundary() {
+        for (uri, body) in [
+            (
+                "/api/settings/notifications",
+                json!({"discord_webhook": "http://127.0.0.1:1/provider"}),
+            ),
+            (
+                "/api/settings/notifications/test",
+                json!({"channel": "discord"}),
+            ),
+        ] {
+            let pool = crate::api::mcp::test_support::setup_db().await;
+            let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            let payload: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(payload["error"]["code"], "unauthorized", "{uri}");
+        }
+    }
+
+    #[test]
+    fn notification_compatibility_handlers_have_no_direct_mutation_path() {
+        let source = include_str!("settings.rs");
+        let set_handler = source
+            .split("pub async fn set_notifications(")
+            .nth(1)
+            .and_then(|rest| rest.split("#[derive(Deserialize)]").next())
+            .expect("notification settings handler");
+        let test_handler = source
+            .split("pub async fn test_notification(")
+            .nth(1)
+            .and_then(|rest| rest.split("#[cfg(test)]").next())
+            .expect("notification test handler");
+
+        for marker in ["db_set(", "db_delete(", "audit::log("] {
+            assert!(!set_handler.contains(marker), "settings mutation marker: {marker}");
+        }
+        for marker in ["reqwest::Client", ".post(", "db_get("] {
+            assert!(!test_handler.contains(marker), "test delivery marker: {marker}");
+        }
     }
 
     #[test]

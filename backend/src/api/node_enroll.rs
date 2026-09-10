@@ -1,6 +1,6 @@
 use crate::{
-    audit, auth,
     api::integrations::{generate_api_token, sha256_hex},
+    audit, auth,
     error::{AppError, Result},
     AppState,
 };
@@ -60,7 +60,7 @@ fn default_device_type() -> String {
     "other".to_string()
 }
 fn default_provision_wireguard() -> bool {
-    true
+    false
 }
 
 #[derive(Serialize)]
@@ -124,11 +124,22 @@ pub async fn create_pairing_code(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&user.id), "human", "nodes.pairing_code.create",
-        Some("node_pairing_code"), Some(&id), "success", None, None,
-    ).await;
+        &state.db,
+        Some(&user.id),
+        "human",
+        "nodes.pairing_code.create",
+        Some("node_pairing_code"),
+        Some(&id),
+        "success",
+        None,
+        None,
+    )
+    .await;
 
-    Ok(Json(PairingCodeResponse { code: raw, expires_at }))
+    Ok(Json(PairingCodeResponse {
+        code: raw,
+        expires_at,
+    }))
 }
 
 pub async fn enroll(
@@ -138,7 +149,10 @@ pub async fn enroll(
     if req.display_name.trim().is_empty() {
         return Err(AppError::BadRequest("display_name is required".into()));
     }
-    if !matches!(req.device_type.as_str(), "phone" | "tablet" | "pi" | "other") {
+    if !matches!(
+        req.device_type.as_str(),
+        "phone" | "tablet" | "pi" | "other"
+    ) {
         return Err(AppError::BadRequest("Invalid device_type".into()));
     }
 
@@ -166,16 +180,21 @@ pub async fn enroll(
         return Err(AppError::Unauthorized);
     }
 
+    if req.provision_wireguard {
+        return Err(AppError::FeatureUnavailable(
+            "WireGuard mutations require a canonical operation adapter".into(),
+        ));
+    }
+
     // Atomically claim the code — `used_at IS NULL` in the WHERE means a concurrent
     // second enrollment attempt with the same code affects 0 rows and gets rejected.
-    let claimed = sqlx::query(
-        "UPDATE node_pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL",
-    )
-    .bind(now)
-    .bind(&pairing.id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let claimed =
+        sqlx::query("UPDATE node_pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL")
+            .bind(now)
+            .bind(&pairing.id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
     if claimed.rows_affected() == 0 {
         return Err(AppError::Unauthorized);
     }
@@ -183,45 +202,14 @@ pub async fn enroll(
     let owner = auth::find_user_by_id(&state.db, &pairing.created_by)
         .await
         .map_err(AppError::Internal)?
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("pairing code owner no longer exists")))?;
+        .ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!("pairing code owner no longer exists"))
+        })?;
 
-    let (wg_peer_id, wg_public_key, client_config, warnings) = if req.provision_wireguard {
-        let wg_result = crate::api::wireguard::add_peer_core(
-            &state,
-            &owner,
-            &req.display_name,
-            "wg0",
-            None,
-        )
-        .await?;
-        let peer_id = wg_result
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let public_key = wg_result
-            .get("public_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let client_config = wg_result
-            .get("client_config")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let warnings = wg_result
-            .get("warnings")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        (peer_id, public_key, client_config, warnings)
-    } else {
-        (None, String::new(), String::new(), Vec::new())
-    };
+    let wg_peer_id: Option<String> = None;
+    let wg_public_key = String::new();
+    let client_config = String::new();
+    let warnings: Vec<String> = Vec::new();
 
     let node_id = Uuid::new_v4().to_string();
     let node_token_raw = generate_api_token();
@@ -246,10 +234,20 @@ pub async fn enroll(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&owner.id), "human", "nodes.enroll",
-        Some("node"), Some(&node_id), "success", None,
-        Some(&format!("display_name={},device_type={}", req.display_name, req.device_type)),
-    ).await;
+        &state.db,
+        Some(&owner.id),
+        "human",
+        "nodes.enroll",
+        Some("node"),
+        Some(&node_id),
+        "success",
+        None,
+        Some(&format!(
+            "display_name={},device_type={}",
+            req.display_name, req.device_type
+        )),
+    )
+    .await;
 
     Ok(Json(EnrollResponse {
         node_id,
@@ -259,7 +257,10 @@ pub async fn enroll(
     }))
 }
 
-pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+pub async fn list(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
     let nodes: Vec<NodeRow> = sqlx::query_as(
@@ -293,16 +294,14 @@ pub async fn delete_node(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or_else(|| AppError::BadRequest("Node not found".into()))?;
 
-    let mut warnings = Vec::new();
-    if let Some(peer_id) = row.wg_peer_id.as_deref().filter(|s| !s.is_empty()) {
-        match crate::api::wireguard::delete_peer_core(&state, &user, peer_id).await {
-            Ok(v) => {
-                if let Some(w) = v.get("warnings").and_then(|w| w.as_array()) {
-                    warnings.extend(w.iter().filter_map(|x| x.as_str().map(str::to_string)));
-                }
-            }
-            Err(e) => warnings.push(format!("wg peer removal: {e}")),
-        }
+    if row
+        .wg_peer_id
+        .as_deref()
+        .is_some_and(|peer_id| !peer_id.is_empty())
+    {
+        return Err(AppError::FeatureUnavailable(
+            "WireGuard mutations require a canonical operation adapter".into(),
+        ));
     }
 
     sqlx::query("DELETE FROM nodes WHERE id = ?")
@@ -312,12 +311,19 @@ pub async fn delete_node(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&user.id), "human", "nodes.delete",
-        Some("node"), Some(&node_id), "success", None,
+        &state.db,
+        Some(&user.id),
+        "human",
+        "nodes.delete",
+        Some("node"),
+        Some(&node_id),
+        "success",
+        None,
         Some(&format!("display_name={}", row.display_name)),
-    ).await;
+    )
+    .await;
 
-    Ok(Json(serde_json::json!({ "ok": true, "warnings": warnings })))
+    Ok(Json(serde_json::json!({ "ok": true, "warnings": [] })))
 }
 
 pub async fn heartbeat(
@@ -335,12 +341,13 @@ pub async fn heartbeat(
         .ok_or(AppError::Unauthorized)?;
     let token_hash = sha256_hex(raw_token);
 
-    let matched: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = ? AND token_hash = ?")
-        .bind(&node_id)
-        .bind(&token_hash)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let matched: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = ? AND token_hash = ?")
+            .bind(&node_id)
+            .bind(&token_hash)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
     if matched == 0 {
         return Err(AppError::Unauthorized);
     }
@@ -364,10 +371,23 @@ pub async fn heartbeat(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub(crate) async fn verify_node_token(state: crate::AppState, node_id: String, headers: axum::http::HeaderMap) -> crate::error::Result<()> {
-    let raw = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).map(str::trim).ok_or(crate::error::AppError::Unauthorized)?;
+pub(crate) async fn verify_node_token(
+    state: crate::AppState,
+    node_id: String,
+    headers: axum::http::HeaderMap,
+) -> crate::error::Result<()> {
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .ok_or(crate::error::AppError::Unauthorized)?;
     let matched: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = ? AND token_hash = ? AND approved = 1 AND agent_capable = 1").bind(node_id).bind(crate::api::integrations::sha256_hex(raw)).fetch_one(&state.db).await.map_err(|e| crate::error::AppError::Internal(e.into()))?;
-    if matched == 0 { Err(crate::error::AppError::Unauthorized) } else { Ok(()) }
+    if matched == 0 {
+        Err(crate::error::AppError::Unauthorized)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -404,14 +424,14 @@ mod tests {
     }
 
     #[test]
-    fn omitted_wireguard_request_preserves_legacy_provisioning_default() {
+    fn omitted_wireguard_request_defaults_to_no_provisioning() {
         let request: EnrollRequest = serde_json::from_value(json!({
             "pairing_code": "pairing-code",
             "display_name": "legacy-client"
         }))
         .unwrap();
 
-        assert!(request.provision_wireguard);
+        assert!(!request.provision_wireguard);
     }
 
     #[tokio::test]
@@ -441,20 +461,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_slice(
-            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
-        )
-        .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
         assert_eq!(body["wg_client_config"], "");
         assert_eq!(body["warnings"], json!([]));
 
-        let (wg_peer_id, wg_public_key): (Option<String>, String) = sqlx::query_as(
-            "SELECT wg_peer_id, wg_public_key FROM nodes WHERE id = ?",
-        )
-        .bind(body["node_id"].as_str().unwrap())
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let (wg_peer_id, wg_public_key): (Option<String>, String) =
+            sqlx::query_as("SELECT wg_peer_id, wg_public_key FROM nodes WHERE id = ?")
+                .bind(body["node_id"].as_str().unwrap())
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(wg_peer_id, None);
         assert!(wg_public_key.is_empty());
 
@@ -463,5 +481,100 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(peer_count, 0);
+    }
+
+    #[tokio::test]
+    async fn explicit_wireguard_provisioning_fails_before_claiming_pairing_code() {
+        let db = test_support::setup_db().await;
+        pairing_code(&db, "wireguard-code").await;
+        let app = crate::api::router(test_support::build(db.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/enroll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "pairing_code": "wireguard-code",
+                            "display_name": "wireguard-agent",
+                            "device_type": "pi",
+                            "agent_capable": true,
+                            "provision_wireguard": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "WireGuard mutations require a canonical operation adapter"
+        );
+
+        let used_at: Option<i64> =
+            sqlx::query_scalar("SELECT used_at FROM node_pairing_codes WHERE token_hash = ?")
+                .bind(sha256_hex("wireguard-code"))
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(used_at, None);
+
+        let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(node_count, 0);
+    }
+
+    #[tokio::test]
+    async fn node_delete_with_wireguard_peer_fails_without_deleting_node() {
+        let db = test_support::setup_db().await;
+        let session = test_support::user_with_session(&db).await;
+        sqlx::query(
+            "INSERT INTO nodes (id, display_name, device_type, owner_user_id, wg_peer_id, \
+             wg_public_key, token_hash, agent_capable, approved, created_at) \
+             VALUES ('node-with-peer', 'fixture-node', 'pi', 'u1', 'peer-1', \
+             'fixture-public-key', 'fixture-token-hash', 1, 1, 0)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let app = crate::api::router(test_support::build(db.clone()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/nodes/node-with-peer")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "WireGuard mutations require a canonical operation adapter"
+        );
+        let node_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = 'node-with-peer'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(node_count, 1);
     }
 }

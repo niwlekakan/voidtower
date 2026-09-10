@@ -1,5 +1,5 @@
 use crate::{
-    audit, auth,
+    auth,
     error::{AppError, Result},
     AppState,
 };
@@ -9,10 +9,8 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 fn unix_now() -> i64 {
@@ -37,14 +35,6 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
     Ok(user)
 }
 
-// ─── Key generation (native Curve25519 — no wg binary required) ───────────────
-
-fn generate_keypair() -> (String, String) {
-    let secret = StaticSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&secret);
-    (B64.encode(secret.as_bytes()), B64.encode(public.as_bytes()))
-}
-
 // ─── wg command helpers ───────────────────────────────────────────────────────
 
 fn wg_cmd(args: &[&str]) -> std::result::Result<String, String> {
@@ -57,7 +47,10 @@ fn wg_cmd(args: &[&str]) -> std::result::Result<String, String> {
     } else {
         let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
         if err.contains("permission") || err.contains("operation not permitted") {
-            Err("Permission denied — VoidTower needs root or CAP_NET_ADMIN to manage WireGuard".to_string())
+            Err(
+                "Permission denied — VoidTower needs root or CAP_NET_ADMIN to manage WireGuard"
+                    .to_string(),
+            )
         } else {
             Err(String::from_utf8_lossy(&out.stderr).to_string())
         }
@@ -103,18 +96,33 @@ fn parse_wg_dump(output: &str) -> (HashMap<String, WgDumpIface>, HashMap<String,
         match parts.len() {
             5 => {
                 // Interface line
-                ifaces.insert(parts[0].to_string(), WgDumpIface {
-                    public_key: parts[2].to_string(),
-                    listen_port: parts[3].parse().unwrap_or(51820),
-                });
+                ifaces.insert(
+                    parts[0].to_string(),
+                    WgDumpIface {
+                        public_key: parts[2].to_string(),
+                        listen_port: parts[3].parse().unwrap_or(51820),
+                    },
+                );
             }
             9 => {
                 // Peer line
-                let endpoint = if parts[3] == "(none)" { None } else { Some(parts[3].to_string()) };
+                let endpoint = if parts[3] == "(none)" {
+                    None
+                } else {
+                    Some(parts[3].to_string())
+                };
                 let handshake = parts[5].parse::<i64>().ok().filter(|&v| v > 0);
                 let rx = parts[6].parse::<u64>().unwrap_or(0);
                 let tx = parts[7].parse::<u64>().unwrap_or(0);
-                peers.insert(parts[1].to_string(), WgDumpPeer { endpoint, latest_handshake: handshake, rx_bytes: rx, tx_bytes: tx });
+                peers.insert(
+                    parts[1].to_string(),
+                    WgDumpPeer {
+                        endpoint,
+                        latest_handshake: handshake,
+                        rx_bytes: rx,
+                        tx_bytes: tx,
+                    },
+                );
             }
             _ => {}
         }
@@ -122,7 +130,7 @@ fn parse_wg_dump(output: &str) -> (HashMap<String, WgDumpIface>, HashMap<String,
     (ifaces, peers)
 }
 
-// ─── Config file helpers ──────────────────────────────────────────────────────
+// ─── Read-only config helpers ─────────────────────────────────────────────────
 
 fn conf_path(iface: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/etc/wireguard/{iface}.conf"))
@@ -130,31 +138,6 @@ fn conf_path(iface: &str) -> std::path::PathBuf {
 
 fn read_conf(iface: &str) -> String {
     std::fs::read_to_string(conf_path(iface)).unwrap_or_default()
-}
-
-fn write_conf(iface: &str, content: &str) -> std::result::Result<(), String> {
-    std::fs::write(conf_path(iface), content)
-        .map_err(|e| format!("Cannot write /etc/wireguard/{iface}.conf: {e}"))
-}
-
-// Parse [Interface] Address = x.x.x.1/24 → returns ("10.0.0", 24, 1) or default
-fn parse_server_addr(conf: &str) -> (String, u8, u32) {
-    for line in conf.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("Address") {
-            let val = rest.trim_start_matches('=').trim().split(',').next().unwrap_or("").trim();
-            if let Some((ip, mask)) = val.split_once('/') {
-                let mask: u8 = mask.parse().unwrap_or(24);
-                let parts: Vec<&str> = ip.split('.').collect();
-                if parts.len() == 4 {
-                    let prefix = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
-                    let last: u32 = parts[3].parse().unwrap_or(1);
-                    return (prefix, mask, last);
-                }
-            }
-        }
-    }
-    ("10.13.37".to_string(), 24, 1)
 }
 
 fn parse_server_pubkey(conf: &str) -> Option<String> {
@@ -174,80 +157,6 @@ fn parse_server_pubkey(conf: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn append_peer_to_conf(iface: &str, name: &str, pubkey: &str, ip: &str) -> std::result::Result<(), String> {
-    let mut conf = read_conf(iface);
-    if !conf.ends_with('\n') && !conf.is_empty() { conf.push('\n'); }
-    conf.push_str(&format!(
-        "\n[Peer]\n# {name}\nPublicKey = {pubkey}\nAllowedIPs = {ip}/32\nPersistentKeepalive = 25\n"
-    ));
-    write_conf(iface, &conf)
-}
-
-fn remove_peer_from_conf(iface: &str, pubkey: &str) -> std::result::Result<(), String> {
-    let conf = read_conf(iface);
-    let mut out = String::new();
-    let mut skip = false;
-    let mut pending = String::new();
-
-    for line in conf.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[Peer]" {
-            if !pending.is_empty() && !skip {
-                out.push_str(&pending);
-            }
-            pending = format!("{line}\n");
-            skip = false;
-        } else if trimmed.starts_with('[') && trimmed != "[Peer]" {
-            if !pending.is_empty() && !skip {
-                out.push_str(&pending);
-            }
-            pending = String::new();
-            skip = false;
-            out.push_str(&format!("{line}\n"));
-        } else if pending.is_empty() {
-            out.push_str(&format!("{line}\n"));
-        } else {
-            let is_key_line = trimmed.starts_with("PublicKey")
-                && trimmed.replace(" ", "").contains(&format!("={pubkey}"));
-            if is_key_line { skip = true; }
-            pending.push_str(&format!("{line}\n"));
-        }
-    }
-    if !pending.is_empty() && !skip {
-        out.push_str(&pending);
-    }
-    write_conf(iface, &out)
-}
-
-// ─── IP allocation ────────────────────────────────────────────────────────────
-
-fn allocate_ip(prefix: &str, used: &[String]) -> String {
-    for host in 2u32..=254 {
-        let candidate = format!("{prefix}.{host}");
-        if !used.contains(&candidate) {
-            return candidate;
-        }
-    }
-    format!("{prefix}.2") // fallback; shouldn't happen in practice
-}
-
-// ─── Client config builder ────────────────────────────────────────────────────
-
-fn client_config(
-    private_key: &str,
-    client_ip: &str,
-    mask: u8,
-    server_pubkey: &str,
-    server_endpoint: &str,
-    listen_port: u16,
-) -> String {
-    format!(
-        "[Interface]\nPrivateKey = {private_key}\nAddress = {client_ip}/{mask}\nDNS = 1.1.1.1\n\
-         \n[Peer]\nPublicKey = {server_pubkey}\nEndpoint = {server_endpoint}:{listen_port}\n\
-         AllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n"
-    )
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -291,7 +200,9 @@ pub struct AddPeerRequest {
     pub interface: String,
     pub server_endpoint: Option<String>,
 }
-fn default_iface() -> String { "wg0".to_string() }
+fn default_iface() -> String {
+    "wg0".to_string()
+}
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -390,118 +301,16 @@ pub async fn add_peer(
     jar: CookieJar,
     Json(req): Json<AddPeerRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let result = add_peer_core(
-        &state,
-        &user,
-        &req.name,
-        &req.interface,
-        req.server_endpoint.as_deref(),
-    )
-    .await?;
-    Ok(Json(result))
-}
-
-/// Core peer-provisioning logic, reused by both the HTTP handler above (cookie-session
-/// admin) and `node_enroll.rs` (pairing-code-authenticated node enrollment) so the
-/// WireGuard config generation exists in exactly one place.
-pub(crate) async fn add_peer_core(
-    state: &AppState,
-    user: &auth::User,
-    name: &str,
-    interface: &str,
-    server_endpoint: Option<&str>,
-) -> Result<serde_json::Value> {
-    if name.trim().is_empty() {
-        return Err(AppError::BadRequest("Peer name is required".into()));
-    }
-
-    let iface = interface.trim().to_string();
-
-    // Get server info
-    let conf = read_conf(&iface);
-    let (prefix, mask, _server_last) = parse_server_addr(&conf);
-
-    let server_pubkey = wg_cmd(&["show", &iface, "public-key"])
-        .ok()
-        .or_else(|| parse_server_pubkey(&conf))
-        .unwrap_or_else(|| "(unknown — run wg show to verify)".to_string());
-
-    let listen_port = wg_cmd(&["show", &iface, "listen-port"])
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(51820);
-
-    // Collect used IPs
-    let used_ips: Vec<String> = sqlx::query_scalar(
-        "SELECT allocated_ip FROM wireguard_peers WHERE interface = ?",
-    )
-    .bind(&iface)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    let client_ip = allocate_ip(&prefix, &used_ips);
-
-    // Generate keypair
-    let (private_key, public_key) = generate_keypair();
-
-    // Add to running WireGuard (best-effort — might need root)
-    let wg_result = wg_cmd(&[
-        "set", &iface, "peer", &public_key,
-        "allowed-ips", &format!("{client_ip}/32"),
-        "persistent-keepalive", "25",
-    ]);
-
-    // Write to conf file (best-effort)
-    let conf_result = append_peer_to_conf(&iface, name, &public_key, &client_ip);
-
-    // Save to DB regardless (so we track it even if wg command had issues)
-    let id = Uuid::new_v4().to_string();
-    let now = unix_now();
-    sqlx::query(
-        "INSERT INTO wireguard_peers (id, interface, name, public_key, allocated_ip, created_at) VALUES (?,?,?,?,?,?)",
-    )
-    .bind(&id)
-    .bind(&iface)
-    .bind(name)
-    .bind(&public_key)
-    .bind(&client_ip)
-    .bind(now)
-    .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Build client config
-    let endpoint = server_endpoint
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("VOIDTOWER_WG_ENDPOINT").ok())
-        .unwrap_or_else(|| "YOUR_SERVER_IP".to_string());
-
-    let config_str = client_config(&private_key, &client_ip, mask, &server_pubkey, &endpoint, listen_port);
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "wireguard.peer_add",
-        Some("wireguard_peer"), Some(&id), "success", None,
-        Some(&format!("name={name},ip={client_ip},iface={iface}")),
-    ).await;
-
-    let warnings: Vec<String> = [
-        wg_result.err().map(|e| format!("wg set: {e}")),
-        conf_result.err().map(|e| format!("conf update: {e}")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-
-    Ok(serde_json::json!({
-        "id": id,
-        "public_key": public_key,
-        "allocated_ip": client_ip,
-        "client_config": config_str,
-        "warnings": warnings,
-    }))
+    require_admin(&state, &jar).await?;
+    let AddPeerRequest {
+        name,
+        interface,
+        server_endpoint,
+    } = req;
+    let _ = (name, interface, server_endpoint);
+    Err(AppError::FeatureUnavailable(
+        "WireGuard mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn delete_peer(
@@ -509,55 +318,141 @@ pub async fn delete_peer(
     jar: CookieJar,
     Path(peer_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-    let result = delete_peer_core(&state, &user, &peer_id).await?;
-    Ok(Json(result))
+    require_admin(&state, &jar).await?;
+    let _ = peer_id;
+    Err(AppError::FeatureUnavailable(
+        "WireGuard mutations require a canonical operation adapter".into(),
+    ))
 }
 
-/// Core peer-removal logic, reused by the HTTP handler above and `node_enroll.rs`'s
-/// node-revocation flow (one call removes the WireGuard peer, DB row, and audit-logs it).
-pub(crate) async fn delete_peer_core(
-    state: &AppState,
-    user: &auth::User,
-    peer_id: &str,
-) -> Result<serde_json::Value> {
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header, Request, StatusCode},
+    };
+    use serde_json::json;
+    use tower::ServiceExt;
 
-    let row: Option<PeerRow> = sqlx::query_as(
-        "SELECT id, interface, name, public_key, allocated_ip, created_at FROM wireguard_peers WHERE id = ?",
-    )
-    .bind(peer_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    #[tokio::test]
+    async fn add_peer_route_fails_closed_until_canonical_adapter_exists() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
 
-    let peer = row.ok_or_else(|| AppError::BadRequest("Peer not found".into()))?;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/wireguard/peers")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"name": "fixture-peer", "interface": "wg0"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-    // Remove from running WireGuard
-    let wg_result = wg_cmd(&["set", &peer.interface, "peer", &peer.public_key, "remove"]);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "WireGuard mutations require a canonical operation adapter"
+        );
+    }
 
-    // Remove from conf file
-    let conf_result = remove_peer_from_conf(&peer.interface, &peer.public_key);
+    #[tokio::test]
+    async fn add_peer_route_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
 
-    // Remove from DB
-    sqlx::query("DELETE FROM wireguard_peers WHERE id = ?")
-        .bind(peer_id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/wireguard/peers")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"name": "fixture-peer", "interface": "wg0"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-    audit::log(
-        &state.db, Some(&user.id), "human", "wireguard.peer_remove",
-        Some("wireguard_peer"), Some(peer_id), "success", None,
-        Some(&format!("name={},ip={}", peer.name, peer.allocated_ip)),
-    ).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "unauthorized");
+    }
 
-    let warnings: Vec<String> = [
-        wg_result.err().map(|e| format!("wg set: {e}")),
-        conf_result.err().map(|e| format!("conf update: {e}")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    #[tokio::test]
+    async fn delete_peer_route_fails_closed_until_canonical_adapter_exists() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
 
-    Ok(serde_json::json!({ "ok": true, "warnings": warnings }))
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/wireguard/peers/fixture-peer")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "WireGuard mutations require a canonical operation adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_peer_route_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/wireguard/peers/fixture-peer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "unauthorized");
+    }
+
+    #[test]
+    fn compatibility_mutation_module_has_no_wireguard_write_path() {
+        let source = include_str!("wireguard.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("WireGuard tests must follow production code");
+        assert!(!production.contains("std::fs::write"));
+        assert!(!production.contains("\"set\""));
+        assert!(!production.contains("\"remove\""));
+    }
 }

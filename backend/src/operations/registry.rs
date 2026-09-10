@@ -635,12 +635,18 @@ mod tests {
         assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 3);
 
         let settings = include_str!("../api/settings.rs");
-        for (needle, expected) in [
-            ("reload_nginx_pub()", 3),
-            ("open_firewall_port(", 2),
-            ("close_firewall_port(", 4),
+        let production = settings
+            .split("#[cfg(test)]")
+            .next()
+            .expect("settings tests must follow production code");
+        for needle in [
+            "reload_nginx_pub(",
+            "open_firewall_port(",
+            "close_firewall_port(",
+            "write_ai_proxy_conf(",
+            "patch_nginx_compose_port(",
         ] {
-            assert_eq!(occurrences(settings, needle), expected, "settings bypass drift: {needle}");
+            assert!(!production.contains(needle), "settings bypass drift: {needle}");
         }
     }
 

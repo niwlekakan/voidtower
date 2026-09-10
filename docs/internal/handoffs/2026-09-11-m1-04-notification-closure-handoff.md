@@ -3,7 +3,7 @@
 - **Date:** 2026-09-11
 - **Status:** integration-verified
 - **Tracked plan slice:** M1-04 — Compatibility bypass closure.
-- **Branch and code commit:** `dev`; `24a5e004c0ec3a646acac4fa1bf1eab014bfcb0b` (`[verified] close notification webhook compatibility mutations`).
+- **Branch and code commit:** `dev`; `24a5e0090d1002af87b181e5146e22e77b61fcd0` (`[verified] close notification webhook compatibility mutations`).
 
 ## Outcome
 
@@ -56,11 +56,11 @@ The notification compatibility mutation paths now fail closed after administrato
   - The frontend still presents the legacy notification form and will receive the stable unavailable response on save/test; frontend UX was a non-goal.
   - No live provider, network delivery, deployment/runtime, upgrade/recovery, or release-artifact qualification was run.
   - Whole-workspace formatting is not qualified because pre-existing Rust formatting drift remains; the slice did not widen the diff to reformat it.
-- **Recovery/rollback:** `git revert 24a5e004c0ec3a646acac4fa1bf1eab014bfcb0b` removes this code slice while preserving the unrelated staged agent files. Retaining the closure is the safe state until the canonical adapter is ready.
+- **Recovery/rollback:** `git revert 24a5e0090d1002af87b181e5146e22e77b61fcd0` removes this code slice while preserving the unrelated staged agent files. Retaining the closure is the safe state until the canonical adapter is ready.
 
 ## Repository state after delivery
 
-- **Branch/HEAD/ahead/behind:** `dev` / `24a5e004c0ec3a646acac4fa1bf1eab014bfcb0b` / ahead 94 / behind 0 before this handoff commit.
+- **Branch/HEAD/ahead/behind:** `dev` / `24a5e0090d1002af87b181e5146e22e77b61fcd0` / ahead 94 / behind 0 before this handoff commit.
 - **Staged paths:** `backend/src/agent/mod.rs`; `backend/src/agent/state.rs`.
 - **Modified paths:** none.
 - **Remote publication:** not pushed.

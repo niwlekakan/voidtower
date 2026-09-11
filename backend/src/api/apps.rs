@@ -2036,6 +2036,7 @@ pub async fn detect_external(
 
 // ── Adopt external app ────────────────────────────────────────────────────────
 
+#[allow(dead_code)] // retained as the request contract for the future canonical adapter
 #[derive(Deserialize)]
 pub struct AdoptRequest {
     pub project_name: String,
@@ -2047,50 +2048,12 @@ pub struct AdoptRequest {
 pub async fn adopt_app(
     State(state): State<AppState>,
     jar: CookieJar,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(req): Json<AdoptRequest>,
+    Json(_req): Json<AdoptRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let user = require_user(&state, &jar).await?;
-
-    let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT id FROM deployed_apps WHERE project_name = ?"
-    ).bind(&req.project_name).fetch_optional(&state.db).await?;
-    if existing.is_some() {
-        return Err(AppError::BadRequest("Already managed by VoidTower".into()));
-    }
-
-    let id  = uuid::Uuid::new_v4().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-    let compose_path = req.compose_path.as_deref().unwrap_or("");
-
-    sqlx::query(
-        "INSERT INTO deployed_apps \
-         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin) \
-         VALUES (?, 'external', ?, ?, 'running', ?, ?, ?, 'adopted')"
-    )
-    .bind(&id).bind(&req.app_name).bind(&req.project_name)
-    .bind(now).bind(compose_path).bind(req.primary_port)
-    .execute(&state.db).await?;
-
-    // Connect all containers in the project to vt-proxy so the reverse proxy can reach them
-    ensure_vt_proxy_network().await;
-    let ps = tokio::process::Command::new("docker")
-        .args(["ps", "-q", "--filter", &format!("label=com.docker.compose.project={}", req.project_name)])
-        .output().await;
-    if let Ok(ps_out) = ps {
-        for cid in String::from_utf8_lossy(&ps_out.stdout).split_whitespace() {
-            let _ = tokio::process::Command::new("docker")
-                .args(["network", "connect", "vt-proxy", cid])
-                .output().await;
-        }
-    }
-
-    audit::log(&state.db, Some(&user.id), &user.username, "app.adopt",
-        Some("app"), Some(&req.project_name), "success",
-        Some(&addr.ip().to_string()), None).await;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    require_user(&state, &jar).await?;
+    Err(AppError::FeatureUnavailable(
+        "App adoption requires a canonical operation adapter".into(),
+    ))
 }
 
 // ── Convert adopted app to VoidTower management ───────────────────────────────
@@ -2346,4 +2309,114 @@ pub async fn purge_app(
     audit::log(&state.db, Some(&user.id), &user.username, "app.purge",
         Some("app"), Some(&project_name), "success", Some(&ip), None).await;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::{to_bytes, Body},
+        extract::ConnectInfo,
+        http::{header, Request, StatusCode},
+    };
+    use serde_json::json;
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    async fn json_body(response: axum::response::Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn adopt_app_fails_closed_before_persisting_or_mutating_docker() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool.clone()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/adopt")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(
+                        json!({
+                            "project_name": "external-stack",
+                            "app_name": "External Stack",
+                            "compose_path": "/srv/external/compose.yml",
+                            "primary_port": 8080
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let payload = json_body(response).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "App adoption requires a canonical operation adapter"
+        );
+
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT project_name FROM deployed_apps WHERE project_name = 'external-stack'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, None);
+    }
+
+    #[tokio::test]
+    async fn adopt_app_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/adopt")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(
+                        json!({
+                            "project_name": "external-stack",
+                            "app_name": "External Stack"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[test]
+    fn adopt_app_handler_has_no_direct_mutation_path() {
+        let source = include_str!("apps.rs");
+        let handler = source
+            .split("pub async fn adopt_app(")
+            .nth(1)
+            .and_then(|rest| rest.split("// ── Convert adopted app").next())
+            .expect("adopt handler");
+
+        for marker in [
+            "sqlx::query(",
+            "ensure_vt_proxy_network(",
+            "tokio::process::Command",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "adopt handler marker: {marker}");
+        }
+    }
 }

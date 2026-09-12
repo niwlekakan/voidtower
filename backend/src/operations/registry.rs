@@ -625,7 +625,7 @@ mod tests {
             .expect("apps production source");
 
         for (needle, expected) in [
-            ("containers::deploy_compose(", 1),
+            ("containers::deploy_compose(", 0),
             ("containers::deploy_compose_cancellable(", 0),
             ("containers::restart_compose(", 0),
             ("containers::remove_compose(", 0),

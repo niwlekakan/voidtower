@@ -273,17 +273,6 @@ pub async fn deploy_compose_cancellable(
     Ok(())
 }
 
-pub async fn stop_compose(project_name: &str, compose_path: &std::path::Path) -> Result<()> {
-    tokio::process::Command::new("docker")
-        .args(["compose", "-p", project_name, "-f"])
-        .arg(compose_path)
-        .arg("down")
-        .process_group(0)
-        .output()
-        .await?;
-    Ok(())
-}
-
 pub async fn logs_compose(project_name: &str, compose_path: &std::path::Path, tail: usize) -> Result<String> {
     let out = tokio::process::Command::new("docker")
         .args(["compose", "-p", project_name, "-f"])

@@ -625,7 +625,7 @@ mod tests {
             ("containers::deploy_compose_cancellable(", 1),
             ("containers::restart_compose(", 0),
             ("containers::remove_compose(", 0),
-            ("containers::stop_compose(", 1),
+            ("containers::stop_compose(", 0),
             ("containers::pull_compose(", 0),
         ] {
             assert_eq!(occurrences(apps, needle), expected, "App Vault bypass drift: {needle}");

@@ -284,20 +284,6 @@ pub async fn stop_compose(project_name: &str, compose_path: &std::path::Path) ->
     Ok(())
 }
 
-pub async fn restart_compose(project_name: &str, compose_path: &std::path::Path) -> Result<()> {
-    let out = tokio::process::Command::new("docker")
-        .args(["compose", "-p", project_name, "-f"])
-        .arg(compose_path)
-        .arg("restart")
-        .process_group(0)
-        .output()
-        .await?;
-    if !out.status.success() {
-        anyhow::bail!("docker compose restart failed: {}", String::from_utf8_lossy(&out.stderr));
-    }
-    Ok(())
-}
-
 pub async fn logs_compose(project_name: &str, compose_path: &std::path::Path, tail: usize) -> Result<String> {
     let out = tokio::process::Command::new("docker")
         .args(["compose", "-p", project_name, "-f"])

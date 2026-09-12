@@ -623,7 +623,7 @@ mod tests {
         for (needle, expected) in [
             ("containers::deploy_compose(", 4),
             ("containers::deploy_compose_cancellable(", 1),
-            ("containers::restart_compose(", 1),
+            ("containers::restart_compose(", 0),
             ("containers::remove_compose(", 0),
             ("containers::stop_compose(", 1),
             ("containers::pull_compose(", 0),

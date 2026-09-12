@@ -619,10 +619,14 @@ mod tests {
 
     #[test]
     fn deferred_direct_execution_inventory_is_exact() {
-        let apps = include_str!("../api/apps.rs");
+        let apps = include_str!("../api/apps.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("apps production source");
+
         for (needle, expected) in [
             ("containers::deploy_compose(", 1),
-            ("containers::deploy_compose_cancellable(", 1),
+            ("containers::deploy_compose_cancellable(", 0),
             ("containers::restart_compose(", 0),
             ("containers::remove_compose(", 0),
             ("containers::stop_compose(", 0),
@@ -631,6 +635,7 @@ mod tests {
         ] {
             assert_eq!(occurrences(apps, needle), expected, "App Vault bypass drift: {needle}");
         }
+        assert!(apps.contains("pub async fn update_compose("));
 
         let models = include_str!("../api/models.rs");
         assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 1);

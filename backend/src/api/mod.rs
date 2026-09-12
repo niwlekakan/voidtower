@@ -46,6 +46,7 @@ pub mod ai_context;
 pub mod ai_providers;
 pub mod alerts;
 pub mod approvals;
+#[allow(dead_code)]
 pub mod apps;
 pub mod audit;
 pub mod auth;
@@ -67,6 +68,7 @@ pub mod integrations;
 pub mod jobs;
 pub mod lxc;
 pub mod mcp;
+#[allow(dead_code)]
 pub mod members;
 pub mod metrics;
 pub mod models;

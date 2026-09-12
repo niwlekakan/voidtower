@@ -245,6 +245,7 @@ pub async fn deploy_compose(
 /// Like `deploy_compose`, but registers the spawned process's pid in `registry` for the
 /// duration of the call so it can be cancelled gracefully via `cancel_deploy`. Used by the
 /// interactive deploy flow, which exposes a Cancel button while this is in flight.
+#[allow(dead_code)]
 pub async fn deploy_compose_cancellable(
     project_name: &str,
     compose_path: &std::path::Path,

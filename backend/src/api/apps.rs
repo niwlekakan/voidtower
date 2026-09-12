@@ -5,7 +5,7 @@ use crate::{
     error::{AppError, Result},
     AppState,
 };
-use super::members;
+
 use axum::{
     body::Body,
     extract::{ConnectInfo, Path, State},
@@ -169,6 +169,7 @@ fn extract_primary_port(app: &AppDef) -> Option<u16> {
     app.web_port.or_else(|| first_port_from_compose(&app.compose))
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct DeployRequest {
     pub app_id: String,
@@ -977,237 +978,13 @@ struct DeployedAppRow {
 pub async fn deploy(
     State(state): State<AppState>,
     jar: CookieJar,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(req): Json<DeployRequest>,
+    ConnectInfo(_addr): ConnectInfo<SocketAddr>,
+    Json(_req): Json<DeployRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let user = require_user(&state, &jar).await?;
-    let ip = addr.ip().to_string();
-
-    if !containers::is_docker_available() {
-        return Err(AppError::FeatureUnavailable("Docker is not available".into()));
-    }
-
-    let catalog = load_catalog(&state.config.catalog_dir);
-    let app = catalog
-        .into_iter()
-        .find(|a| a.id == req.app_id)
-        .ok_or(AppError::NotFound)?;
-
-    // Refuse to deploy if a matching system service is installed on the host.
-    // The installer writes a marker file when it sets up Odysseus or Ollama as
-    // a systemd service; deploying the container would cause a port conflict.
-    if let Some(ref conflict_key) = app.system_conflict_check {
-        let marker = std::path::Path::new("/var/lib/voidtower")
-            .join(format!(".{}-system-installed", conflict_key));
-        if marker.exists() {
-            let port_hint = match conflict_key.as_str() {
-                "odysseus" => " (port 7000 conflict)",
-                "ollama"   => " (port 11434 conflict)",
-                _          => "",
-            };
-            return Err(AppError::BadRequest(format!(
-                "{} is already installed as a system service on this host{}. \
-                 Use the system service or remove it first with: \
-                 systemctl stop {conflict_key} && systemctl disable {conflict_key}",
-                app.name, port_hint,
-            )));
-        }
-    }
-
-    // Self-hosting hub: resolve the acting member's ownership/storage/target-node
-    // context. Untouched (all None) for every other role, which preserves the
-    // exact pre-existing admin/global deploy behavior.
-    let mut owner_user_id: Option<String> = None;
-    let mut storage_root: Option<String> = None;
-    let mut target_node_id: Option<String> = None;
-    if user.role == "member" {
-        members::check_member_app_access(&state, &user.id, &app.id).await?;
-        members::check_member_quota(&state, &user.id).await?;
-        let resolved = members::resolve_member_storage_root(&state, &user.id, req.storage_drive_id.as_deref()).await?;
-        storage_root = Some(resolved.path);
-        target_node_id = members::resolve_member_target_node(&state, &user.id, req.target_node_id.as_deref()).await?;
-        owner_user_id = Some(user.id.clone());
-    }
-
-    let project_name = req
-        .project_name
-        .unwrap_or_else(|| format!("vt-{}", app.id));
-
-    // Write the compose file
-    let app_dir = state.config.apps_dir().join(&project_name);
-    std::fs::create_dir_all(&app_dir).map_err(|e| AppError::Internal(e.into()))?;
-
-    let mut compose_val = app.compose.clone();
-
-    // Apply env overrides if any
-    if let Some(overrides) = &req.env_overrides {
-        if let Some(services) = compose_val.get_mut("services") {
-            if let Some(obj) = services.as_object_mut() {
-                for svc in obj.values_mut() {
-                    if let Some(env) = svc.get_mut("environment") {
-                        if let Some(arr) = env.as_array_mut() {
-                            for (k, v) in overrides {
-                                arr.retain(|e| {
-                                    !e.as_str()
-                                        .map(|s| s.starts_with(&format!("{}=", k)))
-                                        .unwrap_or(false)
-                                });
-                                arr.push(Value::String(format!("{}={}", k, v)));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Resolve values for required_env entries not supplied by the user, via
-    // `generate` strategy or `default` fallback. These (plus all user-supplied
-    // overrides) are written to a .env file below — compose templates reference
-    // them as `${VAR}` interpolation, which docker compose only resolves from a
-    // .env file or process environment, never from another `environment:` entry.
-    let mut resolved_required_env: HashMap<String, String> = HashMap::new();
-    for req_var in &app.required_env {
-        let already_set = req.env_overrides.as_ref()
-            .map(|o| o.contains_key(&req_var.key))
-            .unwrap_or(false);
-        if already_set {
-            continue;
-        }
-        let value = req_var.generate.as_ref()
-            .filter(|g| !g.is_empty())
-            .map(|g| generate_required_env_value(g))
-            .or_else(|| req_var.default.clone());
-        if let Some(value) = value {
-            resolved_required_env.insert(req_var.key.clone(), value);
-        }
-    }
-
-    // Replace null volume entries with empty maps so docker compose accepts them
-    if let Some(vols) = compose_val.get_mut("volumes") {
-        if let Some(obj) = vols.as_object_mut() {
-            for v in obj.values_mut() {
-                if v.is_null() { *v = serde_json::json!({}); }
-            }
-        }
-    }
-
-    // Strip GPU requirements on non-NVIDIA hosts; on NVIDIA hosts apply CUDA
-    // compatibility fixes (ipc: host, NVIDIA_DISABLE_REQUIRE) for the driver.
-    let has_gpu = detect_gpu().await;
-    if !has_gpu {
-        strip_gpu_requirements(&mut compose_val);
-        adjust_cuda_image_for_no_gpu(&mut compose_val);
-    } else {
-        apply_nvidia_compat(&mut compose_val, detect_cuda_major_version().await);
-    }
-
-    // Member deploys: redirect the app's own named-volume data onto the
-    // member's resolved storage (drive or quota dir) instead of an opaque
-    // Docker-managed volume.
-    if let Some(ref root) = storage_root {
-        rewrite_named_volumes_to_storage_root(&mut compose_val, root, &project_name);
-    }
-
-    // Create any host-side bind-mount directories referenced in volumes.
-    ensure_volume_dirs(&compose_val);
-
-    // Auto-detect running LLM service and inject LLM_API_BASE if not manually set
-    let detected_llm = auto_inject_llm(
-        &mut compose_val,
-        req.env_overrides.as_ref().unwrap_or(&HashMap::new()),
-    ).await;
-
-    // Inject top-level external network declaration when services reference vt-proxy
-    inject_external_networks(&mut compose_val);
-    // Pin all compose-managed networks to IPv4 (TrueNAS IPv6 pool workaround)
-    force_ipv4_networks(&mut compose_val);
-    // Rewrite VoidTower-data bind-mount sources for containerized installs (TrueNAS)
-    rewrite_voidtower_home_paths(&mut compose_val, &state.config);
-    rewrite_host_bind_mounts(&mut compose_val, &state.config);
-    strip_unavailable_devices(&mut compose_val);
-
-    let compose_str = serde_yaml::to_string(&compose_val).map_err(|e| AppError::Internal(e.into()))?;
-    let compose_path = app_dir.join("docker-compose.yml");
-    std::fs::write(&compose_path, &compose_str).map_err(|e| AppError::Internal(e.into()))?;
-
-    // Write a .env file next to the compose file so docker compose can resolve
-    // ${VAR} interpolation (project directory defaults to the -f file's dir).
-    let mut dotenv_map = req.env_overrides.clone().unwrap_or_default();
-    dotenv_map.extend(resolved_required_env.clone());
-    if !dotenv_map.is_empty() {
-        let dotenv_content = dotenv_map.iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(app_dir.join(".env"), dotenv_content + "\n")
-            .map_err(|e| AppError::Internal(e.into()))?;
-    }
-
-    // Ensure shared Docker network exists before composing
-    ensure_vt_proxy_network().await;
-
-    // Run docker compose up — cancellable via POST /api/apps/deploy/cancel/{project_name}
-    containers::deploy_compose_cancellable(&project_name, &compose_path, &state.deploy_registry)
-        .await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-
-    if let Some(hook) = app.post_deploy.clone() {
-        spawn_post_deploy_hook(project_name.clone(), hook, dotenv_map.clone());
-    }
-
-    // Record in DB
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    let primary_port = extract_primary_port(&app).map(|p| p as i64);
-
-    sqlx::query(
-        "INSERT OR REPLACE INTO deployed_apps \
-         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin, \
-          owner_user_id, storage_root, target_node_id) \
-         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, 'voidtower', ?, ?, ?)"
-    )
-    .bind(&id)
-    .bind(&app.id)
-    .bind(&app.name)
-    .bind(&project_name)
-    .bind(now)
-    .bind(compose_path.to_string_lossy().as_ref())
-    .bind(primary_port)
-    .bind(&owner_user_id)
-    .bind(&storage_root)
-    .bind(&target_node_id)
-    .execute(&state.db)
-    .await
-    .map_err(AppError::Database)?;
-
-    audit::log(
-        &state.db,
-        Some(&user.id),
-        &user.username,
-        "app.deploy",
-        Some("app"),
-        Some(&app.id),
-        "success",
-        Some(&ip),
-        Some(&format!(
-            "project={},owner={}",
-            project_name,
-            owner_user_id.as_deref().unwrap_or("admin"),
-        )),
-    )
-    .await;
-
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "project_name": project_name,
-        "detected_llm": detected_llm,
-        "generated_env": resolved_required_env,
-    })))
+    let _user = require_user(&state, &jar).await?;
+    Err(AppError::FeatureUnavailable(
+        "App deployment requires a canonical operation adapter".into(),
+    ))
 }
 
 /// Gracefully cancel an in-flight deploy started via `deploy()` (SIGTERM, escalating to
@@ -1864,6 +1641,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deploy_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/deploy")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(json!({ "app_id": "example" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn deploy_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/deploy")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(json!({ "app_id": "example" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "App deployment requires a canonical operation adapter"
+        );
+    }
+
+    #[test]
+    fn deploy_handler_has_no_direct_mutation_path() {
+        let source = include_str!("apps.rs");
+        let handler = source
+            .split("pub async fn deploy(")
+            .nth(1)
+            .and_then(|rest| rest.split("pub async fn cancel_deploy(").next())
+            .expect("deploy handler");
+
+        for marker in [
+            "sqlx::query(",
+            "std::fs::",
+            "containers::",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "deploy handler marker: {marker}");
+        }
+    }
+
+    #[tokio::test]
     async fn deploy_custom_rejects_unauthenticated_call_before_feature_boundary() {
         let pool = crate::api::mcp::test_support::setup_db().await;
         let app = crate::api::router(crate::api::mcp::test_support::build(pool));
@@ -2447,97 +2294,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn purge_app_rejects_operator_before_feature_boundary() {
-        let pool = crate::api::mcp::test_support::setup_db().await;
-        let session = crate::api::mcp::test_support::user_with_role_session(&pool, "operator").await;
-        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/apps/external-stack/purge")
-                    .header(header::COOKIE, format!("vt_session={session}"))
-                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(json_body(response).await["error"]["code"], "forbidden");
-    }
-
-    #[tokio::test]
-    async fn purge_app_fails_closed_after_authentication() {
-        let pool = crate::api::mcp::test_support::setup_db().await;
-        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
-        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/apps/external-stack/purge")
-                    .header(header::COOKIE, format!("vt_session={session}"))
-                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let payload = json_body(response).await;
-        assert_eq!(payload["error"]["code"], "feature_unavailable");
-        assert_eq!(
-            payload["error"]["message"],
-            "App purge requires a canonical operation adapter"
-        );
-    }
-
-    #[tokio::test]
-    async fn purge_app_rejects_unauthenticated_call_before_feature_boundary() {
-        let pool = crate::api::mcp::test_support::setup_db().await;
-        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/apps/external-stack/purge")
-                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
-    }
-
-    #[test]
-    fn purge_app_handler_has_no_direct_mutation_path() {
-        let source = include_str!("apps.rs");
-        let handler = source
-            .split("pub async fn purge_app(")
-            .nth(1)
-            .and_then(|rest| rest.split("#[cfg(test)]").next())
-            .expect("purge handler");
-
-        for marker in [
-            "sqlx::query(",
-            "sqlx::query_as",
-            "std::fs::",
-            "containers::",
-            "audit::log(",
-        ] {
-            assert!(!handler.contains(marker), "purge handler marker: {marker}");
-        }
-    }
 
     #[tokio::test]
     async fn redeploy_app_fails_closed_after_authentication() {

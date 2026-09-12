@@ -627,6 +627,7 @@ mod tests {
             ("containers::remove_compose(", 0),
             ("containers::stop_compose(", 0),
             ("containers::pull_compose(", 0),
+            ("std::fs::remove_dir_all(", 0),
         ] {
             assert_eq!(occurrences(apps, needle), expected, "App Vault bypass drift: {needle}");
         }

@@ -960,46 +960,11 @@ pub async fn get_ollama_config(
 pub async fn save_ollama_config(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(cfg): Json<OllamaConfig>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
-        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'ollama' LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::BadRequest("Ollama is not deployed".into()))?;
-
-    let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content =
-        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
-
-    if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
-        for svc in services.values_mut() {
-            if let Some(env) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
-                env.retain(
-                    |e| !matches!(e.as_str(), Some(s) if s.starts_with("OLLAMA_KEEP_ALIVE=")),
-                );
-                env.push(serde_json::Value::String(format!(
-                    "OLLAMA_KEEP_ALIVE={}",
-                    cfg.keep_alive_secs
-                )));
-            }
-        }
-    }
-
-    let new_content = serde_yaml::to_string(&val).map_err(|e| AppError::Internal(e.into()))?;
-    std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
-
-    crate::containers::deploy_compose(&project_name, &compose_path)
-        .await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "Saving Ollama configuration requires a canonical operation adapter".into(),
+    ))
 }
 
 // ─── llama.cpp config ─────────────────────────────────────────────────────────
@@ -1362,6 +1327,80 @@ mod tests {
             payload["error"]["message"],
             "Saving llama.cpp configuration requires a canonical operation adapter"
         );
+    }
+
+    #[tokio::test]
+    async fn save_ollama_config_rejects_unauthenticated_malformed_input_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/ollama-config")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn save_ollama_config_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/ollama-config")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Saving Ollama configuration requires a canonical operation adapter"
+        );
+    }
+
+    #[test]
+    fn save_ollama_config_handler_has_no_direct_mutation_path() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn save_ollama_config(")
+            .nth(1)
+            .and_then(|rest| rest.split("// ─── llama.cpp config").next())
+            .expect("save-ollama-config handler");
+
+        for marker in [
+            "sqlx::query",
+            "std::fs::",
+            "containers::",
+            "deploy_compose(",
+            "audit::log(",
+        ] {
+            assert!(
+                !handler.contains(marker),
+                "save-ollama-config handler marker: {marker}"
+            );
+        }
     }
 
     #[test]

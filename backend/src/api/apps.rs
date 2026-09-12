@@ -2073,12 +2073,6 @@ pub async fn convert_app(
 // ── Toolpack-backed handlers ─────────────────────────────────────────────────
 
 #[derive(Deserialize)]
-pub struct PatchEnvRequest {
-    pub env: HashMap<String, String>,
-    pub service: Option<String>,
-}
-
-#[derive(Deserialize)]
 pub struct ExposeAppRequest {
     pub domain: String,
     #[serde(default)]
@@ -2103,66 +2097,15 @@ pub async fn pull_app(
 pub async fn patch_app_env(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path(project_name): Path<String>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(req): Json<PatchEnvRequest>,
+    Path(_project_name): Path<String>,
+    ConnectInfo(_addr): ConnectInfo<SocketAddr>,
+    Json(_req): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
-    let ip = addr.ip().to_string();
-    let row = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
-        .bind(&project_name).fetch_optional(&state.db).await
-        .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
-    let content = std::fs::read_to_string(&row.compose_path)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let mut compose: serde_json::Value = serde_yaml::from_str(&content)
-        .map_err(|e| AppError::BadRequest(format!("Invalid compose YAML: {e}")))?;
-    if let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) {
-        for (svc_name, svc) in services.iter_mut() {
-            if let Some(ref target) = req.service {
-                if svc_name != target { continue; }
-            }
-            let Some(svc_obj) = svc.as_object_mut() else { continue };
-            match svc_obj.get("environment") {
-                Some(serde_json::Value::Object(_)) => {
-                    if let Some(serde_json::Value::Object(map)) = svc_obj.get_mut("environment") {
-                        for (k, v) in &req.env {
-                            map.insert(k.clone(), serde_json::Value::String(v.clone()));
-                        }
-                    }
-                }
-                Some(serde_json::Value::Array(arr)) => {
-                    let mut map = serde_json::Map::new();
-                    for item in arr.clone() {
-                        if let Some(s) = item.as_str() {
-                            if let Some((k, v)) = s.split_once('=') {
-                                map.insert(k.to_string(), serde_json::Value::String(v.to_string()));
-                            }
-                        }
-                    }
-                    for (k, v) in &req.env { map.insert(k.clone(), serde_json::Value::String(v.clone())); }
-                    svc_obj.insert("environment".to_string(), serde_json::Value::Object(map));
-                }
-                _ => {
-                    let map: serde_json::Map<_, _> = req.env.iter()
-                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                        .collect();
-                    svc_obj.insert("environment".to_string(), serde_json::Value::Object(map));
-                }
-            }
-        }
-    }
-    let new_content = serde_yaml::to_string(&compose)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    std::fs::write(&row.compose_path, &new_content)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let compose_path = std::path::PathBuf::from(&row.compose_path);
-    containers::deploy_compose(&project_name, &compose_path).await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-    audit::log(&state.db, Some(&user.id), &user.username, "app.env.patch",
-        Some("app"), Some(&project_name), "success", Some(&ip), None).await;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "App environment patch requires a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn expose_app(
@@ -2408,6 +2351,76 @@ mod tests {
             "audit::log(",
         ] {
             assert!(!handler.contains(marker), "pull handler marker: {marker}");
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_app_env_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/external-stack/env")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"env": {"EXAMPLE": "bounded"}}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "App environment patch requires a canonical operation adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_app_env_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/external-stack/env")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"env": {"EXAMPLE": "bounded"}}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[test]
+    fn patch_app_env_handler_has_no_direct_mutation_path() {
+        let source = include_str!("apps.rs");
+        let handler = source
+            .split("pub async fn patch_app_env(")
+            .nth(1)
+            .and_then(|rest| rest.split("pub async fn expose_app(").next())
+            .expect("patch env handler");
+
+        for marker in [
+            "sqlx::query(",
+            "std::fs::",
+            "containers::",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "patch env handler marker: {marker}");
         }
     }
 

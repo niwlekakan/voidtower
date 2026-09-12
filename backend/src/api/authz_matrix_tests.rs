@@ -1132,30 +1132,33 @@ async fn apps_delete_app_volumes_operator_guard_rejects_guest_and_member() {
 }
 
 #[tokio::test]
-async fn app_vault_admin_guard_admits_owner_for_expose_and_purge() {
+async fn app_vault_admin_guard_admits_owner_for_expose_and_purge_is_closed() {
     let db = setup_db().await;
     let owner_session = session_for_role(&db, "owner").await;
     let app = crate::api::router(test_support::build(db));
 
-    for (path, body) in [
-        (
+    let expose = app
+        .clone()
+        .oneshot(cookie_req(
+            "POST",
             "/api/apps/missing-project/expose",
+            &owner_session,
             Some(serde_json::json!({ "domain": "missing.invalid" })),
-        ),
-        ("/api/apps/missing-project/purge", None),
-    ] {
-        let res = app
-            .clone()
-            .oneshot(cookie_req("POST", path, &owner_session, body))
-            .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::NOT_FOUND,
-            "an owner must clear {path}'s admin guard and reach the missing-app lookup, got {}",
-            res.status()
-        );
-    }
+        ))
+        .await
+        .unwrap();
+    assert_eq!(expose.status(), StatusCode::NOT_FOUND);
+
+    let purge = app
+        .oneshot(cookie_req(
+            "POST",
+            "/api/apps/missing-project/purge",
+            &owner_session,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(purge.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

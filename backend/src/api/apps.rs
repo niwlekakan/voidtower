@@ -2356,6 +2356,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn purge_app_rejects_operator_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&pool, "operator").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/external-stack/purge")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_body(response).await["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
     async fn purge_app_fails_closed_after_authentication() {
         let pool = crate::api::mcp::test_support::setup_db().await;
         let session = crate::api::mcp::test_support::user_with_session(&pool).await;

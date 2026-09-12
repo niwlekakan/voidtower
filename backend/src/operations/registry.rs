@@ -633,6 +633,14 @@ mod tests {
 
         let models = include_str!("../api/models.rs");
         assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 1);
+        let ollama_create = models
+            .split_once("pub async fn start_ollama_create(")
+            .and_then(|(_, rest)| rest.split_once("async fn do_ollama_create"))
+            .map(|(handler, _)| handler)
+            .expect("Ollama create handler");
+        for marker in ["api/create", "do_ollama_create(", "tokio::spawn"] {
+            assert!(!ollama_create.contains(marker), "Ollama create bypass drift: {marker}");
+        }
 
         let settings = include_str!("../api/settings.rs");
         let production = settings

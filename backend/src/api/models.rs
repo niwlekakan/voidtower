@@ -660,6 +660,7 @@ fn ollama_creates() -> &'static Mutex<HashMap<String, OllamaPullState>> {
     OLLAMA_CREATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[allow(dead_code)]
 fn gguf_to_ollama_name(filename: &str) -> String {
     filename
         .trim_end_matches(".gguf")
@@ -668,6 +669,7 @@ fn gguf_to_ollama_name(filename: &str) -> String {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct OllamaCreateReq {
     pub filename: String,
 }
@@ -675,65 +677,14 @@ pub struct OllamaCreateReq {
 pub async fn start_ollama_create(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<OllamaCreateReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    if req.filename.contains('/') || req.filename.contains("..") || !req.filename.ends_with(".gguf")
-    {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
-
-    // Verify the file exists
-    let dir = models_dir(&state).await;
-    if !dir.join(&req.filename).exists() {
-        return Err(AppError::NotFound);
-    }
-
-    let model_name = gguf_to_ollama_name(&req.filename);
-    let id = uuid::Uuid::new_v4().to_string();
-
-    {
-        let mut map = ollama_creates().lock().unwrap();
-        map.insert(
-            id.clone(),
-            OllamaPullState {
-                id: id.clone(),
-                model: model_name.clone(),
-                status: "pulling".into(),
-                current_layer: Some("Sending to Ollama…".into()),
-                total_bytes: None,
-                pulled_bytes: None,
-                error: None,
-            },
-        );
-    }
-
-    let id2 = id.clone();
-    let filename = req.filename.clone();
-    let model_name_spawn = model_name.clone();
-    tokio::spawn(async move {
-        let result = do_ollama_create(&id2, &filename, &model_name_spawn).await;
-        let mut map = ollama_creates().lock().unwrap();
-        if let Some(entry) = map.get_mut(&id2) {
-            match result {
-                Ok(_) => {
-                    entry.status = "done".into();
-                    entry.current_layer = Some("Complete".into());
-                }
-                Err(e) => {
-                    entry.status = "error".into();
-                    entry.error = Some(e);
-                }
-            }
-        }
-    });
-
-    Ok(Json(
-        serde_json::json!({ "id": id, "model_name": model_name }),
+    Err(AppError::FeatureUnavailable(
+        "Ollama model creation requires a canonical operation adapter".into(),
     ))
 }
 
+#[allow(dead_code)]
 async fn do_ollama_create(
     id: &str,
     filename: &str,
@@ -1225,6 +1176,78 @@ mod tests {
     async fn json_body(response: axum::response::Response) -> serde_json::Value {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn start_ollama_create_rejects_unauthenticated_malformed_input_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/ollama/create")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn start_ollama_create_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/ollama/create")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Ollama model creation requires a canonical operation adapter"
+        );
+    }
+
+    #[test]
+    fn start_ollama_create_handler_has_no_direct_mutation_path() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn start_ollama_create(")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn do_ollama_create").next())
+            .expect("start-ollama-create handler");
+
+        for marker in [
+            "reqwest::",
+            "sqlx::query",
+            "std::fs::",
+            "tokio::spawn",
+            "do_ollama_create(",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "start-ollama-create marker: {marker}");
+        }
     }
 
     #[tokio::test]

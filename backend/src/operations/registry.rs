@@ -632,7 +632,7 @@ mod tests {
         }
 
         let models = include_str!("../api/models.rs");
-        assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 3);
+        assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 2);
 
         let settings = include_str!("../api/settings.rs");
         let production = settings

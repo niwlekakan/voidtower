@@ -4,6 +4,7 @@ use crate::{
     AppState,
 };
 use axum::{
+    body::Body,
     extract::{Path, State},
     Json,
 };
@@ -1100,31 +1101,6 @@ fn parse_llama_exec_args(line: &str) -> LlamaConfig {
     cfg
 }
 
-fn build_llama_exec_line(cfg: &LlamaConfig) -> String {
-    let mut parts = vec![
-        "--host 0.0.0.0".to_string(),
-        "--port 8080".to_string(),
-        format!("--n-gpu-layers {}", cfg.n_gpu_layers),
-        format!("--ctx-size {}", cfg.ctx_size),
-        format!("--batch-size {}", cfg.batch_size),
-        format!("--threads {}", cfg.threads),
-        format!("--parallel {}", cfg.parallel),
-    ];
-    if cfg.cont_batching {
-        parts.push("--cont-batching".to_string());
-    }
-    if cfg.flash_attn {
-        parts.push("--flash-attn".to_string());
-    }
-    if cfg.cache_type_k != "f16" {
-        parts.push(format!("--cache-type-k {}", cfg.cache_type_k));
-    }
-    if cfg.cache_type_v != "f16" {
-        parts.push(format!("--cache-type-v {}", cfg.cache_type_v));
-    }
-    parts.join(" ")
-}
-
 pub async fn get_llama_config(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1166,44 +1142,12 @@ pub async fn get_llama_config(
 pub async fn save_llama_config(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(cfg): Json<LlamaConfig>,
+    _body: Body,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
-        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::BadRequest("llama.cpp is not deployed".into()))?;
-
-    let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content =
-        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
-
-    let new_script = llama_entrypoint_with_exec(&build_llama_exec_line(&cfg));
-
-    if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
-        for svc in services.values_mut() {
-            if let Some(ep) = svc.get_mut("entrypoint").and_then(|e| e.as_array_mut()) {
-                if ep.len() >= 3 {
-                    ep[2] = serde_json::Value::String(new_script.clone());
-                }
-            }
-        }
-    }
-
-    let new_content = serde_yaml::to_string(&val).map_err(|e| AppError::Internal(e.into()))?;
-    std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
-
-    crate::containers::deploy_compose(&project_name, &compose_path)
-        .await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "Saving llama.cpp configuration requires a canonical operation adapter".into(),
+    ))
 }
 
 // ─── OpenAI-compatible proxy ──────────────────────────────────────────────────
@@ -1369,6 +1313,57 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn save_llama_config_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/llama-config")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn save_llama_config_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/llama-config")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Saving llama.cpp configuration requires a canonical operation adapter"
+        );
+    }
+
     #[test]
     fn load_model_handler_has_no_direct_mutation_path() {
         let source = include_str!("models.rs");
@@ -1386,6 +1381,29 @@ mod tests {
             "audit::log(",
         ] {
             assert!(!handler.contains(marker), "load-model handler marker: {marker}");
+        }
+    }
+
+    #[test]
+    fn save_llama_config_handler_has_no_direct_mutation_path() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn save_llama_config(")
+            .nth(1)
+            .and_then(|rest| rest.split("// ─── OpenAI-compatible proxy").next())
+            .expect("save-llama-config handler");
+
+        for marker in [
+            "sqlx::query",
+            "std::fs::",
+            "containers::",
+            "deploy_compose(",
+            "audit::log(",
+        ] {
+            assert!(
+                !handler.contains(marker),
+                "save-llama-config handler marker: {marker}"
+            );
         }
     }
 }

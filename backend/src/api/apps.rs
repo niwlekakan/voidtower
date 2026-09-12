@@ -581,6 +581,7 @@ fn rewrite_named_volumes_to_storage_root(compose: &mut Value, storage_root: &str
 /// privilege escalation (safe to strip); hard-rejects anything that would
 /// escape the member's own storage or the project-scoped bridge network,
 /// since those can't be "fixed" without changing what was actually asked for.
+#[allow(dead_code)]
 fn validate_and_sanitize_custom_deploy(svc: &mut Value, storage_root: &str) -> std::result::Result<(), String> {
     let Some(obj) = svc.as_object_mut() else { return Ok(()) };
 
@@ -1249,168 +1250,22 @@ pub struct CustomDeployRequest {
 pub async fn deploy_custom(
     State(state): State<AppState>,
     jar: CookieJar,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(_addr): ConnectInfo<SocketAddr>,
     Json(req): Json<CustomDeployRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let user = require_user(&state, &jar).await?;
-    let ip = addr.ip().to_string();
-
-    if !containers::is_docker_available() {
-        return Err(AppError::FeatureUnavailable("Docker is not available".into()));
-    }
-
-    let name = req.name.trim().to_string();
-    if name.is_empty() || req.image.trim().is_empty() {
-        return Err(AppError::BadRequest("name and image are required".into()));
-    }
-
-    // Custom-tier deploys are a materially bigger trust boundary than the
-    // curated catalog (plan §5) — a member needs the opt-in flag, and their
-    // submission gets validated/sanitized below. Admin/operator callers keep
-    // the pre-existing free-form behavior untouched.
-    let is_member = user.role == "member";
-    let mut owner_user_id: Option<String> = None;
-    let mut storage_root: Option<String> = None;
-    let mut target_node_id: Option<String> = None;
-    if is_member {
-        if !members::member_can_deploy_custom(&state, &user.id).await {
-            return Err(AppError::Forbidden);
-        }
-        members::check_member_quota(&state, &user.id).await?;
-        let resolved = members::resolve_member_storage_root(&state, &user.id, req.storage_drive_id.as_deref()).await?;
-        storage_root = Some(resolved.path);
-        target_node_id = members::resolve_member_target_node(&state, &user.id, req.target_node_id.as_deref()).await?;
-        owner_user_id = Some(user.id.clone());
-    }
-
-    // Sanitise project name — alphanumeric + hyphens only
-    let project_name = format!("vt-custom-{}",
-        name.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect::<String>()
+    let _user = require_user(&state, &jar).await?;
+    let _ = (
+        &req.name,
+        &req.image,
+        &req.ports,
+        &req.volumes,
+        &req.env,
+        &req.storage_drive_id,
+        &req.target_node_id,
     );
-
-    // Member port bindings: manual host ports must fall in the auto-allocated
-    // range; a bare container port (no host side given) gets one allocated.
-    let mut ports = req.ports.clone();
-    if is_member {
-        for p in ports.iter_mut() {
-            if let Some((host, _container)) = p.split_once(':') {
-                let h: u16 = host.parse().map_err(|_| AppError::BadRequest(format!("Invalid host port '{host}'")))?;
-                if !members::MEMBER_CUSTOM_PORT_RANGE.contains(&h) {
-                    return Err(AppError::BadRequest(format!(
-                        "Port {h} is outside the allowed range {}-{}",
-                        members::MEMBER_CUSTOM_PORT_RANGE.start(), members::MEMBER_CUSTOM_PORT_RANGE.end(),
-                    )));
-                }
-            } else {
-                let host_port = members::allocate_member_port(&state).await?;
-                *p = format!("{host_port}:{p}");
-            }
-        }
-    }
-
-    // Member volumes: a relative host path (or none) is anchored under their
-    // own storage_root automatically — they never need to know the real path.
-    let mut volumes = req.volumes.clone();
-    if is_member {
-        let root = storage_root.clone().unwrap_or_default();
-        for v in volumes.iter_mut() {
-            if let Some((host, rest)) = v.split_once(':') {
-                if !host.starts_with('/') {
-                    let full = std::path::Path::new(&root).join(host.trim_start_matches("./"));
-                    let _ = std::fs::create_dir_all(&full);
-                    *v = format!("{}:{}", full.display(), rest);
-                }
-            }
-        }
-    }
-
-    // Build compose YAML manually
-    let mut svc = serde_json::json!({
-        "image": req.image.trim(),
-        "restart": "unless-stopped",
-    });
-    if !ports.is_empty() {
-        svc["ports"] = Value::Array(ports.iter().map(|p| Value::String(p.clone())).collect());
-    }
-    if !volumes.is_empty() {
-        svc["volumes"] = Value::Array(volumes.iter().map(|v| Value::String(v.clone())).collect());
-    }
-    if !req.env.is_empty() {
-        svc["environment"] = Value::Array(req.env.iter().map(|e| Value::String(e.clone())).collect());
-    }
-
-    if is_member {
-        let root = storage_root.clone().unwrap_or_default();
-        validate_and_sanitize_custom_deploy(&mut svc, &root).map_err(AppError::BadRequest)?;
-        // Mandatory resource limits — arbitrary member-supplied images on
-        // shared infrastructure get a hard ceiling, unlike the vetted catalog.
-        if let Some(obj) = svc.as_object_mut() {
-            obj.entry("mem_limit".to_string()).or_insert(Value::String("1g".into()));
-            obj.entry("cpus".to_string()).or_insert(Value::String("1.0".into()));
-        }
-    }
-
-    let mut compose_val = serde_json::json!({
-        "services": { &name: svc }
-    });
-
-    // Extract primary port before writing (custom deploys have no AppDef)
-    let primary_port = first_port_from_compose(&compose_val).map(|p| p as i64);
-
-    // Ensure any bind-mount host paths exist
-    ensure_volume_dirs(&compose_val);
-
-    // Write compose file
-    let app_dir = state.config.apps_dir().join(&project_name);
-    std::fs::create_dir_all(&app_dir).map_err(|e| AppError::Internal(e.into()))?;
-
-    // Replace null volumes
-    if let Some(vols) = compose_val.get_mut("volumes") {
-        if let Some(obj) = vols.as_object_mut() {
-            for v in obj.values_mut() {
-                if v.is_null() { *v = serde_json::json!({}); }
-            }
-        }
-    }
-
-    // Pin all compose-managed networks to IPv4 (TrueNAS IPv6 pool workaround)
-    force_ipv4_networks(&mut compose_val);
-    // Rewrite VoidTower-data bind-mount sources for containerized installs (TrueNAS)
-    rewrite_voidtower_home_paths(&mut compose_val, &state.config);
-    rewrite_host_bind_mounts(&mut compose_val, &state.config);
-    strip_unavailable_devices(&mut compose_val);
-
-    let compose_str = serde_yaml::to_string(&compose_val).map_err(|e| AppError::Internal(e.into()))?;
-    let compose_path = app_dir.join("docker-compose.yml");
-    std::fs::write(&compose_path, &compose_str).map_err(|e| AppError::Internal(e.into()))?;
-
-    containers::deploy_compose(&project_name, &compose_path)
-        .await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-
-    sqlx::query(
-        "INSERT OR REPLACE INTO deployed_apps \
-         (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin, \
-          owner_user_id, storage_root, target_node_id) \
-         VALUES (?, 'custom', ?, ?, 'running', ?, ?, ?, 'voidtower', ?, ?, ?)"
-    )
-    .bind(&id).bind(&name).bind(&project_name)
-    .bind(now).bind(compose_path.to_string_lossy().as_ref()).bind(primary_port)
-    .bind(&owner_user_id).bind(&storage_root).bind(&target_node_id)
-    .execute(&state.db).await.map_err(AppError::Database)?;
-
-    audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "app.deploy_custom", Some("app"), Some(&project_name),
-        "success", Some(&ip),
-        Some(&format!("image={},owner={}", req.image.trim(), owner_user_id.as_deref().unwrap_or("admin"))),
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true, "project_name": project_name })))
+    Err(AppError::FeatureUnavailable(
+        "Custom app deployment requires a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn start_app(
@@ -2006,6 +1861,80 @@ mod tests {
     async fn json_body(response: axum::response::Response) -> serde_json::Value {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn deploy_custom_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/deploy-custom")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(
+                        json!({ "name": "custom-app", "image": "example/image:latest" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[test]
+    fn deploy_custom_handler_has_no_direct_mutation_path() {
+        let source = include_str!("apps.rs");
+        let handler = source
+            .split("pub async fn deploy_custom(")
+            .nth(1)
+            .and_then(|rest| rest.split("pub async fn start_app(").next())
+            .expect("deploy-custom handler");
+
+        for marker in [
+            "sqlx::query(",
+            "std::fs::",
+            "containers::",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "deploy-custom handler marker: {marker}");
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_custom_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/deploy-custom")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(
+                        json!({ "name": "custom-app", "image": "example/image:latest" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Custom app deployment requires a canonical operation adapter"
+        );
     }
 
     #[tokio::test]

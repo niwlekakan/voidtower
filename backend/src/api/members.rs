@@ -29,6 +29,7 @@ const DEFAULT_MAX_APPS: i64 = 5;
 /// from catalog apps' own (arbitrary, YAML-declared) ports and from anything
 /// an admin might have manually exposed, so a member can never claim or
 /// collide with a port they don't own.
+#[allow(dead_code)]
 pub(crate) const MEMBER_CUSTOM_PORT_RANGE: std::ops::RangeInclusive<u16> = 20000..=29999;
 
 fn unix_now() -> i64 {
@@ -481,6 +482,7 @@ pub(crate) async fn check_member_app_access(state: &AppState, user_id: &str, app
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) async fn member_can_deploy_custom(state: &AppState, user_id: &str) -> bool {
     sqlx::query_scalar::<_, bool>("SELECT can_deploy_custom FROM member_settings WHERE user_id = ?")
         .bind(user_id)
@@ -610,6 +612,7 @@ pub(crate) async fn resolve_member_target_node(
     Ok(Some(node_id.to_string()))
 }
 
+#[allow(dead_code)]
 pub(crate) async fn allocate_member_port(state: &AppState) -> Result<u16> {
     let next: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(primary_port), 19999) + 1 FROM deployed_apps \

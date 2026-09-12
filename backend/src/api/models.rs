@@ -439,11 +439,6 @@ pub async fn get_active(
     Ok(Json(serde_json::json!({ "filename": active })))
 }
 
-#[derive(Deserialize)]
-pub struct LoadReq {
-    pub filename: String,
-}
-
 fn llama_entrypoint_with_exec(server_args: &str) -> String {
     [
         "if [ -n \"$$MODEL_PATH\" ]; then",
@@ -513,15 +508,11 @@ async fn switch_llama_model(state: &AppState, filename: &str) -> Result<()> {
 pub async fn load_model(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<LoadReq>,
+    Json(_req): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    if req.filename.contains('/') || req.filename.contains("..") {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
-    switch_llama_model(&state, &req.filename).await?;
-    Ok(Json(
-        serde_json::json!({ "ok": true, "model": req.filename }),
+    Err(AppError::FeatureUnavailable(
+        "Model loading requires a canonical operation adapter".into(),
     ))
 }
 
@@ -1309,4 +1300,92 @@ pub async fn openai_chat_completions(
             .insert(axum::http::header::CONTENT_TYPE, ct);
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::{to_bytes, Body},
+        extract::ConnectInfo,
+        http::{header, Request, StatusCode},
+    };
+    use serde_json::json;
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    async fn json_body(response: axum::response::Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn load_model_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/load")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(json!({ "filename": "model.gguf" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn load_model_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/load")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(json!({ "filename": "model.gguf" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Model loading requires a canonical operation adapter"
+        );
+    }
+
+    #[test]
+    fn load_model_handler_has_no_direct_mutation_path() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn load_model(")
+            .nth(1)
+            .and_then(|rest| rest.split("// ─── Ollama pull").next())
+            .expect("load-model handler");
+
+        for marker in [
+            "switch_llama_model(",
+            "sqlx::query(",
+            "std::fs::",
+            "containers::",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "load-model handler marker: {marker}");
+        }
+    }
 }

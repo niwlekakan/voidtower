@@ -621,7 +621,7 @@ mod tests {
     fn deferred_direct_execution_inventory_is_exact() {
         let apps = include_str!("../api/apps.rs");
         for (needle, expected) in [
-            ("containers::deploy_compose(", 4),
+            ("containers::deploy_compose(", 3),
             ("containers::deploy_compose_cancellable(", 1),
             ("containers::restart_compose(", 0),
             ("containers::remove_compose(", 0),

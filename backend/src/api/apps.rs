@@ -2091,31 +2091,13 @@ fn default_true() -> bool { true }
 pub async fn pull_app(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path(project_name): Path<String>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(_project_name): Path<String>,
+    ConnectInfo(_addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<serde_json::Value>> {
-    let user = require_user(&state, &jar).await?;
-    let ip = addr.ip().to_string();
-    if !containers::is_docker_available() {
-        return Err(AppError::FeatureUnavailable("Docker is not available".into()));
-    }
-    let row = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
-        .bind(&project_name).fetch_optional(&state.db).await
-        .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
-    let compose_path = std::path::PathBuf::from(&row.compose_path);
-    if !compose_path.exists() {
-        return Err(AppError::BadRequest(format!("Compose file not found at {}", compose_path.display())));
-    }
-    containers::pull_compose(&project_name, &compose_path).await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-    containers::deploy_compose(&project_name, &compose_path).await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-    sqlx::query("UPDATE deployed_apps SET status = 'running' WHERE project_name = ?")
-        .bind(&project_name).execute(&state.db).await.map_err(AppError::Database)?;
-    audit::log(&state.db, Some(&user.id), &user.username, "app.pull",
-        Some("app"), Some(&project_name), "success", Some(&ip), None).await;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    require_user(&state, &jar).await?;
+    Err(AppError::FeatureUnavailable(
+        "App pull requires a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn patch_app_env(
@@ -2359,6 +2341,74 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn pull_app_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/external-stack/pull")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "App pull requires a canonical operation adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_app_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/external-stack/pull")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[test]
+    fn pull_app_handler_has_no_direct_mutation_path() {
+        let source = include_str!("apps.rs");
+        let handler = source
+            .split("pub async fn pull_app(")
+            .nth(1)
+            .and_then(|rest| rest.split("pub async fn patch_app_env(").next())
+            .expect("pull handler");
+
+        for marker in [
+            "sqlx::query(",
+            "std::fs::",
+            "containers::",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "pull handler marker: {marker}");
+        }
     }
 
     #[tokio::test]

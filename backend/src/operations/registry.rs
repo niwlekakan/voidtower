@@ -621,12 +621,12 @@ mod tests {
     fn deferred_direct_execution_inventory_is_exact() {
         let apps = include_str!("../api/apps.rs");
         for (needle, expected) in [
-            ("containers::deploy_compose(", 6),
+            ("containers::deploy_compose(", 5),
             ("containers::deploy_compose_cancellable(", 1),
             ("containers::restart_compose(", 1),
             ("containers::remove_compose(", 3),
             ("containers::stop_compose(", 1),
-            ("containers::pull_compose(", 1),
+            ("containers::pull_compose(", 0),
         ] {
             assert_eq!(occurrences(apps, needle), expected, "App Vault bypass drift: {needle}");
         }

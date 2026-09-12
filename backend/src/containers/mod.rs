@@ -298,17 +298,6 @@ pub async fn restart_compose(project_name: &str, compose_path: &std::path::Path)
     Ok(())
 }
 
-pub async fn remove_compose(project_name: &str, compose_path: &std::path::Path) -> Result<()> {
-    tokio::process::Command::new("docker")
-        .args(["compose", "-p", project_name, "-f"])
-        .arg(compose_path)
-        .args(["down", "--volumes", "--remove-orphans"])
-        .process_group(0)
-        .output()
-        .await?;
-    Ok(())
-}
-
 pub async fn logs_compose(project_name: &str, compose_path: &std::path::Path, tail: usize) -> Result<String> {
     let out = tokio::process::Command::new("docker")
         .args(["compose", "-p", project_name, "-f"])

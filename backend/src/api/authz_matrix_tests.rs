@@ -1132,6 +1132,18 @@ async fn apps_delete_app_volumes_operator_guard_rejects_guest_and_member() {
 }
 
 #[tokio::test]
+async fn apps_remove_app_admin_guard_rejects_guest_and_member() {
+    let db = setup_db().await;
+    assert_mutation_guard_rejects_guest_and_member(
+        &db,
+        "DELETE",
+        "/api/apps/:project_name",
+        "apps::remove_app",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn app_vault_admin_guard_admits_owner_for_expose_and_purge_is_closed() {
     let db = setup_db().await;
     let owner_session = session_for_role(&db, "owner").await;

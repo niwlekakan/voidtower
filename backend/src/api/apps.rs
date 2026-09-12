@@ -1577,41 +1577,14 @@ pub async fn restart_app(
 pub async fn remove_app(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path(project_name): Path<String>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(_project_name): Path<String>,
+    ConnectInfo(_addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
-    let ip = addr.ip().to_string();
-
-    let row = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
-    )
-    .bind(&project_name)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or(AppError::NotFound)?;
-    require_app_owner_or_admin(&user, &row)?;
-
-    let compose_path = std::path::PathBuf::from(&row.compose_path);
-    let _ = containers::remove_compose(&project_name, &compose_path).await;
-
-    // Remove compose file and project dir
-    let _ = std::fs::remove_file(&compose_path);
-    if let Some(dir) = compose_path.parent() {
-        let _ = std::fs::remove_dir(dir);
-    }
-
-    sqlx::query("DELETE FROM deployed_apps WHERE project_name = ?")
-        .bind(&project_name)
-        .execute(&state.db)
-        .await
-        .map_err(AppError::Database)?;
-
-    audit::log(&state.db, Some(&user.id), &user.username, "app.remove",
-        Some("app"), Some(&project_name), "success", Some(&ip), None).await;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    super::role_guard::require_admin(&user)?;
+    Err(AppError::FeatureUnavailable(
+        "App removal requires a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn app_logs(
@@ -2536,6 +2509,75 @@ mod tests {
             "audit::log(",
         ] {
             assert!(!handler.contains(marker), "purge handler marker: {marker}");
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_app_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/apps/external-stack")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "App removal requires a canonical operation adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_app_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/apps/external-stack")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[test]
+    fn remove_app_handler_has_no_direct_mutation_path() {
+        let source = include_str!("apps.rs");
+        let handler = source
+            .split("pub async fn remove_app(")
+            .nth(1)
+            .and_then(|rest| rest.split("pub async fn app_logs(").next())
+            .expect("remove handler");
+
+        for marker in [
+            "sqlx::query(",
+            "sqlx::query_as",
+            "std::fs::",
+            "containers::",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "remove handler marker: {marker}");
         }
     }
 

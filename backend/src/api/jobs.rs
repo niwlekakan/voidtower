@@ -18,7 +18,11 @@ use crate::{
     AppState,
 };
 
-use super::{actions::CanonicalApiError, bearer_auth::AuthenticatedApiToken};
+use super::{
+    actions::CanonicalApiError,
+    bearer_auth::AuthenticatedApiToken,
+    version::{JobReadEnvelopeV1, JobSuccessEnvelopeV1},
+};
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -60,7 +64,7 @@ pub async fn get_by_idempotency(
     jar: CookieJar,
     token: Option<Extension<AuthenticatedApiToken>>,
     Path(key): Path<String>,
-) -> std::result::Result<Json<serde_json::Value>, CanonicalApiError> {
+) -> std::result::Result<Json<JobReadEnvelopeV1<crate::operations::contracts::JobSummaryV1>>, CanonicalApiError> {
     let credential =
         super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
     invocation::validate_idempotency_key(&key)?;
@@ -71,20 +75,28 @@ pub async fn get_by_idempotency(
     let action = crate::api::mcp::action_registry::action(&job.action)
         .ok_or_else(CanonicalApiError::forbidden)?;
     invocation::authorize_action(action, &credential)?;
-    Ok(Json(serde_json::json!({"job": job})))
+    Ok(Json(JobReadEnvelopeV1::new(
+        job.resource.id.clone(),
+        job.action.clone(),
+        job,
+    )))
 }
 
 pub async fn get(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<JobReadEnvelopeV1<crate::operations::contracts::JobSummaryV1>>> {
     require_operator(&state, &jar).await?;
     let job = jobs::get(&state.db, &id)
         .await
         .map_err(AppError::Internal)?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(serde_json::json!({"job": job})))
+    Ok(Json(JobReadEnvelopeV1::new(
+        job.resource.id.clone(),
+        job.action.clone(),
+        job,
+    )))
 }
 
 pub async fn cancel(
@@ -130,5 +142,13 @@ pub async fn cancel(
         .await
         .map_err(|_| CanonicalApiError::internal())?
         .ok_or_else(CanonicalApiError::job_not_found)?;
-    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"job": job}))).into_response())
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(JobSuccessEnvelopeV1::new(
+            job.resource.id.clone(),
+            job.action.clone(),
+            job,
+        )),
+    )
+        .into_response())
 }

@@ -8,6 +8,7 @@ use serde::Serialize;
 
 pub const API_VERSION: &str = "1";
 pub const ACTION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
+pub const JOB_READ_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 const VERSION_HEADER: &str = "x-voidtower-api-version";
 
 #[derive(Debug, Serialize)]
@@ -46,6 +47,38 @@ impl<T> JobSuccessEnvelopeV1<T> {
             job: data,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobReadEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub resource_id: String,
+    pub action: String,
+    pub job: T,
+}
+
+impl<T> JobReadEnvelopeV1<T> {
+    pub fn new(resource_id: impl Into<String>, action: impl Into<String>, data: T) -> Self {
+        Self {
+            schema_version: JOB_READ_ENVELOPE_SCHEMA_VERSION,
+            resource_id: resource_id.into(),
+            action: action.into(),
+            job: data,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiErrorV1 {
+    pub code: &'static str,
+    pub message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiErrorEnvelopeV1 {
+    pub error: ApiErrorV1,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,6 +166,23 @@ mod tests {
     }
 
     #[test]
+    fn canonical_error_contract_serializes_without_schema_drift() {
+        let body = serde_json::to_string(&ApiErrorEnvelopeV1 {
+            error: ApiErrorV1 {
+                code: "job_not_found",
+                message: "The requested job does not exist.",
+                job_id: None,
+            },
+        })
+        .unwrap();
+
+        assert_eq!(
+            body,
+            r#"{"error":{"code":"job_not_found","message":"The requested job does not exist."}}"#
+        );
+    }
+
+    #[test]
     fn action_success_envelopes_serializes_without_schema_drift() {
         let plan = serde_json::to_string(&PlanSuccessEnvelopeV1::new(
             "resource-1",
@@ -146,6 +196,12 @@ mod tests {
             serde_json::json!({"id": "job-1"}),
         ))
         .unwrap();
+        let read = serde_json::to_string(&JobReadEnvelopeV1::new(
+            "resource-1",
+            "container.start",
+            serde_json::json!({"id": "job-1"}),
+        ))
+        .unwrap();
 
         assert_eq!(
             plan,
@@ -153,6 +209,10 @@ mod tests {
         );
         assert_eq!(
             job,
+            r#"{"schema_version":1,"resource_id":"resource-1","action":"container.start","job":{"id":"job-1"}}"#
+        );
+        assert_eq!(
+            read,
             r#"{"schema_version":1,"resource_id":"resource-1","action":"container.start","job":{"id":"job-1"}}"#
         );
     }

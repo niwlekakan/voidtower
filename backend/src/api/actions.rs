@@ -18,7 +18,7 @@ use crate::{
 };
 
 use super::bearer_auth::AuthenticatedApiToken;
-use super::version::{JobSuccessEnvelopeV1, PlanSuccessEnvelopeV1};
+use super::version::{ApiErrorEnvelopeV1, ApiErrorV1, JobSuccessEnvelopeV1, PlanSuccessEnvelopeV1};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,14 +84,17 @@ impl CanonicalApiError {
 
 impl IntoResponse for CanonicalApiError {
     fn into_response(self) -> Response {
-        let mut error = serde_json::json!({
-            "code": self.code,
-            "message": self.message,
-        });
-        if let Some(job_id) = self.job_id {
-            error["job_id"] = Value::String(job_id);
-        }
-        (self.status, Json(serde_json::json!({"error": error}))).into_response()
+        (
+            self.status,
+            Json(ApiErrorEnvelopeV1 {
+                error: ApiErrorV1 {
+                    code: self.code,
+                    message: self.message,
+                    job_id: self.job_id,
+                },
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -501,11 +504,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "application/json");
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "unauthorized");
+        assert_eq!(
+            body.as_ref(),
+            br#"{"error":{"code":"unauthorized","message":"Authentication is required."}}"#
+        );
     }
 
     #[tokio::test]
@@ -621,7 +627,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cancelled.status(), StatusCode::ACCEPTED);
-        assert_eq!(json(cancelled).await["job"]["state"], "cancelled");
+        let cancelled_json = json(cancelled).await;
+        assert_eq!(cancelled_json["schema_version"], 1);
+        assert_eq!(cancelled_json["resource_id"], resource.id);
+        assert_eq!(cancelled_json["action"], "container.start");
+        assert_eq!(cancelled_json["job"]["state"], "cancelled");
 
         let terminal_replay = app
             .clone()
@@ -995,7 +1005,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(recovered.status(), StatusCode::OK);
-        assert_eq!(json(recovered).await["job"]["id"], job_id);
+        let recovered_json = json(recovered).await;
+        assert_eq!(recovered_json["schema_version"], 1);
+        assert_eq!(recovered_json["resource_id"], resource.id);
+        assert_eq!(recovered_json["action"], "proxmox.guest.start");
+        assert_eq!(recovered_json["job"]["id"], job_id);
 
         let other_actor = app
             .clone()

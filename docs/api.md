@@ -1,6 +1,15 @@
 # API Reference
 
-Session-authenticated endpoints require a valid `vt_session` cookie (a scoped Bearer token may be upgraded to a temporary session where its route policy permits). Pairing, webhook, and device routes use their documented non-session credentials. Public routes are the authentication entry/callback endpoints, `/api/health`, `/status`, `/api/settings/public`, `/api/integrations/scopes`, `/api/integrations/odysseus/manifest`, and the `/v1/*` OpenAI-compatible proxy.
+`backend/contracts/api-v1-envelope-contract.json` is the source-owned contract artifact for the versioned canonical operation responses and the shared frontend generated artifact. The current API version is `1`; clients may omit `x-voidtower-api-version` for compatibility, while an explicit unsupported, malformed, or duplicate value receives `406` with the bounded `unsupported_api_version` envelope. Successful responses echo `x-voidtower-api-version: 1`.
+
+Canonical action requests use the same JSON body for planning and submission:
+
+```
+POST /api/resources/:id/actions/:action/plan   { "input": { ... } }
+POST /api/resources/:id/actions/:action        { "input": { ... } }
+```
+
+Both requests send `Content-Type: application/json` and the API-version header. Submission additionally requires `Idempotency-Key`; it is 1–128 ASCII characters matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. Clients reject blank or oversized resource/action path values and invalid idempotency keys before making a request. The plan response is `200` and the submission response is `202`; both use the source-owned versioned envelopes below. Unknown JSON body fields and malformed JSON fail with bounded `400 { "error": { "code": "invalid_request", "message": "The request body is invalid." } }`.
 
 `backend/src/action_registry.rs` is the authoritative security inventory for every registered
 route and structured AI/automation action. Each route explicitly declares its session policy,

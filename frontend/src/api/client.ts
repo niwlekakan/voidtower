@@ -11,6 +11,7 @@ import {
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 const API_VERSION_HEADER = 'x-voidtower-api-version'
+const MAX_CANONICAL_TARGET_LENGTH = 256
 
 export class ApiClientError extends Error {
   constructor(
@@ -94,6 +95,12 @@ async function request<T>(path: string, init?: RequestInit, parse?: (value: unkn
   if (res.status === 204) return undefined as T
   const body = await res.json()
   return parse ? parse(body) : body as T
+}
+
+function validateCanonicalTarget(value: string): void {
+  if (typeof value !== 'string' || value.length === 0 || value === '.' || value === '..' || value.trim().length === 0 || value.length > MAX_CANONICAL_TARGET_LENGTH) {
+    throw new ApiClientError('Invalid canonical action target.', 'invalid_action_target', 400)
+  }
 }
 
 function proxyOptsBody(opts: import('./types').ProxyOptions) {
@@ -801,22 +808,26 @@ export const api = {
   },
 
   canonicalActions: {
-    plan: (resourceId: string, action: string, input: unknown = {}) =>
-      request(`/api/resources/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(action)}/plan`, {
+    plan: async (resourceId: string, action: string, input: unknown = {}) => {
+      validateCanonicalTarget(resourceId)
+      validateCanonicalTarget(action)
+      return request(`/api/resources/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(action)}/plan`, {
         method: 'POST',
         body: JSON.stringify({ input }),
-      }, parsePlanSuccessEnvelope),
-    submit: (resourceId: string, action: string, input: unknown, idempotencyKey: string) =>
-      (() => {
-        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(idempotencyKey)) {
-          return Promise.reject(new ApiClientError('Invalid idempotency key.', 'invalid_idempotency_key', 400))
-        }
-        return request(`/api/resources/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(action)}`, {
-          method: 'POST',
-          headers: { 'Idempotency-Key': idempotencyKey },
-          body: JSON.stringify({ input }),
-        }, parseJobSuccessEnvelope)
-      })(),
+      }, parsePlanSuccessEnvelope)
+    },
+    submit: async (resourceId: string, action: string, input: unknown, idempotencyKey: string) => {
+      validateCanonicalTarget(resourceId)
+      validateCanonicalTarget(action)
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(idempotencyKey)) {
+        throw new ApiClientError('Invalid idempotency key.', 'invalid_idempotency_key', 400)
+      }
+      return request(`/api/resources/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(action)}`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ input }),
+      }, parseJobSuccessEnvelope)
+    },
   },
 
   approvals: {

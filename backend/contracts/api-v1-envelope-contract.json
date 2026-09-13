@@ -1,6 +1,23 @@
 {
   "contract": "voidtower.api.envelopes",
   "api_version": "1",
+  "requests": {
+    "canonical_action_v1": {
+      "body": {
+        "input": {}
+      },
+      "plan_headers": {
+        "Content-Type": "application/json",
+        "x-voidtower-api-version": "1"
+      },
+      "submit_headers": {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "operation-1",
+        "x-voidtower-api-version": "1"
+      },
+      "idempotency_key": "1-128 ASCII characters matching [A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+    }
+  },
   "envelopes": {
     "plan_success_v1": {
       "schema_version": 1,

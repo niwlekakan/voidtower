@@ -155,4 +155,20 @@ describe('versioned API envelope adapters', () => {
       .rejects.toMatchObject({ code: 'invalid_idempotency_key', status: 400 })
     expect(fetch).not.toHaveBeenCalled()
   })
+
+  it.each([
+    ['an empty resource identity', '', 'container.start'],
+    ['a dot resource identity', '.', 'container.start'],
+    ['a parent-dot resource identity', '..', 'container.start'],
+    ['a blank action', 'resource-1', '  '],
+    ['an oversized action', 'resource-1', 'a'.repeat(257)],
+  ])('rejects %s before making a canonical request', async (_description, resourceId, action) => {
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(api.canonicalActions.plan(resourceId, action)).rejects.toMatchObject({
+      name: 'ApiClientError', code: 'invalid_action_target', status: 400,
+    })
+    expect(fetch).not.toHaveBeenCalled()
+  })
 })

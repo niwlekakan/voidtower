@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import type { ApiError } from './types'
 import { API_V1_ENVELOPE_CONTRACT } from './generatedApiContract'
+import { parseApiErrorEnvelope, parseJobReadEnvelope, parseJobSuccessEnvelope, parsePlanSuccessEnvelope } from './envelopeClient'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 const API_VERSION_HEADER = 'x-voidtower-api-version'
@@ -40,7 +41,7 @@ function resolveFetch(): Promise<typeof fetch> {
   return tauriFetchPromise
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, parse?: (value: unknown) => T): Promise<T> {
   const doFetch = await resolveFetch()
   const res = await doFetch(`${BASE}${path}`, {
     ...init,
@@ -55,6 +56,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let body: ApiError | null = null
     try { body = await res.json() } catch { /* ignore */ }
+    if (body && typeof body.error === 'object' && body.error !== null) {
+      try {
+        const error = parseApiErrorEnvelope(body)
+        throw new ApiClientError(error.error.message, error.error.code, res.status)
+      } catch {
+        const errorBody = body.error as Record<string, unknown>
+        const code = typeof errorBody.code === 'string' ? errorBody.code.slice(0, 128) : 'invalid_api_error'
+        const message = typeof errorBody.message === 'string'
+          ? errorBody.message.slice(0, 1024)
+          : 'The API returned an invalid error envelope.'
+        throw new ApiClientError(message, code, res.status)
+      }
+    }
     throw new ApiClientError(
       body?.error?.message ?? res.statusText,
       body?.error?.code ?? 'unknown',
@@ -63,7 +77,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
+  const body = await res.json()
+  return parse ? parse(body) : body as T
 }
 
 function proxyOptsBody(opts: import('./types').ProxyOptions) {
@@ -754,9 +769,28 @@ export const api = {
     list: (limit = 50) =>
       request<import('./types').DurableJobListResponse>(`/api/jobs?limit=${encodeURIComponent(limit)}`),
     get: (id: string) =>
-      request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}`),
+      request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}`, undefined, parseJobReadEnvelope),
     cancel: (id: string) =>
-      request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+      request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }, parseJobSuccessEnvelope),
+  },
+
+  canonicalActions: {
+    plan: (resourceId: string, action: string, input: unknown = {}) =>
+      request(`/api/resources/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(action)}/plan`, {
+        method: 'POST',
+        body: JSON.stringify({ input }),
+      }, parsePlanSuccessEnvelope),
+    submit: (resourceId: string, action: string, input: unknown, idempotencyKey: string) =>
+      (() => {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(idempotencyKey)) {
+          return Promise.reject(new ApiClientError('Invalid idempotency key.', 'invalid_idempotency_key', 400))
+        }
+        return request(`/api/resources/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(action)}`, {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey },
+          body: JSON.stringify({ input }),
+        }, parseJobSuccessEnvelope)
+      })(),
   },
 
   approvals: {

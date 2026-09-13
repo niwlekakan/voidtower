@@ -11,8 +11,8 @@ describe('durable operation API client', () => {
   it('encodes list/detail/cancel job requests', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(ok({ jobs: [] }))
-      .mockResolvedValueOnce(ok({ job: {} }))
-      .mockResolvedValueOnce(ok({ job: {} }))
+      .mockResolvedValueOnce(ok({ schema_version: 1, resource_id: 'resource-1', action: 'container.start', job: {} }))
+      .mockResolvedValueOnce(ok({ schema_version: 1, resource_id: 'resource-1', action: 'container.start', job: {} }))
     vi.stubGlobal('fetch', fetch)
     await api.operationJobs.list(25)
     await api.operationJobs.get('job/id')

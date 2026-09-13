@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "contracts:generate": "node ../scripts/generate-api-contract.mjs",
+    "contracts:check": "node ../scripts/generate-api-contract.mjs --check",
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint . --max-warnings 0",

@@ -20,7 +20,12 @@ describe('durable operation API client', () => {
     expect(fetch.mock.calls[0][0]).toBe('/api/jobs?limit=25')
     expect(fetch.mock.calls[1][0]).toBe('/api/jobs/job%2Fid')
     expect(fetch.mock.calls[2][0]).toBe('/api/jobs/job%2Fid/cancel')
-    expect(fetch.mock.calls[2][1]).toMatchObject({ method: 'POST' })
+    expect(fetch.mock.calls[2][1]).toMatchObject({
+      method: 'POST',
+      headers: {
+        'x-voidtower-api-version': '1',
+      },
+    })
   })
 
   it('omits absent approval status and sends one trimmed exact-record decision', async () => {

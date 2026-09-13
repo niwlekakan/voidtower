@@ -1,7 +1,9 @@
 /// <reference types="vite/client" />
 import type { ApiError } from './types'
+import { API_V1_ENVELOPE_CONTRACT } from './generatedApiContract'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
+const API_VERSION_HEADER = 'x-voidtower-api-version'
 
 export class ApiClientError extends Error {
   constructor(
@@ -45,6 +47,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      [API_VERSION_HEADER]: API_V1_ENVELOPE_CONTRACT.api_version,
       ...init?.headers,
     },
   })

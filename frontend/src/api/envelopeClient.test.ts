@@ -5,6 +5,7 @@ import {
   parseApiErrorEnvelope,
   parseJobSuccessEnvelope,
   parsePlanSuccessEnvelope,
+  parseVersionNegotiationErrorEnvelope,
 } from './envelopeClient'
 
 const job = { id: 'job-1', state: 'queued' }
@@ -67,6 +68,23 @@ describe('versioned API envelope adapters', () => {
       .toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
   })
 
+  it.each([
+    ['missing versions', undefined],
+    ['empty versions', []],
+    ['too many versions', Array.from({ length: 17 }, () => '1')],
+    ['non-string version', [1]],
+    ['blank version', ['   ']],
+    ['oversized version', ['1'.repeat(257)]],
+  ])('rejects %s in a version-negotiation error', (_description, supported_versions) => {
+    expect(() => parseVersionNegotiationErrorEnvelope({
+      error: {
+        code: 'unsupported_api_version',
+        message: 'The requested API version is not supported',
+        ...(supported_versions === undefined ? {} : { supported_versions }),
+      },
+    })).toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
+  })
+
   it('routes canonical plan and job responses through production parsing', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -109,6 +127,23 @@ describe('versioned API envelope adapters', () => {
 
     await expect(api.operationJobs.get('job-1')).rejects.toMatchObject({
       name: 'ApiClientError', code: 'job_not_found', status: 404,
+    })
+  })
+
+  it('preserves supported versions from the version-negotiation error contract', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: {
+        code: 'unsupported_api_version',
+        message: 'The requested API version is not supported',
+        supported_versions: ['1'],
+      },
+    }), { status: 406, headers: { 'content-type': 'application/json' } })))
+
+    await expect(api.operationJobs.get('job-1')).rejects.toMatchObject({
+      name: 'ApiClientError',
+      code: 'unsupported_api_version',
+      status: 406,
+      supportedVersions: ['1'],
     })
   })
 

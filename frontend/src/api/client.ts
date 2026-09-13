@@ -1,7 +1,13 @@
 /// <reference types="vite/client" />
 import type { ApiError } from './types'
 import { API_V1_ENVELOPE_CONTRACT } from './generatedApiContract'
-import { parseApiErrorEnvelope, parseJobReadEnvelope, parseJobSuccessEnvelope, parsePlanSuccessEnvelope } from './envelopeClient'
+import {
+  parseApiErrorEnvelope,
+  parseJobReadEnvelope,
+  parseJobSuccessEnvelope,
+  parsePlanSuccessEnvelope,
+  parseVersionNegotiationErrorEnvelope,
+} from './envelopeClient'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 const API_VERSION_HEADER = 'x-voidtower-api-version'
@@ -11,6 +17,7 @@ export class ApiClientError extends Error {
     message: string,
     public readonly code: string,
     public readonly status: number,
+    public readonly supportedVersions: string[] | null = null,
   ) {
     super(message)
     this.name = 'ApiClientError'
@@ -57,6 +64,14 @@ async function request<T>(path: string, init?: RequestInit, parse?: (value: unkn
     let body: ApiError | null = null
     try { body = await res.json() } catch { /* ignore */ }
     if (body && typeof body.error === 'object' && body.error !== null) {
+      if (body.error.code === 'unsupported_api_version') {
+        try {
+          const error = parseVersionNegotiationErrorEnvelope(body)
+          throw new ApiClientError(error.error.message, error.error.code, res.status, error.error.supported_versions)
+        } catch (error) {
+          if (error instanceof ApiClientError) throw error
+        }
+      }
       try {
         const error = parseApiErrorEnvelope(body)
         throw new ApiClientError(error.error.message, error.error.code, res.status)

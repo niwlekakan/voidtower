@@ -26,6 +26,10 @@ export interface ApiErrorEnvelope {
   }
 }
 
+export interface VersionNegotiationErrorEnvelope extends ApiErrorEnvelope {
+  error: ApiErrorEnvelope['error'] & { supported_versions: string[] }
+}
+
 export class ApiEnvelopeError extends Error {
   constructor(
     public readonly code: 'unsupported_api_schema' | 'invalid_api_envelope' | 'invalid_api_error',
@@ -99,4 +103,21 @@ export function parseApiErrorEnvelope(value: unknown): ApiErrorEnvelope {
     message: error.message,
     ...(typeof error.job_id === 'string' ? { job_id: error.job_id } : {}),
   } }
+}
+
+export function parseVersionNegotiationErrorEnvelope(value: unknown): VersionNegotiationErrorEnvelope {
+  const envelope = parseApiErrorEnvelope(value)
+  const error = asRecord(asRecord(value)?.error)
+  const versions: unknown[] | null = error && Array.isArray(error.supported_versions) ? error.supported_versions : null
+  if (
+    envelope.error.code !== 'unsupported_api_version'
+    || !versions
+    || versions.length === 0
+    || versions.length > 16
+    || versions.some(version => !isBoundedEnvelopeString(version))
+  ) {
+    throw new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0)
+  }
+  const supportedVersions = versions.filter(isBoundedEnvelopeString)
+  return { error: { ...envelope.error, supported_versions: supportedVersions } }
 }

@@ -6,6 +6,10 @@ mkdir -p /var/lib/voidtower /etc/voidtower
 TLS_DIR=/etc/voidtower/tls
 NGINX_CONF=/etc/nginx/conf.d/voidtower.conf
 BACKEND=http://127.0.0.1:8743
+case "$BACKEND" in
+    http://127.0.0.1:8743) ;;
+    *) echo "[entrypoint] invalid backend target" >&2; exit 1 ;;
+esac
 
 # Try to generate a self-signed cert on first run
 HAS_TLS=0
@@ -38,11 +42,33 @@ _proxy_headers='
         proxy_read_timeout 3600;
         proxy_send_timeout 3600;
         client_max_body_size 100m;'
+_sse_proxy_headers='
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Accept text/event-stream;
+        proxy_set_header Connection "";
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_hide_header Cache-Control;
+        add_header X-Accel-Buffering no always;
+        add_header Cache-Control no-cache always;'
 
 cat > "$NGINX_CONF" <<NGINX
 server {
     listen 80;
     server_name _;
+    location ~ ^/api/events/stream(?:/|$) {
+        proxy_pass $BACKEND;$_sse_proxy_headers
+        proxy_set_header X-Forwarded-Proto http;
+    }
+    location ~ ^/api/integrations/events(?:$|/(?!legacy(?:/|$))) {
+        proxy_pass $BACKEND;$_sse_proxy_headers
+        proxy_set_header X-Forwarded-Proto http;
+    }
     location / {
         proxy_pass $BACKEND;$_proxy_headers
         proxy_set_header X-Forwarded-Proto http;

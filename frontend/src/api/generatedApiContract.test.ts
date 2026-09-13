@@ -7,7 +7,7 @@ describe('generated API v1 envelope contract', () => {
     expect(API_V1_ENVELOPE_CONTRACT.api_version).toBe('1')
   })
 
-  it('preserves the v1 action and error envelope seams', () => {
+  it('preserves the v1 action, error, and event envelope seams', () => {
     expect(API_V1_ENVELOPE_CONTRACT.api_version).toBe('1')
     expect(API_V1_ENVELOPE_CONTRACT.envelopes.plan_success_v1).toMatchObject({
       schema_version: 1,
@@ -23,5 +23,12 @@ describe('generated API v1 envelope contract', () => {
       code: 'job_not_found',
       message: 'The requested job does not exist.',
     })
+    expect(API_V1_ENVELOPE_CONTRACT.envelopes.event_v1).toMatchObject({
+      schema_version: 1,
+      event_type: 'job.running.v1',
+      correlation_id: 'correlation-1',
+    })
+    expect(API_V1_ENVELOPE_CONTRACT.envelopes.stream_ready_v1).toEqual({ cursor: 0, high_water: 0 })
+    expect(API_V1_ENVELOPE_CONTRACT.envelopes.stream_gap_v1.reason).toBe('behind_retention')
   })
 })

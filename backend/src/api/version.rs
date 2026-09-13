@@ -215,6 +215,27 @@ mod tests {
                         "code": "job_not_found",
                         "message": "The requested job does not exist."
                     }
+                },
+                "event_v1": {
+                    "sequence": 1,
+                    "event_id": "event-1",
+                    "schema_version": 1,
+                    "event_type": "job.running.v1",
+                    "occurred_at": 100,
+                    "actor": null,
+                    "resource_id": "resource-1",
+                    "job_id": "job-1",
+                    "approval_id": null,
+                    "correlation_id": "correlation-1",
+                    "causation_id": null,
+                    "payload": {}
+                },
+                "stream_ready_v1": {"cursor": 0, "high_water": 0},
+                "stream_gap_v1": {
+                    "reason": "behind_retention",
+                    "requested_after": 0,
+                    "earliest_available": 1,
+                    "latest_available": 1
                 }
             }
         });

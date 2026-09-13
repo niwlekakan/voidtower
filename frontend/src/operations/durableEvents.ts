@@ -1,4 +1,5 @@
 import { api } from '@/api/client'
+import { API_V1_ENVELOPE_CONTRACT } from '@/api/generatedApiContract'
 import type {
   DurableEventEnvelope,
   DurableEventStreamGap,
@@ -23,9 +24,18 @@ let source: EventSource | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let lastSequence: number | null = null
 let state: DurableEventConnectionState = { status: 'disconnected', cursor: null, gap: null }
+const EXPECTED_EVENT_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.event_v1.schema_version
+const MAX_EVENT_FIELD_LENGTH = 256
 
 function isSequence(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function isBoundedString(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.trim().length > 0
+    && value.length <= MAX_EVENT_FIELD_LENGTH
 }
 
 function parseReady(data: string): DurableEventStreamReady | null {
@@ -61,24 +71,23 @@ function parseEnvelope(message: MessageEvent<string>): DurableEventEnvelope | nu
     const actor = value.actor
     const validActor = actor === null || (
       typeof actor === 'object'
-      && typeof actor.actor_type === 'string'
-      && (actor.id === null || typeof actor.id === 'string')
-      && (actor.source === null || typeof actor.source === 'string')
+      && isBoundedString(actor.actor_type)
+      && (actor.id === null || isBoundedString(actor.id))
+      && (actor.source === null || isBoundedString(actor.source))
     )
     const valid = isSequence(value.sequence)
       && isSequence(id)
       && id === value.sequence
-      && typeof value.event_id === 'string'
-      && isSequence(value.schema_version)
-      && value.schema_version > 0
-      && typeof value.event_type === 'string'
+      && isBoundedString(value.event_id)
+      && value.schema_version === EXPECTED_EVENT_SCHEMA_VERSION
+      && isBoundedString(value.event_type)
       && isSequence(value.occurred_at)
       && validActor
-      && typeof value.correlation_id === 'string'
-      && (value.resource_id === null || typeof value.resource_id === 'string')
-      && (value.job_id === null || typeof value.job_id === 'string')
-      && (value.approval_id === null || typeof value.approval_id === 'string')
-      && (value.causation_id === null || typeof value.causation_id === 'string')
+      && isBoundedString(value.correlation_id)
+      && (value.resource_id === null || isBoundedString(value.resource_id))
+      && (value.job_id === null || isBoundedString(value.job_id))
+      && (value.approval_id === null || isBoundedString(value.approval_id))
+      && (value.causation_id === null || isBoundedString(value.causation_id))
       && Object.prototype.hasOwnProperty.call(value, 'payload')
     return valid ? value as DurableEventEnvelope : null
   } catch {

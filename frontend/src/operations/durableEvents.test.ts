@@ -102,6 +102,18 @@ describe('durable event stream client', () => {
     expect(source.closed).toBe(true)
   })
 
+  it('rejects incompatible or unbounded event metadata as a gap', async () => {
+    const states: DurableEventConnectionState[] = []
+    const unsubscribe = subscribeDurableEvents({ onState: state => states.push(state), onEvent: () => {} })
+    const source = FakeEventSource.instances[0]
+    source.emit('stream.ready', { cursor: 0, high_water: 0 })
+    source.emit('durable_event', { ...envelope(1), schema_version: 2 }, '1')
+
+    expect(states[states.length - 1]?.status).toBe('gap')
+    expect(states[states.length - 1]?.gap?.reason).toBe('invalid_frame')
+    unsubscribe()
+  })
+
   it('treats malformed and non-monotonic frames as gaps and resumes from the last valid ID', async () => {
     const states: DurableEventConnectionState[] = []
     const unsubscribe = subscribeDurableEvents({ onState: state => states.push(state), onEvent: () => {} })

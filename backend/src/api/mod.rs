@@ -100,6 +100,7 @@ pub mod timeline;
 pub mod totp;
 pub mod updates;
 pub mod users;
+pub mod version;
 pub mod vms;
 pub mod webhooks;
 pub mod wireguard;
@@ -517,4 +518,5 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(main_router)
         .merge(embed_router)
+        .layer(middleware::from_fn(version::negotiate))
 }

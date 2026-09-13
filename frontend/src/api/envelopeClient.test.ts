@@ -38,6 +38,25 @@ describe('versioned API envelope adapters', () => {
     })).toThrowError(new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid success envelope.', 1))
   })
 
+  it.each([
+    ['a blank resource identity', { ...validJobEnvelope, resource_id: '   ' }],
+    ['a blank action', { ...validJobEnvelope, action: '\t' }],
+    ['an oversized job identity', { ...validJobEnvelope, job: { id: 'j'.repeat(257) } }],
+  ])('rejects %s as an invalid bounded envelope', (_description, body) => {
+    expect(() => parseJobSuccessEnvelope(body)).toThrowError(
+      new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid success envelope.', 1),
+    )
+  })
+
+  it('applies bounded identity validation to plan envelopes', () => {
+    expect(() => parsePlanSuccessEnvelope({
+      schema_version: 1,
+      resource_id: 'resource-1',
+      action: 'container.start',
+      plan: { job_id: 'p'.repeat(257) },
+    })).toThrowError(new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid success envelope.', 1))
+  })
+
   it('parses canonical errors and rejects malformed error bodies', () => {
     expect(parseApiErrorEnvelope({
       error: { code: 'job_not_found', message: 'The requested job does not exist.' },
@@ -56,12 +75,31 @@ describe('versioned API envelope adapters', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(validJobEnvelope), { status: 202 }))
     vi.stubGlobal('fetch', fetch)
 
-    await expect(api.canonicalActions.plan('resource-1', 'container.start')).resolves.toMatchObject({
+    await expect(api.canonicalActions.plan('resource/1', 'container/start')).resolves.toMatchObject({
       schema_version: 1,
       plan: { job_id: 'job-1' },
     })
-    await expect(api.canonicalActions.submit('resource-1', 'container.start', {}, 'key-1'))
+    await expect(api.canonicalActions.submit('resource/1', 'container/start', { force: true }, 'key-1'))
       .resolves.toMatchObject({ job: { id: 'job-1' } })
+    expect(fetch.mock.calls[0][0]).toBe('/api/resources/resource%2F1/actions/container%2Fstart/plan')
+    expect(fetch.mock.calls[0][1]).toMatchObject({
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-voidtower-api-version': '1',
+      },
+      body: JSON.stringify({ input: {} }),
+    })
+    expect(fetch.mock.calls[1][0]).toBe('/api/resources/resource%2F1/actions/container%2Fstart')
+    expect(fetch.mock.calls[1][1]).toMatchObject({
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': 'key-1',
+        'x-voidtower-api-version': '1',
+      },
+      body: JSON.stringify({ input: { force: true } }),
+    })
   })
 
   it('turns a canonical HTTP error into the existing bounded client error', async () => {

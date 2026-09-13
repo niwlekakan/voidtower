@@ -6,6 +6,7 @@ const EXPECTED_JOB_READ_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.job_
 const MAX_ERROR_CODE_LENGTH = 128
 const MAX_ERROR_MESSAGE_LENGTH = 1024
 const MAX_ERROR_JOB_ID_LENGTH = 128
+const MAX_ENVELOPE_FIELD_LENGTH = 256
 
 type RecordValue = Record<string, unknown>
 
@@ -46,6 +47,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
 
+function isBoundedEnvelopeString(value: unknown): value is string {
+  return isNonEmptyString(value) && value.trim().length > 0 && value.length <= MAX_ENVELOPE_FIELD_LENGTH
+}
+
 function requireSuccessEnvelope(value: unknown, payloadKey: 'plan' | 'job', expectedSchemaVersion: number): RecordValue {
   const envelope = asRecord(value)
   if (!envelope) {
@@ -58,7 +63,7 @@ function requireSuccessEnvelope(value: unknown, payloadKey: 'plan' | 'job', expe
 
   const payload = asRecord(envelope[payloadKey])
   const payloadIdentity = payloadKey === 'plan' ? payload?.job_id : payload?.id
-  if (!isNonEmptyString(envelope.resource_id) || !isNonEmptyString(envelope.action) || !payload || !isNonEmptyString(payloadIdentity)) {
+  if (!isBoundedEnvelopeString(envelope.resource_id) || !isBoundedEnvelopeString(envelope.action) || !payload || !isBoundedEnvelopeString(payloadIdentity)) {
     throw new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid success envelope.', expectedSchemaVersion)
   }
   return envelope

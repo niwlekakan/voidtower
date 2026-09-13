@@ -10,6 +10,7 @@ mod cluster;
 pub mod cmdb;
 mod config;
 mod containers;
+pub mod collector;
 mod db;
 mod error;
 mod monitoring;

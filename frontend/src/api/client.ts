@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import type { ApiError } from './types'
+import { useAuthStore } from '@/store/auth'
 import { API_V1_ENVELOPE_CONTRACT } from './generatedApiContract'
 import {
   parseApiErrorEnvelope,
@@ -50,6 +51,7 @@ function resolveFetch(): Promise<typeof fetch> {
 }
 
 async function request<T>(path: string, init?: RequestInit, parse?: (value: unknown) => T): Promise<T> {
+  const requestSessionEpoch = useAuthStore.getState().sessionEpoch
   const doFetch = await resolveFetch()
   const res = await doFetch(`${BASE}${path}`, {
     ...init,
@@ -62,6 +64,9 @@ async function request<T>(path: string, init?: RequestInit, parse?: (value: unkn
   })
 
   if (!res.ok) {
+    if (res.status === 401 && useAuthStore.getState().sessionEpoch === requestSessionEpoch) {
+      useAuthStore.getState().logout()
+    }
     let body: ApiError | null = null
     try { body = await res.json() } catch { /* ignore */ }
     if (body && typeof body.error === 'object' && body.error !== null) {

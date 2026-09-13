@@ -130,6 +130,39 @@ describe('versioned API envelope adapters', () => {
     })
   })
 
+  it('clears the authenticated identity when the server reports an expired session', async () => {
+    const { useAuthStore } = await import('@/store/auth')
+    useAuthStore.getState().setUser({
+      id: 'user-1', username: 'owner', role: 'owner',
+      force_password_change: false, totp_enabled: false, mfa_required: false,
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'unauthorized', message: 'Authentication required.' },
+    }), { status: 401 })))
+
+    await expect(api.auth.me()).rejects.toMatchObject({ name: 'ApiClientError', status: 401 })
+    expect(useAuthStore.getState()).toMatchObject({ user: null, status: 'unauthenticated' })
+  })
+
+  it('does not let an older 401 clear a newer authenticated session', async () => {
+    const { useAuthStore } = await import('@/store/auth')
+    useAuthStore.getState().logout()
+    let resolveResponse: ((response: Response) => void) | undefined
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>(resolve => { resolveResponse = resolve })))
+
+    const pending = api.auth.me()
+    useAuthStore.getState().setUser({
+      id: 'user-2', username: 'operator', role: 'operator',
+      force_password_change: false, totp_enabled: false, mfa_required: false,
+    })
+    resolveResponse?.(new Response(JSON.stringify({
+      error: { code: 'unauthorized', message: 'Authentication required.' },
+    }), { status: 401 }))
+
+    await expect(pending).rejects.toMatchObject({ name: 'ApiClientError', status: 401 })
+    expect(useAuthStore.getState()).toMatchObject({ user: { id: 'user-2' }, status: 'authenticated' })
+  })
+
   it('preserves supported versions from the version-negotiation error contract', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: {

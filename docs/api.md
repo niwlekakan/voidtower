@@ -11,6 +11,13 @@ POST /api/resources/:id/actions/:action        { "input": { ... } }
 
 Both requests send `Content-Type: application/json` and the API-version header. Submission additionally requires `Idempotency-Key`; it is 1–128 ASCII characters matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. Clients reject blank or oversized resource/action path values and invalid idempotency keys before making a request. The plan response is `200` and the submission response is `202`; both use the source-owned versioned envelopes below. Unknown JSON body fields and malformed JSON fail with bounded `400 { "error": { "code": "invalid_request", "message": "The request body is invalid." } }`.
 
+Web-client session and recovery behavior:
+
+- Every API request includes credentials and the current API-version header. A `401` response for the request’s current auth session immediately clears the in-memory authenticated user; stale responses from an older auth session are ignored. The route guard then returns the browser to `/login` rather than leaving protected screens mounted.
+- A `406` `unsupported_api_version` response is parsed only when its bounded `supported_versions` list is valid. The client error exposes that list for a compatibility prompt; malformed negotiation bodies fall back to the generic bounded API error.
+- Durable SSE is an invalidation/history channel, not authoritative state. The client validates event schema, sequence, and SSE ID; transport failure reconnects from the last accepted cursor, while a server or local gap triggers an authoritative HTTP read and reconnects from the server high-water mark.
+- After reconnect or gap recovery, operation views use the authoritative read as their ready barrier. Bounded polling remains the fallback while disconnected and resumes only within its foreground deadline.
+
 `backend/src/action_registry.rs` is the authoritative security inventory for every registered
 route and structured AI/automation action. Each route explicitly declares its session policy,
 concrete credential mechanism, bearer policy, risk class, approval policy, and AI exposure.

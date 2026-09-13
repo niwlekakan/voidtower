@@ -156,6 +156,29 @@ async fn asset(
     .unwrap()
 }
 
+async fn enrolled_agent_host(db: &SqlitePool) -> (String, String, String) {
+    let node_id = format!("inventory-node-{}", uuid::Uuid::new_v4());
+    let raw_token = format!("vt_node_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query("INSERT OR IGNORE INTO users (id, username, password_hash, role, created_at, updated_at) VALUES ('inventory-owner', 'inventory-owner', 'x', 'owner', 0, 0)")
+        .execute(db).await.unwrap();
+    sqlx::query("INSERT INTO nodes (id, display_name, device_type, owner_user_id, wg_peer_id, wg_public_key, token_hash, agent_capable, approved, created_at) VALUES (?, 'fixture agent', 'other', 'inventory-owner', NULL, '', ?, 1, 1, 0)")
+        .bind(&node_id)
+        .bind(crate::api::integrations::sha256_hex(&raw_token))
+        .execute(db).await.unwrap();
+    let host = asset(db, "sys", "host", "Fixture host").await;
+    sqlx::query("UPDATE resources SET node_id = ? WHERE id = ?")
+        .bind(&node_id)
+        .bind(&host.resource_id)
+        .execute(db)
+        .await
+        .unwrap();
+    (node_id, raw_token, host.resource_id)
+}
+
+fn inventory_snapshot(snapshot_id: &str, host_name: &str) -> Value {
+    json!({"schema_version":1,"snapshot_id":snapshot_id,"collector_version":"fixture-0.1","platform":"linux","collected_at":1700000000,"host":{"entity_key":"host","identities":[{"kind":"hardware_uuid","value":host_name}],"attributes":{"hostname":host_name},"runtime":{"kernel":"fixture"}},"entities":[]})
+}
+
 async fn insert_discovery(
     db: &SqlitePool,
     source_resource_id: &str,
@@ -207,6 +230,141 @@ async fn insert_discovery(
         .await
         .unwrap()
         .unwrap()
+}
+
+#[tokio::test]
+async fn inventory_upload_is_authenticated_idempotent_and_binds_the_node_host() {
+    let (db, app) = setup().await;
+    let (node_id, token, host_id) = enrolled_agent_host(&db).await;
+    let snapshot_id = uuid::Uuid::new_v4().to_string();
+    let body = inventory_snapshot(&snapshot_id, "fixture-host");
+
+    let mut first = request(
+        Method::POST,
+        &format!("/api/nodes/{node_id}/inventory"),
+        None,
+        Some(body.clone()),
+    );
+    first.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    let response = app.clone().oneshot(first).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let result = json_body(response).await;
+    assert_eq!(result["snapshot_id"], snapshot_id);
+    assert_eq!(result["replayed"], false);
+
+    let mut replay = request(
+        Method::POST,
+        &format!("/api/nodes/{node_id}/inventory"),
+        None,
+        Some(body),
+    );
+    replay.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    let replayed = json_body(app.clone().oneshot(replay).await.unwrap()).await;
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM cmdb_inventory_snapshots WHERE source_resource_id = ?"
+        )
+        .bind(&host_id)
+        .fetch_one(&db)
+        .await
+        .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn inventory_upload_rejects_wrong_path_conflict_and_revoked_node() {
+    let (db, app) = setup().await;
+    let (node_id, token, _) = enrolled_agent_host(&db).await;
+    let other_node = format!("other-inventory-node-{}", uuid::Uuid::new_v4());
+    let other_token = format!("vt_node_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO nodes (id, display_name, device_type, owner_user_id, wg_peer_id, wg_public_key, token_hash, agent_capable, approved, created_at) VALUES (?, 'other fixture agent', 'other', 'inventory-owner', NULL, '', ?, 1, 1, 0)")
+        .bind(&other_node)
+        .bind(crate::api::integrations::sha256_hex(&other_token))
+        .execute(&db).await.unwrap();
+    let snapshot_id = uuid::Uuid::new_v4().to_string();
+    let body = inventory_snapshot(&snapshot_id, "fixture-host");
+
+    let mut wrong = request(
+        Method::POST,
+        &format!("/api/nodes/{other_node}/inventory"),
+        None,
+        Some(body.clone()),
+    );
+    wrong.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    assert_error(
+        app.clone().oneshot(wrong).await.unwrap(),
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+    )
+    .await;
+
+    let mut first = request(
+        Method::POST,
+        &format!("/api/nodes/{node_id}/inventory"),
+        None,
+        Some(body),
+    );
+    first.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    assert_eq!(
+        app.clone().oneshot(first).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    let mut conflict = request(
+        Method::POST,
+        &format!("/api/nodes/{node_id}/inventory"),
+        None,
+        Some(inventory_snapshot(&snapshot_id, "different-host")),
+    );
+    conflict.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    assert_error(
+        app.clone().oneshot(conflict).await.unwrap(),
+        StatusCode::CONFLICT,
+        "conflict",
+    )
+    .await;
+
+    sqlx::query("UPDATE nodes SET approved = 0 WHERE id = ?")
+        .bind(&node_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let mut revoked = request(
+        Method::POST,
+        &format!("/api/nodes/{node_id}/inventory"),
+        None,
+        Some(inventory_snapshot(
+            &uuid::Uuid::new_v4().to_string(),
+            "fixture-host",
+        )),
+    );
+    revoked.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    assert_error(
+        app.oneshot(revoked).await.unwrap(),
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+    )
+    .await;
 }
 
 #[tokio::test]

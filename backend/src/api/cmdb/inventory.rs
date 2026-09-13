@@ -48,8 +48,21 @@ pub async fn upload(
     node_enroll::verify_node_token(state.clone(), node_id.clone(), headers.clone()).await?;
     let snapshot: InventorySnapshotV1 = serde_json::from_slice(&body)
         .map_err(|_| AppError::BadRequest("invalid inventory snapshot".into()))?;
-    let source_resource_id: Option<String> = sqlx::query_scalar("SELECT r.id FROM resources r JOIN cmdb_assets a ON a.resource_id = r.id WHERE r.node_id = ? AND r.kind = ? ORDER BY r.id LIMIT 1").bind(&node_id).bind("cmdb_asset").fetch_optional(&state.db).await.map_err(AppError::Database)?;
-    let source_resource_id = source_resource_id.ok_or(AppError::NotFound)?;
+    let source_resource_ids: Vec<String> = sqlx::query_scalar("SELECT r.id FROM resources r JOIN cmdb_assets a ON a.resource_id = r.id WHERE r.node_id = ? AND r.kind = ? AND a.class_key = 'sys' AND a.type_key = 'host' ORDER BY r.id")
+        .bind(&node_id)
+        .bind("cmdb_asset")
+        .fetch_all(&state.db)
+        .await
+        .map_err(AppError::Database)?;
+    let source_resource_id = match source_resource_ids.as_slice() {
+        [] => return Err(AppError::NotFound),
+        [resource_id] => resource_id.clone(),
+        _ => {
+            return Err(AppError::Conflict(
+                "node has ambiguous canonical CMDB host resources".into(),
+            ))
+        }
+    };
     let actor = ActorRef {
         actor_type: ActorType::Node,
         id: Some(node_id.clone()),

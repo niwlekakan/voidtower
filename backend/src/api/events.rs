@@ -1,7 +1,7 @@
 use crate::{
     auth,
     error::{AppError, Result},
-    operations::events::{self, EventBounds},
+    operations::events::{self, sse_frame_fits, EventBounds},
     AppState,
 };
 use axum::{
@@ -22,8 +22,8 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
-    pub token: Option<String>,
     pub after: Option<String>,
+    pub token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -114,11 +114,15 @@ pub async fn stream_handler(
     authorize_stream(
         &state,
         &jar,
-        query.token.as_deref(),
         &headers,
         token_context.is_some(),
     )
     .await?;
+    if query.token.is_some() {
+        return Err(AppError::BadRequest(
+            "query-string API tokens are not supported; use Authorization: Bearer".into(),
+        ));
+    }
 
     let bounds = events::bounds(&state.db)
         .await
@@ -150,7 +154,6 @@ pub async fn stream_handler(
 async fn authorize_stream(
     state: &AppState,
     jar: &CookieJar,
-    query_token: Option<&str>,
     headers: &HeaderMap,
     bearer_context: bool,
 ) -> Result<()> {
@@ -185,7 +188,7 @@ async fn authorize_stream(
         return super::role_guard::require_operator(&user);
     }
 
-    if let Some(raw) = query_token.or(header_token) {
+    if let Some(raw) = header_token {
         auth::validate_api_token(&state.db, raw, "alerts:read")
             .await
             .map_err(|_| AppError::Unauthorized)?;
@@ -262,24 +265,29 @@ fn initial_gap(cursor: SelectedCursor, bounds: EventBounds) -> Option<CursorGapR
 }
 
 fn ready_event(cursor: i64, high_water: i64) -> Option<Event> {
-    serde_json::to_string(&ReadyPayload { cursor, high_water })
-        .ok()
-        .map(|data| Event::default().event("stream.ready").data(data))
+    let data = serde_json::to_string(&ReadyPayload { cursor, high_water }).ok()?;
+    sse_frame_fits("stream.ready", data.len(), None)
+        .then(|| Event::default().event("stream.ready").data(data))
 }
 
 fn gap_event(reason: CursorGapReason, cursor: i64, bounds: EventBounds) -> Option<Event> {
-    serde_json::to_string(&GapPayload {
+    let data = serde_json::to_string(&GapPayload {
         reason: reason.as_str(),
         requested_after: cursor,
         earliest_available: bounds.earliest,
         latest_available: bounds.latest,
     })
-    .ok()
-    .map(|data| Event::default().event("stream.gap").data(data))
+    .ok()?;
+    sse_frame_fits("stream.gap", data.len(), None)
+        .then(|| Event::default().event("stream.gap").data(data))
 }
 
 fn durable_event(envelope: &crate::operations::contracts::EventEnvelopeV1) -> Option<Event> {
-    serde_json::to_string(envelope).ok().map(|data| {
+    let data = serde_json::to_string(envelope).ok()?;
+    if !sse_frame_fits("durable_event", data.len(), Some(envelope.sequence)) {
+        return None;
+    }
+    Some({
         Event::default()
             .id(envelope.sequence.to_string())
             .event("durable_event")
@@ -331,6 +339,13 @@ async fn deliver(
             }
             let sequence = envelope.sequence;
             let Some(event) = durable_event(&envelope) else {
+                let bounds = events::bounds(&db).await.unwrap_or(EventBounds {
+                    earliest: None,
+                    latest: cursor,
+                });
+                if let Some(event) = gap_event(CursorGapReason::Discontinuity, cursor, bounds) {
+                    let _ = tx.send(event).await;
+                }
                 return;
             };
             if tx.send(event).await.is_err() {

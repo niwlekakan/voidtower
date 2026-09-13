@@ -1,7 +1,7 @@
 use crate::{
     audit, auth,
     error::{AppError, Result},
-    operations::invocation::CredentialContext,
+    operations::{events::sse_frame_fits, invocation::CredentialContext},
     services::ServiceAction,
     voidwatch, AppState,
 };
@@ -19,6 +19,19 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
+
+async fn send_bounded_legacy_event(
+    tx: &tokio::sync::mpsc::Sender<Event>,
+    event_name: &str,
+    data: String,
+) -> bool {
+    if !sse_frame_fits(event_name, data.len(), None) {
+        return false;
+    }
+    tx.send(Event::default().event(event_name).data(data))
+        .await
+        .is_ok()
+}
 
 // ---------------------------------------------------------------------------
 // Scope definitions
@@ -591,7 +604,7 @@ pub async fn manifest(State(state): State<AppState>) -> Json<serde_json::Value> 
         },
         "event_stream": {
             "url": "/api/integrations/events",
-            "auth": "?token=<api_token> or Authorization header",
+            "auth": "Authorization: Bearer <api_token>",
             "required_scope": "alerts:read",
             "cursor": "after=<sequence> or Last-Event-ID",
             "events": ["stream.ready", "durable_event", "stream.gap"],
@@ -645,7 +658,7 @@ pub struct StreamQuery {
 pub async fn legacy_event_stream(
     State(state): State<AppState>,
     jar: CookieJar,
-    Query(q): Query<StreamQuery>,
+    Query(_q): Query<StreamQuery>,
     headers: HeaderMap,
     token_context: Option<Extension<super::bearer_auth::AuthenticatedApiToken>>,
 ) -> Result<
@@ -673,18 +686,14 @@ pub async fn legacy_event_stream(
             }
             _ => (false, false),
         }
-    } else if let Some(raw) = q.token {
-        (
-            auth::validate_api_token(&state.db, &raw, "alerts:read")
-                .await
-                .is_ok(),
-            true,
-        )
     } else if let Some(hdr) = headers.get("Authorization") {
         let raw = hdr
             .to_str()
             .unwrap_or("")
-            .trim_start_matches("Bearer ")
+            .strip_prefix("Bearer ")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("")
             .to_string();
         (
             auth::validate_api_token(&state.db, &raw, "alerts:read")
@@ -698,6 +707,12 @@ pub async fn legacy_event_stream(
 
     if !authed {
         return Err(AppError::Unauthorized);
+    }
+
+    if _q.token.is_some() {
+        return Err(AppError::BadRequest(
+            "query-string API tokens are not supported; use Authorization: Bearer".into(),
+        ));
     }
 
     // Check emergency disable
@@ -727,7 +742,7 @@ pub async fn legacy_event_stream(
                                 "ram_total": snap.ram_total,
                                 "timestamp": unix_now(),
                             });
-                            if tx.send(Event::default().event("metrics").data(data.to_string())).await.is_err() {
+                            if !send_bounded_legacy_event(&tx, "metrics", data.to_string()).await {
                                 break;
                             }
                             if snap.cpu_usage > 90.0 {
@@ -736,7 +751,7 @@ pub async fn legacy_event_stream(
                                     "value": snap.cpu_usage, "threshold": 90,
                                     "message": format!("CPU at {:.0}%", snap.cpu_usage),
                                 });
-                                if tx.send(Event::default().event("alert").data(alert.to_string())).await.is_err() { break; }
+                                if !send_bounded_legacy_event(&tx, "alert", alert.to_string()).await { break; }
                             }
                             let ram_pct = (snap.ram_used * 100).checked_div(snap.ram_total).unwrap_or(0);
                             if ram_pct > 90 {
@@ -745,7 +760,7 @@ pub async fn legacy_event_stream(
                                     "value": ram_pct, "threshold": 90,
                                     "message": format!("RAM at {}%", ram_pct),
                                 });
-                                if tx.send(Event::default().event("alert").data(alert.to_string())).await.is_err() { break; }
+                                if !send_bounded_legacy_event(&tx, "alert", alert.to_string()).await { break; }
                             }
                         }
                         Err(_) => break,
@@ -768,11 +783,11 @@ pub async fn legacy_event_stream(
                                 "type": "audit", "id": id, "action": action,
                                 "resource_type": resource_type, "outcome": outcome, "timestamp": ts,
                             });
-                            if tx.send(Event::default().event("audit").data(ev.to_string())).await.is_err() { break; }
+                            if !send_bounded_legacy_event(&tx, "audit", ev.to_string()).await { break; }
                         }
                     }
                     last_audit_ts = new_ts;
-                    let _ = tx.send(Event::default().event("ping").data(unix_now().to_string())).await;
+                    let _ = send_bounded_legacy_event(&tx, "ping", unix_now().to_string()).await;
                 }
             }
         }

@@ -10,7 +10,9 @@ use sqlx::SqlitePool;
 use std::time::Duration;
 use tower::ServiceExt;
 
-use crate::operations::events::PendingEvent;
+use crate::operations::events::{
+    PendingEvent, MAX_EVENT_FRAME_BYTES,
+};
 
 use super::mcp::test_support;
 
@@ -150,7 +152,13 @@ async fn token_scope_and_emergency_disable_apply_to_both_durable_aliases() {
     for path in ["/api/events/stream", "/api/integrations/events"] {
         let response = app
             .clone()
-            .oneshot(request(&format!("{path}?token={allowed}"), None))
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header(header::AUTHORIZATION, format!("Bearer {allowed}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "{path}");
@@ -158,11 +166,17 @@ async fn token_scope_and_emergency_disable_apply_to_both_durable_aliases() {
 
         assert_eq!(
             app.clone()
-                .oneshot(request(&format!("{path}?token={denied}"), None))
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {denied}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
             "{path} must reject a missing scope"
         );
     }
@@ -178,7 +192,13 @@ async fn token_scope_and_emergency_disable_apply_to_both_durable_aliases() {
     for path in ["/api/events/stream", "/api/integrations/events"] {
         assert_eq!(
             app.clone()
-                .oneshot(request(&format!("{path}?token={allowed}"), None))
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {allowed}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap()
                 .status(),
@@ -234,6 +254,80 @@ async fn token_scope_and_emergency_disable_apply_to_both_durable_aliases() {
         .status(),
         StatusCode::SERVICE_UNAVAILABLE
     );
+}
+
+#[tokio::test]
+async fn durable_aliases_reject_query_string_api_tokens() {
+    let db = test_support::setup_db().await;
+    let allowed = token(&db, &["alerts:read"]).await;
+    let session = test_support::user_with_role_session(&db, "operator").await;
+    let app = crate::api::router(test_support::build(db));
+
+    for path in ["/api/events/stream", "/api/integrations/events"] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                &format!("{path}?token={allowed}"),
+                Some(&session),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+
+    let response = app
+        .oneshot(request(
+            &format!("/api/integrations/events/legacy?token={allowed}"),
+            Some(&session),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn oversized_persisted_event_is_not_delivered_as_a_durable_frame() {
+    let db = test_support::setup_db().await;
+    let payload = serde_json::json!({
+        "blob": "x".repeat(MAX_EVENT_FRAME_BYTES + 1),
+    });
+    sqlx::query(
+        "INSERT INTO events (event_id, schema_version, event_type, occurred_at, correlation_id, payload_json)\
+         VALUES ('oversized-event', 1, 'test.oversized.v1', 0, 'oversized-test', ?)",
+    )
+    .bind(serde_json::to_string(&payload).unwrap())
+    .execute(&db)
+    .await
+    .unwrap();
+    let session = test_support::user_with_role_session(&db, "operator").await;
+    let app = crate::api::router(test_support::build(db));
+    let response = app
+        .oneshot(request("/api/events/stream?after=0", Some(&session)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut body = response.into_body().into_data_stream();
+    let ready = tokio::time::timeout(Duration::from_secs(2), body.next())
+        .await
+        .expect("stream must emit ready frame")
+        .expect("stream must emit a frame")
+        .expect("ready frame must be readable");
+    assert!(String::from_utf8(ready.to_vec())
+        .unwrap()
+        .contains("event: stream.ready"));
+    let gap = tokio::time::timeout(Duration::from_secs(2), body.next())
+        .await
+        .expect("oversized event must emit a recovery gap")
+        .expect("oversized event must emit a gap frame")
+        .expect("gap frame must be readable");
+    let gap = String::from_utf8(gap.to_vec()).unwrap();
+    assert!(gap.contains("event: stream.gap"));
+    assert!(gap.contains(r#""reason":"discontinuity""#));
+    let next = tokio::time::timeout(Duration::from_secs(2), body.next())
+        .await
+        .expect("oversized event must close after its recovery gap");
+    assert!(next.is_none());
 }
 
 #[tokio::test]

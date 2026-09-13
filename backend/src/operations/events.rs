@@ -3,7 +3,7 @@ use super::{
     contracts::{ActorRef, EventEnvelopeV1},
     unix_now,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -42,6 +42,14 @@ pub struct EventBounds {
     pub latest: i64,
 }
 
+pub const MAX_EVENT_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_EVENT_FRAME_BYTES: usize = 128 * 1024;
+
+pub fn sse_frame_fits(event_name: &str, data_bytes: usize, id: Option<i64>) -> bool {
+    let id_bytes = id.map(|value| 5 + value.to_string().len()).unwrap_or(0);
+    id_bytes + 8 + event_name.len() + 7 + data_bytes < MAX_EVENT_FRAME_BYTES
+}
+
 pub async fn append(
     transaction: &mut Transaction<'_, Sqlite>,
     event: PendingEvent,
@@ -49,6 +57,27 @@ pub async fn append(
     let event_id = uuid::Uuid::new_v4().to_string();
     let occurred_at = unix_now();
     let payload_json = canonical_json::to_canonical_string(&event.payload)?;
+    if payload_json.len() > MAX_EVENT_PAYLOAD_BYTES {
+        bail!("event payload exceeds {MAX_EVENT_PAYLOAD_BYTES} bytes");
+    }
+    let candidate = EventEnvelopeV1 {
+        sequence: i64::MAX,
+        event_id: event_id.clone(),
+        schema_version: 1,
+        event_type: event.event_type.clone(),
+        occurred_at,
+        actor: event.actor.clone(),
+        resource_id: event.resource_id.clone(),
+        job_id: event.job_id.clone(),
+        approval_id: event.approval_id.clone(),
+        correlation_id: event.correlation_id.clone(),
+        causation_id: event.causation_id.clone(),
+        payload: event.payload.clone(),
+    };
+    let candidate_bytes = serde_json::to_vec(&candidate)?;
+    if !sse_frame_fits("durable_event", candidate_bytes.len(), Some(i64::MAX)) {
+        bail!("event frame exceeds {MAX_EVENT_FRAME_BYTES} bytes");
+    }
     let actor_type = event.actor.as_ref().map(|actor| actor.actor_type.as_str());
     let actor_id = event.actor.as_ref().and_then(|actor| actor.id.as_deref());
     let actor_source = event
@@ -263,6 +292,54 @@ mod tests {
         .await
         .unwrap();
         transaction.rollback().await.unwrap();
+        assert!(list_after(&pool, 0, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_payload_is_rejected_before_insert() {
+        let pool = pool().await;
+        let mut transaction = pool.begin().await.unwrap();
+        let result = append(
+            &mut transaction,
+            PendingEvent {
+                event_type: "test.oversized.v1".into(),
+                actor: None,
+                resource_id: None,
+                job_id: None,
+                approval_id: None,
+                correlation_id: "test".into(),
+                causation_id: None,
+                payload: serde_json::json!({
+                    "blob": "x".repeat(MAX_EVENT_PAYLOAD_BYTES + 1),
+                }),
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        transaction.commit().await.unwrap();
+        assert!(list_after(&pool, 0, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_frame_metadata_is_rejected_before_insert() {
+        let pool = pool().await;
+        let mut transaction = pool.begin().await.unwrap();
+        let result = append(
+            &mut transaction,
+            PendingEvent {
+                event_type: "x".repeat(MAX_EVENT_FRAME_BYTES),
+                actor: None,
+                resource_id: None,
+                job_id: None,
+                approval_id: None,
+                correlation_id: "test".into(),
+                causation_id: None,
+                payload: serde_json::json!({"safe": true}),
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        transaction.commit().await.unwrap();
         assert!(list_after(&pool, 0, 10).await.unwrap().is_empty());
     }
 

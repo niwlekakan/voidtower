@@ -190,6 +190,16 @@ async fn get_setting(state: &AppState, key: &str) -> String {
         .unwrap_or_default()
 }
 
+async fn emergency_disabled(state: &AppState) -> Result<bool> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'odysseus.emergency_disabled'",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map(|value| value.as_deref() == Some("true"))
+    .map_err(|error| AppError::Internal(error.into()))
+}
+
 async fn set_setting(state: &AppState, key: &str, value: &str) {
     let now = unix_now();
     let _ = sqlx::query(
@@ -716,7 +726,7 @@ pub async fn legacy_event_stream(
     }
 
     // Check emergency disable
-    if token_backed && get_setting(&state, "odysseus.emergency_disabled").await == "true" {
+    if token_backed && emergency_disabled(&state).await? {
         return Err(AppError::FeatureUnavailable(
             "AI access is emergency-disabled".into(),
         ));

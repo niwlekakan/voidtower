@@ -169,7 +169,7 @@ async fn authorize_stream(
         auth::validate_api_token(&state.db, raw, "alerts:read")
             .await
             .map_err(|_| AppError::Unauthorized)?;
-        if integration_emergency_disabled(state).await {
+        if integration_emergency_disabled(state).await? {
             return Err(AppError::FeatureUnavailable(
                 "AI access is emergency-disabled".into(),
             ));
@@ -192,7 +192,7 @@ async fn authorize_stream(
         auth::validate_api_token(&state.db, raw, "alerts:read")
             .await
             .map_err(|_| AppError::Unauthorized)?;
-        if integration_emergency_disabled(state).await {
+        if integration_emergency_disabled(state).await? {
             return Err(AppError::FeatureUnavailable(
                 "AI access is emergency-disabled".into(),
             ));
@@ -203,16 +203,14 @@ async fn authorize_stream(
     Err(AppError::Unauthorized)
 }
 
-async fn integration_emergency_disabled(state: &AppState) -> bool {
+async fn integration_emergency_disabled(state: &AppState) -> Result<bool> {
     sqlx::query_scalar::<_, String>(
         "SELECT value FROM settings WHERE key = 'odysseus.emergency_disabled'",
     )
     .fetch_optional(&state.db)
     .await
-    .ok()
-    .flatten()
-    .as_deref()
-        == Some("true")
+    .map(|value| value.as_deref() == Some("true"))
+    .map_err(|error| AppError::Internal(error.into()))
 }
 
 fn parse_cursor(value: &str, source: &str) -> Result<i64> {

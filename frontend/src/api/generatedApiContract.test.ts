@@ -23,6 +23,11 @@ describe('generated API v1 envelope contract', () => {
       code: 'job_not_found',
       message: 'The requested job does not exist.',
     })
+    expect(API_V1_ENVELOPE_CONTRACT.envelopes.version_error_v1.error).toEqual({
+      code: 'unsupported_api_version',
+      message: 'The requested API version is not supported',
+      supported_versions: ['1'],
+    })
     expect(API_V1_ENVELOPE_CONTRACT.envelopes.event_v1).toMatchObject({
       schema_version: 1,
       event_type: 'job.running.v1',

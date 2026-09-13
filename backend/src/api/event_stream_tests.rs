@@ -244,6 +244,8 @@ async fn no_cursor_is_live_only_and_explicit_cursor_replays_identically_on_alias
         .oneshot(request("/api/events/stream", Some(&session)))
         .await
         .unwrap();
+    assert_eq!(live.headers().get("x-voidtower-api-version").unwrap(), "1");
+    assert_eq!(live.headers().get(header::CONTENT_TYPE).unwrap(), "text/event-stream");
     let live = first_chunk(live).await;
     assert!(live.contains(&format!(r#""cursor":{sequence}"#)));
     assert!(!live.contains("event: durable_event"));

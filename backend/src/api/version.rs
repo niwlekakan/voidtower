@@ -216,6 +216,13 @@ mod tests {
                         "message": "The requested job does not exist."
                     }
                 },
+                "version_error_v1": {
+                    "error": {
+                        "code": "unsupported_api_version",
+                        "message": "The requested API version is not supported",
+                        "supported_versions": ["1"]
+                    }
+                },
                 "event_v1": {
                     "sequence": 1,
                     "event_id": "event-1",

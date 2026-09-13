@@ -1,0 +1,53 @@
+{
+  "run_id": "2026-09-06-s2-02-redaction-resolver-hardening",
+  "steps": [
+    {
+      "id": "focused-redaction-regressions",
+      "cwd": "backend",
+      "argv": ["cargo", "test", "--all-targets", "--all-features", "known_secret_values", "--", "--nocapture"],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "focused-resolver-regressions",
+      "cwd": "backend",
+      "argv": ["cargo", "test", "--all-targets", "--all-features", "api::secrets::tests::resolver_", "--", "--nocapture"],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "backend-full-tests",
+      "cwd": "backend",
+      "argv": ["cargo", "test", "--all-targets", "--all-features", "--quiet"],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "backend-clippy",
+      "cwd": "backend",
+      "argv": ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "focused-rustfmt",
+      "cwd": "backend",
+      "argv": ["rustfmt", "--edition", "2021", "--check", "src/api/redact.rs", "src/api/secrets.rs"],
+      "timeout_seconds": 120,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "diff-check",
+      "cwd": ".",
+      "argv": ["git", "diff", "--check"],
+      "timeout_seconds": 120,
+      "continue_on_failure": false,
+      "declared_label": "implemented"
+    }
+  ]
+}

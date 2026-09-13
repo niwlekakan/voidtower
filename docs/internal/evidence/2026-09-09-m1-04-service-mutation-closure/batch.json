@@ -1,0 +1,62 @@
+{
+  "run_id": "2026-09-09-m1-04-service-mutation-closure",
+  "steps": [
+    {
+      "id": "source-truth",
+      "cwd": ".",
+      "argv": ["python", "scripts/repo_truth.py", "--repo", ".", "--json", "--check"],
+      "timeout_seconds": 120,
+      "continue_on_failure": false,
+      "declared_label": "implemented"
+    },
+    {
+      "id": "focused-services",
+      "cwd": ".",
+      "argv": [
+        "docker", "run", "--rm", "-v", "/home/elwla/Documents/voidtower_project_files_full/hive/voidtower:/workspace", "-w", "/workspace/backend",
+        "rust:latest", "cargo", "test", "api::services::tests", "--all-features", "--", "--nocapture"
+      ],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "focused-integrations",
+      "cwd": ".",
+      "argv": [
+        "docker", "run", "--rm", "-v", "/home/elwla/Documents/voidtower_project_files_full/hive/voidtower:/workspace", "-w", "/workspace/backend",
+        "rust:latest", "cargo", "test", "api::integrations::tests", "--all-features", "--", "--nocapture"
+      ],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "full-backend-tests",
+      "cwd": ".",
+      "argv": [
+        "docker", "run", "--rm", "-v", "/home/elwla/Documents/voidtower_project_files_full/hive/voidtower:/workspace", "-w", "/workspace/backend",
+        "rust:latest", "cargo", "test", "--all-targets", "--all-features"
+      ],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "schema-ownership",
+      "cwd": ".",
+      "argv": ["scripts/check-schema-migration-ownership.sh"],
+      "timeout_seconds": 120,
+      "continue_on_failure": false,
+      "declared_label": "implemented"
+    },
+    {
+      "id": "diff-check",
+      "cwd": ".",
+      "argv": ["git", "diff", "--check"],
+      "timeout_seconds": 120,
+      "continue_on_failure": false,
+      "declared_label": "implemented"
+    }
+  ]
+}

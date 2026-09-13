@@ -1,0 +1,53 @@
+{
+  "run_id": "2026-09-10-m1-04-wireguard-closure",
+  "steps": [
+    {
+      "id": "source-truth",
+      "cwd": ".",
+      "argv": ["python", "scripts/repo_truth.py", "--repo", ".", "--json", "--check"],
+      "timeout_seconds": 120,
+      "continue_on_failure": false,
+      "declared_label": "implemented"
+    },
+    {
+      "id": "focused-wireguard-tests",
+      "cwd": ".",
+      "argv": ["docker", "run", "--rm", "-v", ".:/workspace", "-w", "/workspace/backend", "rust:latest", "cargo", "test", "api::wireguard::tests", "--all-features", "--", "--nocapture"],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "focused-node-enrollment-tests",
+      "cwd": ".",
+      "argv": ["docker", "run", "--rm", "-v", ".:/workspace", "-w", "/workspace/backend", "rust:latest", "cargo", "test", "api::node_enroll::tests", "--all-features", "--", "--nocapture"],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "integration-verified"
+    },
+    {
+      "id": "backend-full-tests",
+      "cwd": ".",
+      "argv": ["docker", "run", "--rm", "-v", ".:/workspace", "-w", "/workspace/backend", "rust:latest", "cargo", "test", "--all-targets", "--all-features"],
+      "timeout_seconds": 900,
+      "continue_on_failure": false,
+      "declared_label": "integration-verified"
+    },
+    {
+      "id": "schema-migration-ownership",
+      "cwd": ".",
+      "argv": ["scripts/check-schema-migration-ownership.sh"],
+      "timeout_seconds": 120,
+      "continue_on_failure": false,
+      "declared_label": "unit-verified"
+    },
+    {
+      "id": "diff-check",
+      "cwd": ".",
+      "argv": ["git", "diff", "--check"],
+      "timeout_seconds": 120,
+      "continue_on_failure": false,
+      "declared_label": "implemented"
+    }
+  ]
+}

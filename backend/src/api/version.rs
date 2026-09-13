@@ -183,7 +183,46 @@ mod tests {
     }
 
     #[test]
-    fn action_success_envelopes_serializes_without_schema_drift() {
+    fn checked_in_envelope_contract_artifact_matches_source_serialization() {
+        let artifact: serde_json::Value = serde_json::from_str(include_str!(
+            "../../contracts/api-v1-envelope-contract.json"
+        ))
+        .unwrap();
+        let expected = serde_json::json!({
+            "contract": "voidtower.api.envelopes",
+            "api_version": API_VERSION,
+            "envelopes": {
+                "plan_success_v1": {
+                    "schema_version": ACTION_ENVELOPE_SCHEMA_VERSION,
+                    "resource_id": "resource-1",
+                    "action": "container.start",
+                    "plan": {"job_id": "job-1"}
+                },
+                "job_success_v1": {
+                    "schema_version": ACTION_ENVELOPE_SCHEMA_VERSION,
+                    "resource_id": "resource-1",
+                    "action": "container.start",
+                    "job": {"id": "job-1"}
+                },
+                "job_read_v1": {
+                    "schema_version": JOB_READ_ENVELOPE_SCHEMA_VERSION,
+                    "resource_id": "resource-1",
+                    "action": "container.start",
+                    "job": {"id": "job-1"}
+                },
+                "error_v1": {
+                    "error": {
+                        "code": "job_not_found",
+                        "message": "The requested job does not exist."
+                    }
+                }
+            }
+        });
+        assert_eq!(artifact, expected);
+    }
+
+    #[test]
+    fn action_success_envelopes_serialize_without_schema_drift() {
         let plan = serde_json::to_string(&PlanSuccessEnvelopeV1::new(
             "resource-1",
             "container.start",

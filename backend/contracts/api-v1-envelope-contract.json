@@ -1,0 +1,36 @@
+{
+  "contract": "voidtower.api.envelopes",
+  "api_version": "1",
+  "envelopes": {
+    "plan_success_v1": {
+      "schema_version": 1,
+      "resource_id": "resource-1",
+      "action": "container.start",
+      "plan": {
+        "job_id": "job-1"
+      }
+    },
+    "job_success_v1": {
+      "schema_version": 1,
+      "resource_id": "resource-1",
+      "action": "container.start",
+      "job": {
+        "id": "job-1"
+      }
+    },
+    "job_read_v1": {
+      "schema_version": 1,
+      "resource_id": "resource-1",
+      "action": "container.start",
+      "job": {
+        "id": "job-1"
+      }
+    },
+    "error_v1": {
+      "error": {
+        "code": "job_not_found",
+        "message": "The requested job does not exist."
+      }
+    }
+  }
+}

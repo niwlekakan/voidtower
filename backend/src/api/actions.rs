@@ -18,6 +18,7 @@ use crate::{
 };
 
 use super::bearer_auth::AuthenticatedApiToken;
+use super::version::{JobSuccessEnvelopeV1, PlanSuccessEnvelopeV1};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -237,7 +238,7 @@ pub async fn plan(
     token: Option<Extension<AuthenticatedApiToken>>,
     Path((resource_id, action)): Path<(String, String)>,
     request: Result<Json<ActionRequest>, JsonRejection>,
-) -> Result<Json<Value>, CanonicalApiError> {
+) -> Result<Json<PlanSuccessEnvelopeV1<invocation::PlanViewV1>>, CanonicalApiError> {
     let credential = credential(&state, &jar, token.map(|Extension(token)| token)).await?;
     let request = body(request)?;
     let prepared = invocation::prepare(
@@ -249,7 +250,12 @@ pub async fn plan(
         request.input,
     )
     .await?;
-    Ok(Json(serde_json::json!({"plan": prepared.view()})))
+    let view = prepared.view();
+    Ok(Json(PlanSuccessEnvelopeV1::new(
+        prepared.resource.id,
+        prepared.action.name,
+        view,
+    )))
 }
 
 pub async fn submit(
@@ -279,7 +285,15 @@ pub async fn submit(
     if job.state == JobState::Rejected {
         return Err(CanonicalApiError::policy_denied(job.id));
     }
-    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"job": job}))).into_response())
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(JobSuccessEnvelopeV1::new(
+            job.resource.id.clone(),
+            job.action.clone(),
+            job,
+        )),
+    )
+        .into_response())
 }
 
 #[cfg(test)]
@@ -549,7 +563,9 @@ mod tests {
             .unwrap();
         assert_eq!(planned.status(), StatusCode::OK);
         let planned = json(planned).await;
-        assert_eq!(planned["plan"]["action"], "container.start");
+        assert_eq!(planned["schema_version"], 1);
+        assert_eq!(planned["resource_id"], resource.id);
+        assert_eq!(planned["action"], "container.start");
         assert_eq!(
             planned["plan"]["operation"]["title"],
             "Start the web container"
@@ -939,8 +955,8 @@ mod tests {
             .unwrap();
         assert_eq!(accepted.status(), StatusCode::ACCEPTED);
         let accepted = json(accepted).await;
-        assert_eq!(accepted["job"]["action"], "proxmox.guest.start");
-        assert_eq!(accepted["job"]["resource"]["id"], resource.id);
+        assert_eq!(accepted["action"], "proxmox.guest.start");
+        assert_eq!(accepted["resource_id"], resource.id);
         assert_eq!(accepted["job"]["actor"]["id"], "vm-control");
         let job_id = accepted["job"]["id"].as_str().unwrap();
         let event_count: i64 = sqlx::query_scalar(

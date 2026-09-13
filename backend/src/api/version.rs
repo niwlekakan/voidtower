@@ -7,7 +7,46 @@ use axum::{
 use serde::Serialize;
 
 pub const API_VERSION: &str = "1";
+pub const ACTION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 const VERSION_HEADER: &str = "x-voidtower-api-version";
+
+#[derive(Debug, Serialize)]
+pub struct PlanSuccessEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub resource_id: String,
+    pub action: String,
+    pub plan: T,
+}
+
+impl<T> PlanSuccessEnvelopeV1<T> {
+    pub fn new(resource_id: impl Into<String>, action: impl Into<String>, data: T) -> Self {
+        Self {
+            schema_version: ACTION_ENVELOPE_SCHEMA_VERSION,
+            resource_id: resource_id.into(),
+            action: action.into(),
+            plan: data,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobSuccessEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub resource_id: String,
+    pub action: String,
+    pub job: T,
+}
+
+impl<T> JobSuccessEnvelopeV1<T> {
+    pub fn new(resource_id: impl Into<String>, action: impl Into<String>, data: T) -> Self {
+        Self {
+            schema_version: ACTION_ENVELOPE_SCHEMA_VERSION,
+            resource_id: resource_id.into(),
+            action: action.into(),
+            job: data,
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct VersionNegotiationErrorV1 {
@@ -90,6 +129,31 @@ mod tests {
                     "supported_versions": ["1"]
                 }
             })
+        );
+    }
+
+    #[test]
+    fn action_success_envelopes_serializes_without_schema_drift() {
+        let plan = serde_json::to_string(&PlanSuccessEnvelopeV1::new(
+            "resource-1",
+            "container.start",
+            serde_json::json!({"job_id": "job-1"}),
+        ))
+        .unwrap();
+        let job = serde_json::to_string(&JobSuccessEnvelopeV1::new(
+            "resource-1",
+            "container.start",
+            serde_json::json!({"id": "job-1"}),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            plan,
+            r#"{"schema_version":1,"resource_id":"resource-1","action":"container.start","plan":{"job_id":"job-1"}}"#
+        );
+        assert_eq!(
+            job,
+            r#"{"schema_version":1,"resource_id":"resource-1","action":"container.start","job":{"id":"job-1"}}"#
         );
     }
 

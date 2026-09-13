@@ -42,6 +42,10 @@ function asRecord(value: unknown): RecordValue | null {
     : null
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
 function requireSuccessEnvelope(value: unknown, payloadKey: 'plan' | 'job', expectedSchemaVersion: number): RecordValue {
   const envelope = asRecord(value)
   if (!envelope) {
@@ -52,7 +56,9 @@ function requireSuccessEnvelope(value: unknown, payloadKey: 'plan' | 'job', expe
     throw new ApiEnvelopeError('unsupported_api_schema', 'Unsupported API envelope schema version.', expectedSchemaVersion)
   }
 
-  if (typeof envelope.resource_id !== 'string' || typeof envelope.action !== 'string' || !asRecord(envelope[payloadKey])) {
+  const payload = asRecord(envelope[payloadKey])
+  const payloadIdentity = payloadKey === 'plan' ? payload?.job_id : payload?.id
+  if (!isNonEmptyString(envelope.resource_id) || !isNonEmptyString(envelope.action) || !payload || !isNonEmptyString(payloadIdentity)) {
     throw new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid success envelope.', expectedSchemaVersion)
   }
   return envelope

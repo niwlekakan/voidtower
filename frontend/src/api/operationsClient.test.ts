@@ -5,11 +5,12 @@ function ok(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
 }
 
+const envelope = { schema_version: 1, resource_id: 'resource-1', action: 'container.start', job: { id: 'job-1' } }
+
 describe('durable operation API client', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('encodes list/detail/cancel and idempotency lookup requests', async () => {
-    const envelope = { schema_version: 1, resource_id: 'resource-1', action: 'container.start', job: {} }
     const fetch = vi.fn()
       .mockResolvedValueOnce(ok({ jobs: [] }))
       .mockResolvedValueOnce(ok(envelope))
@@ -44,6 +45,19 @@ describe('durable operation API client', () => {
       .rejects.toMatchObject({ code: 'invalid_idempotency_key', status: 400 })
     expect(fetch).not.toHaveBeenCalled()
   })
+
+  it.each([
+    ['an incompatible schema version', { ...envelope, schema_version: 2 }],
+    ['a missing resource identity', { ...envelope, resource_id: 42 }],
+    ['a missing action', { ...envelope, action: null }],
+    ['a malformed job payload', { ...envelope, job: { state: 'queued' } }],
+  ])('rejects %s from idempotency lookup', async (_description, body) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ok(body)))
+
+    await expect(api.operationJobs.getByIdempotency('key-1'))
+      .rejects.toMatchObject({ name: 'ApiEnvelopeError', code: expect.stringMatching(/^unsupported_api_schema$|^invalid_api_envelope$/) })
+  })
+
   it('omits absent approval status and sends one trimmed exact-record decision', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(ok({ approvals: [] }))

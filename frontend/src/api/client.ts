@@ -770,6 +770,17 @@ export const api = {
       request<import('./types').DurableJobListResponse>(`/api/jobs?limit=${encodeURIComponent(limit)}`),
     get: (id: string) =>
       request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}`, undefined, parseJobReadEnvelope),
+    getByIdempotency: (key: string) =>
+      (() => {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(key)) {
+          return Promise.reject(new ApiClientError('Invalid idempotency key.', 'invalid_idempotency_key', 400))
+        }
+        return request<import('./types').DurableJobResponse>(
+          `/api/jobs/by-idempotency/${encodeURIComponent(key)}`,
+          undefined,
+          parseJobReadEnvelope,
+        )
+      })(),
     cancel: (id: string) =>
       request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }, parseJobSuccessEnvelope),
   },

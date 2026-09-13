@@ -86,7 +86,11 @@ async fn through_durable_event(response: axum::response::Response) -> String {
     let mut body = response.into_body().into_data_stream();
     let mut output = String::new();
     tokio::time::timeout(Duration::from_secs(2), async {
-        while !output.contains("event: durable_event") {
+        while !output
+            .split("event: durable_event")
+            .nth(1)
+            .is_some_and(|frame| frame.contains("\n\n"))
+        {
             let chunk = body
                 .next()
                 .await
@@ -96,7 +100,7 @@ async fn through_durable_event(response: axum::response::Response) -> String {
         }
     })
     .await
-    .expect("durable event must arrive promptly");
+    .expect("complete durable event frame must arrive promptly");
     output
 }
 
@@ -269,6 +273,72 @@ async fn no_cursor_is_live_only_and_explicit_cursor_replays_identically_on_alias
         assert!(output.contains(r#""number":1"#));
     }
     assert_eq!(canonical, alias);
+}
+
+#[tokio::test]
+async fn real_router_serializes_source_owned_event_frames_exactly() {
+    let db = test_support::setup_db().await;
+    let sequence = append_event(&db, 7).await;
+    let session = test_support::user_with_role_session(&db, "operator").await;
+    let app = crate::api::router(test_support::build(db));
+
+    let response = app
+        .clone()
+        .oneshot(request("/api/events/stream?after=0", Some(&session)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "text/event-stream");
+    assert_eq!(response.headers().get("x-voidtower-api-version").unwrap(), "1");
+    let body = through_durable_event(response).await;
+    assert!(body.contains("event: stream.ready\ndata: {\"cursor\":0,\"high_water\":1}\n\n"));
+    assert!(body.contains(&format!("id: {sequence}\nevent: durable_event\ndata: ")));
+    let durable_data = body
+        .split("event: durable_event")
+        .nth(1)
+        .and_then(|frame| frame.split("data: ").nth(1))
+        .and_then(|data| data.split("\n\n").next())
+        .expect("durable event data frame");
+    let envelope: serde_json::Value = serde_json::from_str(durable_data).unwrap();
+    assert_eq!(envelope["sequence"], sequence);
+    assert_eq!(envelope["schema_version"], 1);
+    assert_eq!(envelope["event_type"], "test.stream.v1");
+    assert_eq!(envelope["correlation_id"], "stream-test");
+    assert_eq!(envelope["payload"], serde_json::json!({"number": 7}));
+    assert_eq!(
+        envelope.as_object().unwrap().keys().collect::<Vec<_>>(),
+        [
+            "actor",
+            "approval_id",
+            "causation_id",
+            "correlation_id",
+            "event_id",
+            "event_type",
+            "job_id",
+            "occurred_at",
+            "payload",
+            "resource_id",
+            "schema_version",
+            "sequence",
+        ]
+        .into_iter()
+        .collect::<Vec<_>>()
+    );
+
+    let gap = app
+        .oneshot(request("/api/events/stream?after=999999", Some(&session)))
+        .await
+        .unwrap();
+    assert_eq!(gap.status(), StatusCode::OK);
+    assert_eq!(gap.headers().get(header::CONTENT_TYPE).unwrap(), "text/event-stream");
+    let body = axum::body::to_bytes(gap.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        body.as_ref(),
+        br#"event: stream.gap
+data: {"reason":"future_cursor","requested_after":999999,"earliest_available":1,"latest_available":1}
+
+"#
+    );
 }
 
 #[tokio::test]

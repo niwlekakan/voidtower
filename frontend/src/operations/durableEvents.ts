@@ -22,10 +22,13 @@ export interface DurableEventSubscriber {
 const subscribers = new Set<DurableEventSubscriber>()
 let source: EventSource | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let reconnectAttempt = 0
 let lastSequence: number | null = null
 let state: DurableEventConnectionState = { status: 'disconnected', cursor: null, gap: null }
 const EXPECTED_EVENT_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.event_v1.schema_version
 const MAX_EVENT_FIELD_LENGTH = 256
+const INITIAL_RECONNECT_DELAY_MS = 1_000
+const MAX_RECONNECT_DELAY_MS = 30_000
 
 function isSequence(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -131,10 +134,15 @@ function localGap(reconnectAfter?: number) {
 function scheduleReconnect(after?: number) {
   clearReconnect()
   if (subscribers.size === 0) return
+  const delay = Math.min(
+    INITIAL_RECONNECT_DELAY_MS * (2 ** reconnectAttempt),
+    MAX_RECONNECT_DELAY_MS,
+  )
+  reconnectAttempt = Math.min(reconnectAttempt + 1, 31)
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
     start(after)
-  }, 0)
+  }, delay)
 }
 
 function start(after?: number) {
@@ -155,6 +163,7 @@ function start(after?: number) {
       return
     }
     lastSequence = ready.cursor
+    reconnectAttempt = 0
     publishState({ status: 'ready', cursor: ready.cursor, gap: null })
   })
 
@@ -185,7 +194,10 @@ function start(after?: number) {
 
   next.onerror = () => {
     if (source !== next) return
+    const reconnectAfter = lastSequence ?? after
+    closeSource()
     publishState({ status: 'disconnected', cursor: lastSequence, gap: null })
+    scheduleReconnect(reconnectAfter)
   }
 }
 
@@ -200,6 +212,7 @@ export function subscribeDurableEvents(subscriber: DurableEventSubscriber): () =
       clearReconnect()
       closeSource()
       lastSequence = null
+      reconnectAttempt = 0
       state = { status: 'disconnected', cursor: null, gap: null }
     }
   }
@@ -211,5 +224,6 @@ export function resetDurableEventStreamForTests() {
   clearReconnect()
   closeSource()
   lastSequence = null
+  reconnectAttempt = 0
   state = { status: 'disconnected', cursor: null, gap: null }
 }

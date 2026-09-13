@@ -130,6 +130,26 @@ describe('durable event stream client', () => {
     unsubscribe()
   })
 
+  it('reconnects from the last accepted cursor after transport disconnect', async () => {
+    const states: DurableEventConnectionState[] = []
+    const unsubscribe = subscribeDurableEvents({ onState: state => states.push(state), onEvent: () => {} })
+    const source = FakeEventSource.instances[0]
+    source.emit('stream.ready', { cursor: 0, high_water: 0 })
+    source.emit('durable_event', envelope(1), '1')
+    source.fail()
+
+    expect(states[states.length - 1]).toMatchObject({ status: 'disconnected', cursor: 1 })
+    expect(source.closed).toBe(true)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(FakeEventSource.instances).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+
+    const replacement = FakeEventSource.instances[FakeEventSource.instances.length - 1]!
+    expect(replacement.url).toBe('/api/events/stream?after=1')
+    expect(replacement.withCredentials).toBe(true)
+    unsubscribe()
+  })
+
   it('uses server gap high-water for reset and exposes transport disconnects', async () => {
     const states: DurableEventConnectionState[] = []
     const unsubscribe = subscribeDurableEvents({ onState: state => states.push(state), onEvent: () => {} })
@@ -146,8 +166,8 @@ describe('durable event stream client', () => {
     const replacement = FakeEventSource.instances[FakeEventSource.instances.length - 1]!
     expect(replacement.url).toBe('/api/events/stream?after=9')
     replacement.fail()
-    expect(states[states.length - 1]).toMatchObject({ status: 'disconnected' })
-    expect(replacement.closed).toBe(false)
+    expect(states[states.length - 1]).toMatchObject({ status: 'disconnected', cursor: null })
+    expect(replacement.closed).toBe(true)
     unsubscribe()
   })
 })

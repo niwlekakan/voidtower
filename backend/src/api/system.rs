@@ -152,31 +152,8 @@ pub async fn restart(
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let pid = std::process::id();
-
-    let script = if is_dev_install() {
-        let root = project_root()
-            .ok_or_else(|| AppError::FeatureUnavailable("cannot locate project root".into()))?;
-        format!(
-            "#!/bin/sh\nsleep 1\nkill -TERM {pid}\nsleep 1\nexec bash {root}/start-dev.sh >> /tmp/voidtower.log 2>&1\n",
-            root = root.display()
-        )
-    } else {
-        // systemd Restart=on-failure restarts after SIGTERM — no need for systemctl
-        format!("#!/bin/sh\nsleep 1\nkill -TERM {pid}\n")
-    };
-
-    let script_path = "/tmp/voidtower-restart.sh";
-    std::fs::write(script_path, &script).map_err(|e| AppError::Internal(e.into()))?;
-    std::process::Command::new("setsid")
-        .args(["bash", script_path])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(
-        serde_json::json!({ "ok": true, "message": "Restarting…" }),
+    Err(AppError::FeatureUnavailable(
+        "system restart requires the canonical operation adapter".into(),
     ))
 }
 

@@ -38,6 +38,7 @@ pub struct DeferredMutationException {
 
 /// Compatibility mutations intentionally unavailable until their canonical adapters exist.
 pub const DEFERRED_MUTATION_EXCEPTIONS: &[DeferredMutationException] = &[
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/system/restart", source: "system::restart", reason: "system lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/files/write", source: "files::write_file", reason: "filesystem resource adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/files/mkdir", source: "files::mkdir", reason: "filesystem resource adapter" },
     DeferredMutationException { method: HttpMethod::Delete, route: "/api/files/delete", source: "files::delete", reason: "filesystem resource adapter" },
@@ -701,7 +702,7 @@ mod tests {
 
     #[test]
     fn deferred_mutation_exception_ledger_is_complete_and_fail_closed() {
-        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 23);
+        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 24);
         for exception in DEFERRED_MUTATION_EXCEPTIONS {
             assert!(!exception.route.is_empty());
             assert!(!exception.reason.is_empty());
@@ -720,6 +721,7 @@ mod tests {
                 "vms" => include_str!("../api/vms.rs"),
                 "wireguard" => include_str!("../api/wireguard.rs"),
                 "storage" => include_str!("../api/storage.rs"),
+                "system" => include_str!("../api/system.rs"),
                 _ => panic!("unclassified deferred module {module}"),
             };
             let start = source.find(&format!("pub async fn {handler}"))
@@ -741,6 +743,7 @@ mod tests {
         let session = crate::api::mcp::test_support::user_with_session(&pool).await;
         let app = crate::api::router(crate::api::mcp::test_support::build(pool));
         let cases = [
+            ("POST", "/api/system/restart", ""),
             ("POST", "/api/services/fixture.service/action", r#"{"action":"start"}"#),
             ("POST", "/api/lxc/101/action", r#"{"action":"start"}"#),
             ("POST", "/api/storage/mount", r#"{"device":"/dev/sdb","mountpoint":"/mnt/x","fstype":"ext4"}"#),

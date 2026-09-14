@@ -475,6 +475,11 @@ POST /api/system/restart
 POST /api/system/update
 ```
 
+`POST /api/system/restart` authenticates an owner/admin session, then returns `503
+feature_unavailable` until a canonical system lifecycle adapter exists. It does not write a restart
+script, spawn a process, signal the server, or otherwise mutate the host directly. System updates and
+update checks remain on their separately adopted durable operation paths.
+
 ## Integrations
 
 ```

@@ -1,57 +1,27 @@
 use crate::{
     api::secrets,
-    audit,
     auth,
     error::{AppError, Result},
-    terminal,
     AppState,
 };
 use axum::{
-    extract::{ws::WebSocketUpgrade, ConnectInfo, Path, Query, State},
+    extract::{Path, State},
     response::Response,
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
-
-#[derive(Deserialize)]
-pub struct LocalWsQuery {
-    pub session_id: Option<String>,
-}
-
 pub async fn ws_handler(
-    ws: WebSocketUpgrade,
     State(state): State<AppState>,
     jar: CookieJar,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Query(q): Query<LocalWsQuery>,
 ) -> Result<Response> {
     let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &session_id).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
     super::role_guard::require_operator(&user)?;
 
-    let user_id = user.id.clone();
-    let db = state.db.clone();
-    let ip = addr.ip().to_string();
-
-    if let Some(ref local_sid) = q.session_id {
-        sqlx::query("UPDATE local_sessions SET last_used = unixepoch() WHERE id = ?")
-            .bind(local_sid).execute(&db).await.ok();
-    }
-
-    audit::log(&db, Some(&user.id), "human", "terminal.session.start",
-        Some("terminal"), None, "success", Some(&ip), None).await;
-
-    let db2 = db.clone();
-    let user_id2 = user_id.clone();
-    let ip2 = ip.clone();
-
-    Ok(ws.on_upgrade(move |socket| async move {
-        terminal::handle_terminal_ws(socket, None, user_id.clone()).await;
-        audit::log(&db2, Some(&user_id2), "human", "terminal.session.end",
-            Some("terminal"), None, "success", Some(&ip2), None).await;
-    }))
+    Err(AppError::FeatureUnavailable(
+        "local interactive shells require the canonical operation adapter".into(),
+    ))
 }
 
 // ── Local sessions ────────────────────────────────────────────────────────────
@@ -378,47 +348,15 @@ pub async fn delete_ssh_session(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-#[derive(Deserialize)]
-pub struct SshConnectQuery {
-    pub session_id: String,
-}
-
 pub async fn ssh_ws_handler(
-    ws: WebSocketUpgrade,
     State(state): State<AppState>,
     jar: CookieJar,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Query(q): Query<SshConnectQuery>,
 ) -> Result<Response> {
-    let user = require_operator(&state, &jar).await?;
-    let session = sqlx::query_as::<_, SshSession>(
-        "SELECT id, label, host, port, username, key_path, password_secret_id, created_at, last_used FROM ssh_sessions WHERE id = ?"
-    ).bind(&q.session_id).fetch_optional(&state.db).await?.ok_or(AppError::NotFound)?;
+    let _user = require_operator(&state, &jar).await?;
 
-    let password = resolve_ssh_password(
-        &state.db,
-        &state.secrets_key,
-        session.password_secret_id.as_deref(),
-    )
-    .await
-    .map_err(|_| AppError::FeatureUnavailable("SSH credential unavailable".into()))?;
-
-    sqlx::query("UPDATE ssh_sessions SET last_used = unixepoch() WHERE id = ?")
-        .bind(&session.id).execute(&state.db).await?;
-
-    audit::log(&state.db, Some(&user.id), "human", "terminal.ssh.connect",
-        Some("ssh_session"), Some(&session.id), "success", Some(&addr.ip().to_string()),
-        Some(&format!("{}@{}:{}", session.username, session.host, session.port)),
-    ).await;
-
-    let host     = session.host.clone();
-    let port     = session.port as u16;
-    let username = session.username.clone();
-    let key_path = session.key_path.clone();
-
-    Ok(ws.on_upgrade(move |socket| async move {
-        terminal::handle_ssh_ws(socket, host, port, username, key_path, password).await;
-    }))
+    Err(AppError::FeatureUnavailable(
+        "SSH interactive sessions require the canonical operation adapter".into(),
+    ))
 }
 
 #[cfg(test)]

@@ -38,6 +38,9 @@ pub struct DeferredMutationException {
 
 /// Compatibility mutations intentionally unavailable until their canonical adapters exist.
 pub const DEFERRED_MUTATION_EXCEPTIONS: &[DeferredMutationException] = &[
+    DeferredMutationException { method: HttpMethod::Get, route: "/api/containers/:id/exec", source: "containers::exec_ws", reason: "container shell adapter" },
+    DeferredMutationException { method: HttpMethod::Get, route: "/api/terminal/ws", source: "terminal::ws_handler", reason: "local shell adapter" },
+    DeferredMutationException { method: HttpMethod::Get, route: "/api/terminal/ssh/ws", source: "terminal::ssh_ws_handler", reason: "SSH session adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/ai/llama/unload", source: "ai::llama_unload", reason: "AI process lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/system/restart", source: "system::restart", reason: "system lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/files/write", source: "files::write_file", reason: "filesystem resource adapter" },
@@ -703,7 +706,7 @@ mod tests {
 
     #[test]
     fn deferred_mutation_exception_ledger_is_complete_and_fail_closed() {
-        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 25);
+        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 28);
         for exception in DEFERRED_MUTATION_EXCEPTIONS {
             assert!(!exception.route.is_empty());
             assert!(!exception.reason.is_empty());
@@ -724,13 +727,15 @@ mod tests {
                 "storage" => include_str!("../api/storage.rs"),
                 "system" => include_str!("../api/system.rs"),
                 "ai" => include_str!("../api/ai.rs"),
+                "containers" => include_str!("../api/containers.rs"),
+                "terminal" => include_str!("../api/terminal.rs"),
                 _ => panic!("unclassified deferred module {module}"),
             };
             let start = source.find(&format!("pub async fn {handler}"))
                 .unwrap_or_else(|| panic!("missing deferred handler {}", exception.source));
             let body = source[start..].split("\n}\n").next().unwrap_or(&source[start..]);
             assert!(body.contains("FeatureUnavailable"), "{} must fail closed", exception.source);
-            for marker in ["std::fs::", "tokio::fs::", "Command::new", "run_checked(", "reqwest::", "sqlx::query(", "audit::log("] {
+            for marker in ["std::fs::", "tokio::fs::", "Command::new", "handle_terminal_ws(", "handle_ssh_ws(", "run_checked(", "reqwest::", "sqlx::query(", "audit::log("] {
                 assert!(!body.contains(marker), "{} retains direct mutation marker {}", exception.source, marker);
             }
         }
@@ -745,6 +750,9 @@ mod tests {
         let session = crate::api::mcp::test_support::user_with_session(&pool).await;
         let app = crate::api::router(crate::api::mcp::test_support::build(pool));
         let cases = [
+            ("GET", "/api/containers/fixture-container/exec", ""),
+            ("GET", "/api/terminal/ws", ""),
+            ("GET", "/api/terminal/ssh/ws?session_id=fixture", ""),
             ("POST", "/api/ai/llama/unload", ""),
             ("POST", "/api/system/restart", ""),
             ("POST", "/api/services/fixture.service/action", r#"{"action":"start"}"#),

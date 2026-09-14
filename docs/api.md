@@ -156,7 +156,7 @@ GET  /api/containers
 GET  /api/containers/images
 POST /api/containers/:id/action   { action: start|stop|restart|remove, dry_run?: boolean }
 GET  /api/containers/:id/logs
-GET  /api/containers/:id/exec     WebSocket PTY
+GET  /api/containers/:id/exec     Interactive shell (currently unavailable)
 GET  /api/containers/:id/compose
 POST /api/containers/:id/compose/propose   { path, content }
 POST /api/containers/:id/compose/apply     { path?, content }
@@ -167,6 +167,25 @@ Container mutations submit through the durable operation boundary. A normal acti
 Callers may provide `Idempotency-Key`; compatibility callers that omit it receive legacy
 at-most-once-per-request behavior through a generated key. Compose content is validated and staged
 as a controlled opaque artifact before the job is submitted—the handler never applies it directly.
+
+Interactive container execution is intentionally fail-closed: an authenticated operator receives
+`503 { "error": { "code": "feature_unavailable", "message": "interactive container shells require the canonical operation adapter" } }`.
+The endpoint does not open a WebSocket or invoke `docker exec`. Container logs remain read-only.
+
+## Terminal and SSH sessions
+
+```
+GET /api/terminal/ws                 Local shell (currently unavailable)
+GET /api/terminal/ssh/sessions       SSH session metadata and encrypted credential reference CRUD
+GET /api/terminal/ssh/ws?session_id= Interactive SSH shell (currently unavailable)
+GET /api/terminal/local/sessions     Local session metadata CRUD
+```
+
+The local and SSH interactive shell endpoints authenticate first and return bounded `503
+feature_unavailable` until canonical shell/session action adapters exist. They do not spawn a local
+shell, open an SSH connection, or expose a WebSocket upgrade. Session metadata endpoints remain
+available; SSH passwords are stored through the encrypted secret reference boundary and are never
+returned in responses. This limitation is intentional and is not runtime or release qualification.
 
 ## App Vault
 

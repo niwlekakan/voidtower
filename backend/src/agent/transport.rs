@@ -1,4 +1,7 @@
-use crate::{agent::state::{AgentState, HeartbeatToken}, cmdb::contracts::InventorySnapshotV1};
+use crate::{
+    agent::state::{AgentState, HeartbeatToken},
+    cmdb::contracts::{InventorySnapshotResultV1, InventorySnapshotV1},
+};
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -206,7 +209,10 @@ impl AgentTransport {
             .send()
             .await
             .context("heartbeat request failed")?;
-        let _: serde_json::Value = read_json_response(response).await?;
+        let response: HeartbeatResponse = read_json_response(response).await?;
+        if !response.ok {
+            bail!("agent server rejected heartbeat");
+        }
         Ok(())
     }
 
@@ -214,7 +220,7 @@ impl AgentTransport {
         &self,
         state: &AgentState,
         snapshot: &InventorySnapshotV1,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<InventorySnapshotResultV1> {
         let endpoint = self.endpoint(&format!("api/nodes/{}/inventory", state.node_id))?;
         let response = self
             .client
@@ -236,6 +242,11 @@ impl AgentTransport {
     fn request_timeout(&self) -> Duration {
         REQUEST_TIMEOUT
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct HeartbeatResponse {
+    ok: bool,
 }
 
 async fn read_json_response<T: for<'de> Deserialize<'de>>(
@@ -383,8 +394,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn heartbeat_rejects_a_success_response_that_is_not_acknowledged() {
+        let (server_url, _request_rx) = serve_once("200 OK", "{\"ok\":false}".into()).await;
+        let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
+        let state = AgentState {
+            server_url: "https://controller.example.test".into(),
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: HeartbeatToken::new("heartbeat-contract-token".into()).unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule::default(),
+        };
+
+        let error = transport.heartbeat(&state).await.unwrap_err();
+        assert!(error.to_string().contains("rejected heartbeat"));
+    }
+
+    #[tokio::test]
     async fn inventory_upload_uses_node_path_and_scoped_token() {
-        let (server_url, request_rx) = serve_once("200 OK", "{\"replayed\":false}".into()).await;
+        let (server_url, request_rx) = serve_once(
+            "200 OK",
+            "{\"snapshot_id\":\"snapshot-1\",\"replayed\":false,\"linked\":1,\"registered\":0,\"review_required\":0,\"missing\":0}".into(),
+        )
+        .await;
         let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
         let state = AgentState {
             server_url,
@@ -401,7 +433,7 @@ mod tests {
             "entities": []
         })).unwrap();
         let result = transport.upload_inventory(&state, &snapshot).await.unwrap();
-        assert_eq!(result["replayed"], false);
+        assert!(!result.replayed);
         let request = request_rx.await.unwrap();
         assert!(request.starts_with(&format!("POST /api/nodes/{}/inventory HTTP/1.1", state.node_id)));
         assert!(request.to_ascii_lowercase().contains("authorization"));

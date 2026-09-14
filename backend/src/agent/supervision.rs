@@ -66,6 +66,13 @@ impl Backoff {
 }
 
 pub async fn run(state: AgentState, transport: AgentTransport, cancellation: Cancellation) {
+    if state.validate().is_err() {
+        tracing::warn!(
+            event_code = "agent_state_invalid",
+            error_code = "invalid_agent_state"
+        );
+        return;
+    }
     let heartbeat_state = state.clone();
     let heartbeat_transport = transport.clone();
     let heartbeat_cancel = cancellation.clone();
@@ -217,7 +224,7 @@ mod tests {
         });
         let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
         let state = AgentState {
-            server_url,
+            server_url: "https://controller.example.test".into(),
             node_id: uuid::Uuid::new_v4(),
             heartbeat_token: crate::agent::state::HeartbeatToken::new(
                 "supervision-heartbeat-token".into(),
@@ -254,5 +261,30 @@ mod tests {
                 .unwrap()
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_state_fails_closed_before_starting_loops() {
+        let state = crate::agent::state::AgentState {
+            server_url: "https://controller.example.test".into(),
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: crate::agent::state::HeartbeatToken::new(
+                "supervision-invalid-state-token".into(),
+            )
+            .unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule {
+                heartbeat_interval_seconds: 0,
+                ..Default::default()
+            },
+        };
+        let transport = AgentTransport::new_loopback_test("http://127.0.0.1:1", None).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run(state, transport, Cancellation::new()),
+        )
+        .await
+        .expect("invalid state should stop without starting network loops");
     }
 }

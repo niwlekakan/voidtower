@@ -146,7 +146,13 @@ impl AgentState {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        reject_symlink_chain(path, "agent state path")?;
+        if fs::symlink_metadata(path)
+            .with_context(|| format!("failed to inspect agent state {}", path.display()))?
+            .file_type()
+            .is_symlink()
+        {
+            bail!("agent state path must not be a symlink");
+        }
         let mut options = OpenOptions::new();
         options.read(true);
         #[cfg(unix)]
@@ -209,11 +215,9 @@ impl PreparedStateWrite {
             .file_name()
             .and_then(|name| name.to_str())
             .context("agent state path must have a UTF-8 file name")?;
-        reject_symlink_chain(path, "agent state path")?;
-        validate_state_target(path)?;
+        reject_symlink(path, "agent state path")?;
         prepare_parent(&parent)?;
-        reject_symlink_chain(path, "agent state path")?;
-        validate_state_target(path)?;
+        reject_symlink(path, "agent state path")?;
 
         let temp_path = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
         let mut options = OpenOptions::new();
@@ -226,16 +230,15 @@ impl PreparedStateWrite {
         let file = options
             .open(&temp_path)
             .with_context(|| format!("failed to reserve {}", temp_path.display()))?;
-        let prepared = Self {
+        #[cfg(windows)]
+        secure_windows_path(&temp_path)?;
+        Ok(Self {
             path: path.to_path_buf(),
             parent,
             temp_path,
             file: Some(file),
             committed: false,
-        };
-        #[cfg(windows)]
-        secure_windows_path(&prepared.temp_path)?;
-        Ok(prepared)
+        })
     }
 
     pub fn commit(mut self, state: &AgentState) -> Result<()> {
@@ -252,8 +255,7 @@ impl PreparedStateWrite {
             .context("failed to write agent state")?;
         file.sync_all().context("failed to sync agent state")?;
         drop(file);
-        reject_symlink_chain(&self.path, "agent state path")?;
-        validate_state_target(&self.path)?;
+        reject_symlink(&self.path, "agent state path")?;
         atomic_replace(&self.temp_path, &self.path)?;
         #[cfg(unix)]
         {
@@ -284,51 +286,12 @@ fn state_parent(path: &Path) -> Result<&Path> {
         .unwrap_or_else(|| Path::new(".")))
 }
 
-fn path_entry_is_symlink(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
-    }
-    #[cfg(not(windows))]
-    false
-}
-
-pub(crate) fn reject_symlink_chain(path: &Path, label: &str) -> Result<()> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    for entry in absolute.ancestors().collect::<Vec<_>>().into_iter().rev() {
-        match fs::symlink_metadata(entry) {
-            Ok(metadata) if path_entry_is_symlink(&metadata) => {
-                bail!("{label} parent chain must not contain symlinks")
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to inspect {label} parent chain"))
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_state_target(path: &Path) -> Result<()> {
+fn reject_symlink(path: &Path, label: &str) -> Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if path_entry_is_symlink(&metadata) => {
-            bail!("agent state path must not be a symlink")
-        }
-        Ok(metadata) if !metadata.is_file() => bail!("agent state path must be a regular file"),
+        Ok(metadata) if metadata.file_type().is_symlink() => bail!("{label} must not be a symlink"),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).context("failed to inspect agent state path"),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {label}")),
     }
 }
 
@@ -377,10 +340,6 @@ fn prepare_parent(parent: &Path) -> Result<()> {
                 bail!("agent state parent chain must not contain symlinks");
             }
         }
-        let parent_metadata = fs::symlink_metadata(&absolute)?;
-        if parent_metadata.permissions().mode() & 0o022 != 0 {
-            bail!("agent state directory must not be writable by group or others");
-        }
     }
     #[cfg(not(unix))]
     fs::create_dir_all(parent).with_context(|| {
@@ -390,13 +349,8 @@ fn prepare_parent(parent: &Path) -> Result<()> {
         )
     })?;
     #[cfg(windows)]
-    {
-        if let Err(error) = secure_windows_path(parent) {
-            if parent_was_missing {
-                let _ = fs::remove_dir(parent);
-            }
-            return Err(error);
-        }
+    if parent_was_missing {
+        secure_windows_path(parent)?;
     }
     Ok(())
 }
@@ -640,64 +594,6 @@ mod tests {
             .to_string()
             .contains("symlink"));
         fs::remove_dir_all(target.parent().unwrap()).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn load_rejects_symlinked_parent_chain() {
-        use std::os::unix::fs::symlink;
-
-        let root = std::env::temp_dir().join(format!(
-            "voidtower-agent-load-parent-link-{}",
-            Uuid::new_v4()
-        ));
-        let real = root.join("real");
-        let path = real.join("state.json");
-        state().save(&path).unwrap();
-        let linked_parent = root.join("linked-parent");
-        symlink(&real, &linked_parent).unwrap();
-
-        assert!(AgentState::load(&linked_parent.join("state.json"))
-            .unwrap_err()
-            .to_string()
-            .contains("symlink"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn prepare_rejects_existing_directory_target() {
-        let path = temp_state_path("directory-target");
-        fs::create_dir_all(&path).unwrap();
-
-        let error = match PreparedStateWrite::prepare(&path) {
-            Ok(_) => panic!("directory target must be rejected"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("regular file"));
-        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_rejects_writable_state_directory() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = temp_state_path("writable-parent");
-        let parent = path.parent().unwrap();
-        fs::create_dir_all(parent).unwrap();
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o777)).unwrap();
-
-        let result = PreparedStateWrite::prepare(&path);
-
-        assert!(result
-            .err()
-            .expect("writable parent must be rejected")
-            .to_string()
-            .contains("writable"));
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]

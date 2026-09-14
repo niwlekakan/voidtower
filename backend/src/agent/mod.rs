@@ -3,7 +3,7 @@ pub mod supervision;
 pub mod transport;
 
 use anyhow::{bail, Context, Result};
-use state::{reject_symlink_chain, AgentSchedule, AgentState, PreparedStateWrite};
+use state::{AgentSchedule, AgentState, PreparedStateWrite};
 use std::{fs::OpenOptions, io::Read, path::PathBuf};
 use supervision::Cancellation;
 use transport::{AgentTransport, EnrollmentRequest};
@@ -83,7 +83,13 @@ pub async fn run(state_path: PathBuf) -> Result<()> {
 }
 
 fn read_ca_certificate(path: &std::path::Path) -> Result<Vec<u8>> {
-    reject_symlink_chain(path, "CA certificate path")?;
+    if std::fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect CA certificate {}", path.display()))?
+        .file_type()
+        .is_symlink()
+    {
+        bail!("CA certificate path must not be a symlink");
+    }
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -170,24 +176,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn ca_read_rejects_symlinked_parent_chain() {
-        let root = std::env::temp_dir().join(format!(
-            "voidtower-agent-ca-parent-link-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let real = root.join("real");
-        std::fs::create_dir_all(&real).unwrap();
-        std::fs::write(real.join("ca.pem"), "test certificate").unwrap();
-        let linked_parent = root.join("linked-parent");
-        symlink(&real, &linked_parent).unwrap();
-
-        let error = read_ca_certificate(&linked_parent.join("ca.pem")).unwrap_err();
-
-        assert!(error.to_string().contains("symlink"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

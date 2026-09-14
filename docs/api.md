@@ -70,18 +70,17 @@ Policy denial returns `403 policy_denied` with the rejected durable `job_id`. Ot
 use `{ "error": { "code", "message", "job_id"? } }`. Persisted plans, results, events, and errors
 use bounded, redacted representations; credentials and staged secret contents are never returned.
 
-The adopted compatibility inventory contains 48 route keys: App Vault exposure (1), Odysseus
-container webhooks (1), Backups (5), Containers/Compose apply (2), Firewall (3), Proxy/nginx (6),
-Updates/system update (9), and Proxmox plus legacy Proxmox VM routes (21). Each mapped durable
-branch returns `202 { "job": ... }`; a compatibility `dry_run: true` returns an advisory plan and
-creates no job. App Vault/model Compose lifecycle, AI proxy-settings orchestration, service and
-arbitrary-automation webhook actions, and ephemeral Proxmox VNC ticket creation remain synchronous
-exceptions because they do not yet have matching durable actions. The current web clients follow
-submitted jobs locally and link to shared job detail. Owner/admin/operator sessions can list and
-inspect the newest 50 jobs in Tower or Void Mode; cancellation is offered only for queued/running
-records. Owner/admin sessions can list and decide exact immutable approvals with an optional
-comment. These shared workflows use bounded, visibility-aware HTTP polling and never retry a
-mutation automatically. `/api/events` exposes durable history; `/api/events/stream` and
+The adopted compatibility inventory is executable and validated by
+`backend/src/operations/registry.rs`; it must not be copied into documentation as a mutable route
+count. Each mapped durable branch returns `202 { "job": ... }`; a compatibility `dry_run: true`
+returns an advisory plan and creates no job. App Vault/model Compose lifecycle, AI proxy-settings
+orchestration, service and arbitrary-automation webhook actions, and ephemeral Proxmox VNC ticket
+creation remain synchronous exceptions because they do not yet have matching durable actions. The
+current web clients follow submitted jobs locally and link to shared job detail. Owner/admin/operator
+sessions can list and inspect the newest 50 jobs in Tower or Void Mode; cancellation is offered only
+for queued/running records. Owner/admin sessions can list and decide exact immutable approvals with
+an optional comment. These shared workflows use bounded, visibility-aware HTTP polling and never
+retry a mutation automatically. `/api/events` exposes durable history; `/api/events/stream` and
 `/api/integrations/events` expose the same cursor-resumable durable SSE stream. Shared operation
 views use it only to invalidate authoritative HTTP reads and retain bounded polling as fallback.
 
@@ -224,10 +223,15 @@ GET  /api/models/ollama/create/:id Admin or owner session; Bearer denied
 
 `POST /api/ai/llama/unload` authenticates an owner/admin session but currently returns `503 feature_unavailable` until a canonical AI process lifecycle adapter exists. It does not signal or terminate host processes. `GET /api/ai/llama` remains a read-only status projection.
 
-The legacy model mutation POST endpoints (`/api/models/load`, `/api/models/llama-config`,
-`/api/models/ollama-config`, and `/api/models/ollama/create`) authenticate first and
-return `503 feature_unavailable` until canonical operation adapters exist. They do not
-write compose files, invoke Docker, or mutate provider state.
+The model lifecycle mutation family (`POST /api/models/download`, `DELETE /api/models/:filename`,
+`POST /api/models/load`, `POST /api/models/llama-config`, `POST /api/models/ollama-config`,
+`POST /api/models/ollama/pull`, and `POST /api/models/ollama/create`) authenticates an owner/admin
+session first and then returns bounded `503 feature_unavailable` until canonical model/resource
+operation adapters exist. These compatibility handlers do not create files, delete model files,
+spawn detached work, call llama.cpp/Ollama, write compose configuration, invoke Docker, or emit
+mutation success audit. Their existing status/progress implementations remain unreachable from
+these mutation handlers; callers must not retry an uncertain request as a new mutation.
+
 
 The public OpenAI-compatible proxy remains available at:
 

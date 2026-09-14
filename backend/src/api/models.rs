@@ -245,66 +245,11 @@ pub struct DownloadReq {
 pub async fn start_download(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<DownloadReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    if !req.url.starts_with("http") {
-        return Err(AppError::BadRequest("URL must start with http".into()));
-    }
-
-    let filename = req.filename.filter(|f| !f.is_empty()).unwrap_or_else(|| {
-        req.url
-            .split('/')
-            .next_back()
-            .unwrap_or("model.gguf")
-            .split('?')
-            .next()
-            .unwrap_or("model.gguf")
-            .to_string()
-    });
-
-    if filename.contains('/') || filename.contains("..") {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
-
-    let id = uuid::Uuid::new_v4().to_string();
-    let dir = models_dir(&state).await;
-
-    {
-        let mut map = downloads().lock().unwrap();
-        map.insert(
-            id.clone(),
-            DownloadState {
-                id: id.clone(),
-                filename: filename.clone(),
-                total_bytes: None,
-                downloaded_bytes: 0,
-                status: "downloading".into(),
-                error: None,
-            },
-        );
-    }
-
-    let id2 = id.clone();
-    let url = req.url.clone();
-    tokio::spawn(async move {
-        let result = download_file(&id2, &url, &dir, &filename).await;
-        let mut map = downloads().lock().unwrap();
-        if let Some(entry) = map.get_mut(&id2) {
-            match result {
-                Ok(_) => {
-                    entry.status = "done".into();
-                }
-                Err(e) => {
-                    entry.status = "error".into();
-                    entry.error = Some(e);
-                }
-            }
-        }
-    });
-
-    Ok(Json(serde_json::json!({ "id": id })))
+    Err(AppError::FeatureUnavailable(
+        "Model downloads require a canonical operation adapter".into(),
+    ))
 }
 
 async fn download_file(
@@ -414,21 +359,12 @@ pub async fn download_status(
 pub async fn delete_model(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path(filename): Path<String>,
+    Path(_filename): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    if filename.contains('/') || filename.contains("..") {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
-    let dir = models_dir(&state).await;
-    let path = dir.join(&filename);
-    if !path.exists() {
-        return Err(AppError::NotFound);
-    }
-    tokio::fs::remove_file(&path)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "Model deletion requires a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn get_active(
@@ -443,7 +379,6 @@ pub async fn get_active(
 pub async fn load_model(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(_req): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
     Err(AppError::FeatureUnavailable(
@@ -461,57 +396,11 @@ pub struct OllamaPullReq {
 pub async fn start_ollama_pull(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<OllamaPullReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    // Allow letters, digits, colons (tags), hyphens, dots, underscores, slashes (registry)
-    if req.model.is_empty()
-        || !req
-            .model
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, ':' | '-' | '.' | '_' | '/'))
-    {
-        return Err(AppError::BadRequest("Invalid model name".into()));
-    }
-
-    let id = uuid::Uuid::new_v4().to_string();
-    {
-        let mut map = ollama_pulls().lock().unwrap();
-        map.insert(
-            id.clone(),
-            OllamaPullState {
-                id: id.clone(),
-                model: req.model.clone(),
-                status: "pulling".into(),
-                current_layer: Some("Connecting to Ollama…".into()),
-                total_bytes: None,
-                pulled_bytes: None,
-                error: None,
-            },
-        );
-    }
-
-    let id2 = id.clone();
-    let model = req.model.clone();
-    tokio::spawn(async move {
-        let result = do_ollama_pull(&id2, &model).await;
-        let mut map = ollama_pulls().lock().unwrap();
-        if let Some(entry) = map.get_mut(&id2) {
-            match result {
-                Ok(_) => {
-                    entry.status = "done".into();
-                    entry.current_layer = Some("Complete".into());
-                }
-                Err(e) => {
-                    entry.status = "error".into();
-                    entry.error = Some(e);
-                }
-            }
-        }
-    });
-
-    Ok(Json(serde_json::json!({ "id": id })))
+    Err(AppError::FeatureUnavailable(
+        "Ollama model pulls require a canonical operation adapter".into(),
+    ))
 }
 
 async fn do_ollama_pull(id: &str, model: &str) -> std::result::Result<(), String> {

@@ -41,6 +41,13 @@ pub const DEFERRED_MUTATION_EXCEPTIONS: &[DeferredMutationException] = &[
     DeferredMutationException { method: HttpMethod::Get, route: "/api/containers/:id/exec", source: "containers::exec_ws", reason: "container shell adapter" },
     DeferredMutationException { method: HttpMethod::Get, route: "/api/terminal/ws", source: "terminal::ws_handler", reason: "local shell adapter" },
     DeferredMutationException { method: HttpMethod::Get, route: "/api/terminal/ssh/ws", source: "terminal::ssh_ws_handler", reason: "SSH session adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/download", source: "models::start_download", reason: "model file lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Delete, route: "/api/models/:filename", source: "models::delete_model", reason: "model file lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/load", source: "models::load_model", reason: "model process lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/llama-config", source: "models::save_llama_config", reason: "model runtime configuration adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/ollama-config", source: "models::save_ollama_config", reason: "model runtime configuration adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/ollama/pull", source: "models::start_ollama_pull", reason: "Ollama provider lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/ollama/create", source: "models::start_ollama_create", reason: "Ollama provider lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/ai/llama/unload", source: "ai::llama_unload", reason: "AI process lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/system/restart", source: "system::restart", reason: "system lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/files/write", source: "files::write_file", reason: "filesystem resource adapter" },
@@ -706,7 +713,7 @@ mod tests {
 
     #[test]
     fn deferred_mutation_exception_ledger_is_complete_and_fail_closed() {
-        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 28);
+        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 35);
         for exception in DEFERRED_MUTATION_EXCEPTIONS {
             assert!(!exception.route.is_empty());
             assert!(!exception.reason.is_empty());
@@ -729,6 +736,7 @@ mod tests {
                 "ai" => include_str!("../api/ai.rs"),
                 "containers" => include_str!("../api/containers.rs"),
                 "terminal" => include_str!("../api/terminal.rs"),
+                "models" => include_str!("../api/models.rs"),
                 _ => panic!("unclassified deferred module {module}"),
             };
             let start = source.find(&format!("pub async fn {handler}"))
@@ -753,6 +761,13 @@ mod tests {
             ("GET", "/api/containers/fixture-container/exec", ""),
             ("GET", "/api/terminal/ws", ""),
             ("GET", "/api/terminal/ssh/ws?session_id=fixture", ""),
+            ("POST", "/api/models/download", "not-json"),
+            ("DELETE", "/api/models/model.gguf", ""),
+            ("POST", "/api/models/load", "not-json"),
+            ("POST", "/api/models/llama-config", r#"{"base_url":"http://127.0.0.1:8080"}"#),
+            ("POST", "/api/models/ollama-config", r#"{"base_url":"http://127.0.0.1:11434"}"#),
+            ("POST", "/api/models/ollama/pull", "not-json"),
+            ("POST", "/api/models/ollama/create", r#"{"filename":"model.gguf"}"#),
             ("POST", "/api/ai/llama/unload", ""),
             ("POST", "/api/system/restart", ""),
             ("POST", "/api/services/fixture.service/action", r#"{"action":"start"}"#),

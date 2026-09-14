@@ -108,7 +108,6 @@ pub struct LocalActionRequest {
 pub async fn local_action(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(_req): Json<LocalActionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
     Err(AppError::FeatureUnavailable(
@@ -524,10 +523,6 @@ mod tests {
         let result = local_action(
             State(state),
             jar,
-            Json(LocalActionRequest {
-                name: "fixture-vm".into(),
-                action: "start".into(),
-            }),
         )
         .await;
 

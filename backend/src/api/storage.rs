@@ -65,10 +65,8 @@ pub struct MountReq {
 pub async fn mount_device(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<MountReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let _ = req;
     Err(AppError::FeatureUnavailable(
         "local storage mutations require a canonical operation adapter".into(),
     ))
@@ -85,10 +83,8 @@ pub struct UmountReq {
 pub async fn umount_device(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<UmountReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let _ = req;
     Err(AppError::FeatureUnavailable(
         "local storage mutations require a canonical operation adapter".into(),
     ))
@@ -119,10 +115,8 @@ pub struct AddFstabReq {
 pub async fn add_fstab(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<AddFstabReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let _ = req;
     Err(AppError::FeatureUnavailable(
         "local storage mutations require a canonical operation adapter".into(),
     ))
@@ -184,10 +178,8 @@ pub struct CreateRaidReq {
 pub async fn create_raid(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<CreateRaidReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let _ = req;
     Err(AppError::FeatureUnavailable(
         "local storage mutations require a canonical operation adapter".into(),
     ))
@@ -204,10 +196,8 @@ pub struct StopRaidReq {
 pub async fn stop_raid(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<StopRaidReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let _ = req;
     Err(AppError::FeatureUnavailable(
         "local storage mutations require a canonical operation adapter".into(),
     ))
@@ -226,10 +216,8 @@ pub struct FormatReq {
 pub async fn format_device(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<FormatReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let _ = req;
     Err(AppError::FeatureUnavailable(
         "local storage mutations require a canonical operation adapter".into(),
     ))
@@ -250,11 +238,6 @@ mod tests {
         let result = format_device(
             State(state),
             jar,
-            Json(FormatReq {
-                device: "/dev/voidtower-test".into(),
-                fstype: "ext4".into(),
-                label: None,
-            }),
         )
         .await;
 
@@ -398,10 +381,8 @@ pub struct SetStoragePathsReq {
 pub async fn set_storage_paths(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<SetStoragePathsReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let _ = req;
     Err(AppError::FeatureUnavailable(
         "local storage mutations require a canonical operation adapter".into(),
     ))

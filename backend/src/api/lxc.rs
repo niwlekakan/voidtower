@@ -148,10 +148,9 @@ pub async fn action(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(vmid): Path<u32>,
-    Json(req): Json<ActionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let _ = (vmid, req.action);
+    let _ = vmid;
     Err(AppError::FeatureUnavailable(
         "local LXC mutations require a canonical operation adapter".into(),
     ))
@@ -173,9 +172,6 @@ mod tests {
             State(state),
             jar,
             Path(101),
-            Json(ActionRequest {
-                action: "start".into(),
-            }),
         )
         .await;
 

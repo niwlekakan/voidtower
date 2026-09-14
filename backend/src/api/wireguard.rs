@@ -299,15 +299,8 @@ pub async fn list(
 pub async fn add_peer(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<AddPeerRequest>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let AddPeerRequest {
-        name,
-        interface,
-        server_endpoint,
-    } = req;
-    let _ = (name, interface, server_endpoint);
     Err(AppError::FeatureUnavailable(
         "WireGuard mutations require a canonical operation adapter".into(),
     ))

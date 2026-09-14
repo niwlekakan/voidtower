@@ -63,14 +63,13 @@ pub async fn action(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(name): Path<String>,
-    Json(req): Json<ActionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
 
     // Require at least operator role for mutations.
     super::role_guard::require_operator(&user)?;
 
-    let _ = (name, req.action);
+    let _ = name;
     Err(AppError::FeatureUnavailable(
         "service mutations require a canonical operation adapter".into(),
     ))
@@ -114,9 +113,6 @@ mod tests {
             State(state),
             jar,
             Path("fixture.service".into()),
-            Json(ActionRequest {
-                action: ServiceAction::Start,
-            }),
         )
         .await;
 

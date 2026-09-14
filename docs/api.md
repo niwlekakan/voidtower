@@ -313,8 +313,10 @@ POST /api/files/rename             { from, to }
 
 Filesystem mutation routes authenticate an owner/admin session and currently return
 `503 { "error": { "code": "feature_unavailable", "message": "filesystem mutations require a canonical operation adapter" } }`.
-They never write, create, rename, or delete host paths until a typed canonical action adapter exists.
-Read-only file listing, reading, and raw serving remain separate paths.
+Authentication is performed before request-body or query validation, so unauthenticated malformed requests
+receive the bounded `401 unauthorized` envelope rather than an extractor `400`/`422`. They never write,
+create, rename, or delete host paths until a typed canonical action adapter exists. Read-only file listing,
+reading, and raw serving remain separate paths.
 
 ## Plugins and repository mods
 
@@ -333,10 +335,12 @@ POST /api/mods/rollback
 
 Plugin install/update/uninstall and repository-mod fetch/apply/rollback routes authenticate an
 owner/admin session and return the same bounded `503 feature_unavailable` response until canonical
-operation adapters exist. They do not download archives, alter the plugin database/filesystem,
-run Git commands, merge, or reset the host directly. The separate `POST /api/mods/config` route only
-stores the selected source settings and remains a bounded configuration mutation; it does not fetch
-or apply a repository. Status, configuration, and diff reads remain available where registered.
+operation adapters exist. Authentication precedes body parsing on deferred mutation routes, including
+malformed requests, which receive `401 unauthorized` before any `400`/`422` extractor response. They do
+not download archives, alter the plugin database/filesystem, run Git commands, merge, or reset the host
+directly. The separate `POST /api/mods/config` route only stores the selected source settings and remains
+a bounded configuration mutation; it does not fetch or apply a repository. Status, configuration, and diff
+reads remain available where registered.
 
 ## Proxy
 
@@ -371,9 +375,10 @@ DELETE /api/wireguard/peers/:id
 ```
 
 WireGuard peer mutations authenticate an owner/admin session and return bounded `503 feature_unavailable`
-until a canonical WireGuard resource/action adapter exists. They do not invoke `wg`, write interface
-configuration, or mutate peer records from the compatibility handler. The authenticated read path remains
-available for status inspection.
+until a canonical WireGuard resource/action adapter exists. Authentication occurs before body parsing, so
+malformed unauthenticated calls receive `401 unauthorized` rather than `400`/`422`. They do not invoke `wg`,
+write interface configuration, or mutate peer records from the compatibility handler. The authenticated read
+path remains available for status inspection.
 
 ## Storage
 
@@ -396,8 +401,10 @@ POST /api/storage/paths
 
 Storage mutations, including mount/umount, fstab, RAID, format, and storage-path settings, authenticate
 an owner/admin session and return bounded `503 feature_unavailable` until a canonical storage adapter
-exists. They do not invoke host storage commands or write settings from compatibility handlers. Device,
-mount, fstab, SMART, RAID, and configured-path reads remain separate authenticated projections.
+exists. Authentication precedes request-body parsing, so malformed unauthenticated requests receive `401
+unauthorized` rather than `400`/`422`. They do not invoke host storage commands or write settings from
+compatibility handlers. Device, mount, fstab, SMART, RAID, and configured-path reads remain separate
+authenticated projections.
 
 ## Network
 

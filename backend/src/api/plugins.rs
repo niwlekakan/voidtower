@@ -100,7 +100,6 @@ pub async fn list(
 pub async fn install(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(_req): Json<InstallRequest>,
 ) -> Result<Json<Plugin>> {
     require_admin(&state, &jar).await?;
     Err(AppError::FeatureUnavailable(
@@ -123,7 +122,6 @@ pub async fn update(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(_id): Path<String>,
-    Json(_req): Json<UpdateRequest>,
 ) -> Result<Json<Value>> {
     require_admin(&state, &jar).await?;
     Err(AppError::FeatureUnavailable(

@@ -292,7 +292,6 @@ pub async fn read_file(
 pub async fn write_file(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(_req): Json<WriteRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
@@ -304,7 +303,6 @@ pub async fn write_file(
 pub async fn mkdir(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(_req): Json<MkdirRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
@@ -316,7 +314,6 @@ pub async fn mkdir(
 pub async fn delete(
     State(state): State<AppState>,
     jar: CookieJar,
-    Query(_q): Query<PathQuery>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
@@ -328,7 +325,6 @@ pub async fn delete(
 pub async fn rename(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(_req): Json<RenameRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;

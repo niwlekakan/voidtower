@@ -49,6 +49,7 @@ pub async fn create(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
     validate_kind(&req.kind)?;
+    validate_provider_fields(&req.kind, &req.name, req.base_url.as_deref(), req.model.as_deref(), req.priority.unwrap_or(50))?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
@@ -109,16 +110,21 @@ pub async fn update(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
     let mut tx = state.db.begin().await.map_err(AppError::Database)?;
-    let current_ref: Option<String> = sqlx::query_scalar(
-        "SELECT api_key_ref FROM ai_providers WHERE id = ?",
+    let current: Option<(String, String, Option<String>, Option<String>, i64, Option<String>)> = sqlx::query_as(
+        "SELECT kind, name, base_url, model, priority, api_key_ref FROM ai_providers WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(AppError::Database)?;
-    if current_ref.is_none() {
-        return Err(AppError::NotFound);
-    }
+    let (current_kind, current_name, current_base_url, current_model, current_priority, current_ref) = current.ok_or(AppError::NotFound)?;
+    validate_provider_fields(
+        &current_kind,
+        req.name.as_deref().unwrap_or(&current_name),
+        req.base_url.as_deref().or(current_base_url.as_deref()),
+        req.model.as_deref().or(current_model.as_deref()),
+        req.priority.unwrap_or(current_priority),
+    )?;
     let now = unix_now();
 
     if let Some(name) = &req.name {
@@ -206,7 +212,7 @@ pub async fn health(
     let orchestrator = crate::ai::AiOrchestrator::new(state.db.clone(), state.secrets_key.clone());
     match orchestrator.health_check(&id).await {
         Ok(()) => Ok(Json(HealthResult { id, ok: true, error: None })),
-        Err(e) => Ok(Json(HealthResult { id, ok: false, error: Some(e) })),
+        Err(e) => Ok(Json(HealthResult { id, ok: false, error: Some(redact_health_error(&e)) })),
     }
 }
 
@@ -300,7 +306,7 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
     Ok(user)
 }
 
-fn validate_kind(kind: &str) -> Result<()> {
+fn validate_provider_fields(kind: &str, name: &str, base_url: Option<&str>, model: Option<&str>, priority: i64) -> Result<()> { if name.trim().is_empty() || name.len() > 200 { return Err(AppError::BadRequest("provider name is invalid".into())); } if priority < 0 { return Err(AppError::BadRequest("provider priority must be non-negative".into())); } if let Some(value) = model { if value.trim().is_empty() || value.len() > 200 { return Err(AppError::BadRequest("provider model is invalid".into())); } } if let Some(raw) = base_url { if raw.len() > 500 { return Err(AppError::BadRequest("provider base URL is too long".into())); } let url = reqwest::Url::parse(raw).map_err(|_| AppError::BadRequest("provider base URL is invalid".into()))?; if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() { return Err(AppError::BadRequest("provider base URL must be an HTTP(S) URL without credentials".into())); } let host = url.host_str().unwrap_or_default().trim_end_matches('.'); if kind != "local" && (host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") || host.parse::<std::net::IpAddr>().is_ok()) { return Err(AppError::BadRequest("provider base URL cannot target a local or private address".into())); } } Ok(()) } fn redact_health_error(_error: &str) -> String { "provider health check failed".into() } fn validate_kind(kind: &str) -> Result<()> {
     match kind {
         "odysseus" | "openai" | "anthropic" | "local" => Ok(()),
         _ => Err(AppError::BadRequest(format!(
@@ -323,6 +329,20 @@ mod tests {
         http::{header, Request, StatusCode},
     };
     use tower::ServiceExt;
+
+    #[test]
+    fn provider_validation_rejects_unsafe_endpoint_and_invalid_metadata() {
+        assert!(super::validate_provider_fields("openai", " ", None, None, 1).is_err());
+        assert!(super::validate_provider_fields("openai", "provider", Some("file:///etc/passwd"), None, 1).is_err());
+        assert!(super::validate_provider_fields("openai", "provider", Some("http://127.0.0.1:8080"), None, 1).is_err());
+        assert!(super::validate_provider_fields("local", "provider", Some("http://127.0.0.1:11434"), Some("model"), 0).is_ok());
+        assert!(super::validate_provider_fields("openai", "provider", Some("https://api.example.test"), Some("model"), 0).is_ok());
+    }
+
+    #[test]
+    fn provider_health_failure_is_redacted() {
+        assert_eq!(super::redact_health_error("database password at http://10.0.0.1"), "provider health check failed");
+    }
 
     #[tokio::test]
     async fn create_encrypts_api_key_and_returns_only_secret_reference() {

@@ -1,4 +1,4 @@
-use crate::ai::{AiCapabilities, AiProvider, AiRequest};
+use crate::ai::{egress, AiCapabilities, AiProvider, AiRequest};
 use async_trait::async_trait;
 
 pub struct OpenAiProvider {
@@ -19,11 +19,8 @@ impl OpenAiProvider {
         format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
-    fn client(&self) -> std::result::Result<reqwest::Client, String> {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|e| e.to_string())
+    async fn client(&self, timeout: std::time::Duration) -> std::result::Result<reqwest::Client, String> {
+        egress::client_for(&self.base_url, timeout).await
     }
 }
 
@@ -45,7 +42,7 @@ impl AiProvider for OpenAiProvider {
 
     async fn complete(&self, req: &AiRequest) -> std::result::Result<String, String> {
         let body = build_body(req, &self.model, false);
-        let resp = self.client()?
+        let resp = self.client(std::time::Duration::from_secs(120)).await?
             .post(self.completions_url())
             .bearer_auth(&self.api_key)
             .json(&body)
@@ -54,8 +51,7 @@ impl AiProvider for OpenAiProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("OpenAI error {status}: {text}"));
+            return Err(format!("OpenAI request failed with HTTP {status}"));
         }
         let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
         extract_content(&json)
@@ -63,23 +59,25 @@ impl AiProvider for OpenAiProvider {
 
     async fn stream(&self, req: &AiRequest) -> std::result::Result<reqwest::Response, String> {
         let body = build_body(req, &self.model, true);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build().map_err(|e| e.to_string())?;
+        let client = self.client(std::time::Duration::from_secs(300)).await?;
 
-        client
+        let resp = client
             .post(self.completions_url())
             .bearer_auth(&self.api_key)
             .json(&body)
             .send().await
-            .map_err(|e| format!("OpenAI unreachable: {e}"))
+            .map_err(|e| format!("OpenAI unreachable: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("OpenAI request failed with HTTP {}", resp.status()));
+        }
+        Ok(resp)
     }
 
     async fn health_check(&self) -> std::result::Result<(), String> {
-        let resp = self.client()?
+        let resp = self.client(std::time::Duration::from_secs(5)).await?
             .get(format!("{}/v1/models", self.base_url.trim_end_matches('/')))
             .bearer_auth(&self.api_key)
-            .timeout(std::time::Duration::from_secs(5))
+
             .send().await
             .map_err(|e| e.to_string())?;
         if resp.status().is_success() { Ok(()) }

@@ -265,7 +265,7 @@ GET    /api/ai/providers/:id/health
 
 Valid `kind` values: `odysseus` · `openai` · `anthropic` · `local`.  
 The orchestrator picks the enabled provider with the lowest `priority` number. Pass `provider_id` in `/api/ai/ask` to pin a specific provider for that request.  
-API key values are stored in the `settings` table under the name given in `api_key_ref`.
+API key values are encrypted in the secret manager and referenced by canonical secrets.id; plaintext keys are never returned by provider APIs. Provider names/models and base URLs are bounded; only credential-free HTTP(S) URLs are accepted, and local/private/link-local/metadata and other special targets are rejected. Before every external provider health, completion, or streaming request, the hostname is resolved and every result is checked; the safe address is pinned for that request and redirects are disabled. The explicitly local provider may use loopback or RFC1918 targets for a local LLM, but still pins DNS and rejects metadata/link-local/special targets. This closes hostname-based DNS rebinding for external provider clients. Health failures return a generic provider health check failed message. External provider and Docker/App Vault runtime qualification remains a separate gate.
 
 ## VMs
 

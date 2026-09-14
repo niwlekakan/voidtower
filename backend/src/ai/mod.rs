@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod providers;
+pub mod egress;
 pub mod orchestrator;
 pub mod router;
 

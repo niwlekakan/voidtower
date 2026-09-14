@@ -1,5 +1,5 @@
 /// Local LLM provider — targets Ollama or llama.cpp via OpenAI-compatible API.
-use crate::ai::{AiCapabilities, AiProvider, AiRequest};
+use crate::ai::{egress, AiCapabilities, AiProvider, AiRequest};
 use async_trait::async_trait;
 
 pub struct LocalLlmProvider {
@@ -42,9 +42,7 @@ impl AiProvider for LocalLlmProvider {
 
     async fn complete(&self, req: &AiRequest) -> std::result::Result<String, String> {
         let body = build_body(req, &self.model, false);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build().map_err(|e| e.to_string())?;
+        let client = egress::client_for_local(&self.base_url, std::time::Duration::from_secs(120)).await?;
 
         let resp = client
             .post(self.completions_url())
@@ -68,21 +66,21 @@ impl AiProvider for LocalLlmProvider {
 
     async fn stream(&self, req: &AiRequest) -> std::result::Result<reqwest::Response, String> {
         let body = build_body(req, &self.model, true);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build().map_err(|e| e.to_string())?;
+        let client = egress::client_for_local(&self.base_url, std::time::Duration::from_secs(300)).await?;
 
-        client
+        let resp = client
             .post(self.completions_url())
             .json(&body)
             .send().await
-            .map_err(|e| format!("Local LLM unreachable: {e}"))
+            .map_err(|e| format!("Local LLM unreachable: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Local LLM request failed with HTTP {}", resp.status()));
+        }
+        Ok(resp)
     }
 
     async fn health_check(&self) -> std::result::Result<(), String> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build().map_err(|e| e.to_string())?;
+        let client = egress::client_for_local(&self.base_url, std::time::Duration::from_secs(3)).await?;
 
         if client.get(self.tags_url()).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
             return Ok(());

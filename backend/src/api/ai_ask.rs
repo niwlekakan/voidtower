@@ -124,14 +124,19 @@ async fn legacy_odysseus_fallback(state: &AppState, ai_req: &AiRequest) -> Resul
     });
 
     let upstream_url = format!("{}/api/chat/completions", odysseus_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    let client = crate::ai::egress::client_for(&odysseus_url, std::time::Duration::from_secs(300))
+        .await
+        .map_err(|_| AppError::BadRequest("legacy AI provider endpoint is unavailable".into()))?;
     let upstream_res = client
         .post(&upstream_url)
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .map_err(|_| AppError::BadRequest("legacy AI provider request failed".into()))?;
+    if !upstream_res.status().is_success() {
+        return Err(AppError::BadRequest("legacy AI provider request failed".into()));
+    }
 
     let status = upstream_res.status();
     let content_type = upstream_res

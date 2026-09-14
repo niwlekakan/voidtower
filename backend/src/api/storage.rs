@@ -1,5 +1,5 @@
 use crate::{
-    audit, auth,
+    auth,
     error::{AppError, Result},
     storage,
     AppState,
@@ -369,21 +369,6 @@ async fn db_get_path(state: &AppState, key: &str) -> Option<String> {
         .map(|(v,)| v)
 }
 
-async fn db_set_path(state: &AppState, key: &str, value: &str) -> Result<()> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
-        .bind(key)
-        .bind(value)
-        .bind(now)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn get_storage_paths(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -401,6 +386,7 @@ pub async fn get_storage_paths(
     })))
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct SetStoragePathsReq {
     pub containers: Option<String>,
@@ -414,31 +400,9 @@ pub async fn set_storage_paths(
     jar: CookieJar,
     Json(req): Json<SetStoragePathsReq>,
 ) -> Result<Json<serde_json::Value>> {
-    let user = require_admin(&state, &jar).await?;
-
-    let pairs: &[(&str, Option<&String>)] = &[
-        ("storage.paths.containers", req.containers.as_ref()),
-        ("storage.paths.appvault",   req.appvault.as_ref()),
-        ("storage.paths.vms",        req.vms.as_ref()),
-        ("storage.paths.backups",    req.backups.as_ref()),
-    ];
-
-    for (key, val) in pairs {
-        if let Some(v) = val {
-            if !v.starts_with('/') {
-                return Err(AppError::BadRequest(format!("{key}: path must be absolute")));
-            }
-            if v.contains([';', '&', '|', '`', '$', '\n']) {
-                return Err(AppError::BadRequest(format!("{key}: invalid characters")));
-            }
-            db_set_path(&state, key, v).await?;
-        }
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "storage.paths.set",
-        Some("storage"), None, "success", None, None,
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    require_admin(&state, &jar).await?;
+    let _ = req;
+    Err(AppError::FeatureUnavailable(
+        "local storage mutations require a canonical operation adapter".into(),
+    ))
 }

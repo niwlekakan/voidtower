@@ -329,6 +329,11 @@ POST /api/wireguard/peers          { name, interface, server_endpoint? }
 DELETE /api/wireguard/peers/:id
 ```
 
+WireGuard peer mutations authenticate an owner/admin session and return bounded `503 feature_unavailable`
+until a canonical WireGuard resource/action adapter exists. They do not invoke `wg`, write interface
+configuration, or mutate peer records from the compatibility handler. The authenticated read path remains
+available for status inspection.
+
 ## Storage
 
 ```
@@ -347,6 +352,11 @@ POST /api/storage/format
 GET  /api/storage/paths
 POST /api/storage/paths
 ```
+
+Storage mutations, including mount/umount, fstab, RAID, format, and storage-path settings, authenticate
+an owner/admin session and return bounded `503 feature_unavailable` until a canonical storage adapter
+exists. They do not invoke host storage commands or write settings from compatibility handlers. Device,
+mount, fstab, SMART, RAID, and configured-path reads remain separate authenticated projections.
 
 ## Network
 

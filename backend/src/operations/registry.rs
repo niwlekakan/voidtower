@@ -28,6 +28,41 @@ pub const ADAPTERS: &[AdapterMetadata] = &[
     AdapterMetadata { key: "updates" },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferredMutationException {
+    pub method: HttpMethod,
+    pub route: &'static str,
+    pub source: &'static str,
+    pub reason: &'static str,
+}
+
+/// Compatibility mutations intentionally unavailable until their canonical adapters exist.
+pub const DEFERRED_MUTATION_EXCEPTIONS: &[DeferredMutationException] = &[
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/files/write", source: "files::write_file", reason: "filesystem resource adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/files/mkdir", source: "files::mkdir", reason: "filesystem resource adapter" },
+    DeferredMutationException { method: HttpMethod::Delete, route: "/api/files/delete", source: "files::delete", reason: "filesystem resource adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/files/rename", source: "files::rename", reason: "filesystem resource adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/plugins", source: "plugins::install", reason: "plugin lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Patch, route: "/api/plugins/:id", source: "plugins::update", reason: "plugin lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Delete, route: "/api/plugins/:id", source: "plugins::uninstall", reason: "plugin lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/mods/fetch", source: "mods::fetch_mod", reason: "repository-mod adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/mods/apply", source: "mods::apply_mod", reason: "repository-mod adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/mods/rollback", source: "mods::rollback_mod", reason: "repository-mod adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/services/:name/action", source: "services::action", reason: "service lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/lxc/:vmid/action", source: "lxc::action", reason: "local LXC adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/vms/local/action", source: "vms::local_action", reason: "local VM adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/wireguard/peers", source: "wireguard::add_peer", reason: "WireGuard adapter" },
+    DeferredMutationException { method: HttpMethod::Delete, route: "/api/wireguard/peers/:id", source: "wireguard::delete_peer", reason: "WireGuard adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/mount", source: "storage::mount_device", reason: "storage adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/umount", source: "storage::umount_device", reason: "storage adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/fstab", source: "storage::add_fstab", reason: "storage adapter" },
+    DeferredMutationException { method: HttpMethod::Delete, route: "/api/storage/fstab/:idx", source: "storage::remove_fstab", reason: "storage adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/raid/create", source: "storage::create_raid", reason: "storage adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/raid/stop", source: "storage::stop_raid", reason: "storage adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/format", source: "storage::format_device", reason: "storage adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/paths", source: "storage::set_storage_paths", reason: "storage adapter" },
+];
+
 /// Compatibility routes included in the approved six-domain adoption. POST routes that only plan
 /// and the ephemeral Proxmox VNC-ticket route are intentionally absent.
 const ADOPTED_ROUTES: &[(HttpMethod, &str)] = &[
@@ -661,6 +696,63 @@ mod tests {
             "patch_nginx_compose_port(",
         ] {
             assert!(!production.contains(needle), "settings bypass drift: {needle}");
+        }
+    }
+
+    #[test]
+    fn deferred_mutation_exception_ledger_is_complete_and_fail_closed() {
+        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 23);
+        for exception in DEFERRED_MUTATION_EXCEPTIONS {
+            assert!(!exception.route.is_empty());
+            assert!(!exception.reason.is_empty());
+            let route = action_registry::route(exception.method.as_str(), exception.route)
+                .unwrap_or_else(|| panic!("missing route metadata for {} {}", exception.method.as_str(), exception.route));
+            assert!(route.canonical_actions.is_empty(), "deferred route must not claim a canonical action: {} {}", exception.method.as_str(), exception.route);
+            let (module, handler) = exception.source.split_once("::").expect("module::handler source");
+            let api_routes = include_str!("../api/mod.rs");
+            assert!(api_routes.contains(exception.source), "{} is not registered in the API router", exception.source);
+            let source = match module {
+                "files" => include_str!("../api/files.rs"),
+                "plugins" => include_str!("../api/plugins.rs"),
+                "mods" => include_str!("../api/mods.rs"),
+                "services" => include_str!("../api/services.rs"),
+                "lxc" => include_str!("../api/lxc.rs"),
+                "vms" => include_str!("../api/vms.rs"),
+                "wireguard" => include_str!("../api/wireguard.rs"),
+                "storage" => include_str!("../api/storage.rs"),
+                _ => panic!("unclassified deferred module {module}"),
+            };
+            let start = source.find(&format!("pub async fn {handler}"))
+                .unwrap_or_else(|| panic!("missing deferred handler {}", exception.source));
+            let body = source[start..].split("\n}\n").next().unwrap_or(&source[start..]);
+            assert!(body.contains("FeatureUnavailable"), "{} must fail closed", exception.source);
+            for marker in ["std::fs::", "tokio::fs::", "Command::new", "run_checked(", "reqwest::", "sqlx::query(", "audit::log("] {
+                assert!(!body.contains(marker), "{} retains direct mutation marker {}", exception.source, marker);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn deferred_mutation_routes_preserve_authentication_then_fail_closed() {
+        use axum::{body::{to_bytes, Body}, http::{header, Request, StatusCode}};
+        use tower::ServiceExt;
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let cases = [
+            ("POST", "/api/services/fixture.service/action", r#"{"action":"start"}"#),
+            ("POST", "/api/lxc/101/action", r#"{"action":"start"}"#),
+            ("POST", "/api/storage/mount", r#"{"device":"/dev/sdb","mountpoint":"/mnt/x","fstype":"ext4"}"#),
+            ("POST", "/api/wireguard/peers", r#"{"name":"fixture","interface":"wg0"}"#),
+        ];
+        for (method, uri, body) in cases {
+            let unauthenticated = app.clone().oneshot(Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+            assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            let response = app.clone().oneshot(Request::builder().method(method).uri(uri).header(header::COOKIE, format!("vt_session={session}")).header(header::CONTENT_TYPE, "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            let payload: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+            assert_eq!(payload["error"]["code"], "feature_unavailable", "{uri}");
         }
     }
 

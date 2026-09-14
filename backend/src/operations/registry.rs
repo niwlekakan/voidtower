@@ -638,7 +638,7 @@ mod tests {
         assert!(apps.contains("pub async fn update_compose("));
 
         let models = include_str!("../api/models.rs");
-        assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 1);
+        assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 0);
         let ollama_create = models
             .split_once("pub async fn start_ollama_create(")
             .and_then(|(_, rest)| rest.split_once("async fn do_ollama_create"))

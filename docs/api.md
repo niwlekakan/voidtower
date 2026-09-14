@@ -203,6 +203,22 @@ POST /api/models/ollama/create     { filename }
 GET  /api/models/ollama/create/:id Admin or owner session; Bearer denied
 ```
 
+The legacy model mutation POST endpoints (`/api/models/load`, `/api/models/llama-config`,
+`/api/models/ollama-config`, and `/api/models/ollama/create`) authenticate first and
+return `503 feature_unavailable` until canonical operation adapters exist. They do not
+write compose files, invoke Docker, or mutate provider state.
+
+The public OpenAI-compatible proxy remains available at:
+
+```
+POST /v1/chat/completions       { model, messages, ... }
+```
+
+It forwards inference requests to the local llama.cpp server and does not implicitly
+switch or reload models. Model selection/loading must be performed through a future
+canonical operation boundary; callers should target the model currently served by the
+configured local runtime.
+
 ## AI / GPU
 
 ```

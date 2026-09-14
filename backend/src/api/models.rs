@@ -440,72 +440,6 @@ pub async fn get_active(
     Ok(Json(serde_json::json!({ "filename": active })))
 }
 
-fn llama_entrypoint_with_exec(server_args: &str) -> String {
-    [
-        "if [ -n \"$$MODEL_PATH\" ]; then",
-        "  MODEL=\"$$MODEL_PATH\"",
-        "else",
-        "  MODEL=\"$$(find /models -name '*.gguf' 2>/dev/null | head -1)\"",
-        "fi",
-        "while [ -z \"$$MODEL\" ]; do",
-        "  echo \"[llama.cpp] No .gguf found -- retrying in 15s...\"",
-        "  sleep 15",
-        "  MODEL=\"$$(find /models -name '*.gguf' 2>/dev/null | head -1)\"",
-        "done",
-        "echo \"[llama.cpp] Loading: $$MODEL\"",
-        &format!("exec /app/llama-server --model \"$$MODEL\" {}", server_args),
-    ]
-    .join("\n")
-}
-
-fn llama_entrypoint_script() -> String {
-    llama_entrypoint_with_exec(
-        "--host 0.0.0.0 --port 8080 --n-gpu-layers 999 --ctx-size 8192 --batch-size 512 --threads 4 --cont-batching --parallel 1",
-    )
-}
-
-async fn switch_llama_model(state: &AppState, filename: &str) -> Result<()> {
-    let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
-        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::BadRequest("llama.cpp is not deployed".into()))?;
-
-    let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content =
-        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
-
-    if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
-        for svc in services.values_mut() {
-            if let Some(env) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
-                env.retain(|e| !matches!(e.as_str(), Some(s) if s.starts_with("MODEL_PATH=")));
-                env.push(serde_json::Value::String(format!(
-                    "MODEL_PATH=/models/{}",
-                    filename
-                )));
-            }
-            if let Some(ep) = svc.get_mut("entrypoint").and_then(|e| e.as_array_mut()) {
-                if ep.len() >= 3 {
-                    ep[2] = serde_json::Value::String(llama_entrypoint_script());
-                }
-            }
-        }
-    }
-
-    let new_content = serde_yaml::to_string(&val).map_err(|e| AppError::Internal(e.into()))?;
-    std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
-
-    crate::containers::deploy_compose(&project_name, &compose_path)
-        .await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-
-    Ok(())
-}
-
 pub async fn load_model(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1098,45 +1032,11 @@ pub async fn openai_list_models(State(state): State<AppState>) -> Result<Json<se
     Ok(Json(serde_json::json!({ "object": "list", "data": data })))
 }
 
-/// POST /v1/chat/completions — auto-switches the loaded model if needed, then streams through to llama.cpp.
+/// POST /v1/chat/completions — forwards inference to the currently served llama.cpp model.
 pub async fn openai_chat_completions(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(req_body): Json<serde_json::Value>,
 ) -> Result<axum::response::Response> {
-    if let Some(requested) = req_body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        if get_active_model_from_server().await.as_deref() != Some(requested) {
-            let dir = models_dir(&state).await;
-            let gguf = format!("{}.gguf", requested);
-            if dir.join(&gguf).exists() {
-                switch_llama_model(&state, &gguf).await?;
-                let poll = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(2))
-                    .build()
-                    .map_err(|e| AppError::Internal(e.into()))?;
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if poll
-                        .get("http://127.0.0.1:8090/v1/models")
-                        .send()
-                        .await
-                        .map(|r| r.status().is_success())
-                        .unwrap_or(false)
-                    {
-                        break;
-                    }
-                    if std::time::Instant::now() > deadline {
-                        return Err(AppError::BadRequest("Model switch timed out".into()));
-                    }
-                }
-            }
-        }
-    }
-
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()
@@ -1466,6 +1366,27 @@ mod tests {
                 !handler.contains(marker),
                 "save-llama-config handler marker: {marker}"
             );
+        }
+    }
+
+    #[test]
+    fn openai_chat_handler_does_not_switch_models_or_mutate_host_state() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn openai_chat_completions(")
+            .nth(1)
+            .and_then(|rest| rest.split("#[cfg(test)]").next())
+            .expect("OpenAI chat handler");
+
+        for marker in [
+            "switch_llama_model(",
+            "sqlx::query",
+            "std::fs::",
+            "containers::",
+            "tokio::spawn",
+            "audit::log(",
+        ] {
+            assert!(!handler.contains(marker), "OpenAI chat handler marker: {marker}");
         }
     }
 }

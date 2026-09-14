@@ -222,26 +222,6 @@ pub async fn list_images() -> Result<Vec<ImageInfo>> {
         .collect())
 }
 
-// Deploy a Docker Compose app from a compose file string
-pub async fn deploy_compose(
-    project_name: &str,
-    compose_path: &std::path::Path,
-) -> Result<()> {
-    let output = tokio::process::Command::new("docker")
-        .args(["compose", "-p", project_name, "-f"])
-        .arg(compose_path)
-        .args(["up", "-d", "--build"])
-        .process_group(0)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("docker compose failed: {}", stderr);
-    }
-    Ok(())
-}
-
 /// Like `deploy_compose`, but registers the spawned process's pid in `registry` for the
 /// duration of the call so it can be cancelled gracefully via `cancel_deploy`. Used by the
 /// interactive deploy flow, which exposes a Cancel button while this is in flight.

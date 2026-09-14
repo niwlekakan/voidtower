@@ -75,26 +75,12 @@ pub async fn llama_status(State(state): State<AppState>, jar: CookieJar) -> Resu
     }))
 }
 
-pub async fn llama_unload(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+pub async fn llama_unload(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let procs = find_llama_processes();
-    if procs.is_empty() {
-        return Ok(Json(serde_json::json!({ "ok": true, "killed": 0, "message": "No llama processes found" })));
-    }
-    let mut killed = 0usize;
-    for p in &procs {
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid;
-            let _ = kill(Pid::from_raw(p.pid as i32), Signal::SIGTERM);
-            killed += 1;
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::process::Command::new("taskkill").args(["/PID", &p.pid.to_string(), "/F"]).output();
-            killed += 1;
-        }
-    }
-    Ok(Json(serde_json::json!({ "ok": true, "killed": killed, "message": format!("Sent SIGTERM to {} process(es)", killed) })))
+    Err(AppError::FeatureUnavailable(
+        "AI process unload requires the canonical operation adapter".into(),
+    ))
 }

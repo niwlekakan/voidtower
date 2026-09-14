@@ -203,6 +203,8 @@ POST /api/models/ollama/create     { filename }
 GET  /api/models/ollama/create/:id Admin or owner session; Bearer denied
 ```
 
+`POST /api/ai/llama/unload` authenticates an owner/admin session but currently returns `503 feature_unavailable` until a canonical AI process lifecycle adapter exists. It does not signal or terminate host processes. `GET /api/ai/llama` remains a read-only status projection.
+
 The legacy model mutation POST endpoints (`/api/models/load`, `/api/models/llama-config`,
 `/api/models/ollama-config`, and `/api/models/ollama/create`) authenticate first and
 return `503 feature_unavailable` until canonical operation adapters exist. They do not

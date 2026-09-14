@@ -49,6 +49,9 @@ pub const DEFERRED_MUTATION_EXCEPTIONS: &[DeferredMutationException] = &[
     DeferredMutationException { method: HttpMethod::Post, route: "/api/models/ollama/pull", source: "models::start_ollama_pull", reason: "Ollama provider lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/models/ollama/create", source: "models::start_ollama_create", reason: "Ollama provider lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/ai/llama/unload", source: "ai::llama_unload", reason: "AI process lifecycle adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/studio/image/generate", source: "studio::image_generate", reason: "AI image generation adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/studio/tts/generate", source: "studio::tts_generate", reason: "AI speech generation adapter" },
+    DeferredMutationException { method: HttpMethod::Post, route: "/api/studio/stt/transcribe", source: "studio::stt_transcribe", reason: "AI speech transcription adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/system/restart", source: "system::restart", reason: "system lifecycle adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/files/write", source: "files::write_file", reason: "filesystem resource adapter" },
     DeferredMutationException { method: HttpMethod::Post, route: "/api/files/mkdir", source: "files::mkdir", reason: "filesystem resource adapter" },
@@ -713,7 +716,7 @@ mod tests {
 
     #[test]
     fn deferred_mutation_exception_ledger_is_complete_and_fail_closed() {
-        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 35);
+        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 38);
         for exception in DEFERRED_MUTATION_EXCEPTIONS {
             assert!(!exception.route.is_empty());
             assert!(!exception.reason.is_empty());
@@ -737,6 +740,7 @@ mod tests {
                 "containers" => include_str!("../api/containers.rs"),
                 "terminal" => include_str!("../api/terminal.rs"),
                 "models" => include_str!("../api/models.rs"),
+                "studio" => include_str!("../api/studio.rs"),
                 _ => panic!("unclassified deferred module {module}"),
             };
             let start = source.find(&format!("pub async fn {handler}"))
@@ -769,6 +773,9 @@ mod tests {
             ("POST", "/api/models/ollama/pull", "not-json"),
             ("POST", "/api/models/ollama/create", r#"{"filename":"model.gguf"}"#),
             ("POST", "/api/ai/llama/unload", ""),
+            ("POST", "/api/studio/image/generate", "not-json"),
+            ("POST", "/api/studio/tts/generate", "not-json"),
+            ("POST", "/api/studio/stt/transcribe", ""),
             ("POST", "/api/system/restart", ""),
             ("POST", "/api/services/fixture.service/action", r#"{"action":"start"}"#),
             ("POST", "/api/lxc/101/action", r#"{"action":"start"}"#),

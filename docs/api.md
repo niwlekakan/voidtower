@@ -86,6 +86,22 @@ views use it only to invalidate authoritative HTTP reads and retain bounded poll
 
 ---
 
+## AI Studio generation boundary
+
+The AI Studio generation routes are authenticated compatibility seams, but they do not yet have canonical AI/media resource and action adapters. Until those adapters exist, they authenticate the session first and return a bounded `503` response:
+
+```
+POST /api/studio/image/generate
+POST /api/studio/tts/generate
+POST /api/studio/stt/transcribe
+
+503 { "error": { "code": "feature_unavailable", "message": "... canonical operation adapter" } }
+```
+
+Unauthenticated requests receive `401` before request-body validation or provider access. The routes do not contact SD WebUI, ComfyUI, Kokoro, or Whisper, and do not write generated media while this boundary is deferred. Read-only Studio status, gallery listing, media serving, and deletion remain separate routes; their availability does not imply generation support.
+
+---
+
 ## Auth
 
 ```

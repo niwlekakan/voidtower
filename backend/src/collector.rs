@@ -3,6 +3,7 @@ use crate::cmdb::contracts::{
 };
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::{path::Path, time::Duration};
 use thiserror::Error;
 
 pub const LSBLK_COMMAND: &str = "lsblk --json --bytes --output NAME,KNAME,TYPE,SIZE,MODEL,SERIAL,WWN,ROTA,TRAN,RM,RO,PATH,MOUNTPOINTS";
@@ -10,6 +11,8 @@ pub const MAX_LSBLK_BYTES: usize = 256 * 1024;
 pub const MAX_ENTITY_COUNT: usize = 128;
 pub const MAX_STRING_BYTES: usize = 512;
 pub const MAX_JSON_DEPTH: usize = 16;
+pub const LSBLK_TIMEOUT: Duration = Duration::from_secs(10);
+pub const LSBLK_PROGRAM: &str = "/usr/bin/lsblk";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CollectorError {
@@ -31,6 +34,62 @@ pub enum CollectorError {
     MissingIdentity,
     #[error("lsblk physical disk source identities collide")]
     IdentityCollision,
+    #[error("lsblk command failed")]
+    CommandFailed,
+    #[error("lsblk command timed out")]
+    Timeout,
+    #[error("lsblk output is not UTF-8")]
+    NonUtf8,
+}
+
+/// Run the fixed Linux collector command with bounded time and output. A failed
+/// command never produces a partial or empty full snapshot.
+pub async fn collect_linux_command(
+    snapshot_id: &str,
+    collected_at: i64,
+    host_key: &str,
+) -> Result<InventorySnapshotV1, CollectorError> {
+    collect_linux_program(Path::new(LSBLK_PROGRAM), snapshot_id, collected_at, host_key).await
+}
+
+async fn collect_linux_program(
+    program: &Path,
+    snapshot_id: &str,
+    collected_at: i64,
+    host_key: &str,
+) -> Result<InventorySnapshotV1, CollectorError> {
+    use tokio::io::AsyncReadExt;
+    use tokio::process::Command;
+    let mut child = Command::new(program)
+        .args([
+            "--json", "--bytes", "--output",
+            "NAME,KNAME,TYPE,SIZE,MODEL,SERIAL,WWN,ROTA,TRAN,RM,RO,PATH,MOUNTPOINTS",
+        ])
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|_| CollectorError::CommandFailed)?;
+    let stdout = child.stdout.take().ok_or(CollectorError::CommandFailed)?;
+    let stderr = child.stderr.take().ok_or(CollectorError::CommandFailed)?;
+    let read = async {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut stdout_limited = stdout.take((MAX_LSBLK_BYTES + 1) as u64);
+        let mut stderr_limited = stderr.take(4097);
+        let stdout_read = stdout_limited.read_to_end(&mut out);
+        let stderr_read = stderr_limited.read_to_end(&mut err);
+        let (stdout_result, stderr_result) = tokio::join!(stdout_read, stderr_read);
+        stdout_result.map_err(|_| CollectorError::CommandFailed)?;
+        stderr_result.map_err(|_| CollectorError::CommandFailed)?;
+        let status = child.wait().await.map_err(|_| CollectorError::CommandFailed)?;
+        Ok::<_, CollectorError>((status.success(), out, err))
+    };
+    let (success, output, _diagnostic) = tokio::time::timeout(LSBLK_TIMEOUT, read)
+        .await.map_err(|_| CollectorError::Timeout)??;
+    if !success { return Err(CollectorError::CommandFailed); }
+    let output = String::from_utf8(output).map_err(|_| CollectorError::NonUtf8)?;
+    collect_linux_snapshot(&output, snapshot_id, collected_at, host_key)
 }
 
 /// Parse sanitized lsblk JSON without database knowledge, server identity, or network access.
@@ -207,6 +266,17 @@ mod tests {
             Err(CollectorError::MissingDevices)
         );
     }
+    #[tokio::test]
+    async fn command_runner_fails_closed_when_program_is_missing_or_empty() {
+        let missing = collect_linux_program(
+            Path::new("/definitely/missing/lsblk"), "snapshot", 0, "host",
+        ).await;
+        assert_eq!(missing, Err(CollectorError::CommandFailed));
+
+        let empty = collect_linux_program(Path::new("true"), "snapshot", 0, "host").await;
+        assert_eq!(empty, Err(CollectorError::Empty));
+    }
+
     #[test]
     fn oversized_field_and_deep_json_fail_closed() {
         let x = format!(

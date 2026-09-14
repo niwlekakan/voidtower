@@ -1,4 +1,4 @@
-use crate::agent::state::{AgentState, HeartbeatToken};
+use crate::{agent::state::{AgentState, HeartbeatToken}, cmdb::contracts::InventorySnapshotV1};
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -210,6 +210,23 @@ impl AgentTransport {
         Ok(())
     }
 
+    pub async fn upload_inventory(
+        &self,
+        state: &AgentState,
+        snapshot: &InventorySnapshotV1,
+    ) -> Result<serde_json::Value> {
+        let endpoint = self.endpoint(&format!("api/nodes/{}/inventory", state.node_id))?;
+        let response = self
+            .client
+            .post(endpoint)
+            .bearer_auth(state.heartbeat_token.expose())
+            .json(snapshot)
+            .send()
+            .await
+            .context("inventory upload request failed")?;
+        read_json_response(response).await
+    }
+
     #[cfg(test)]
     fn connect_timeout(&self) -> Duration {
         CONNECT_TIMEOUT
@@ -363,6 +380,32 @@ mod tests {
             .to_ascii_lowercase()
             .contains("authorization: bearer scoped-heartbeat-token"));
         assert!(!request.contains("/inventory"));
+    }
+
+    #[tokio::test]
+    async fn inventory_upload_uses_node_path_and_scoped_token() {
+        let (server_url, request_rx) = serve_once("200 OK", "{\"replayed\":false}".into()).await;
+        let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
+        let state = AgentState {
+            server_url,
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: HeartbeatToken::new("inventory-heartbeat-token".into()).unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule::default(),
+        };
+        let snapshot: InventorySnapshotV1 = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "snapshot_id": "snapshot-1", "collector_version": "test",
+            "platform": "linux", "collected_at": 0,
+            "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
+            "entities": []
+        })).unwrap();
+        let result = transport.upload_inventory(&state, &snapshot).await.unwrap();
+        assert_eq!(result["replayed"], false);
+        let request = request_rx.await.unwrap();
+        assert!(request.starts_with(&format!("POST /api/nodes/{}/inventory HTTP/1.1", state.node_id)));
+        assert!(request.to_ascii_lowercase().contains("authorization"));
+        assert!(request.contains("snapshot-1"));
     }
 
     #[tokio::test]

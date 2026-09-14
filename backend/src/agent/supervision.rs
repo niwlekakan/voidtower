@@ -1,6 +1,7 @@
-use crate::agent::{state::AgentState, transport::AgentTransport};
+use crate::{agent::{state::AgentState, transport::AgentTransport}, collector};
 use rand::Rng;
-use std::time::Duration;
+use std::{time::{Duration, SystemTime, UNIX_EPOCH}};
+use uuid::Uuid;
 use tokio::sync::watch;
 
 #[derive(Clone)]
@@ -65,41 +66,112 @@ impl Backoff {
 }
 
 pub async fn run(state: AgentState, transport: AgentTransport, cancellation: Cancellation) {
-    let heartbeat_interval = Duration::from_secs(state.schedule.heartbeat_interval_seconds);
+    let heartbeat_state = state.clone();
+    let heartbeat_transport = transport.clone();
+    let heartbeat_cancel = cancellation.clone();
+    let heartbeat = tokio::spawn(async move {
+        run_heartbeat(heartbeat_state, heartbeat_transport, heartbeat_cancel).await;
+    });
+    let inventory_state = state;
+    let inventory_transport = transport;
+    let inventory_cancel = cancellation.clone();
+    let inventory = tokio::spawn(async move {
+        run_inventory(inventory_state, inventory_transport, inventory_cancel).await;
+    });
+    let _ = tokio::join!(heartbeat, inventory);
+}
+
+async fn run_heartbeat(state: AgentState, transport: AgentTransport, cancellation: Cancellation) {
+    let interval = Duration::from_secs(state.schedule.heartbeat_interval_seconds);
+    let mut backoff = Backoff::new(Duration::from_secs(1), Duration::from_secs(state.schedule.max_backoff_seconds));
+    loop {
+        if cancellation.is_cancelled() { return; }
+        let result = tokio::select! {
+            result = transport.heartbeat(&state) => result,
+            _ = cancellation.cancelled() => return,
+        };
+        let delay = match result {
+            Ok(()) => { backoff.reset(); interval }
+            Err(_) => {
+                tracing::warn!(event_code = "agent_heartbeat_failed", node_id = %state.node_id);
+                backoff.next_delay()
+            }
+        };
+        if wait_or_cancel(&cancellation, delay).await { return; }
+    }
+}
+
+async fn run_inventory(state: AgentState, transport: AgentTransport, cancellation: Cancellation) {
+    let interval = Duration::from_secs(state.schedule.inventory_interval_seconds);
     let mut backoff = Backoff::new(
         Duration::from_secs(1),
         Duration::from_secs(state.schedule.max_backoff_seconds),
     );
-
-    // Inventory intentionally has no task until a collector can produce a complete snapshot.
-    // Sending an empty full snapshot would incorrectly mark existing observations missing.
+    let host_key = std::env::var("HOSTNAME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "linux-host".into());
+    let mut pending_snapshot = None;
     loop {
         if cancellation.is_cancelled() {
             return;
         }
-        let heartbeat = transport.heartbeat(&state);
-        tokio::pin!(heartbeat);
-        let heartbeat_result = tokio::select! {
-            result = &mut heartbeat => result,
+        if pending_snapshot.is_none() {
+            let snapshot_id = Uuid::new_v4().to_string();
+            let collected_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_secs() as i64)
+                .unwrap_or(0);
+            let collection = tokio::select! {
+                result = collector::collect_linux_command(&snapshot_id, collected_at, &host_key) => result,
+                _ = cancellation.cancelled() => return,
+            };
+            match collection {
+                Ok(snapshot) => pending_snapshot = Some(snapshot),
+                Err(error) => {
+                    tracing::warn!(
+                        event_code = "agent_inventory_collection_failed",
+                        node_id = %state.node_id,
+                        error_code = %inventory_error_code(&anyhow::anyhow!(error)),
+                    );
+                    if wait_or_cancel(&cancellation, backoff.next_delay()).await {
+                        return;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let snapshot = pending_snapshot.as_ref().expect("pending snapshot was set");
+        let result = tokio::select! {
+            result = transport.upload_inventory(&state, snapshot) => result,
             _ = cancellation.cancelled() => return,
         };
-        let delay = match heartbeat_result {
-            Ok(()) => {
+        match result {
+            Ok(_) => {
+                pending_snapshot = None;
                 backoff.reset();
-                heartbeat_interval
+                if wait_or_cancel(&cancellation, interval).await {
+                    return;
+                }
             }
-            Err(_) => {
+            Err(error) => {
                 tracing::warn!(
-                    event_code = "agent_heartbeat_failed",
-                    node_id = %state.node_id
+                    event_code = "agent_inventory_upload_failed",
+                    node_id = %state.node_id,
+                    error_code = %inventory_error_code(&error),
                 );
-                backoff.next_delay()
+                if wait_or_cancel(&cancellation, backoff.next_delay()).await {
+                    return;
+                }
             }
-        };
-        if wait_or_cancel(&cancellation, delay).await {
-            return;
         }
     }
+}
+
+fn inventory_error_code(error: &anyhow::Error) -> &'static str {
+    let _ = error;
+    "bounded_collection_or_upload_failure"
 }
 
 pub async fn wait_or_cancel(cancellation: &Cancellation, duration: Duration) -> bool {

@@ -270,6 +270,33 @@ DELETE /api/files/delete?path=
 POST /api/files/rename             { from, to }
 ```
 
+Filesystem mutation routes authenticate an owner/admin session and currently return
+`503 { "error": { "code": "feature_unavailable", "message": "filesystem mutations require a canonical operation adapter" } }`.
+They never write, create, rename, or delete host paths until a typed canonical action adapter exists.
+Read-only file listing, reading, and raw serving remain separate paths.
+
+## Plugins and repository mods
+
+```
+GET  /api/plugins
+POST /api/plugins                    { url }
+PATCH /api/plugins/:id               { enabled? }
+DELETE /api/plugins/:id
+GET  /api/mods
+POST /api/mods/config                { url, branch }
+POST /api/mods/fetch
+GET  /api/mods/diff
+POST /api/mods/apply
+POST /api/mods/rollback
+```
+
+Plugin install/update/uninstall and repository-mod fetch/apply/rollback routes authenticate an
+owner/admin session and return the same bounded `503 feature_unavailable` response until canonical
+operation adapters exist. They do not download archives, alter the plugin database/filesystem,
+run Git commands, merge, or reset the host directly. The separate `POST /api/mods/config` route only
+stores the selected source settings and remains a bounded configuration mutation; it does not fetch
+or apply a repository. Status, configuration, and diff reads remain available where registered.
+
 ## Proxy
 
 ```

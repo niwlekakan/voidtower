@@ -12,7 +12,7 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::io::Read;
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
@@ -45,6 +45,7 @@ pub struct Plugin {
     pub installed_at: i64,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct PluginManifest {
     id: String,
@@ -60,19 +61,24 @@ struct PluginManifest {
     nav_group: Option<String>,
 }
 
+#[allow(dead_code)]
 fn default_version() -> String { "1.0.0".into() }
+#[allow(dead_code)]
 fn default_entry() -> String { "index.html".into() }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct InstallRequest {
     pub url: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct UpdateRequest {
     pub enabled: Option<bool>,
 }
 
+#[allow(dead_code)]
 fn plugins_dir(state: &AppState) -> std::path::PathBuf {
     state.config.data_dir.join("plugins")
 }
@@ -94,121 +100,35 @@ pub async fn list(
 pub async fn install(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<InstallRequest>,
+    Json(_req): Json<InstallRequest>,
 ) -> Result<Json<Plugin>> {
     require_admin(&state, &jar).await?;
-
-    let dir = plugins_dir(&state);
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    let resp = client
-        .get(&req.url)
-        .send()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Download failed: {e}")))?;
-
-    if !resp.status().is_success() {
-        return Err(AppError::BadRequest(format!(
-            "Download returned status {}",
-            resp.status()
-        )));
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Download error: {e}")))?;
-
-    let manifest = tokio::task::spawn_blocking(move || extract_zip(&bytes, &dir))
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map_err(AppError::BadRequest)?;
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    sqlx::query(
-        "INSERT INTO plugins (id, name, description, version, author, entry, icon, nav_group, enabled, installed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           name=excluded.name, description=excluded.description, version=excluded.version,
-           author=excluded.author, entry=excluded.entry, icon=excluded.icon,
-           nav_group=excluded.nav_group, installed_at=excluded.installed_at",
-    )
-    .bind(&manifest.id)
-    .bind(&manifest.name)
-    .bind(&manifest.description)
-    .bind(&manifest.version)
-    .bind(&manifest.author)
-    .bind(&manifest.entry)
-    .bind(&manifest.icon)
-    .bind(&manifest.nav_group)
-    .bind(now)
-    .execute(&state.db)
-    .await?;
-
-    Ok(Json(Plugin {
-        id: manifest.id,
-        name: manifest.name,
-        description: manifest.description,
-        version: manifest.version,
-        author: manifest.author,
-        entry: manifest.entry,
-        icon: manifest.icon,
-        nav_group: manifest.nav_group,
-        enabled: true,
-        installed_at: now,
-    }))
+    Err(AppError::FeatureUnavailable(
+        "plugin mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn uninstall(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path(id): Path<String>,
+    Path(_id): Path<String>,
 ) -> Result<Json<Value>> {
     require_admin(&state, &jar).await?;
-
-    sqlx::query("DELETE FROM plugins WHERE id = ?")
-        .bind(&id)
-        .execute(&state.db)
-        .await?;
-
-    let plugin_dir = plugins_dir(&state).join(&id);
-    if plugin_dir.exists() {
-        tokio::fs::remove_dir_all(&plugin_dir)
-            .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    }
-
-    Ok(Json(json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "plugin mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn update(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path(id): Path<String>,
-    Json(req): Json<UpdateRequest>,
+    Path(_id): Path<String>,
+    Json(_req): Json<UpdateRequest>,
 ) -> Result<Json<Value>> {
     require_admin(&state, &jar).await?;
-
-    if let Some(enabled) = req.enabled {
-        sqlx::query("UPDATE plugins SET enabled = ? WHERE id = ?")
-            .bind(enabled)
-            .bind(&id)
-            .execute(&state.db)
-            .await?;
-    }
-
-    Ok(Json(json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "plugin mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn serve_asset(
@@ -269,6 +189,7 @@ fn mime_for_path(path: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn extract_zip(
     bytes: &[u8],
     plugins_base: &std::path::Path,

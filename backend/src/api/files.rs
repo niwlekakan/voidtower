@@ -1,5 +1,5 @@
 use crate::{
-    audit, auth,
+    auth,
     error::{AppError, Result},
     AppState,
 };
@@ -115,17 +115,20 @@ pub struct PathQuery {
     pub path: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct WriteRequest {
     pub path: String,
     pub content: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct MkdirRequest {
     pub path: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct RenameRequest {
     pub from: String,
@@ -289,123 +292,49 @@ pub async fn read_file(
 pub async fn write_file(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<WriteRequest>,
+    Json(_req): Json<WriteRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
-
-    let path = guard_path(&req.path)?;
-
-    if path.is_dir() {
-        return Err(AppError::BadRequest("Path is a directory".into()));
-    }
-
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    }
-
-    fs::write(&path, req.content.as_bytes())
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    let path_str = path.to_string_lossy();
-    audit::log(
-        &state.db, Some(&user.id), "human", "file.write",
-        Some("file"), Some(&path_str), "success", None, None,
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true, "path": path_str })))
+    Err(AppError::FeatureUnavailable(
+        "filesystem mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn mkdir(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<MkdirRequest>,
+    Json(_req): Json<MkdirRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
-
-    let path = guard_path(&req.path)?;
-
-    fs::create_dir_all(&path)
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    let path_str = path.to_string_lossy();
-    audit::log(
-        &state.db, Some(&user.id), "human", "file.mkdir",
-        Some("file"), Some(&path_str), "success", None, None,
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true, "path": path_str })))
+    Err(AppError::FeatureUnavailable(
+        "filesystem mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     jar: CookieJar,
-    Query(q): Query<PathQuery>,
+    Query(_q): Query<PathQuery>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
-
-    let path = guard_path(&q.path)?;
-
-    // Safety: refuse to delete root or blocked paths
-    if path == Path::new("/") {
-        return Err(AppError::Forbidden);
-    }
-
-    let meta = fs::metadata(&path)
-        .await
-        .map_err(|_| AppError::NotFound)?;
-
-    let path_str = path.to_string_lossy().into_owned();
-    if meta.is_dir() {
-        fs::remove_dir_all(&path)
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    } else {
-        fs::remove_file(&path)
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "file.delete",
-        Some("file"), Some(&path_str), "success", None, None,
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "filesystem mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn rename(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<RenameRequest>,
+    Json(_req): Json<RenameRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
-
-    let from = guard_path(&req.from)?;
-    let to = guard_path(&req.to)?;
-
-    let from_str = from.to_string_lossy().into_owned();
-    let to_str = to.to_string_lossy().into_owned();
-
-    fs::rename(&from, &to)
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "file.rename",
-        Some("file"), Some(&from_str), "success", None,
-        Some(&format!("→ {to_str}")),
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "filesystem mutations require a canonical operation adapter".into(),
+    ))
 }
 
 // ─── Activity ─────────────────────────────────────────────────────────────────

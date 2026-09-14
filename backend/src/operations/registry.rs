@@ -665,6 +665,96 @@ mod tests {
     }
 
     #[test]
+    fn local_host_mutation_compatibility_handlers_fail_closed() {
+        let cases = [
+            (
+                "files",
+                include_str!("../api/files.rs"),
+                ["write_file", "mkdir", "delete", "rename"].as_slice(),
+            ),
+            (
+                "plugins",
+                include_str!("../api/plugins.rs"),
+                ["install", "uninstall", "update"].as_slice(),
+            ),
+            (
+                "mods",
+                include_str!("../api/mods.rs"),
+                ["fetch_mod", "apply_mod", "rollback_mod"].as_slice(),
+            ),
+        ];
+
+        for (module, source, handlers) in cases {
+            for handler in handlers {
+                let start = source
+                    .find(&format!("pub async fn {handler}"))
+                    .unwrap_or_else(|| panic!("{module}::{handler} handler missing"));
+                let body = source[start..].split("\n}\n").next().unwrap_or(&source[start..]);
+                assert!(
+                    body.contains("FeatureUnavailable"),
+                    "{module}::{handler} must fail closed until its canonical adapter exists"
+                );
+                for marker in [
+                    "std::fs::",
+                    "tokio::fs::",
+                    "reqwest::",
+                    "Command::new",
+                    "run_checked(",
+                    "sqlx::query(",
+                ] {
+                    assert!(
+                        !body.contains(marker),
+                        "{module}::{handler} retains direct mutation marker {marker}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_host_mutation_routes_fail_closed_at_real_router() {
+        use axum::{body::{to_bytes, Body}, http::{header, Request, StatusCode}};
+        use tower::ServiceExt;
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let cases = [
+            ("POST", "/api/files/write", r#"{"path":"/tmp/voidtower-test","content":"x"}"#),
+            ("POST", "/api/plugins", r#"{"url":"https://example.invalid/plugin.zip"}"#),
+            ("POST", "/api/mods/apply", ""),
+        ];
+
+        for (method, uri, body) in cases {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(header::COOKIE, format!("vt_session={session}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            let payload: serde_json::Value = serde_json::from_slice(
+                &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            )
+            .unwrap();
+            assert_eq!(payload["error"]["code"], "feature_unavailable", "{uri}");
+            assert!(
+                payload["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("canonical operation")),
+                "{uri} must expose the stable adapter boundary"
+            );
+        }
+    }
+
+    #[test]
     fn shipped_domain_clients_follow_accepted_jobs() {
         let clients = [
             ("Containers", include_str!("../../../frontend/src/pages/Containers.tsx")),

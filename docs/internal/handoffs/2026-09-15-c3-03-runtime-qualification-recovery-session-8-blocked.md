@@ -2,7 +2,7 @@
 
 Status: blocked at supported-host runtime qualification; C3-03 remains unit-verified
 Tracked slice: C3-03 — Linux agent supervision and service package
-Commit: pending documentation-only checkpoint commit
+Commit: 1a3e544136c6777c38e2513ebf9be68de3faf1fe
 Base: 612c525f91466ad441eaa46a846b838fb0ee1205
 Branch: dev (ahead 1, behind 0)
 

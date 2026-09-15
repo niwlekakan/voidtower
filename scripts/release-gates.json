@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "gates": [
+    {
+      "id": "repository-truth-tests",
+      "description": "Deterministic repository truth fixture tests",
+      "subsystems": ["governance"],
+      "required": true,
+      "cwd": ".",
+      "argv": ["python3", "scripts/test_repo_truth.py", "-v"],
+      "timeout_seconds": 120
+    },
+    {
+      "id": "repository-truth-check",
+      "description": "Credential-safe source inventory",
+      "subsystems": ["governance"],
+      "required": true,
+      "cwd": ".",
+      "argv": ["python3", "scripts/repo_truth.py", "--repo", ".", "--json", "--check"],
+      "timeout_seconds": 30
+    },
+    {
+      "id": "repository-hygiene",
+      "description": "Tracked path and migration ownership checks",
+      "subsystems": ["governance", "schema"],
+      "required": true,
+      "cwd": ".",
+      "argv": ["scripts/check-repository-hygiene.sh"],
+      "timeout_seconds": 30
+    },
+    {
+      "id": "schema-tests",
+      "description": "Database migration and schema tests",
+      "subsystems": ["schema"],
+      "required": true,
+      "cwd": "backend",
+      "argv": ["cargo", "test", "db::tests", "--all-features"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "backend-tests",
+      "description": "Backend all-target integration and unit tests",
+      "subsystems": ["backend", "agent", "schema"],
+      "required": true,
+      "cwd": "backend",
+      "argv": ["cargo", "test", "--all-targets", "--all-features"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "backend-clippy",
+      "description": "Backend warnings-as-errors lint",
+      "subsystems": ["backend", "agent"],
+      "required": true,
+      "cwd": "backend",
+      "argv": ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "supply-chain",
+      "description": "Cargo dependency policy and advisory checks",
+      "subsystems": ["governance", "backend", "agent", "schema"],
+      "required": true,
+      "cwd": "backend",
+      "argv": ["cargo", "deny", "check"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "frontend-tests",
+      "description": "Frontend tests",
+      "subsystems": ["frontend"],
+      "required": true,
+      "cwd": "frontend",
+      "argv": ["npm", "test"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "frontend-type-check",
+      "description": "Frontend TypeScript check",
+      "subsystems": ["frontend"],
+      "required": true,
+      "cwd": "frontend",
+      "argv": ["npm", "run", "type-check"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "frontend-lint",
+      "description": "Frontend lint",
+      "subsystems": ["frontend"],
+      "required": true,
+      "cwd": "frontend",
+      "argv": ["npm", "run", "lint"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "frontend-build",
+      "description": "Frontend production build",
+      "subsystems": ["frontend"],
+      "required": true,
+      "cwd": "frontend",
+      "argv": ["npm", "run", "build"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "standalone-mcp-tests",
+      "description": "Standalone MCP contract tests",
+      "subsystems": ["standalone-mcp"],
+      "required": true,
+      "cwd": ".",
+      "argv": ["python3", "-m", "unittest", "discover", "-s", "odysseus-mcp-servers/tests", "-v"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "diff-check",
+      "description": "Git whitespace check",
+      "subsystems": ["governance", "backend", "frontend", "agent", "schema", "standalone-mcp", "mobile"],
+      "required": true,
+      "cwd": ".",
+      "argv": ["git", "diff", "--check"],
+      "timeout_seconds": 30
+    }
+  ]
+}

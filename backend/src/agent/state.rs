@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use crate::cmdb::contracts::InventorySnapshotV1;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -10,6 +11,7 @@ use uuid::Uuid;
 
 const MAX_STATE_BYTES: u64 = 256 * 1024;
 const MAX_CA_BYTES: usize = 64 * 1024;
+const MAX_PENDING_SNAPSHOT_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
@@ -191,6 +193,122 @@ impl AgentState {
     #[cfg(test)]
     pub fn save(&self, path: &Path) -> Result<()> {
         PreparedStateWrite::prepare(path)?.commit(self)
+    }
+}
+
+pub struct PendingSnapshotStore {
+    path: PathBuf,
+}
+
+impl PendingSnapshotStore {
+    pub fn for_state_path(state_path: &Path) -> Result<Self> {
+        #[cfg(windows)]
+        bail!("pending inventory persistence is available only on supported Linux agents");
+        let parent = state_parent(state_path)?;
+        let name = state_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .context("agent state path must have a UTF-8 file name")?;
+        Ok(Self {
+            path: parent.join(format!(".{name}.pending.json")),
+        })
+    }
+
+    pub fn load(&self) -> Result<Option<InventorySnapshotV1>> {
+        reject_symlink_chain(&self.path, "pending inventory path")?;
+        #[cfg(windows)]
+        secure_windows_path(&self.path)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(nix::libc::O_NOFOLLOW);
+        }
+        let file = match options.open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).context("failed to open pending inventory snapshot"),
+        };
+        let metadata = file.metadata().context("failed to inspect pending inventory snapshot")?;
+        if !metadata.is_file() || metadata.len() > MAX_PENDING_SNAPSHOT_BYTES {
+            bail!("pending inventory snapshot is invalid or oversized");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o777 != 0o600 {
+                bail!("pending inventory snapshot permissions must be 0600");
+            }
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_PENDING_SNAPSHOT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .context("failed to read pending inventory snapshot")?;
+        if bytes.len() as u64 > MAX_PENDING_SNAPSHOT_BYTES {
+            bail!("pending inventory snapshot is oversized");
+        }
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .context("failed to parse pending inventory snapshot")
+    }
+
+    pub fn save(&self, snapshot: &InventorySnapshotV1) -> Result<()> {
+        let bytes = serde_json::to_vec(snapshot)
+            .context("failed to serialize pending inventory snapshot")?;
+        if bytes.len() as u64 > MAX_PENDING_SNAPSHOT_BYTES {
+            bail!("pending inventory snapshot is oversized");
+        }
+        reject_symlink_chain(&self.path, "pending inventory path")?;
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        prepare_parent(parent)?;
+        let temp = parent.join(format!(".pending-{}.tmp", Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temp)
+            .context("failed to reserve pending inventory snapshot")?;
+        let result = (|| {
+            file.write_all(&bytes)
+                .context("failed to write pending inventory snapshot")?;
+            file.sync_all()
+                .context("failed to sync pending inventory snapshot")?;
+            drop(file);
+            atomic_replace(&temp, &self.path)?;
+            #[cfg(windows)]
+            secure_windows_path(&self.path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
+                fs::File::open(parent)?.sync_all()?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result
+    }
+
+    pub fn clear(&self) -> Result<()> {
+        reject_symlink_chain(&self.path, "pending inventory path")?;
+        match fs::remove_file(&self.path) {
+            Ok(()) => {
+                #[cfg(unix)]
+                if let Some(parent) = self.path.parent() {
+                    fs::File::open(parent)?.sync_all()?;
+                }
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("failed to clear pending inventory snapshot"),
+        }
     }
 }
 
@@ -501,6 +619,24 @@ mod tests {
         }
     }
 
+    fn snapshot() -> InventorySnapshotV1 {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "snapshot_id": "snapshot-recovery-1",
+            "collector_version": "test",
+            "platform": "linux",
+            "collected_at": 1,
+            "host": {
+                "entity_key": "host",
+                "identities": [],
+                "attributes": {},
+                "runtime": {}
+            },
+            "entities": []
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn bare_state_file_uses_current_directory_as_parent() {
         assert_eq!(
@@ -538,6 +674,33 @@ mod tests {
             expected.wireguard_client_config
         );
         assert_eq!(actual.schedule, expected.schedule);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn pending_snapshot_store_round_trips_atomically_and_clears() {
+        let path = temp_state_path("pending-round-trip");
+        let store = PendingSnapshotStore::for_state_path(&path).unwrap();
+        let expected = snapshot();
+
+        assert!(store.load().unwrap().is_none());
+        store.save(&expected).unwrap();
+        assert_eq!(store.load().unwrap().unwrap(), expected);
+        store.clear().unwrap();
+        assert!(store.load().unwrap().is_none());
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_snapshot_store_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_state_path("pending-permissions");
+        let store = PendingSnapshotStore::for_state_path(&path).unwrap();
+        store.save(&snapshot()).unwrap();
+        let pending = path.parent().unwrap().join(".state.json.pending.json");
+        assert_eq!(fs::metadata(pending).unwrap().permissions().mode() & 0o777, 0o600);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

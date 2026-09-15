@@ -1,4 +1,4 @@
-use crate::{agent::{state::AgentState, transport::AgentTransport}, collector};
+use crate::{agent::{state::{AgentState, PendingSnapshotStore}, transport::AgentTransport}, collector};
 use rand::Rng;
 use std::{time::{Duration, SystemTime, UNIX_EPOCH}};
 use uuid::Uuid;
@@ -66,6 +66,15 @@ impl Backoff {
 }
 
 pub async fn run(state: AgentState, transport: AgentTransport, cancellation: Cancellation) {
+    run_with_state_path(state, transport, cancellation, None).await;
+}
+
+pub async fn run_with_state_path(
+    state: AgentState,
+    transport: AgentTransport,
+    cancellation: Cancellation,
+    state_path: Option<std::path::PathBuf>,
+) {
     if state.validate().is_err() {
         tracing::warn!(
             event_code = "agent_state_invalid",
@@ -83,7 +92,7 @@ pub async fn run(state: AgentState, transport: AgentTransport, cancellation: Can
     let inventory_transport = transport;
     let inventory_cancel = cancellation.clone();
     let inventory = tokio::spawn(async move {
-        run_inventory(inventory_state, inventory_transport, inventory_cancel).await;
+        run_inventory(inventory_state, inventory_transport, inventory_cancel, state_path).await;
     });
     let _ = tokio::join!(heartbeat, inventory);
 }
@@ -108,7 +117,12 @@ async fn run_heartbeat(state: AgentState, transport: AgentTransport, cancellatio
     }
 }
 
-async fn run_inventory(state: AgentState, transport: AgentTransport, cancellation: Cancellation) {
+async fn run_inventory(
+    state: AgentState,
+    transport: AgentTransport,
+    cancellation: Cancellation,
+    state_path: Option<std::path::PathBuf>,
+) {
     let interval = Duration::from_secs(state.schedule.inventory_interval_seconds);
     let mut backoff = Backoff::new(
         Duration::from_secs(1),
@@ -118,7 +132,31 @@ async fn run_inventory(state: AgentState, transport: AgentTransport, cancellatio
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "linux-host".into());
-    let mut pending_snapshot = None;
+    let pending_store = match state_path.as_deref() {
+        Some(path) => match PendingSnapshotStore::for_state_path(path) {
+            Ok(store) => match store.load() {
+                Ok(snapshot) => Some((store, snapshot)),
+                Err(error) => {
+                    tracing::warn!(
+                        event_code = "agent_inventory_persistence_load_failed",
+                        node_id = %state.node_id,
+                        error_code = %inventory_error_code(&error),
+                    );
+                    return;
+                }
+            },
+            Err(error) => {
+                tracing::warn!(
+                    event_code = "agent_inventory_persistence_path_failed",
+                    node_id = %state.node_id,
+                    error_code = %inventory_error_code(&error),
+                );
+                return;
+            }
+        },
+        None => None,
+    };
+    let mut pending_snapshot = pending_store.as_ref().and_then(|(_, snapshot)| snapshot.clone());
     loop {
         if cancellation.is_cancelled() {
             return;
@@ -134,7 +172,22 @@ async fn run_inventory(state: AgentState, transport: AgentTransport, cancellatio
                 _ = cancellation.cancelled() => return,
             };
             match collection {
-                Ok(snapshot) => pending_snapshot = Some(snapshot),
+                Ok(snapshot) => {
+                    if let Some((store, _)) = pending_store.as_ref() {
+                        if let Err(error) = store.save(&snapshot) {
+                            tracing::warn!(
+                                event_code = "agent_inventory_persistence_failed",
+                                node_id = %state.node_id,
+                                error_code = %inventory_error_code(&error),
+                            );
+                            if wait_or_cancel(&cancellation, backoff.next_delay()).await {
+                                return;
+                            }
+                            continue;
+                        }
+                    }
+                    pending_snapshot = Some(snapshot);
+                }
                 Err(error) => {
                     tracing::warn!(
                         event_code = "agent_inventory_collection_failed",
@@ -156,9 +209,23 @@ async fn run_inventory(state: AgentState, transport: AgentTransport, cancellatio
         };
         match result {
             Ok(_) => {
-                pending_snapshot = None;
-                backoff.reset();
-                if wait_or_cancel(&cancellation, interval).await {
+                let mut cleared = true;
+                if let Some((store, _)) = pending_store.as_ref() {
+                    if let Err(error) = store.clear() {
+                        cleared = false;
+                        tracing::warn!(
+                            event_code = "agent_inventory_persistence_clear_failed",
+                            node_id = %state.node_id,
+                            error_code = %inventory_error_code(&error),
+                        );
+                    }
+                }
+                if cleared {
+                    pending_snapshot = None;
+                    backoff.reset();
+                }
+                let delay = if cleared { interval } else { backoff.next_delay() };
+                if wait_or_cancel(&cancellation, delay).await {
                     return;
                 }
             }

@@ -69,7 +69,12 @@ pub async fn run(state_path: PathBuf) -> Result<()> {
         state.ca_certificate_pem.as_deref().map(str::as_bytes),
     )?;
     let cancellation = Cancellation::new();
-    let supervision = supervision::run(state, transport, cancellation.clone());
+    let supervision = supervision::run_with_state_path(
+        state,
+        transport,
+        cancellation.clone(),
+        Some(state_path),
+    );
     tokio::pin!(supervision);
 
     tokio::select! {

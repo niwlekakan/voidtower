@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::{path::Path, time::Duration};
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub const LSBLK_COMMAND: &str = "lsblk --json --bytes --output NAME,KNAME,TYPE,SIZE,MODEL,SERIAL,WWN,ROTA,TRAN,RM,RO,PATH,MOUNTPOINTS";
 pub const MAX_LSBLK_BYTES: usize = 256 * 1024;
@@ -49,7 +50,13 @@ pub async fn collect_linux_command(
     collected_at: i64,
     host_key: &str,
 ) -> Result<InventorySnapshotV1, CollectorError> {
-    collect_linux_program(Path::new(LSBLK_PROGRAM), snapshot_id, collected_at, host_key).await
+    collect_linux_program(
+        Path::new(LSBLK_PROGRAM),
+        snapshot_id,
+        collected_at,
+        host_key,
+    )
+    .await
 }
 
 async fn collect_linux_program(
@@ -58,11 +65,12 @@ async fn collect_linux_program(
     collected_at: i64,
     host_key: &str,
 ) -> Result<InventorySnapshotV1, CollectorError> {
-    use tokio::io::AsyncReadExt;
     use tokio::process::Command;
     let mut child = Command::new(program)
         .args([
-            "--json", "--bytes", "--output",
+            "--json",
+            "--bytes",
+            "--output",
             "NAME,KNAME,TYPE,SIZE,MODEL,SERIAL,WWN,ROTA,TRAN,RM,RO,PATH,MOUNTPOINTS",
         ])
         .kill_on_drop(true)
@@ -73,23 +81,45 @@ async fn collect_linux_program(
     let stdout = child.stdout.take().ok_or(CollectorError::CommandFailed)?;
     let stderr = child.stderr.take().ok_or(CollectorError::CommandFailed)?;
     let read = async {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let mut stdout_limited = stdout.take((MAX_LSBLK_BYTES + 1) as u64);
-        let mut stderr_limited = stderr.take(4097);
-        let stdout_read = stdout_limited.read_to_end(&mut out);
-        let stderr_read = stderr_limited.read_to_end(&mut err);
+        let stdout_read = read_bounded(stdout, MAX_LSBLK_BYTES);
+        let stderr_read = read_bounded(stderr, 4096);
         let (stdout_result, stderr_result) = tokio::join!(stdout_read, stderr_read);
-        stdout_result.map_err(|_| CollectorError::CommandFailed)?;
-        stderr_result.map_err(|_| CollectorError::CommandFailed)?;
-        let status = child.wait().await.map_err(|_| CollectorError::CommandFailed)?;
+        let out = stdout_result.map_err(|_| CollectorError::CommandFailed)?;
+        let err = stderr_result.map_err(|_| CollectorError::CommandFailed)?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|_| CollectorError::CommandFailed)?;
         Ok::<_, CollectorError>((status.success(), out, err))
     };
     let (success, output, _diagnostic) = tokio::time::timeout(LSBLK_TIMEOUT, read)
-        .await.map_err(|_| CollectorError::Timeout)??;
-    if !success { return Err(CollectorError::CommandFailed); }
+        .await
+        .map_err(|_| CollectorError::Timeout)??;
+    if output.len() > MAX_LSBLK_BYTES || _diagnostic.len() > 4096 {
+        return Err(CollectorError::Oversized);
+    }
+    if !success {
+        return Err(CollectorError::CommandFailed);
+    }
     let output = String::from_utf8(output).map_err(|_| CollectorError::NonUtf8)?;
     collect_linux_snapshot(&output, snapshot_id, collected_at, host_key)
+}
+
+async fn read_bounded<R: AsyncRead + Unpin>(
+    mut reader: R,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_add(1).saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+    }
+    Ok(retained)
 }
 
 /// Parse sanitized lsblk JSON without database knowledge, server identity, or network access.
@@ -247,6 +277,7 @@ fn check_depth(v: &Value, depth: usize) -> Result<(), CollectorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     const FIXTURE: &str = r#"{"blockdevices":[{"name":"sda","type":"disk","size":100,"model":"Fixture Disk","serial":"SERIAL-001","wwn":"wwn-001","rota":true,"tran":"sata","rm":false,"ro":false,"path":"/dev/sda","mountpoints":[null]},{"name":"sda1","type":"part"},{"name":"loop0","type":"loop"},{"name":"zram0","type":"ram"}]}"#;
     #[test]
     fn linux_fixture_produces_snapshot_and_filters_ephemeral_devices() {
@@ -269,12 +300,28 @@ mod tests {
     #[tokio::test]
     async fn command_runner_fails_closed_when_program_is_missing_or_empty() {
         let missing = collect_linux_program(
-            Path::new("/definitely/missing/lsblk"), "snapshot", 0, "host",
-        ).await;
+            Path::new("/definitely/missing/lsblk"),
+            "snapshot",
+            0,
+            "host",
+        )
+        .await;
         assert_eq!(missing, Err(CollectorError::CommandFailed));
 
         let empty = collect_linux_program(Path::new("true"), "snapshot", 0, "host").await;
         assert_eq!(empty, Err(CollectorError::Empty));
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_retains_only_an_overflow_sentinel() {
+        let output = read_bounded(
+            Cursor::new(vec![b'x'; MAX_LSBLK_BYTES + 1]),
+            MAX_LSBLK_BYTES,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output.len(), MAX_LSBLK_BYTES + 1);
     }
 
     #[test]

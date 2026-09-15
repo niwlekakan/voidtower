@@ -12,6 +12,12 @@
 - Future documentation required: a supported-platform runtime runbook with observed systemd status, controller outage/restart recovery, binary upgrade, rollback, and enrollment-to-host-adoption evidence.
 - Reusable checks: `cd backend && cargo test collector --all-features`; `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test agent::supervision --all-features`; `cd backend && cargo test --all-targets --all-features`.
 
+## C3-03 bounded command I/O — 2026-09-15
+
+- End-user documentation updated: `docs/agent/linux-agent-service.md` now states that collector stdout/stderr are concurrently drained within bounded limits and overflow skips the snapshot.
+- Future documentation required: the supported-platform runbook still needs observed systemd status, protected state, real collection/upload, controller outage/restart recovery, upgrade, rollback, and enrollment-to-host-adoption evidence.
+- Reusable check: `cd backend && cargo test collector::tests --all-features`.
+
 
 ## C3-03 runtime qualification checkpoint — 2026-09-14
 

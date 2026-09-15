@@ -16,6 +16,11 @@
 - `packaging/systemd/voidtower-agent.service` is the foreground service unit. It preserves `/var/lib/voidtower/agent`, runs without an inbound listener, and uses restrictive systemd hardening.
 - C3-03 is unit-verified by focused tests and full backend tests. Runtime service install/restart/outage/upgrade/rollback evidence is blocked because this sandbox has no host systemd runtime.
 
+## C3-03 bounded command I/O — 2026-09-15
+
+- `backend/src/collector.rs::collect_linux_program` drains stdout and stderr concurrently through `read_bounded`, retaining at most the configured limit plus one byte while continuing to drain the child pipes. This prevents an over-limit producer from blocking on a full pipe and classifies stdout/stderr overflow as `CollectorError::Oversized` before parsing or snapshot creation.
+- Focused evidence: `cd backend && cargo test collector::tests --all-features` passed 5 tests after the overflow sentinel test was added. This is unit-verified only; real service-managed collection remains blocked by the absent systemd host boundary.
+
 
 ## C3-03 runtime qualification checkpoint — 2026-09-14
 

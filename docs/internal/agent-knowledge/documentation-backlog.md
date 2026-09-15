@@ -151,10 +151,28 @@
 - Still required after host evidence exists: a supported-platform runbook containing OS/image/version, artifact checksum, observed systemd status, protected state permissions, canonical host/adoption prerequisite, real collection/upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, and redacted evidence retention.
 - Reusable checks: `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test agent::supervision --all-features`; `cd backend && cargo test api::cmdb::tests::inventory_upload --all-features`; `python3 scripts/repo_truth.py --repo . --json --check`; `git diff --check`.
 - Blocker: this sandbox has no `systemctl` or `/run/systemd/private`; do not promote C3-03 beyond `unit-verified`.
-
 ## C3-03 runtime qualification recovery session 8 — 2026-09-15
 
 - No end-user documentation changed because the supported-host runtime remains unavailable; `docs/agent/linux-agent-service.md` remains accurate for the current `unit-verified` boundary.
 - Still required after host evidence exists: a supported-platform runbook containing OS/image/version, artifact checksum, observed systemd status, protected state permissions, canonical host/adoption prerequisite, real collection/upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, and redacted evidence retention.
 - Reusable checks: `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test agent::supervision --all-features`; `cd backend && cargo test api::cmdb::tests::inventory_upload --all-features`; `cd backend && cargo test --all-targets --all-features`; `python3 scripts/test_release_gate.py`; `python3 scripts/repo_truth.py --repo . --json --check`; `scripts/check-schema-migration-ownership.sh`; `git diff --check`.
 - Blocker: PID 1 is Docker's `docker-init`, `systemctl` and the systemd private socket are absent, and the sandbox cannot safely provide a supported host runtime. Do not promote C3-03 beyond `unit-verified`.
+
+## C3-02 agent response-contract completion — 2026-09-15
+
+- End-user documentation updated: `docs/agent/inventory-upload.md` now publishes the complete `InventorySnapshotResultV1` success response and states that malformed or incomplete success responses are retryable upload failures.
+- The enrollment contract already documents the shared 512-byte pairing-code limit; no further operator workflow changed.
+- Reusable check: `cd backend && cargo test agent::transport --all-features`.
+- Future documentation required: supported-host evidence for outage/restart recovery, durable pending snapshots, service installation, upgrade, rollback, and enrollment-to-host-adoption.
+
+## C3-03 durable pending inventory — 2026-09-15
+
+- End-user/operator documentation updated: `docs/agent/linux-agent-service.md` now documents the owner-only `.state.json.pending.json` sidecar, 256 KiB bound, atomic-before-upload ordering, restart reuse, and success-only cleanup.
+- Future documentation required: named supported-host evidence for systemd outage/restart recovery, duplicate-safe upload after process restart, upgrade, rollback, and enrollment-to-host-adoption. The sidecar behavior is unit-verified only in this sandbox.
+- Reusable checks: `cd backend && cargo test agent::state --all-features`; `cd backend && cargo test agent::supervision --all-features`.
+
+## C3-03 inventory acknowledgement binding — 2026-09-15
+
+- End-user/operator documentation updated: `docs/agent/inventory-upload.md` now states that the response `snapshot_id` must match the uploaded snapshot and that mismatches remain retryable.
+- Future documentation required: named supported-host evidence for systemd lifecycle, real collection/upload, outage/restart recovery, upgrade, rollback, and enrollment-to-host-adoption.
+- Reusable check: `cd backend && cargo test agent::transport --all-features`.

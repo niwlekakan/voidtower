@@ -164,6 +164,12 @@
 - Rust toolchain recovery succeeded: `rustup component add rustfmt clippy` exited 0 and installed both components. Repository-wide `cargo fmt --check` still reports pre-existing drift, including `backend/src/agent/supervision.rs` and `backend/src/agent/transport.rs` plus unrelated files; repository-wide Clippy still reports unrelated warnings/errors. No formatting or lint fixes were applied.
 - C3-03 focused transport (8), supervision (4), and inventory router (2) tests passed. Repository truth and diff checks passed. Runtime qualification remains blocked for service install/startup, protected state, service-managed collection/upload, outage/restart recovery, upgrade, rollback, and enrollment-to-host-adoption.
 - No source or service-package files were changed. Preserved staged `backend/src/agent/mod.rs` and `backend/src/agent/state.rs`, modified `backend/src/api/apps.rs`, and untracked `testing/` paths. The dated blocked handoff is `docs/internal/handoffs/2026-09-15-c3-03-runtime-qualification-recovery-session-7-blocked.md`.
+## C3-03 runtime qualification recovery session 7 — 2026-09-15
+
+- Recovery reproduced the host boundary at `2026-09-15T16:37:24+00:00`: `systemctl` is unavailable and `/run/systemd/private` is absent. This Docker sandbox cannot provide valid systemd-managed service evidence.
+- Rust toolchain recovery succeeded: `rustup component add rustfmt clippy` exited 0 and installed both components. Repository-wide `cargo fmt --check` still reports pre-existing drift, including `backend/src/agent/supervision.rs` and `backend/src/agent/transport.rs` plus unrelated files; repository-wide Clippy still reports unrelated warnings/errors. No formatting or lint fixes were applied.
+- C3-03 focused transport (8), supervision (4), and inventory router (2) tests passed. Repository truth and diff checks passed. Runtime qualification remains blocked for service install/startup, protected state, service-managed collection/upload, outage/restart recovery, upgrade, rollback, and enrollment-to-host-adoption.
+- No source or service-package files were changed. Preserved staged `backend/src/agent/mod.rs` and `backend/src/agent/state.rs`, modified `backend/src/api/apps.rs`, and untracked `testing/` paths. The dated blocked handoff is `docs/internal/handoffs/2026-09-15-c3-03-runtime-qualification-recovery-session-7-blocked.md`.
 
 ## C3-03 runtime qualification recovery session 8 — 2026-09-15
 
@@ -171,3 +177,23 @@
 - Current checkout is `612c525f91466ad441eaa46a846b838fb0ee1205` on `dev` (ahead 1, behind 0). Existing modified and untracked paths were preserved; this checkpoint added only the dated handoff and knowledge appendices.
 - Current evidence: C3-03 focused transport (8), supervision (4), inventory router (3), full backend (604 unit + 2 integration + examples), release-gate tests (11), repository truth, schema ownership, and diff checks passed. `cargo fmt --check` and strict Clippy remain blocked by existing repository-wide drift/errors; runtime/release qualification remains blocked.
 - The dated blocked handoff is `docs/internal/handoffs/2026-09-15-c3-03-runtime-qualification-recovery-session-8-blocked.md`. The next dependency-ready action remains a named supported Linux host or VM with real systemd and host `/dev` visibility.
+
+## C3-02 agent response-contract completion — 2026-09-15
+
+- `backend/src/agent/transport.rs::EnrollmentRequest::validate` now caps pairing codes at 512 bytes, matching the controller's `MAX_PAIRING_CODE_BYTES` validation and the published enrollment contract.
+- Transport tests prove malformed successful heartbeat JSON and incomplete successful inventory results fail closed; the inventory result requires all six `InventorySnapshotResultV1` fields.
+- Focused evidence after the final test edits: `cd backend && cargo test agent::transport --all-features` passed 11 tests. Existing compiler dead-code warnings remain.
+- This slice is unit-verified at the agent transport seam and complements the existing real-router/database C3-02 evidence. It does not establish supported-host runtime, restart durability, or release qualification.
+
+## C3-03 durable pending inventory — 2026-09-15
+
+- Production `agent::run` passes the protected state path into supervision. After a successful collection, supervision atomically persists the bounded snapshot to the owner-only `.<state>.pending.json` sidecar before upload; it reuses that sidecar after process restart and clears it only after a typed successful upload response.
+- The sidecar is capped at 256 KiB, uses atomic replacement and `0600` permissions on Unix, rejects symlinked parent chains, and fails the inventory loop closed when an existing sidecar cannot be loaded. Collection failures do not create a pending snapshot.
+- Pending sidecar persistence is intentionally unavailable on Windows until a supported ACL implementation exists; no Windows support claim is made by this Linux slice.
+- Focused evidence: `cd backend && cargo test agent::state --all-features` passed 17 tests and `cd backend && cargo test agent::supervision --all-features` passed 4 tests after implementation. Runtime outage/restart and systemd evidence remain blocked by the sandbox.
+
+## C3-03 inventory acknowledgement binding — 2026-09-15
+
+- `AgentTransport::upload_inventory` now accepts a successful typed response only when its `snapshot_id` exactly equals the uploaded `InventorySnapshotV1.snapshot_id`; a different acknowledgement is a retryable error.
+- This preserves the supervision invariant that pending inventory is cleared only after acknowledgement of the exact persisted snapshot. The transport test `inventory_upload_rejects_success_for_a_different_snapshot` covers the fail-closed response contract.
+- Evidence after this checkpoint is unit-verified at the transport seam. Supported-host systemd, outage/restart, upgrade, rollback, and runtime upload evidence remain blocked by the Docker environment.

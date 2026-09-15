@@ -12,6 +12,11 @@ The node must already have one canonical CMDB host resource whose
 a caller-selected `resources.id`; it derives the source host resource from the
 trusted node binding.
 
+The bearer credential is verified before the endpoint parses JSON or applies
+the 4 MiB application body limit. Missing or invalid credentials therefore
+return `401 unauthorized`; authenticated bodies over 4 MiB return
+`413 payload_too_large`.
+
 Snapshots are replay-safe. Reposting the same `snapshot_id` with identical
 content returns the completed result with `replayed: true` and does not create
 a second snapshot. Reusing an ID for different content returns a bounded
@@ -19,6 +24,24 @@ conflict response; an identical upload whose first ingestion is still in
 progress also returns a bounded processing conflict. Invalid schema, oversized
 bodies (over 4 MiB), and unknown schema versions are rejected without CMDB
 mutation.
+
+A successful upload response is the complete `InventorySnapshotResultV1`
+object; clients require all six fields and treat malformed JSON or missing
+fields as a failed upload eligible for bounded retry. The response
+`snapshot_id` must also exactly match the uploaded request; an acknowledgement
+for another snapshot is rejected so a pending snapshot remains eligible for
+retry:
+
+```json
+{
+  "snapshot_id": "uuid",
+  "replayed": false,
+  "linked": 1,
+  "registered": 0,
+  "review_required": 0,
+  "missing": 0
+}
+```
 
 Reconciliation persists the snapshot and observations transactionally. Strong
 identity evidence is linked deterministically; weak or ambiguous evidence is

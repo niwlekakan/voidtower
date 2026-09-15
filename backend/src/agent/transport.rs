@@ -44,8 +44,8 @@ impl EnrollmentRequest {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.pairing_code.is_empty() || self.pairing_code.len() > 4096 {
-            bail!("pairing code must be between 1 and 4096 bytes");
+        if self.pairing_code.is_empty() || self.pairing_code.len() > 512 {
+            bail!("pairing code must be between 1 and 512 bytes");
         }
         if self.display_name.trim().is_empty() || self.display_name.len() > 128 {
             bail!("display name must be between 1 and 128 bytes");
@@ -230,7 +230,11 @@ impl AgentTransport {
             .send()
             .await
             .context("inventory upload request failed")?;
-        read_json_response(response).await
+        let result: InventorySnapshotResultV1 = read_json_response(response).await?;
+        if result.snapshot_id != snapshot.snapshot_id {
+            bail!("agent server acknowledged a different inventory snapshot");
+        }
+        Ok(result)
     }
 
     #[cfg(test)]
@@ -471,6 +475,84 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("exceeds"));
+    }
+
+    #[tokio::test]
+    async fn heartbeat_rejects_malformed_success_response() {
+        let (server_url, _request_rx) = serve_once("200 OK", "{".into()).await;
+        let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
+        let state = AgentState {
+            server_url: "https://controller.example.test".into(),
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: HeartbeatToken::new("heartbeat-contract-token".into()).unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule::default(),
+        };
+
+        let error = transport.heartbeat(&state).await.unwrap_err();
+        assert!(error.to_string().contains("invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn inventory_upload_rejects_incomplete_success_response() {
+        let (server_url, _request_rx) = serve_once(
+            "200 OK",
+            "{\"snapshot_id\":\"snapshot-1\",\"replayed\":false}".into(),
+        )
+        .await;
+        let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
+        let state = AgentState {
+            server_url: "https://controller.example.test".into(),
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: HeartbeatToken::new("inventory-contract-token".into()).unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule::default(),
+        };
+        let snapshot: InventorySnapshotV1 = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "snapshot_id": "snapshot-1", "collector_version": "test",
+            "platform": "linux", "collected_at": 0,
+            "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
+            "entities": []
+        })).unwrap();
+
+        let error = transport.upload_inventory(&state, &snapshot).await.unwrap_err();
+        assert!(format!("{error:#}").contains("missing field `linked`"));
+    }
+
+    #[tokio::test]
+    async fn inventory_upload_rejects_success_for_a_different_snapshot() {
+        let (server_url, _request_rx) = serve_once(
+            "200 OK",
+            "{\"snapshot_id\":\"different-snapshot\",\"replayed\":false,\"linked\":1,\"registered\":0,\"review_required\":0,\"missing\":0}".into(),
+        )
+        .await;
+        let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
+        let state = AgentState {
+            server_url: "https://controller.example.test".into(),
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: HeartbeatToken::new("inventory-contract-token".into()).unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule::default(),
+        };
+        let snapshot: InventorySnapshotV1 = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "snapshot_id": "snapshot-1", "collector_version": "test",
+            "platform": "linux", "collected_at": 0,
+            "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
+            "entities": []
+        })).unwrap();
+
+        let error = transport.upload_inventory(&state, &snapshot).await.unwrap_err();
+        assert!(error.to_string().contains("different inventory snapshot"));
+    }
+
+    #[test]
+    fn enrollment_validation_matches_controller_pairing_code_limit() {
+        let request = EnrollmentRequest::new("x".repeat(513), "test-node".into(), "pi".into(), false);
+        let error = request.validate().unwrap_err();
+        assert!(error.to_string().contains("512"));
     }
 
     #[tokio::test]

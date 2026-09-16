@@ -176,3 +176,11 @@
 - End-user/operator documentation updated: `docs/agent/inventory-upload.md` now states that the response `snapshot_id` must match the uploaded snapshot and that mismatches remain retryable.
 - Future documentation required: named supported-host evidence for systemd lifecycle, real collection/upload, outage/restart recovery, upgrade, rollback, and enrollment-to-host-adoption.
 - Reusable check: `cd backend && cargo test agent::transport --all-features`.
+
+## C3-03 runtime qualification recovery session 9 — 2026-09-16
+
+- No end-user documentation changed because the required supported-host runtime is unavailable; `docs/agent/linux-agent-service.md` remains accurate and explicitly labels service/release qualification as blocked.
+- Still required on a named supported Linux host: systemd installation/status, owner-only state permissions, canonical host adoption before upload, real `/usr/bin/lsblk` collection/upload, outbound-only evidence, controller outage and process-restart pending-snapshot reuse, upgrade, rollback, redacted artifacts, and a checksum.
+- Reusable checks: `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test agent::supervision --all-features`; `cd backend && cargo test api::cmdb::tests::inventory_upload --all-features`; `python3 scripts/test_release_gate.py`; `git diff --check`. Schema ownership remains unverified in this sandbox because `rg` is unavailable (the wrapper exits 0 after its diagnostic).
+- Full-gate note: one run reached 610 passing tests but hit SQLite `database is locked` in the existing `cmdb::assets::tests::concurrent_manual_creates_receive_distinct_identifiers`; the 2026-09-16 rerun passed with 611 unit tests, 2 integration tests, and examples. Keep the transient failure in historical evidence, not as a current blocker.
+- Blocker: this Docker sandbox has no `systemctl` or `/run/systemd/private`; do not promote C3-03 beyond `unit-verified`.

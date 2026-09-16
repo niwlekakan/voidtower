@@ -104,6 +104,26 @@ async fn send_raw(
         .unwrap()
 }
 
+async fn send_node_raw(
+    app: &axum::Router,
+    uri: &str,
+    token: &str,
+    body: impl Into<Body>,
+) -> Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body.into())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 async fn json_body(response: Response) -> Value {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&body).unwrap()
@@ -230,6 +250,39 @@ async fn insert_discovery(
         .await
         .unwrap()
         .unwrap()
+}
+
+#[tokio::test]
+async fn inventory_upload_authenticates_before_rejecting_oversized_body() {
+    let (db, app) = setup().await;
+    let oversized = "x".repeat(4 * 1024 * 1024 + 2);
+    assert_error(
+        send_raw(
+            &app,
+            Method::POST,
+            "/api/nodes/missing/inventory",
+            None,
+            oversized,
+        )
+        .await,
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+    )
+    .await;
+
+    let (node_id, token, _) = enrolled_agent_host(&db).await;
+    assert_error(
+        send_node_raw(
+            &app,
+            &format!("/api/nodes/{node_id}/inventory"),
+            &token,
+            "x".repeat(4 * 1024 * 1024 + 2),
+        )
+        .await,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    )
+    .await;
 }
 
 #[tokio::test]

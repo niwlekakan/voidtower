@@ -370,8 +370,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/nodes/enroll",       post(node_enroll::enroll))
         .route("/api/nodes",              get(node_enroll::list))
         .route("/api/nodes/:id",          delete(node_enroll::delete_node))
-        .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat))
-        .route("/api/nodes/:id/inventory", post(cmdb::inventory::upload).layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024)))
+        .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)).layer(axum::middleware::from_fn_with_state(state.clone(), node_enroll::authenticate_node_request)))
+        .route("/api/nodes/:id/inventory", post(cmdb::inventory::upload).layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024 + 1)).layer(axum::middleware::from_fn_with_state(state.clone(), node_enroll::authenticate_node_request)))
         // Self-hosting hub: per-member app access / storage / custom-deploy
         .route("/api/members", get(members::list_members))
         .route("/api/members/me/access", get(members::get_my_access))

@@ -47,7 +47,10 @@ impl EnrollmentRequest {
         if self.pairing_code.is_empty() || self.pairing_code.len() > 512 {
             bail!("pairing code must be between 1 and 512 bytes");
         }
-        if self.display_name.trim().is_empty() || self.display_name.len() > 128 {
+        if self.display_name.trim().is_empty()
+            || self.display_name.len() > 128
+            || self.display_name.chars().any(char::is_control)
+        {
             bail!("display name must be between 1 and 128 bytes");
         }
         if !matches!(
@@ -553,6 +556,17 @@ mod tests {
         let request = EnrollmentRequest::new("x".repeat(513), "test-node".into(), "pi".into(), false);
         let error = request.validate().unwrap_err();
         assert!(error.to_string().contains("512"));
+    }
+
+    #[test]
+    fn enrollment_validation_rejects_control_characters_in_display_name() {
+        let request = EnrollmentRequest::new(
+            "pairing-code".into(),
+            "test-node\n".into(),
+            "pi".into(),
+            false,
+        );
+        assert!(request.validate().is_err());
     }
 
     #[tokio::test]

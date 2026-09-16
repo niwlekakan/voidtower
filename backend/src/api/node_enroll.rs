@@ -6,7 +6,8 @@ use crate::{
 };
 use axum::{
     extract::{Path, State},
-    http::{header, HeaderMap},
+    http::HeaderMap,
+    response::IntoResponse,
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -36,6 +37,11 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
 }
 
 const PAIRING_CODE_TTL_SECS: i64 = 900; // 15 minutes
+const MAX_PAIRING_CODE_BYTES: usize = 512;
+const MAX_DISPLAY_NAME_BYTES: usize = 128;
+const MAX_DEVICE_TYPE_BYTES: usize = 32;
+const MAX_NODE_TOKEN_BYTES: usize = 512;
+const MAX_BATTERY_PERCENT: f32 = 100.0;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -146,15 +152,7 @@ pub async fn enroll(
     State(state): State<AppState>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>> {
-    if req.display_name.trim().is_empty() {
-        return Err(AppError::BadRequest("display_name is required".into()));
-    }
-    if !matches!(
-        req.device_type.as_str(),
-        "phone" | "tablet" | "pi" | "other"
-    ) {
-        return Err(AppError::BadRequest("Invalid device_type".into()));
-    }
+    validate_enroll_request(&req)?;
 
     let now = unix_now();
     let hash = sha256_hex(&req.pairing_code);
@@ -330,27 +328,22 @@ pub async fn heartbeat(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<HeartbeatRequest>,
+    body: std::result::Result<
+        axum::body::Bytes,
+        axum::extract::rejection::BytesRejection,
+    >,
 ) -> Result<Json<serde_json::Value>> {
     verify_node_token(state.clone(), node_id.clone(), headers.clone()).await?;
-    let raw_token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim)
-        .ok_or(AppError::Unauthorized)?;
-    let token_hash = sha256_hex(raw_token);
-
-    let matched: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = ? AND token_hash = ?")
-            .bind(&node_id)
-            .bind(&token_hash)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-    if matched == 0 {
-        return Err(AppError::Unauthorized);
-    }
+    let body = match body {
+        Ok(body) => body,
+        Err(axum::extract::rejection::BytesRejection::FailedToBufferBody(
+            axum::extract::rejection::FailedToBufferBody::LengthLimitError(_),
+        )) => return Err(AppError::PayloadTooLarge),
+        Err(_) => return Err(AppError::BadRequest("invalid request body".into())),
+    };
+    let req: HeartbeatRequest = serde_json::from_slice(&body)
+        .map_err(|_| AppError::BadRequest("invalid heartbeat".into()))?;
+    validate_heartbeat_request(&req)?;
 
     let now = unix_now();
     let telemetry = serde_json::json!({
@@ -371,6 +364,39 @@ pub async fn heartbeat(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+fn validate_enroll_request(req: &EnrollRequest) -> Result<()> {
+    if req.pairing_code.is_empty() || req.pairing_code.len() > MAX_PAIRING_CODE_BYTES {
+        return Err(AppError::BadRequest("invalid pairing_code".into()));
+    }
+    if req.display_name.trim().is_empty()
+        || req.display_name.len() > MAX_DISPLAY_NAME_BYTES
+        || req.display_name.chars().any(|c| c.is_control())
+    {
+        return Err(AppError::BadRequest("invalid display_name".into()));
+    }
+    if req.device_type.len() > MAX_DEVICE_TYPE_BYTES
+        || !matches!(
+            req.device_type.as_str(),
+            "phone" | "tablet" | "pi" | "other"
+        )
+    {
+        return Err(AppError::BadRequest("Invalid device_type".into()));
+    }
+    Ok(())
+}
+
+fn validate_heartbeat_request(req: &HeartbeatRequest) -> Result<()> {
+    if req.battery.is_some_and(|battery| {
+        !battery.is_finite() || !(0.0..=MAX_BATTERY_PERCENT).contains(&battery)
+    }) {
+        return Err(AppError::BadRequest("battery must be between 0 and 100".into()));
+    }
+    if req.storage_free_bytes.is_some_and(|bytes| bytes < 0) {
+        return Err(AppError::BadRequest("storage_free_bytes must be non-negative".into()));
+    }
+    Ok(())
+}
+
 pub(crate) async fn verify_node_token(
     state: crate::AppState,
     node_id: String,
@@ -382,12 +408,36 @@ pub(crate) async fn verify_node_token(
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
         .ok_or(crate::error::AppError::Unauthorized)?;
+    if raw.is_empty() || raw.len() > MAX_NODE_TOKEN_BYTES {
+        return Err(crate::error::AppError::Unauthorized);
+    }
     let matched: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = ? AND token_hash = ? AND approved = 1 AND agent_capable = 1").bind(node_id).bind(crate::api::integrations::sha256_hex(raw)).fetch_one(&state.db).await.map_err(|e| crate::error::AppError::Internal(e.into()))?;
     if matched == 0 {
         Err(crate::error::AppError::Unauthorized)
     } else {
         Ok(())
     }
+}
+
+pub(crate) async fn authenticate_node_request(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let node_id = request
+        .uri()
+        .path()
+        .strip_prefix("/api/nodes/")
+        .and_then(|path| path.split('/').next())
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
+    let Some(node_id) = node_id else {
+        return AppError::Unauthorized.into_response();
+    };
+    if let Err(error) = verify_node_token(state, node_id, request.headers().clone()).await {
+        return error.into_response();
+    }
+    next.run(request).await
 }
 
 #[cfg(test)]
@@ -432,6 +482,102 @@ mod tests {
         .unwrap();
 
         assert!(!request.provision_wireguard);
+    }
+
+    #[test]
+    fn enrollment_validation_rejects_oversized_and_controlled_operator_fields() {
+        let request = EnrollRequest {
+            pairing_code: "pairing-code".into(),
+            display_name: format!("{}\n", "x".repeat(MAX_DISPLAY_NAME_BYTES)),
+            device_type: "pi".into(),
+            agent_capable: true,
+            provision_wireguard: false,
+        };
+        assert!(matches!(
+            validate_enroll_request(&request),
+            Err(AppError::BadRequest(message)) if message == "invalid display_name"
+        ));
+    }
+
+    #[tokio::test]
+    async fn malformed_heartbeat_is_authenticated_before_json_parsing() {
+        let db = test_support::setup_db().await;
+        let app = crate::api::router(test_support::build(db));
+        for body in ["{".to_string(), "x".repeat(64 * 1024 + 1)] {
+            let response = app
+                .clone()
+                .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/missing/heartbeat")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    #[tokio::test]
+    async fn heartbeat_rejects_impossible_telemetry_after_authentication() {
+        let db = test_support::setup_db().await;
+        pairing_code(&db, "unused-pairing-code").await;
+        let token = "heartbeat-secret";
+        sqlx::query(
+            "INSERT INTO nodes (id, display_name, device_type, owner_user_id, token_hash, agent_capable, approved, created_at) VALUES (?, ?, ?, ?, ?, 1, 1, 0)",
+        )
+        .bind("heartbeat-node")
+        .bind("test node")
+        .bind("pi")
+        .bind("enroll-owner")
+        .bind(sha256_hex(token))
+        .execute(&db)
+        .await
+        .unwrap();
+        let app = crate::api::router(test_support::build(db.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/heartbeat-node/heartbeat")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"battery": 101.0}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let last_seen: Option<i64> = sqlx::query_scalar("SELECT last_seen FROM nodes WHERE id = ?")
+            .bind("heartbeat-node")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(last_seen, None);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_rejects_empty_or_oversized_node_tokens_before_database_match() {
+        let db = test_support::setup_db().await;
+        let app = crate::api::router(test_support::build(db));
+        for token in [String::new(), "x".repeat(MAX_NODE_TOKEN_BYTES + 1)] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/nodes/missing/heartbeat")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 
     #[tokio::test]

@@ -212,3 +212,10 @@
 - `cargo clippy --all-targets --all-features -- -D warnings` remains blocked by existing repository-wide diagnostics. The schema wrapper exits 0 but emits `rg: command not found`; schema ownership is not fully verified in this environment.
 - Runtime qualification remains blocked: `systemctl` and `/run/systemd/private` are absent and PID 1 is Docker `docker-init`. Direct `/usr/bin/lsblk` execution is only a utility smoke check, not service-managed evidence.
 - No product source or end-user documentation changed. The next dependency-ready action remains a named supported Linux host/VM run of `docs/agent/linux-agent-service.md:43-54`.
+
+## C3-03 enrollment and upload boundary hardening — 2026-09-16
+
+- Agent-side enrollment validation now rejects display names containing control characters, matching controller validation; node-bound bearer verification rejects empty or over-512-byte token values before hashing/database matching.
+- The real-router CMDB upload path authenticates before its 4 MiB application check and returns the bounded `payload_too_large` error for oversized authenticated bodies; the route framework allowance is 4 MiB plus one byte so the handler owns that response.
+- App Vault response and proxy hardening plus release-gate argv/output redaction are present in the same uncommitted worktree but remain separately attributable changes; they are not treated as C3 runtime qualification evidence.
+- Focused evidence after this checkpoint is recorded in the dated handoff; host systemd/runtime and strict repository lint gates remain blocked as previously documented.

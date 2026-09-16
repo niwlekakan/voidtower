@@ -38,14 +38,22 @@ pub async fn upload(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    body: std::result::Result<
+        axum::body::Bytes,
+        axum::extract::rejection::BytesRejection,
+    >,
 ) -> Result<Json<Value>> {
-    if body.len() > MAX_BODY_BYTES {
-        return Err(AppError::BadRequest(
-            "inventory snapshot exceeds 4 MiB".into(),
-        ));
-    }
     node_enroll::verify_node_token(state.clone(), node_id.clone(), headers.clone()).await?;
+    let body = match body {
+        Ok(body) => body,
+        Err(axum::extract::rejection::BytesRejection::FailedToBufferBody(
+            axum::extract::rejection::FailedToBufferBody::LengthLimitError(_),
+        )) => return Err(AppError::PayloadTooLarge),
+        Err(_) => return Err(AppError::BadRequest("invalid request body".into())),
+    };
+    if body.len() > MAX_BODY_BYTES {
+        return Err(AppError::PayloadTooLarge);
+    }
     let snapshot: InventorySnapshotV1 = serde_json::from_slice(&body)
         .map_err(|_| AppError::BadRequest("invalid inventory snapshot".into()))?;
     let source_resource_ids: Vec<String> = sqlx::query_scalar("SELECT r.id FROM resources r JOIN cmdb_assets a ON a.resource_id = r.id WHERE r.node_id = ? AND r.kind = ? AND a.class_key = 'sys' AND a.type_key = 'host' ORDER BY r.id")

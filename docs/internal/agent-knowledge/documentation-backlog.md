@@ -191,3 +191,9 @@
 - The required future operator runbook evidence is unchanged: systemd install/status, owner-only state, canonical host adoption, real collection/upload, outbound-only observation, controller outage/restart recovery, upgrade, rollback, redacted artifacts, and checksum.
 - Reusable checks: focused CMDB/enrollment/App Vault/collector/transport/supervision Cargo tests; `cd backend && cargo test --all-targets --all-features` after disposable `/tmp` fixture cleanup; `python3 scripts/test_release_gate.py`; `python3 scripts/repo_truth.py --repo . --json --check`; `scripts/check-schema-migration-ownership.sh`; and `git diff --check`.
 - Blockers remain missing `systemctl`/`/run/systemd/private`, pre-existing strict Clippy diagnostics, and missing `rg` for fully trustworthy schema ownership verification.
+
+## C3-03 enrollment and upload boundary hardening — 2026-09-16
+
+- End-user documentation updated: `docs/agent/node-enrollment.md` now documents the 512-byte node-token bound and authentication-before-body-limit behavior.
+- Future documentation required: supported-host evidence for service lifecycle, real collection/upload, outage/restart recovery, upgrade, rollback, and enrollment-to-host adoption remains unchanged; no sandbox source test promotes those claims.
+- Reusable checks: `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test api::node_enroll::tests --all-features`; `cd backend && cargo test api::cmdb::tests --all-features`; `python3 scripts/test_release_gate.py`; `git diff --check`.

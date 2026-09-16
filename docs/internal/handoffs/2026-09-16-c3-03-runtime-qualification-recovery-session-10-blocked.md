@@ -3,7 +3,7 @@
 Status: blocked; C3-03 remains unit-verified
 Tracked slice: C3-03 — Linux agent supervision and service package
 Base: a2415e35771111e79c03c3efdf67d4cc5488a9e0
-Commit: pending local continuity commit
+Commit: c7e3b028d79e99b7249f210cf58087722d934e1d (continuity evidence commit)
 Branch: dev
 
 ## Boundary and acceptance

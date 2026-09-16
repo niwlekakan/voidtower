@@ -218,4 +218,10 @@
 - Agent-side enrollment validation now rejects display names containing control characters, matching controller validation; node-bound bearer verification rejects empty or over-512-byte token values before hashing/database matching.
 - The real-router CMDB upload path authenticates before its 4 MiB application check and returns the bounded `payload_too_large` error for oversized authenticated bodies; the route framework allowance is 4 MiB plus one byte so the handler owns that response.
 - App Vault response and proxy hardening plus release-gate argv/output redaction are present in the same uncommitted worktree but remain separately attributable changes; they are not treated as C3 runtime qualification evidence.
+
+## C3-03 enrollment/fingerprint contract closure — 2026-09-16
+
+- `POST /api/nodes/enroll` now applies a 64 KiB route body limit and maps Axum JSON length-limit rejection to the stable `413 payload_too_large` envelope; other JSON extraction failures remain bounded `400 bad_request`.
+- Inventory ingestion fingerprints a cloned snapshot after trimming `snapshot_id`, matching the trimmed persisted/replay identity. Equivalent surrounding-whitespace representations therefore replay instead of conflicting.
+- Focused real-router tests cover oversized enrollment response shape and whitespace-normalized inventory replay. Supported-host systemd/runtime qualification, strict repository Clippy, and complete schema ownership remain blocked as previously recorded.
 - Focused evidence after this checkpoint is recorded in the dated handoff; host systemd/runtime and strict repository lint gates remain blocked as previously documented.

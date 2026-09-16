@@ -290,7 +290,7 @@ async fn inventory_upload_is_authenticated_idempotent_and_binds_the_node_host() 
     let (db, app) = setup().await;
     let (node_id, token, host_id) = enrolled_agent_host(&db).await;
     let snapshot_id = uuid::Uuid::new_v4().to_string();
-    let body = inventory_snapshot(&snapshot_id, "fixture-host");
+    let body = inventory_snapshot(&format!(" {snapshot_id} "), "fixture-host");
 
     let mut first = request(
         Method::POST,
@@ -312,7 +312,7 @@ async fn inventory_upload_is_authenticated_idempotent_and_binds_the_node_host() 
         Method::POST,
         &format!("/api/nodes/{node_id}/inventory"),
         None,
-        Some(body),
+        Some(inventory_snapshot(&snapshot_id, "fixture-host")),
     );
     replay.headers_mut().insert(
         header::AUTHORIZATION,

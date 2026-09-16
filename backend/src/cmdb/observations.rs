@@ -1189,8 +1189,10 @@ async fn ingest_once(
         ));
     }
 
+    let mut fingerprint_snapshot = input.snapshot.clone();
+    fingerprint_snapshot.snapshot_id = input.snapshot.snapshot_id.trim().to_owned();
     let snapshot_fingerprint =
-        canonical_json::digest_with_limit(&input.snapshot, MAX_SNAPSHOT_BYTES)
+        canonical_json::digest_with_limit(&fingerprint_snapshot, MAX_SNAPSHOT_BYTES)
             .map_err(|error| ObservationError::Invalid(error.to_string()))?;
     let mut transaction = pool.begin().await?;
     let trusted = source_trust(

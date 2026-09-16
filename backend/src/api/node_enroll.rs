@@ -5,7 +5,7 @@ use crate::{
     AppState,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{rejection::JsonRejection, Path, State},
     http::HeaderMap,
     response::IntoResponse,
     Json,
@@ -150,8 +150,16 @@ pub async fn create_pairing_code(
 
 pub async fn enroll(
     State(state): State<AppState>,
-    Json(req): Json<EnrollRequest>,
+    request: std::result::Result<Json<EnrollRequest>, JsonRejection>,
 ) -> Result<Json<EnrollResponse>> {
+    let Json(req) = request.map_err(|rejection| match rejection {
+        JsonRejection::BytesRejection(
+            axum::extract::rejection::BytesRejection::FailedToBufferBody(
+                axum::extract::rejection::FailedToBufferBody::LengthLimitError(_),
+            ),
+        ) => AppError::PayloadTooLarge,
+        _ => AppError::BadRequest("invalid request body".into()),
+    })?;
     validate_enroll_request(&req)?;
 
     let now = unix_now();
@@ -518,6 +526,32 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
+    }
+
+    #[tokio::test]
+    async fn enrollment_rejects_oversized_body_with_stable_error() {
+        let db = test_support::setup_db().await;
+        let app = crate::api::router(test_support::build(db));
+        let body = format!(
+            "{{\"pairing_code\":\"code\",\"display_name\":\"{}\"}}",
+            "x".repeat(64 * 1024 + 1)
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/enroll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "payload_too_large");
     }
 
     #[tokio::test]

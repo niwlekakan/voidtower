@@ -367,7 +367,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cmdb/settings", get(cmdb::settings::get).patch(cmdb::settings::update).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
         // Fleet node enrollment (phones/tablets/pis joining over WireGuard)
         .route("/api/nodes/pairing-code", post(node_enroll::create_pairing_code))
-        .route("/api/nodes/enroll",       post(node_enroll::enroll))
+        .route("/api/nodes/enroll",       post(node_enroll::enroll).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         .route("/api/nodes",              get(node_enroll::list))
         .route("/api/nodes/:id",          delete(node_enroll::delete_node))
         .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)).layer(axum::middleware::from_fn_with_state(state.clone(), node_enroll::authenticate_node_request)))

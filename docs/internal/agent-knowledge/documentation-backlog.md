@@ -184,3 +184,10 @@
 - Reusable checks: `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test agent::supervision --all-features`; `cd backend && cargo test api::cmdb::tests::inventory_upload --all-features`; `python3 scripts/test_release_gate.py`; `git diff --check`. Schema ownership remains unverified in this sandbox because `rg` is unavailable (the wrapper exits 0 after its diagnostic).
 - Full-gate note: one run reached 610 passing tests but hit SQLite `database is locked` in the existing `cmdb::assets::tests::concurrent_manual_creates_receive_distinct_identifiers`; the 2026-09-16 rerun passed with 611 unit tests, 2 integration tests, and examples. Keep the transient failure in historical evidence, not as a current blocker.
 - Blocker: this Docker sandbox has no `systemctl` or `/run/systemd/private`; do not promote C3-03 beyond `unit-verified`.
+
+## C3-03 runtime qualification recovery session 10 — 2026-09-16
+
+- No end-user documentation changed because supported-host systemd and host-device runtime remain unavailable; `docs/agent/linux-agent-service.md` remains accurate.
+- The required future operator runbook evidence is unchanged: systemd install/status, owner-only state, canonical host adoption, real collection/upload, outbound-only observation, controller outage/restart recovery, upgrade, rollback, redacted artifacts, and checksum.
+- Reusable checks: focused CMDB/enrollment/App Vault/collector/transport/supervision Cargo tests; `cd backend && cargo test --all-targets --all-features` after disposable `/tmp` fixture cleanup; `python3 scripts/test_release_gate.py`; `python3 scripts/repo_truth.py --repo . --json --check`; `scripts/check-schema-migration-ownership.sh`; and `git diff --check`.
+- Blockers remain missing `systemctl`/`/run/systemd/private`, pre-existing strict Clippy diagnostics, and missing `rg` for fully trustworthy schema ownership verification.

@@ -3,7 +3,7 @@
 Status: blocked; source and managed-node/CMDB router contracts remain unit-verified and integration-verified
 Tracked slice: C3-03 supported-host Linux agent supervision and service-package qualification
 Base: fd3c60cb264a19568cc9115c298fa063a21bad50
-Commit: 4033069 (docs: record blocked C3-03 qualification session 13)
+Milestone commit: fc4c567 (docs: record blocked C3-03 qualification session 13)
 Branch: dev (ahead 2, behind 0 before this handoff)
 
 Implemented

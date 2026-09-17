@@ -225,3 +225,16 @@
 - Inventory ingestion fingerprints a cloned snapshot after trimming `snapshot_id`, matching the trimmed persisted/replay identity. Equivalent surrounding-whitespace representations therefore replay instead of conflicting.
 - Focused real-router tests cover oversized enrollment response shape and whitespace-normalized inventory replay. Supported-host systemd/runtime qualification, strict repository Clippy, and complete schema ownership remain blocked as previously recorded.
 - Focused evidence after this checkpoint is recorded in the dated handoff; host systemd/runtime and strict repository lint gates remain blocked as previously documented.
+
+## C3-03 managed-node authorization contract — 2026-09-17
+
+- The node authentication seam now compares the HTTP `Bearer` scheme case-insensitively, while trimming and enforcing the existing 512-byte credential bound before the node-token hash lookup.
+- Real Axum-router test `api::node_enroll::tests::lowercase_bearer_scheme_authenticates_approved_agent` proves a lowercase scheme succeeds for an approved, agent-capable node; existing missing/empty/oversized, wrong-node, and revoked credential tests remain the negative boundary evidence.
+- This is `integration-verified` at the router/database boundary and does not promote C3-03 host runtime or release qualification. The Docker sandbox still lacks systemd and the supported host/device boundary.
+- The direct end-user contract is documented in `docs/agent/node-enrollment.md`.
+
+## C3-03 token contract parity — 2026-09-17
+
+- `agent::state::MAX_NODE_TOKEN_BYTES` is the shared 512-byte bound used by persisted `HeartbeatToken` validation and controller node-token authentication.
+- The state seam accepts exactly 512 bytes and rejects 513 bytes; the real Axum heartbeat route test authenticates an approved agent-capable node with an exactly 512-byte token, while the existing route test rejects over-limit credentials before database matching.
+- Focused state, node-enrollment, and supervision test suites pass after this change. This remains unit/integration evidence only; the Docker sandbox lacks `systemd-analyze`, systemd, and supported host-device runtime boundaries.

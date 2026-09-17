@@ -203,3 +203,15 @@
 - End-user documentation updated: `docs/agent/node-enrollment.md` now documents the 512-byte node-token bound and authentication-before-body-limit behavior.
 - Future documentation required: supported-host evidence for service lifecycle, real collection/upload, outage/restart recovery, upgrade, rollback, and enrollment-to-host adoption remains unchanged; no sandbox source test promotes those claims.
 - Reusable checks: `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test api::node_enroll::tests --all-features`; `cd backend && cargo test api::cmdb::tests --all-features`; `python3 scripts/test_release_gate.py`; `git diff --check`.
+
+## C3-03 managed-node authorization contract — 2026-09-17
+
+- End-user documentation updated: `docs/agent/node-enrollment.md` now states that the HTTP `Bearer` scheme is case-insensitive while node credentials remain trimmed and bounded.
+- Future documentation remains required for named supported-host systemd lifecycle, real collection/upload, outage/restart recovery, upgrade, rollback, redacted artifacts, and checksum evidence.
+- Reusable check: `cd backend && cargo test api::node_enroll::tests --all-features`.
+
+## C3-03 token contract parity — 2026-09-17
+
+- End-user documentation updated: `docs/agent/linux-agent-service.md` now records the shared 512-byte node-token bound and exact-limit behavior.
+- Future documentation remains required for named-host systemd installation/status, real collection/upload, outage and restart recovery, upgrade/rollback, redacted artifacts, and checksums; none is claimed from this sandbox.
+- Reusable checks: `cd backend && cargo test agent::state --all-features`; `cd backend && cargo test api::node_enroll::tests --all-features`; `cd backend && cargo test agent::supervision --all-features`.

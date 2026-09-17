@@ -12,6 +12,7 @@ use uuid::Uuid;
 const MAX_STATE_BYTES: u64 = 256 * 1024;
 const MAX_CA_BYTES: usize = 64 * 1024;
 const MAX_PENDING_SNAPSHOT_BYTES: u64 = 256 * 1024;
+pub const MAX_NODE_TOKEN_BYTES: usize = 512;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
@@ -25,7 +26,7 @@ impl HeartbeatToken {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.0.len() < 16 || self.0.len() > 4096 || self.0.trim() != self.0 {
+        if self.0.len() < 16 || self.0.len() > MAX_NODE_TOKEN_BYTES || self.0.trim() != self.0 {
             bail!("heartbeat token is invalid");
         }
         Ok(())
@@ -917,6 +918,12 @@ mod tests {
             .to_string()
             .contains("heartbeat token"));
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn heartbeat_token_uses_controller_compatible_byte_bound() {
+        assert!(HeartbeatToken::new("x".repeat(MAX_NODE_TOKEN_BYTES)).is_ok());
+        assert!(HeartbeatToken::new("x".repeat(MAX_NODE_TOKEN_BYTES + 1)).is_err());
     }
 
     #[test]

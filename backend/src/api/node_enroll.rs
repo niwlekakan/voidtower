@@ -1,4 +1,5 @@
 use crate::{
+    agent::state::MAX_NODE_TOKEN_BYTES,
     api::integrations::{generate_api_token, sha256_hex},
     audit, auth,
     error::{AppError, Result},
@@ -40,7 +41,6 @@ const PAIRING_CODE_TTL_SECS: i64 = 900; // 15 minutes
 const MAX_PAIRING_CODE_BYTES: usize = 512;
 const MAX_DISPLAY_NAME_BYTES: usize = 128;
 const MAX_DEVICE_TYPE_BYTES: usize = 32;
-const MAX_NODE_TOKEN_BYTES: usize = 512;
 const MAX_BATTERY_PERCENT: f32 = 100.0;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -413,7 +413,10 @@ pub(crate) async fn verify_node_token(
     let raw = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|v| {
+            let (scheme, credentials) = v.split_once(' ')?;
+            scheme.eq_ignore_ascii_case("Bearer").then_some(credentials)
+        })
         .map(str::trim)
         .ok_or(crate::error::AppError::Unauthorized)?;
     if raw.is_empty() || raw.len() > MAX_NODE_TOKEN_BYTES {
@@ -590,6 +593,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(last_seen, None);
+    }
+
+    #[tokio::test]
+    async fn lowercase_bearer_scheme_authenticates_approved_agent() {
+        let db = test_support::setup_db().await;
+        let token = "x".repeat(MAX_NODE_TOKEN_BYTES);
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES ('lowercase-bearer-owner', 'lowercase-bearer-owner', 'x', 'owner', 0, 0)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO nodes (id, display_name, device_type, owner_user_id, token_hash, agent_capable, approved, created_at) VALUES (?, ?, ?, ?, ?, 1, 1, 0)",
+        )
+        .bind("lowercase-bearer-node")
+        .bind("fixture agent")
+        .bind("pi")
+        .bind("lowercase-bearer-owner")
+        .bind(sha256_hex(&token))
+        .execute(&db)
+        .await
+        .unwrap();
+        let app = crate::api::router(test_support::build(db));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/lowercase-bearer-node/heartbeat")
+                    .header(header::AUTHORIZATION, format!("bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let oversized = "x".repeat(MAX_NODE_TOKEN_BYTES + 1);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/lowercase-bearer-node/heartbeat")
+                    .header(header::AUTHORIZATION, format!("Bearer {oversized}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

@@ -215,3 +215,9 @@
 - End-user documentation updated: `docs/agent/linux-agent-service.md` now records the shared 512-byte node-token bound and exact-limit behavior.
 - Future documentation remains required for named-host systemd installation/status, real collection/upload, outage and restart recovery, upgrade/rollback, redacted artifacts, and checksums; none is claimed from this sandbox.
 - Reusable checks: `cd backend && cargo test agent::state --all-features`; `cd backend && cargo test api::node_enroll::tests --all-features`; `cd backend && cargo test agent::supervision --all-features`.
+
+## C3-03 runtime qualification session 11 — 2026-09-17
+
+- No end-user documentation changed because the supported-host runtime boundary remains unavailable; the existing Linux agent and enrollment docs remain accurate and explicitly do not claim runtime qualification.
+- Still required after a named host run: observed systemd install/status, owner-only state permissions, canonical host adoption before collection, real collection/upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, redacted evidence retention, and artifact checksum.
+- Reusable checks from this blocked checkpoint: `python3 scripts/repo_truth.py --repo . --json --check`; the five focused managed-node Cargo commands in `docs/internal/handoffs/2026-09-17-c3-03-runtime-qualification-session-11-blocked.md`; `python3 scripts/test_release_gate.py`; and `git diff --check`.

@@ -233,6 +233,12 @@
 - This is `integration-verified` at the router/database boundary and does not promote C3-03 host runtime or release qualification. The Docker sandbox still lacks systemd and the supported host/device boundary.
 - The direct end-user contract is documented in `docs/agent/node-enrollment.md`.
 
+## C3-03 runtime qualification session 11 — 2026-09-17
+
+- Current source and focused contract evidence were rechecked without product-code changes: state (18), enrollment (10), supervision (4), transport (13), and inventory-router (3) Cargo tests passed; release-gate tests (11), repository truth, and `git diff --check` passed.
+- The runtime blocker is directly reproduced in this Docker sandbox: `systemctl` is absent, `/run/systemd/private` is absent, and PID 1 is Docker `docker-init`. Consequently systemd lifecycle, service-managed `/usr/bin/lsblk`, host-state permissions, outage/restart recovery, upgrade, rollback, outbound-only observation, and artifact checksum evidence remain blocked.
+- This checkpoint adds no runtime or release claim. The next dependency-ready action remains a named supported Linux host or VM run of `docs/agent/linux-agent-service.md:43-54`.
+
 ## C3-03 token contract parity — 2026-09-17
 
 - `agent::state::MAX_NODE_TOKEN_BYTES` is the shared 512-byte bound used by persisted `HeartbeatToken` validation and controller node-token authentication.

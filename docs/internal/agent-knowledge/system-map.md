@@ -258,3 +258,10 @@
 - Final backend target evidence with the explicit workspace variable: 616 unit tests, 2 workflow-contract integration-test cases, and the example target passed. Focused state (18), transport (13), supervision (4), lowercase Bearer enrollment (1), inventory upload (3), release-gate (11), repository-truth, and diff checks passed. The YAML workflow-contract test is separate from the `integration-verified` router/database evidence.
 - `systemctl`, `systemd-analyze`, and `/run/systemd/private` remain unavailable; PID 1 is Docker `docker-init`. C3-03 service lifecycle, service-managed collection/upload, outage/restart, upgrade, rollback, and artifact qualification remain blocked and must not be promoted from this sandbox.
 - Strict Clippy and rustfmt remain unavailable in the active toolchain; schema ownership still emits the known missing-`rg` diagnostic. The dated handoff is `docs/internal/handoffs/2026-09-17-c3-03-runtime-qualification-session-13-blocked.md`.
+
+## C3-03 agent prequalification hardening — 2026-09-17
+
+- `AgentTransport::upload_inventory` serializes the snapshot once and rejects payloads over 256 KiB before constructing or sending the HTTP request. The bound matches the collector/pending-snapshot contract and prevents a manually constructed public snapshot from bypassing the client-side limit.
+- Focused transport test `agent::transport::tests::inventory_upload_rejects_oversized_snapshot_before_network_request` passed; the full backend unit target previously reached 618 tests before the known transient SQLite lock failure. The golden-path integration test requires `GITHUB_WORKSPACE` to resolve the tracked workflow and fails without that explicit environment in this sandbox.
+- `docs/agent/linux-inventory-collector.md` now describes the shipped fixed-command collection, pending persistence, enrolled-node upload, 256 KiB request bound, and the separate supported-host qualification boundary.
+- C3-03 remains blocked for systemd/service/device runtime, outage/restart, upgrade, rollback, and artifact qualification because `systemctl`, `systemd-analyze`, and `/run/systemd/private` are unavailable in this Docker sandbox.

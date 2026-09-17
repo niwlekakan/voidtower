@@ -234,3 +234,10 @@
 - Still required after a named host run: observed systemd install/status, owner-only state permissions, canonical host adoption, real service-managed `/usr/bin/lsblk` upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, redacted evidence retention, and artifact checksum.
 - Reusable full backend test invocation: from the repository root, run `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; the variable is required by the golden-path workflow contract test in this sandbox invocation. This does not replace release-gate, repository-truth, schema-ownership, or diff checks.
 - Blockers remain absent host systemd/device runtime, unavailable Clippy/rustfmt components, and unavailable `rg` for fully trustworthy schema ownership verification.
+
+## C3-03 agent prequalification hardening — 2026-09-17
+
+- End-user documentation updated: `docs/agent/linux-inventory-collector.md` now reflects that the fixed `/usr/bin/lsblk` command is invoked by supervision, snapshots are persisted/uploaded through the enrolled node path, and serialized inventory requests are capped at 256 KiB.
+- Future documentation required: the supported-host runbook still needs observed systemd installation/status, owner-only state, real service-managed collection/upload, outage/restart recovery, upgrade, rollback, redacted artifacts, and checksum evidence.
+- Reusable checks: `cd backend && cargo test agent --all-features`; `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `cargo fmt --check`; and `git diff --check`. The full command must set `GITHUB_WORKSPACE` for the workflow-contract fixture in this sandbox.
+- Blockers: no supported systemd/device runtime, `cargo-fmt` unavailable for the active toolchain, and schema ownership cannot be fully trusted while the wrapper's `rg` dependency is absent.

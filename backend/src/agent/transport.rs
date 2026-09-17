@@ -5,12 +5,47 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::{fmt, net::IpAddr, time::Duration};
+use std::{fmt, io, net::IpAddr, time::Duration};
 use uuid::Uuid;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_INVENTORY_REQUEST_BYTES: usize = 256 * 1024;
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    overflowed: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit),
+            limit,
+            overflowed: false,
+        }
+    }
+}
+
+impl io::Write for BoundedJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(bytes.len()) > self.limit {
+            self.overflowed = true;
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "serialized JSON exceeds configured bound",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct AgentTransport {
@@ -224,12 +259,23 @@ impl AgentTransport {
         state: &AgentState,
         snapshot: &InventorySnapshotV1,
     ) -> Result<InventorySnapshotResultV1> {
+        let mut writer = BoundedJsonWriter::new(MAX_INVENTORY_REQUEST_BYTES);
+        if let Err(error) = serde_json::to_writer(&mut writer, snapshot) {
+            if writer.overflowed {
+                bail!(
+                    "inventory snapshot exceeds {MAX_INVENTORY_REQUEST_BYTES} bytes"
+                );
+            }
+            return Err(error).context("failed to serialize inventory snapshot");
+        }
+        let body = writer.bytes;
         let endpoint = self.endpoint(&format!("api/nodes/{}/inventory", state.node_id))?;
         let response = self
             .client
             .post(endpoint)
             .bearer_auth(state.heartbeat_token.expose())
-            .json(snapshot)
+            .body(body)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
             .send()
             .await
             .context("inventory upload request failed")?;
@@ -445,6 +491,36 @@ mod tests {
         assert!(request.starts_with(&format!("POST /api/nodes/{}/inventory HTTP/1.1", state.node_id)));
         assert!(request.to_ascii_lowercase().contains("authorization"));
         assert!(request.contains("snapshot-1"));
+    }
+
+    #[tokio::test]
+    async fn inventory_upload_rejects_oversized_snapshot_before_network_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_url = format!("http://{}", listener.local_addr().unwrap());
+        let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
+        let state = AgentState {
+            server_url,
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: HeartbeatToken::new("inventory-heartbeat-token".into()).unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule::default(),
+        };
+        let mut snapshot: InventorySnapshotV1 = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "snapshot_id": "snapshot-large", "collector_version": "test",
+            "platform": "linux", "collected_at": 0,
+            "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
+            "entities": []
+        })).unwrap();
+        snapshot.host.runtime = serde_json::Value::String("x".repeat(MAX_INVENTORY_REQUEST_BYTES));
+
+        let error = transport.upload_inventory(&state, &snapshot).await.unwrap_err();
+
+        assert!(error.to_string().contains("inventory snapshot exceeds"));
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(25),
+            listener.accept()
+        ).await.is_err());
     }
 
     #[tokio::test]

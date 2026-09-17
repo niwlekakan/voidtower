@@ -221,3 +221,9 @@
 - No end-user documentation changed because the supported-host runtime boundary remains unavailable; the existing Linux agent and enrollment docs remain accurate and explicitly do not claim runtime qualification.
 - Still required after a named host run: observed systemd install/status, owner-only state permissions, canonical host adoption before collection, real collection/upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, redacted evidence retention, and artifact checksum.
 - Reusable checks from this blocked checkpoint: `python3 scripts/repo_truth.py --repo . --json --check`; the five focused managed-node Cargo commands in `docs/internal/handoffs/2026-09-17-c3-03-runtime-qualification-session-11-blocked.md`; `python3 scripts/test_release_gate.py`; and `git diff --check`.
+
+## C3-03 runtime qualification session 12 — 2026-09-17
+
+- No end-user documentation changed because the supported-host systemd/device boundary remains unavailable. Existing Linux agent, enrollment, and inventory-upload docs remain accurate for the unit/integration-verified boundary and do not claim runtime qualification.
+- Still required after a named host run: observed systemd install/status, owner-only state permissions, canonical host adoption before collection, real service-managed `/usr/bin/lsblk` upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, redacted evidence retention, and artifact checksum.
+- Reusable checks: `python3 scripts/repo_truth.py --repo . --json --check`; `cd backend && cargo test agent::state --all-features`; `cd backend && cargo test api::node_enroll::tests --all-features`; `cd backend && cargo test agent::supervision --all-features`; `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test api::cmdb::tests::inventory_upload --all-features`; `python3 scripts/test_release_gate.py`; `git diff --check`.

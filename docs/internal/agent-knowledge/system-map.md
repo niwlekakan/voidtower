@@ -233,14 +233,21 @@
 - This is `integration-verified` at the router/database boundary and does not promote C3-03 host runtime or release qualification. The Docker sandbox still lacks systemd and the supported host/device boundary.
 - The direct end-user contract is documented in `docs/agent/node-enrollment.md`.
 
+## C3-03 token contract parity — 2026-09-17
+
+- `agent::state::MAX_NODE_TOKEN_BYTES` is the shared 512-byte bound used by persisted `HeartbeatToken` validation and controller node-token authentication.
+- The state seam accepts exactly 512 bytes and rejects 513 bytes; the real Axum heartbeat route test authenticates an approved agent-capable node with an exactly 512-byte token, while the existing route test rejects over-limit credentials before database matching.
+- Focused state, node-enrollment, and supervision test suites pass after this change. This remains unit/integration evidence only; the Docker sandbox lacks `systemd-analyze`, systemd, and supported host-device runtime boundaries.
+
 ## C3-03 runtime qualification session 11 — 2026-09-17
 
 - Current source and focused contract evidence were rechecked without product-code changes: state (18), enrollment (10), supervision (4), transport (13), and inventory-router (3) Cargo tests passed; release-gate tests (11), repository truth, and `git diff --check` passed.
 - The runtime blocker is directly reproduced in this Docker sandbox: `systemctl` is absent, `/run/systemd/private` is absent, and PID 1 is Docker `docker-init`. Consequently systemd lifecycle, service-managed `/usr/bin/lsblk`, host-state permissions, outage/restart recovery, upgrade, rollback, outbound-only observation, and artifact checksum evidence remain blocked.
 - This checkpoint adds no runtime or release claim. The next dependency-ready action remains a named supported Linux host or VM run of `docs/agent/linux-agent-service.md:43-54`.
 
-## C3-03 token contract parity — 2026-09-17
+## C3-03 runtime qualification session 12 — 2026-09-17
 
-- `agent::state::MAX_NODE_TOKEN_BYTES` is the shared 512-byte bound used by persisted `HeartbeatToken` validation and controller node-token authentication.
-- The state seam accepts exactly 512 bytes and rejects 513 bytes; the real Axum heartbeat route test authenticates an approved agent-capable node with an exactly 512-byte token, while the existing route test rejects over-limit credentials before database matching.
-- Focused state, node-enrollment, and supervision test suites pass after this change. This remains unit/integration evidence only; the Docker sandbox lacks `systemd-analyze`, systemd, and supported host-device runtime boundaries.
+- The supported-host prerequisite remains unavailable in the coding sandbox: `systemctl` is absent, `/run/systemd/private` is absent, PID 1 is Docker's `docker-init -- sleep infinity`, and only direct `/usr/bin/lsblk` execution is available. No service-managed or host-device qualification claim is permitted.
+- Rechecked managed-node and upload seams without product-code changes: state (18), enrollment (10), supervision (4), transport (13), and inventory-router (3) focused tests passed. The full backend unit target passed 616 tests, while the existing `backend/tests/golden_path.rs` integration target failed because its expected `ci.yml` fixture is absent.
+- `python3 scripts/repo_truth.py --repo . --json --check`, `python3 scripts/test_release_gate.py`, and `git diff --check` passed. Strict Clippy is blocked because `cargo-clippy` is not installed; schema ownership exits 0 but emits the known `rg: command not found` diagnostic.
+- This checkpoint changed no product source or end-user documentation. The next dependency-ready action remains a named supported Linux host/VM run of `docs/agent/linux-agent-service.md:43-54`, not another source-only C3-03 implementation slice.

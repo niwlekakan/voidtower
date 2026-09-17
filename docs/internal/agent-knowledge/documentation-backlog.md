@@ -227,3 +227,10 @@
 - No end-user documentation changed because the supported-host systemd/device boundary remains unavailable. Existing Linux agent, enrollment, and inventory-upload docs remain accurate for the unit/integration-verified boundary and do not claim runtime qualification.
 - Still required after a named host run: observed systemd install/status, owner-only state permissions, canonical host adoption before collection, real service-managed `/usr/bin/lsblk` upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, redacted evidence retention, and artifact checksum.
 - Reusable checks: `python3 scripts/repo_truth.py --repo . --json --check`; `cd backend && cargo test agent::state --all-features`; `cd backend && cargo test api::node_enroll::tests --all-features`; `cd backend && cargo test agent::supervision --all-features`; `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test api::cmdb::tests::inventory_upload --all-features`; `python3 scripts/test_release_gate.py`; `git diff --check`.
+
+## C3-03 runtime qualification session 13 — 2026-09-17
+
+- No end-user documentation changed. Existing Linux agent, enrollment, and inventory-upload docs remain accurate for the unit/integration-verified boundary and do not claim runtime qualification.
+- Still required after a named host run: observed systemd install/status, owner-only state permissions, canonical host adoption, real service-managed `/usr/bin/lsblk` upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, redacted evidence retention, and artifact checksum.
+- Reusable full backend test invocation: from the repository root, run `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; the variable is required by the golden-path workflow contract test in this sandbox invocation. This does not replace release-gate, repository-truth, schema-ownership, or diff checks.
+- Blockers remain absent host systemd/device runtime, unavailable Clippy/rustfmt components, and unavailable `rg` for fully trustworthy schema ownership verification.

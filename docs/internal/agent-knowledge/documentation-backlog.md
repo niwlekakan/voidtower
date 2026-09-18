@@ -247,4 +247,10 @@
 - End-user documentation updated: `docs/agent/linux-inventory-collector.md` now reflects that the fixed `/usr/bin/lsblk` command is invoked by supervision, snapshots are persisted/uploaded through the enrolled node path, and serialized inventory requests are capped at 256 KiB.
 - Future documentation required: the supported-host runbook still needs observed systemd installation/status, owner-only state, real service-managed collection/upload, outage/restart recovery, upgrade, rollback, redacted artifacts, and checksum evidence.
 - Reusable checks: `cd backend && cargo test agent --all-features`; `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `cargo fmt --check`; and `git diff --check`. The full command must set `GITHUB_WORKSPACE` for the workflow-contract fixture in this sandbox.
+
+## C3-03 enrollment persistence and audit-boundary hardening — 2026-09-18
+
+- End-user documentation updated: `docs/agent/node-enrollment.md` now specifies atomic claim-plus-node persistence, retryability after persistence failure, and structured JSON audit details for enrollment and deletion.
+- Future documentation remains required for named supported-host systemd installation/status, service-managed collection/upload, outage/restart recovery, upgrade/rollback, redacted evidence retention, and artifact checksums.
+- Reusable focused check: `cd backend && cargo test api::node_enroll::tests --all-features`.
 - Blockers: no supported systemd/device runtime, `cargo-fmt` unavailable for the active toolchain, and schema ownership cannot be fully trusted while the wrapper's `rg` dependency is absent.

@@ -194,20 +194,27 @@ pub async fn enroll(
 
     // Atomically claim the code — `used_at IS NULL` in the WHERE means a concurrent
     // second enrollment attempt with the same code affects 0 rows and gets rejected.
-    let claimed =
-        sqlx::query("UPDATE node_pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL")
-            .bind(now)
-            .bind(&pairing.id)
-            .execute(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+    let mut transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let claimed = sqlx::query(
+        "UPDATE node_pairing_codes SET used_at = CAST(strftime('%s', 'now') AS INTEGER) WHERE id = ? AND used_at IS NULL AND expires_at > CAST(strftime('%s', 'now') AS INTEGER)",
+    )
+    .bind(&pairing.id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
     if claimed.rows_affected() == 0 {
         return Err(AppError::Unauthorized);
     }
 
-    let owner = auth::find_user_by_id(&state.db, &pairing.created_by)
+    let owner_id: String = sqlx::query_scalar("SELECT id FROM users WHERE id = ?")
+        .bind(&pairing.created_by)
+        .fetch_optional(&mut *transaction)
         .await
-        .map_err(AppError::Internal)?
+        .map_err(|e| AppError::Internal(e.into()))?
         .ok_or_else(|| {
             AppError::Internal(anyhow::anyhow!("pairing code owner no longer exists"))
         })?;
@@ -228,20 +235,25 @@ pub async fn enroll(
     .bind(&node_id)
     .bind(&req.display_name)
     .bind(&req.device_type)
-    .bind(&owner.id)
+    .bind(&owner_id)
     .bind(wg_peer_id.as_deref())
     .bind(&wg_public_key)
     .bind(&node_token_hash)
     .bind(req.agent_capable)
     .bind(true)
     .bind(now)
-    .execute(&state.db)
+    .execute(&mut *transaction)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
+    transaction
+        .commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
     audit::log(
         &state.db,
-        Some(&owner.id),
+        Some(&owner_id),
         "human",
         "nodes.enroll",
         Some("node"),
@@ -328,7 +340,12 @@ pub async fn delete_node(
         Some(&node_id),
         "success",
         None,
-        Some(&format!("display_name={}", row.display_name)),
+        Some(
+            &serde_json::json!({
+                "display_name": row.display_name,
+            })
+            .to_string(),
+        ),
     )
     .await;
 
@@ -730,6 +747,150 @@ mod tests {
         let details: serde_json::Value = serde_json::from_str(&details).unwrap();
         assert_eq!(details["display_name"], "lan-agent");
         assert_eq!(details["device_type"], "pi");
+    }
+
+    #[tokio::test]
+    async fn enrollment_rejects_pairing_code_at_expiry_boundary() {
+        let db = test_support::setup_db().await;
+        pairing_code(&db, "expired-at-boundary").await;
+        sqlx::query("UPDATE node_pairing_codes SET expires_at = ? WHERE token_hash = ?")
+            .bind(unix_now())
+            .bind(sha256_hex("expired-at-boundary"))
+            .execute(&db)
+            .await
+            .unwrap();
+        let app = crate::api::router(test_support::build(db.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/enroll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "pairing_code": "expired-at-boundary",
+                            "display_name": "expired-agent",
+                            "device_type": "pi",
+                            "agent_capable": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let used_at: Option<i64> = sqlx::query_scalar(
+            "SELECT used_at FROM node_pairing_codes WHERE token_hash = ?",
+        )
+        .bind(sha256_hex("expired-at-boundary"))
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(used_at, None);
+    }
+
+    #[tokio::test]
+    async fn enrollment_rolls_back_pairing_claim_when_node_persistence_fails() {
+        let db = test_support::setup_db().await;
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, role, created_at, updated_at) \
+             VALUES ('insert-failure-owner', 'insert-failure-owner', 'x', 'owner', 0, 0)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO node_pairing_codes \
+             (id, token_hash, created_by, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("missing-owner-code")
+        .bind(sha256_hex("missing-owner-code"))
+        .bind("insert-failure-owner")
+        .bind(unix_now() + PAIRING_CODE_TTL_SECS)
+        .bind(unix_now())
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_node_enrollment BEFORE INSERT ON nodes BEGIN SELECT RAISE(ABORT, 'fixture enrollment failure'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let app = crate::api::router(test_support::build(db.clone()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/enroll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "pairing_code": "missing-owner-code",
+                            "display_name": "orphaned-agent",
+                            "device_type": "pi",
+                            "agent_capable": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let used_at: Option<i64> = sqlx::query_scalar(
+            "SELECT used_at FROM node_pairing_codes WHERE token_hash = ?",
+        )
+        .bind(sha256_hex("missing-owner-code"))
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(used_at, None);
+        let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(node_count, 0);
+    }
+
+    #[tokio::test]
+    async fn node_delete_audit_details_are_structured() {
+        let db = test_support::setup_db().await;
+        let session = test_support::user_with_session(&db).await;
+        sqlx::query(
+            "INSERT INTO nodes (id, display_name, device_type, owner_user_id, token_hash, agent_capable, approved, created_at) VALUES (?, ?, 'pi', 'u1', 'fixture-token-hash', 1, 1, 0)",
+        )
+        .bind("structured-audit-node")
+        .bind("name=comma,quote\"unicode")
+        .execute(&db)
+        .await
+        .unwrap();
+        let app = crate::api::router(test_support::build(db.clone()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/nodes/structured-audit-node")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let details: String = sqlx::query_scalar(
+            "SELECT details FROM audit_log WHERE action = 'nodes.delete' ORDER BY timestamp DESC LIMIT 1",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let details: serde_json::Value = serde_json::from_str(&details).unwrap();
+        assert_eq!(details["display_name"], "name=comma,quote\"unicode");
     }
 
     #[tokio::test]

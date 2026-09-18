@@ -272,3 +272,10 @@
 - Successful enrollment audit details are now JSON with `display_name` and `device_type` fields rather than delimiter-built text. The enrollment test parses the persisted audit detail and verifies both fields.
 - The public `AppError` response seam has a focused redaction/bounds test proving database and internal errors omit raw SQL/provider text and remain under 256 bytes. Existing response mapping already emits generic `database_error`/`internal_error` messages while detailed causes stay in server logs.
 - This checkpoint is unit/integration-verified at the enrollment/error seams. It does not establish supported-host systemd, service-managed collection, outage/restart runtime, upgrade, rollback, artifact, or release evidence; those remain blocked by the Docker sandbox boundary.
+
+## C3-03 enrollment persistence and audit-boundary hardening — 2026-09-18
+
+- Enrollment now wraps the pairing-code claim, owner existence check, and node insertion in one SQLite transaction; a node persistence failure rolls back `used_at` and leaves the code retryable. The real-router test `enrollment_rolls_back_pairing_claim_when_node_persistence_fails` uses a database trigger to exercise the failure boundary and verifies no node or claim remains.
+- Node deletion audit details now use structured JSON for `display_name`; `node_delete_audit_details_are_structured` verifies exact preservation of commas, equals signs, and quotes.
+- `docs/agent/node-enrollment.md` documents the transaction rollback/retry contract and structured audit representation.
+- Focused `api::node_enroll::tests` passed 14 tests after the final change. Runtime/systemd/device and release qualification remain blocked by the sandbox boundary; unrelated worktree paths remain excluded.

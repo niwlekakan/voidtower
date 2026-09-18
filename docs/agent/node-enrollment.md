@@ -8,6 +8,8 @@ The request is rejected with the bounded `bad_request` envelope when the pairing
 
 A successful response contains the node UUID and a node-bound bearer token for heartbeat and inventory only. Enrollment does not create or adopt a CMDB host resource. Before inventory upload, an administrator must provision or adopt exactly one canonical `sys/host` projection and bind `resources.node_id` to the enrolled node.
 
+The pairing-code claim and node row are committed in one database transaction. If owner resolution or node persistence fails, the transaction rolls back and the pairing code remains retryable; no partial node is created. After a successful commit, the enrollment audit details are structured JSON containing the bounded display name and device type. Node-deletion audit details use the same structured representation, so commas, equals signs, quotes, and other display-name characters are not ambiguous delimiters.
+
 ## Heartbeat
 
 `POST /api/nodes/:node_id/heartbeat` requires the node bearer token, approved status, and `agent_capable=true`. The `Bearer` authentication scheme is matched case-insensitively (`Bearer`, `bearer`, and other casing are equivalent); the credential value is trimmed and then bounded. Authentication is performed before JSON parsing, so malformed unauthenticated input receives `401 unauthorized` rather than a parser diagnostic. Authenticated malformed JSON receives `400 bad_request` with `invalid heartbeat`.

@@ -324,3 +324,10 @@
 - The Linux collector now maps `lsblk` `SIZE` to the CMDB canonical `attributes.capacity_bytes`; it rejects missing, null, zero, negative, and string sizes before producing a snapshot, and it no longer emits the unrelated `size_bytes` alias used by other product domains.
 - The real Axum/router/SQLite test `linux_collector_snapshot_reaches_reconciliation_classification` proves the positive capacity value persists alongside protocol, rotation, serial, and WWN evidence. `inventory_upload_rejects_semantically_invalid_snapshots` proves zero capacity returns bounded `400 bad_request` and creates no inventory snapshot.
 - Focused evidence is `integration-verified` for this collector-to-router/database contract. Supported-host systemd/device runtime, outage/restart, upgrade/rollback, release artifacts, strict Clippy/rustfmt, and complete schema-ownership verification remain blocked as previously recorded.
+
+## C3-03 supported-host runtime qualification session 18 — 2026-09-18
+
+- The runtime prerequisite was re-probed at HEAD `1b418a42f947fecb2bfceef0915b6e5f6e9e5bfa`: `systemctl` and `systemd-analyze` are absent, PID 1 is `/sbin/docker-init -- sleep infinity`, `/run/systemd/private` and `/dev/block` are absent, `/usr/bin/lsblk` exists, and the process runs as UID/GID 1000. No service-managed or host-device qualification claim is permitted.
+- Deterministic evidence passed without product-code changes: agent (40), CMDB API (15), contract (4), package/release-gate (19), and full backend targets (630 unit, 2 workflow-contract integration tests, example) after removing only generated `/tmp/vt-p1-*` and `/tmp/voidtower-*` fixtures. Repository truth, shell/JSON syntax, and diff checks passed.
+- `cargo fmt --check` and strict Clippy are blocked by missing toolchain components; schema ownership exits 0 but emits the known missing-`rg` diagnostic. This checkpoint adds no integration coverage or maturity promotion.
+- The next dependency-ready action remains a named supported Linux host/VM run of `docs/agent/linux-agent-service.md:43-54`, not another source-only C3-03 implementation slice.

@@ -3,6 +3,7 @@
 Status: blocked at the supported-host runtime boundary; available source and router/database evidence rechecked
 Tracked slice: C3-03 Linux agent supervision and service package qualification
 Evidence base commit: 238bd406615bf30fca70e39dd274f771c9c60678 (`docs: hand off agent recovery hardening`)
+Continuity documentation commit: 6294b00 (`docs: record blocked c3-03 runtime qualification session 15`)
 Branch: dev
 
 Implemented

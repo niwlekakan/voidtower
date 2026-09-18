@@ -7,6 +7,12 @@ Linux collector. The node must be approved and agent-capable, and the bearer
 token is hashed and matched to the path `node_id`; tokens from another node,
 revoked nodes, and missing credentials are rejected before ingestion.
 
+The Linux collector's physical-disk fields are mapped for reconciliation before
+upload: `TRAN` is `attributes.protocol`, `ROTA` is `attributes.rotation`, and
+bounded serial/WWN values remain both attributes and identity evidence. A
+successful collector result has already passed the shared snapshot validation;
+malformed UUID or non-positive collection-time inputs never reach this route.
+
 The node must already have one canonical CMDB host resource whose
 `resources.node_id` equals the path node ID. The upload endpoint never accepts
 a caller-selected `resources.id`; it derives the source host resource from the

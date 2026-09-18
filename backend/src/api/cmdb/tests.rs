@@ -199,6 +199,11 @@ fn inventory_snapshot(snapshot_id: &str, host_name: &str) -> Value {
     json!({"schema_version":1,"snapshot_id":snapshot_id,"collector_version":"fixture-0.1","platform":"linux","collected_at":1700000000,"host":{"entity_key":"host","identities":[{"kind":"hardware_uuid","value":host_name}],"attributes":{"hostname":host_name},"runtime":{"kernel":"fixture"}},"entities":[]})
 }
 
+fn linux_collector_snapshot() -> Value {
+    let raw = r#"{"blockdevices":[{"name":"sda","type":"disk","size":100,"model":"Fixture Disk","serial":"SERIAL-001","wwn":"0011223344556677","rota":true,"tran":"sata","rm":false,"ro":false,"path":"/dev/sda","mountpoints":[null]},{"name":"sda1","type":"part"},{"name":"loop0","type":"loop"},{"name":"zram0","type":"ram"}]}"#;
+    serde_json::to_value(crate::collector::collect_linux_fixture(raw).unwrap()).unwrap()
+}
+
 async fn insert_discovery(
     db: &SqlitePool,
     source_resource_id: &str,
@@ -366,6 +371,40 @@ async fn inventory_upload_is_authenticated_idempotent_and_binds_the_node_host() 
         .unwrap(),
         1
     );
+}
+
+#[tokio::test]
+async fn linux_collector_snapshot_reaches_reconciliation_classification() {
+    let (db, app) = setup().await;
+    let (node_id, token, host_id) = enrolled_agent_host(&db).await;
+    let response = send_node_raw(
+        &app,
+        &format!("/api/nodes/{node_id}/inventory"),
+        &token,
+        linux_collector_snapshot().to_string(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let result = json_body(response).await;
+    assert_eq!(result["registered"], 1);
+    assert_eq!(result["review_required"], 0);
+
+    let (attributes, identities): (String, String) = sqlx::query_as(
+        "SELECT attributes_json, identity_json FROM cmdb_observations WHERE source_resource_id = ? AND entity_type = 'physical_disk'",
+    )
+    .bind(host_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let attributes: Value = serde_json::from_str(&attributes).unwrap();
+    assert_eq!(attributes["protocol"], "sata");
+    assert_eq!(attributes["rotation"], true);
+    assert_eq!(attributes["serial"], "SERIAL-001");
+    assert_eq!(attributes["wwn"], "0011223344556677");
+    let identities: Value = serde_json::from_str(&identities).unwrap();
+    assert!(identities.as_array().unwrap().iter().any(|identity| {
+        identity["kind"] == "wwn" && identity["value"] == "0011223344556677"
+    }));
 }
 
 #[tokio::test]

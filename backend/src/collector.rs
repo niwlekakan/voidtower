@@ -41,6 +41,8 @@ pub enum CollectorError {
     Timeout,
     #[error("lsblk output is not UTF-8")]
     NonUtf8,
+    #[error("collected inventory snapshot is invalid: {0}")]
+    InvalidSnapshot(String),
 }
 
 /// Run the fixed Linux collector command with bounded time and output. A failed
@@ -124,7 +126,12 @@ async fn read_bounded<R: AsyncRead + Unpin>(
 
 /// Parse sanitized lsblk JSON without database knowledge, server identity, or network access.
 pub fn collect_linux_fixture(raw: &str) -> Result<InventorySnapshotV1, CollectorError> {
-    collect_linux_snapshot(raw, "fixture-snapshot", 0, "host:fixture")
+    collect_linux_snapshot(
+        raw,
+        "00000000-0000-0000-0000-000000000001",
+        1_700_000_000,
+        "host:fixture",
+    )
 }
 
 pub fn collect_linux_snapshot(
@@ -158,7 +165,7 @@ pub fn collect_linux_snapshot(
     for device in devices {
         collect_device(device, &mut entities, &mut source_keys, &mut identity_keys)?;
     }
-    Ok(InventorySnapshotV1 {
+    let snapshot = InventorySnapshotV1 {
         schema_version: 1,
         snapshot_id: snapshot_id.into(),
         collector_version: "linux-collector-v1".into(),
@@ -171,7 +178,11 @@ pub fn collect_linux_snapshot(
             runtime: json!({"collection":"complete"}),
         },
         entities,
-    })
+    };
+    snapshot
+        .validate()
+        .map_err(CollectorError::InvalidSnapshot)?;
+    Ok(snapshot)
 }
 fn collect_device(
     v: &Value,
@@ -225,7 +236,7 @@ fn collect_device(
     if !source_keys.insert(key.clone()) {
         return Err(CollectorError::IdentityCollision);
     }
-    out.push(ObservedEntityV1 { entity_key: key, entity_type: "physical_disk".into(), identities, attributes: json!({"name":name,"model":model,"size_bytes":v.get("size"),"transport":bounded_value(v, "tran")?,"removable":v.get("rm"),"read_only":v.get("ro"),"path":path,"mountpoints":bounded_value(v, "mountpoints")?}), runtime: json!({"rotation":v.get("rota")}), health: json!({}) });
+    out.push(ObservedEntityV1 { entity_key: key, entity_type: "physical_disk".into(), identities, attributes: json!({"name":name,"model":model,"serial":serial,"wwn":wwn,"size_bytes":v.get("size"),"protocol":bounded_value(v, "tran")?,"rotation":v.get("rota"),"removable":v.get("rm"),"read_only":v.get("ro"),"path":path,"mountpoints":bounded_value(v, "mountpoints")?}), runtime: json!({}), health: json!({}) });
     Ok(())
 }
 fn bounded(v: &Value, field: &'static str) -> Result<Option<String>, CollectorError> {
@@ -278,12 +289,36 @@ fn check_depth(v: &Value, depth: usize) -> Result<(), CollectorError> {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    const FIXTURE: &str = r#"{"blockdevices":[{"name":"sda","type":"disk","size":100,"model":"Fixture Disk","serial":"SERIAL-001","wwn":"wwn-001","rota":true,"tran":"sata","rm":false,"ro":false,"path":"/dev/sda","mountpoints":[null]},{"name":"sda1","type":"part"},{"name":"loop0","type":"loop"},{"name":"zram0","type":"ram"}]}"#;
+    const FIXTURE: &str = r#"{"blockdevices":[{"name":"sda","type":"disk","size":100,"model":"Fixture Disk","serial":"SERIAL-001","wwn":"0011223344556677","rota":true,"tran":"sata","rm":false,"ro":false,"path":"/dev/sda","mountpoints":[null]},{"name":"sda1","type":"part"},{"name":"loop0","type":"loop"},{"name":"zram0","type":"ram"}]}"#;
     #[test]
     fn linux_fixture_produces_snapshot_and_filters_ephemeral_devices() {
         let s = collect_linux_fixture(FIXTURE).unwrap();
         assert_eq!((s.schema_version, s.entities.len()), (1, 1));
         assert_eq!(s.entities[0].identities[0].kind, "serial");
+        assert!(s.validate().is_ok());
+        assert_eq!(s.snapshot_id, "00000000-0000-0000-0000-000000000001");
+        assert_eq!(s.collected_at, 1_700_000_000);
+        assert_eq!(s.entities[0].attributes["protocol"], "sata");
+        assert_eq!(s.entities[0].attributes["rotation"], true);
+        assert_eq!(s.entities[0].attributes["serial"], "SERIAL-001");
+        assert_eq!(s.entities[0].attributes["wwn"], "0011223344556677");
+    }
+
+    #[test]
+    fn production_snapshot_rejects_invalid_contract_metadata() {
+        assert!(matches!(
+            collect_linux_snapshot(FIXTURE, "not-a-uuid", 1_700_000_000, "host"),
+            Err(CollectorError::InvalidSnapshot(_))
+        ));
+        assert!(matches!(
+            collect_linux_snapshot(
+                FIXTURE,
+                "00000000-0000-0000-0000-000000000001",
+                0,
+                "host"
+            ),
+            Err(CollectorError::InvalidSnapshot(_))
+        ));
     }
     #[test]
     fn malformed_oversized_and_missing_input_fail_closed() {

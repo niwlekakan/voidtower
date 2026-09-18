@@ -133,7 +133,7 @@ async fn run_inventory(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "linux-host".into());
     let pending_store = match state_path.as_deref() {
-        Some(path) => match PendingSnapshotStore::for_state_path(path) {
+        Some(path) => match PendingSnapshotStore::for_state_path(path, state.node_id) {
             Ok(store) => match store.load() {
                 Ok(snapshot) => Some((store, snapshot)),
                 Err(error) => {

@@ -21,16 +21,20 @@ Snapshots are replay-safe. Reposting the same `snapshot_id` with identical
 content returns the completed result with `replayed: true` and does not create
 a second snapshot. Reusing an ID for different content returns a bounded
 conflict response; an identical upload whose first ingestion is still in
-progress also returns a bounded processing conflict. Invalid schema, oversized
+progress also returns a bounded processing conflict. The route validates the
+schema version, UUID snapshot ID, bounded text fields, positive collection time,
+host/entity keys, identity fields, entity count, and duplicate keys before
+resolving the canonical host. Invalid schema, control characters, oversized
 bodies (over 4 MiB), and unknown schema versions are rejected without CMDB
 mutation.
 
 A successful upload response is the complete `InventorySnapshotResultV1`
 object; clients require all six fields and treat malformed JSON or missing
 fields as a failed upload eligible for bounded retry. The response
-`snapshot_id` must also exactly match the uploaded request; an acknowledgement
-for another snapshot is rejected so a pending snapshot remains eligible for
-retry:
+`snapshot_id` must match the uploaded request after trimming the contract's
+allowed surrounding whitespace; an acknowledgement for another snapshot is
+rejected so a pending snapshot remains eligible for retry. The controller
+returns the canonical trimmed ID:
 
 ```json
 {

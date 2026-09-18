@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
+
+const MAX_JSON_DEPTH: usize = 8;
+const MAX_JSON_VALUES: usize = 256;
+const MAX_JSON_COLLECTION_LEN: usize = 128;
+const MAX_JSON_STRING_LEN: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -239,6 +245,126 @@ pub struct InventorySnapshotV1 {
     pub entities: Vec<ObservedEntityV1>,
 }
 
+impl InventorySnapshotV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != 1 {
+            return Err("only inventory schema version 1 is supported".into());
+        }
+        uuid::Uuid::parse_str(self.snapshot_id.trim())
+            .map_err(|_| "snapshot_id must be a UUID".to_owned())?;
+        validate_text(&self.collector_version, "collector_version", 64)?;
+        validate_text(&self.platform, "platform", 32)?;
+        if self.collected_at <= 0 {
+            return Err("collected_at must be a positive Unix timestamp".into());
+        }
+        let host_key = validate_text(&self.host.entity_key, "host.entity_key", 256)?;
+        validate_identities(&self.host.identities, "host.identities")?;
+        validate_json_object(&self.host.attributes, "host.attributes")?;
+        validate_json_object(&self.host.runtime, "host.runtime")?;
+        if self.entities.len() > 512 {
+            return Err("entity count exceeds 512".into());
+        }
+        let mut keys = HashSet::new();
+        keys.insert(host_key);
+        for entity in &self.entities {
+            let key = validate_text(&entity.entity_key, "entity_key", 256)?;
+            validate_text(&entity.entity_type, "entity_type", 64)?;
+            if !keys.insert(key) {
+                return Err("entity keys must be non-empty and unique within a snapshot".into());
+            }
+            validate_identities(&entity.identities, "entity.identities")?;
+            validate_json_object(&entity.attributes, "entity.attributes")?;
+            validate_json_object(&entity.runtime, "entity.runtime")?;
+            validate_json_object(&entity.health, "entity.health")?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_text(value: &str, field: &str, maximum: usize) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{field} is required"));
+    }
+    if value.len() > maximum {
+        return Err(format!("{field} exceeds {maximum} bytes"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{field} contains control characters"));
+    }
+    Ok(value.to_owned())
+}
+
+fn validate_identities(
+    identities: &[IdentityEvidenceV1],
+    field: &str,
+) -> Result<(), String> {
+    if identities.len() > 128 {
+        return Err(format!("{field} exceeds 128 values"));
+    }
+    for identity in identities {
+        validate_text(&identity.kind, "identity kind", 64)?;
+        validate_text(&identity.value, "identity value", 256)?;
+    }
+    Ok(())
+}
+
+fn validate_json_object(value: &Value, field: &str) -> Result<(), String> {
+    let mut value_count = 0;
+    validate_json_value(value, field, 1, &mut value_count)?;
+    if matches!(value, Value::Null | Value::Object(_)) {
+        Ok(())
+    } else {
+        Err(format!("{field} must be a JSON object"))
+    }
+}
+
+fn validate_json_value(
+    value: &Value,
+    field: &str,
+    depth: usize,
+    value_count: &mut usize,
+) -> Result<(), String> {
+    if depth > MAX_JSON_DEPTH {
+        return Err(format!("{field} exceeds maximum depth {MAX_JSON_DEPTH}"));
+    }
+    *value_count += 1;
+    if *value_count > MAX_JSON_VALUES {
+        return Err(format!("{field} exceeds {MAX_JSON_VALUES} values"));
+    }
+    match value {
+        Value::String(value) if value.len() > MAX_JSON_STRING_LEN => {
+            Err(format!("{field} string exceeds {MAX_JSON_STRING_LEN} bytes"))
+        }
+        Value::Array(values) => {
+            if values.len() > MAX_JSON_COLLECTION_LEN {
+                return Err(format!(
+                    "{field} array exceeds {MAX_JSON_COLLECTION_LEN} values"
+                ));
+            }
+            for value in values {
+                validate_json_value(value, field, depth + 1, value_count)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            if values.len() > MAX_JSON_COLLECTION_LEN {
+                return Err(format!(
+                    "{field} object exceeds {MAX_JSON_COLLECTION_LEN} fields"
+                ));
+            }
+            for (key, value) in values {
+                if key.len() > 256 {
+                    return Err(format!("{field} key exceeds 256 bytes"));
+                }
+                validate_json_value(value, field, depth + 1, value_count)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InventorySnapshotResultV1 {
     pub snapshot_id: String,
@@ -286,5 +412,45 @@ mod tests {
         assert!(snapshot.entities.is_empty());
         assert_eq!(snapshot.host.attributes, Value::Null);
         assert_eq!(snapshot.host.runtime, Value::Null);
+    }
+
+    #[test]
+    fn snapshot_validation_rejects_unknown_versions_and_duplicate_entity_keys() {
+        let mut snapshot: InventorySnapshotV1 = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "snapshot_id": "58b99686-7b8e-4d7f-a169-89cc56a6052c",
+            "collector_version": "0.9.0",
+            "platform": "linux",
+            "collected_at": 1,
+            "host": { "entity_key": "host" },
+            "entities": [
+                { "entity_key": "disk-1", "entity_type": "physical_disk" },
+                { "entity_key": "disk-1", "entity_type": "physical_disk" }
+            ]
+        }))
+        .unwrap();
+
+        assert!(snapshot.validate().is_err());
+        snapshot.entities.clear();
+        snapshot.schema_version = 2;
+        assert!(snapshot.validate().is_err());
+    }
+
+    #[test]
+    fn snapshot_validation_rejects_host_entity_collisions_and_non_object_payloads() {
+        let mut snapshot: InventorySnapshotV1 = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "snapshot_id": "58b99686-7b8e-4d7f-a169-89cc56a6052c",
+            "collector_version": "0.9.0",
+            "platform": "linux",
+            "collected_at": 1,
+            "host": { "entity_key": "host", "attributes": [] },
+            "entities": [{ "entity_key": "host", "entity_type": "physical_disk" }]
+        }))
+        .unwrap();
+
+        assert!(snapshot.validate().is_err());
+        snapshot.host.attributes = serde_json::json!({});
+        assert!(snapshot.validate().is_err());
     }
 }

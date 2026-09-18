@@ -56,6 +56,7 @@ pub async fn upload(
     }
     let snapshot: InventorySnapshotV1 = serde_json::from_slice(&body)
         .map_err(|_| AppError::BadRequest("invalid inventory snapshot".into()))?;
+    snapshot.validate().map_err(AppError::BadRequest)?;
     let source_resource_ids: Vec<String> = sqlx::query_scalar("SELECT r.id FROM resources r JOIN cmdb_assets a ON a.resource_id = r.id WHERE r.node_id = ? AND r.kind = ? AND a.class_key = 'sys' AND a.type_key = 'host' ORDER BY r.id")
         .bind(&node_id)
         .bind("cmdb_asset")

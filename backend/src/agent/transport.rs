@@ -280,7 +280,7 @@ impl AgentTransport {
             .await
             .context("inventory upload request failed")?;
         let result: InventorySnapshotResultV1 = read_json_response(response).await?;
-        if result.snapshot_id != snapshot.snapshot_id {
+        if result.snapshot_id.trim() != snapshot.snapshot_id.trim() {
             bail!("agent server acknowledged a different inventory snapshot");
         }
         Ok(result)
@@ -480,7 +480,7 @@ mod tests {
             schedule: crate::agent::state::AgentSchedule::default(),
         };
         let snapshot: InventorySnapshotV1 = serde_json::from_value(serde_json::json!({
-            "schema_version": 1, "snapshot_id": "snapshot-1", "collector_version": "test",
+            "schema_version": 1, "snapshot_id": " snapshot-1 ", "collector_version": "test",
             "platform": "linux", "collected_at": 0,
             "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
             "entities": []

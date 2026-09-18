@@ -105,6 +105,13 @@ fn read_ca_certificate(path: &std::path::Path) -> Result<Vec<u8>> {
     if !metadata.is_file() {
         bail!("CA certificate path must be a regular file");
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            bail!("CA certificate permissions must be 0600");
+        }
+    }
     if metadata.len() == 0 || metadata.len() > 64 * 1024 {
         bail!("CA certificate must be between 1 and 65536 bytes");
     }
@@ -193,6 +200,26 @@ mod tests {
         let error = read_ca_certificate(&linked_parent.join("ca.pem")).unwrap_err();
 
         assert!(error.to_string().contains("symlink"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ca_read_rejects_group_or_world_readable_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "voidtower-agent-ca-permissions-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("ca.pem");
+        std::fs::write(&path, "test certificate").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let error = read_ca_certificate(&path).unwrap_err();
+
+        assert!(error.to_string().contains("0600"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

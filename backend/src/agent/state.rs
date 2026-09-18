@@ -199,10 +199,18 @@ impl AgentState {
 
 pub struct PendingSnapshotStore {
     path: PathBuf,
+    node_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingSnapshotEnvelopeV1 {
+    schema_version: u8,
+    node_id: Uuid,
+    snapshot: InventorySnapshotV1,
 }
 
 impl PendingSnapshotStore {
-    pub fn for_state_path(state_path: &Path) -> Result<Self> {
+    pub fn for_state_path(state_path: &Path, node_id: Uuid) -> Result<Self> {
         #[cfg(windows)]
         bail!("pending inventory persistence is available only on supported Linux agents");
         let parent = state_parent(state_path)?;
@@ -212,6 +220,7 @@ impl PendingSnapshotStore {
             .context("agent state path must have a UTF-8 file name")?;
         Ok(Self {
             path: parent.join(format!(".{name}.pending.json")),
+            node_id,
         })
     }
 
@@ -249,13 +258,27 @@ impl PendingSnapshotStore {
         if bytes.len() as u64 > MAX_PENDING_SNAPSHOT_BYTES {
             bail!("pending inventory snapshot is oversized");
         }
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .context("failed to parse pending inventory snapshot")
+        let envelope: PendingSnapshotEnvelopeV1 = serde_json::from_slice(&bytes)
+            .context("failed to parse pending inventory snapshot")?;
+        if envelope.schema_version != 1 || envelope.node_id != self.node_id {
+            bail!("pending inventory snapshot node binding is invalid");
+        }
+        envelope
+            .snapshot
+            .validate()
+            .map_err(|error| anyhow::anyhow!("pending inventory snapshot is invalid: {error}"))?;
+        Ok(Some(envelope.snapshot))
     }
 
     pub fn save(&self, snapshot: &InventorySnapshotV1) -> Result<()> {
-        let bytes = serde_json::to_vec(snapshot)
+        snapshot
+            .validate()
+            .map_err(|error| anyhow::anyhow!("pending inventory snapshot is invalid: {error}"))?;
+        let bytes = serde_json::to_vec(&PendingSnapshotEnvelopeV1 {
+            schema_version: 1,
+            node_id: self.node_id,
+            snapshot: snapshot.clone(),
+        })
             .context("failed to serialize pending inventory snapshot")?;
         if bytes.len() as u64 > MAX_PENDING_SNAPSHOT_BYTES {
             bail!("pending inventory snapshot is oversized");
@@ -623,7 +646,7 @@ mod tests {
     fn snapshot() -> InventorySnapshotV1 {
         serde_json::from_value(serde_json::json!({
             "schema_version": 1,
-            "snapshot_id": "snapshot-recovery-1",
+            "snapshot_id": "58b99686-7b8e-4d7f-a169-89cc56a6052c",
             "collector_version": "test",
             "platform": "linux",
             "collected_at": 1,
@@ -681,7 +704,8 @@ mod tests {
     #[test]
     fn pending_snapshot_store_round_trips_atomically_and_clears() {
         let path = temp_state_path("pending-round-trip");
-        let store = PendingSnapshotStore::for_state_path(&path).unwrap();
+        let node_id = state().node_id;
+        let store = PendingSnapshotStore::for_state_path(&path, node_id).unwrap();
         let expected = snapshot();
 
         assert!(store.load().unwrap().is_none());
@@ -692,13 +716,27 @@ mod tests {
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    #[test]
+    fn pending_snapshot_store_rejects_a_sidecar_bound_to_another_node() {
+        let path = temp_state_path("pending-node-binding");
+        let owner = state();
+        let owner_store = PendingSnapshotStore::for_state_path(&path, owner.node_id).unwrap();
+        owner_store.save(&snapshot()).unwrap();
+
+        let other_store = PendingSnapshotStore::for_state_path(&path, Uuid::new_v4()).unwrap();
+        let error = other_store.load().unwrap_err();
+
+        assert!(error.to_string().contains("node binding"));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn pending_snapshot_store_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
 
         let path = temp_state_path("pending-permissions");
-        let store = PendingSnapshotStore::for_state_path(&path).unwrap();
+        let store = PendingSnapshotStore::for_state_path(&path, state().node_id).unwrap();
         store.save(&snapshot()).unwrap();
         let pending = path.parent().unwrap().join(".state.json.pending.json");
         assert_eq!(fs::metadata(pending).unwrap().permissions().mode() & 0o777, 0o600);

@@ -286,6 +286,42 @@ async fn inventory_upload_authenticates_before_rejecting_oversized_body() {
 }
 
 #[tokio::test]
+async fn inventory_upload_rejects_semantically_invalid_snapshots() {
+    let (db, app) = setup().await;
+    let (node_id, token, _) = enrolled_agent_host(&db).await;
+    let mut invalid = inventory_snapshot(&uuid::Uuid::new_v4().to_string(), "fixture-host");
+    invalid["schema_version"] = json!(2);
+
+    assert_error(
+        send_node_raw(
+            &app,
+            &format!("/api/nodes/{node_id}/inventory"),
+            &token,
+            invalid.to_string(),
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "bad_request",
+    )
+    .await;
+
+    let mut colliding = inventory_snapshot(&uuid::Uuid::new_v4().to_string(), "fixture-host");
+    colliding["entities"] = json!([{ "entity_key": "host", "entity_type": "physical_disk" }]);
+    assert_error(
+        send_node_raw(
+            &app,
+            &format!("/api/nodes/{node_id}/inventory"),
+            &token,
+            colliding.to_string(),
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "bad_request",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn inventory_upload_is_authenticated_idempotent_and_binds_the_node_host() {
     let (db, app) = setup().await;
     let (node_id, token, host_id) = enrolled_agent_host(&db).await;

@@ -55,3 +55,19 @@ Operational qualification is not established by the router tests. C3-03 still
 owns supervised upload scheduling, bounded backoff, service installation,
 outage/restart recovery, upgrade, and rollback. Runtime Linux collection and
 controller outage tests remain required before release claims.
+
+Enrollment lifecycle safety
+
+An owner or administrator creates a short-lived pairing code, and the agent
+submits it to `POST /api/nodes/enroll`. The controller claims the code
+atomically before creating the node, so concurrent submissions result in one
+successful enrollment and one `401 unauthorized`; a code is never valid for a
+second node. Explicit `provision_wireguard: true` remains a bounded
+`503 feature_unavailable` and does not consume the code while the canonical
+WireGuard action adapter is unavailable.
+
+Successful enrollment audit details are stored as structured JSON containing
+only the bounded display name and device type. This avoids treating commas,
+equals signs, or other user-provided characters as audit record delimiters.
+Internal controller/database failures use bounded generic error envelopes and
+do not return SQL, provider diagnostics, or credential material.

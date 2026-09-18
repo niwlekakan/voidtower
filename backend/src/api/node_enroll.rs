@@ -248,10 +248,13 @@ pub async fn enroll(
         Some(&node_id),
         "success",
         None,
-        Some(&format!(
-            "display_name={},device_type={}",
-            req.display_name, req.device_type
-        )),
+        Some(
+            &serde_json::json!({
+                "display_name": req.display_name,
+                "device_type": req.device_type,
+            })
+            .to_string(),
+        ),
     )
     .await;
 
@@ -717,6 +720,58 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(peer_count, 0);
+
+        let details: String = sqlx::query_scalar(
+            "SELECT details FROM audit_log WHERE action = 'nodes.enroll' ORDER BY timestamp DESC LIMIT 1",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let details: serde_json::Value = serde_json::from_str(&details).unwrap();
+        assert_eq!(details["display_name"], "lan-agent");
+        assert_eq!(details["device_type"], "pi");
+    }
+
+    #[tokio::test]
+    async fn concurrent_enrollment_claims_a_pairing_code_once() {
+        let db = test_support::setup_db().await;
+        pairing_code(&db, "concurrent-code").await;
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/nodes/enroll")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "pairing_code": "concurrent-code",
+                        "display_name": "concurrent-agent",
+                        "device_type": "pi",
+                        "agent_capable": true,
+                        "provision_wireguard": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        let app = crate::api::router(test_support::build(db.clone()));
+        let (first, second) = tokio::join!(app.clone().oneshot(request()), app.oneshot(request()));
+        let statuses = [first.unwrap().status(), second.unwrap().status()];
+        assert!(statuses.contains(&StatusCode::OK));
+        assert!(statuses.contains(&StatusCode::UNAUTHORIZED));
+
+        let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(node_count, 1);
+        let claimed_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM node_pairing_codes WHERE token_hash = ? AND used_at IS NOT NULL",
+        )
+        .bind(sha256_hex("concurrent-code"))
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(claimed_count, 1);
     }
 
     #[tokio::test]

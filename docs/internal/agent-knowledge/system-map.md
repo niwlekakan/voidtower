@@ -265,3 +265,10 @@
 - Focused transport test `agent::transport::tests::inventory_upload_rejects_oversized_snapshot_before_network_request` passed; the full backend unit target previously reached 618 tests before the known transient SQLite lock failure. The golden-path integration test requires `GITHUB_WORKSPACE` to resolve the tracked workflow and fails without that explicit environment in this sandbox.
 - `docs/agent/linux-inventory-collector.md` now describes the shipped fixed-command collection, pending persistence, enrolled-node upload, 256 KiB request bound, and the separate supported-host qualification boundary.
 - C3-03 remains blocked for systemd/service/device runtime, outage/restart, upgrade, rollback, and artifact qualification because `systemctl`, `systemd-analyze`, and `/run/systemd/private` are unavailable in this Docker sandbox.
+
+## C3-03 enrollment lifecycle and error contract hardening — 2026-09-18
+
+- `POST /api/nodes/enroll` claims `node_pairing_codes.used_at` with an atomic `used_at IS NULL` update before node creation. The real-router test `concurrent_enrollment_claims_a_pairing_code_once` proves two concurrent requests produce exactly one node, one `200`, and one `401`.
+- Successful enrollment audit details are now JSON with `display_name` and `device_type` fields rather than delimiter-built text. The enrollment test parses the persisted audit detail and verifies both fields.
+- The public `AppError` response seam has a focused redaction/bounds test proving database and internal errors omit raw SQL/provider text and remain under 256 bytes. Existing response mapping already emits generic `database_error`/`internal_error` messages while detailed causes stay in server logs.
+- This checkpoint is unit/integration-verified at the enrollment/error seams. It does not establish supported-host systemd, service-managed collection, outage/restart runtime, upgrade, rollback, artifact, or release evidence; those remain blocked by the Docker sandbox boundary.

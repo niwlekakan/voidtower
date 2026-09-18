@@ -237,6 +237,13 @@
 
 ## C3-03 agent prequalification hardening — 2026-09-17
 
+
+## C3-03 enrollment lifecycle and error contract hardening — 2026-09-18
+
+- End-user documentation updated: `docs/agent/inventory-upload.md` now documents atomic single-use pairing-code behavior under concurrent enrollment, non-consuming WireGuard-unavailable responses, structured enrollment audit details, and generic redacted internal-error envelopes.
+- Future documentation remains required for named supported-host systemd installation/status, real service-managed collection/upload, outage/restart recovery, upgrade/rollback, redacted evidence retention, and artifact checksums.
+- Reusable focused checks: `cd backend && cargo test api::node_enroll::tests::explicit_false_enrolls_without_wireguard_state --all-features`; `cd backend && cargo test api::node_enroll::tests::concurrent_enrollment_claims_a_pairing_code_once --all-features`; `cd backend && cargo test error::tests::internal_failures_return_bounded_redacted_envelopes --all-features`.
+- Retrospective: the atomic claim was already implemented but lacked concurrent public-seam evidence; persisted audit metadata should be structured rather than delimiter-built; sandbox runtime and toolchain blockers remain unchanged.
 - End-user documentation updated: `docs/agent/linux-inventory-collector.md` now reflects that the fixed `/usr/bin/lsblk` command is invoked by supervision, snapshots are persisted/uploaded through the enrolled node path, and serialized inventory requests are capped at 256 KiB.
 - Future documentation required: the supported-host runbook still needs observed systemd installation/status, owner-only state, real service-managed collection/upload, outage/restart recovery, upgrade, rollback, redacted artifacts, and checksum evidence.
 - Reusable checks: `cd backend && cargo test agent --all-features`; `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `cargo fmt --check`; and `git diff --check`. The full command must set `GITHUB_WORKSPACE` for the workflow-contract fixture in this sandbox.

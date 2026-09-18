@@ -90,3 +90,25 @@ impl IntoResponse for AppError {
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn internal_failures_return_bounded_redacted_envelopes() {
+        for error in [
+            AppError::Database(sqlx::Error::Protocol("secret SQL details".into())),
+            AppError::Internal(anyhow::anyhow!("provider token and SQL details")),
+        ] {
+            let response = error.into_response();
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            assert!(!text.contains("secret SQL details"));
+            assert!(!text.contains("provider token"));
+            assert!(text.contains("internal_error") || text.contains("database_error"));
+            assert!(text.len() < 256);
+        }
+    }
+}

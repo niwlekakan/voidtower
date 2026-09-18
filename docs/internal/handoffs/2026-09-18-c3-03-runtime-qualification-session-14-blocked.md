@@ -2,7 +2,8 @@
 
 Status: blocked at the supported-host runtime boundary; available source and router/database evidence rechecked
 Tracked slice: C3-03 Linux agent supervision and service package qualification
-Current commit: c8ee67eaca172259488e96fb7cc4c2691435a999 (`docs: hand off enrollment persistence hardening`)
+Evidence base commit: c8ee67eaca172259488e96fb7cc4c2691435a999 (`docs: hand off enrollment persistence hardening`)
+Continuity commit: db64bb4c81f40852050e85be11fb807dd02e7a67 (`[verified] document blocked C3-03 runtime qualification`)
 Branch: dev
 
 Implemented in this checkpoint

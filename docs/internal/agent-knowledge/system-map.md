@@ -318,3 +318,9 @@
 - Physical-disk output now maps `lsblk` `TRAN` to `attributes.protocol`, `ROTA` to `attributes.rotation`, and retains bounded serial/WWN values in attributes as well as identity evidence. `runtime` remains reserved for collection-runtime facts, matching `cmdb::observations` classification and registration rules.
 - Public-seam evidence: `cargo test collector::tests --all-features` passed 6 tests, including invalid metadata and field mapping. Real-router evidence: `cargo test api::cmdb::tests::linux_collector_snapshot_reaches_reconciliation_classification --all-features` passed and proved one trusted physical disk registers without review while persisted attributes retain the classification fields.
 - Maturity is `integration-verified` for the collector-to-router/database boundary only. C3-03 supported-host systemd, host `/dev`, outage/restart, upgrade/rollback, and artifact/release qualification remain blocked by the Docker sandbox.
+
+## C3-03 collector/CMDB capacity vocabulary parity — 2026-09-18
+
+- The Linux collector now maps `lsblk` `SIZE` to the CMDB canonical `attributes.capacity_bytes`; it no longer emits the unrelated `size_bytes` alias used by other product domains.
+- The real Axum/router/SQLite test `linux_collector_snapshot_reaches_reconciliation_classification` proves the positive capacity value persists alongside protocol, rotation, serial, and WWN evidence. `inventory_upload_rejects_semantically_invalid_snapshots` proves zero capacity returns bounded `400 bad_request` and creates no inventory snapshot.
+- Focused evidence is `integration-verified` for this collector-to-router/database contract. Supported-host systemd/device runtime, outage/restart, upgrade/rollback, release artifacts, strict Clippy/rustfmt, and complete schema-ownership verification remain blocked as previously recorded.

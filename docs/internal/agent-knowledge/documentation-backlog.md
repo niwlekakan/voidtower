@@ -296,3 +296,10 @@
 - Future documentation remains required for named supported-host systemd installation/status, service-managed collection/upload, outage/process-restart recovery, upgrade/rollback, redacted evidence retention, and artifact checksums.
 - Reusable checks: `cd backend && cargo test collector::tests --all-features`; `cd backend && cargo test api::cmdb::tests::linux_collector_snapshot_reaches_reconciliation_classification --all-features`; then the full backend, release-gate, repository-truth, schema-ownership, and diff checks.
 - Retrospective: a sanitized fixture can pass parser tests while still being rejected by downstream identity normalization if its WWN is not valid evidence; the end-to-end fixture now uses a valid non-zero 16-hex WWN and proves trusted registration through the real router/database boundary.
+
+## C3-03 collector/CMDB capacity vocabulary parity — 2026-09-18
+
+- End-user documentation updated: `docs/agent/linux-inventory-collector.md` and `docs/agent/inventory-upload.md` now define `lsblk SIZE` as `attributes.capacity_bytes` and explicitly exclude the `size_bytes` alias.
+- Future documentation remains required for named supported-host systemd installation/status, service-managed collection/upload, outage/process-restart recovery, upgrade/rollback, redacted evidence retention, and artifact checksums.
+- Reusable focused checks: `cd backend && cargo test collector::tests --all-features`; `cd backend && cargo test api::cmdb::tests::linux_collector_snapshot_reaches_reconciliation_classification --all-features`; `cd backend && cargo test api::cmdb::tests::inventory_upload_rejects_semantically_invalid_snapshots --all-features`.
+- Retrospective: CMDB normalization already treated `capacity_bytes` as the canonical positive integer field, while the collector emitted `size_bytes`; aligning the producer and real-router assertion closes that contract drift without changing unrelated model/storage/media size APIs.

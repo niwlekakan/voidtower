@@ -8,10 +8,15 @@ token is hashed and matched to the path `node_id`; tokens from another node,
 revoked nodes, and missing credentials are rejected before ingestion.
 
 The Linux collector's physical-disk fields are mapped for reconciliation before
-upload: `TRAN` is `attributes.protocol`, `ROTA` is `attributes.rotation`, and
-bounded serial/WWN values remain both attributes and identity evidence. A
-successful collector result has already passed the shared snapshot validation;
-malformed UUID or non-positive collection-time inputs never reach this route.
+upload: `SIZE` is `attributes.capacity_bytes`, `TRAN` is
+`attributes.protocol`, `ROTA` is `attributes.rotation`, and bounded serial/WWN
+values remain both attributes and identity evidence. The collector does not
+emit a `size_bytes` alias. A successful collector result has already passed the
+shared snapshot validation; malformed UUID or non-positive collection-time
+inputs never reach this route. Collector physical-disk capacity also fails
+closed before upload when `SIZE` is missing, null, zero, negative, or not a
+JSON integer; a manually supplied invalid `capacity_bytes` is rejected by
+reconciliation as `400 bad_request` without persistence.
 
 The node must already have one canonical CMDB host resource whose
 `resources.node_id` equals the path node ID. The upload endpoint never accepts

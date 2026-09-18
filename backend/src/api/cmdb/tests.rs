@@ -293,7 +293,7 @@ async fn inventory_upload_authenticates_before_rejecting_oversized_body() {
 #[tokio::test]
 async fn inventory_upload_rejects_semantically_invalid_snapshots() {
     let (db, app) = setup().await;
-    let (node_id, token, _) = enrolled_agent_host(&db).await;
+    let (node_id, token, host_id) = enrolled_agent_host(&db).await;
     let mut invalid = inventory_snapshot(&uuid::Uuid::new_v4().to_string(), "fixture-host");
     invalid["schema_version"] = json!(2);
 
@@ -324,6 +324,36 @@ async fn inventory_upload_rejects_semantically_invalid_snapshots() {
         "bad_request",
     )
     .await;
+
+    let mut invalid_capacity = inventory_snapshot(&uuid::Uuid::new_v4().to_string(), "fixture-host");
+    invalid_capacity["entities"] = json!([{
+        "entity_key": "disk-1",
+        "entity_type": "physical_disk",
+        "identities": [{"kind": "serial", "value": "SERIAL-INVALID-CAPACITY"}],
+        "attributes": {"capacity_bytes": 0, "rotation": false, "protocol": "sata"}
+    }]);
+    assert_error(
+        send_node_raw(
+            &app,
+            &format!("/api/nodes/{node_id}/inventory"),
+            &token,
+            invalid_capacity.to_string(),
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "bad_request",
+    )
+    .await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM cmdb_inventory_snapshots WHERE source_resource_id = ?"
+        )
+        .bind(host_id)
+        .fetch_one(&db)
+        .await
+        .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -401,6 +431,8 @@ async fn linux_collector_snapshot_reaches_reconciliation_classification() {
     assert_eq!(attributes["rotation"], true);
     assert_eq!(attributes["serial"], "SERIAL-001");
     assert_eq!(attributes["wwn"], "0011223344556677");
+    assert_eq!(attributes["capacity_bytes"], 100);
+    assert!(attributes.get("size_bytes").is_none());
     let identities: Value = serde_json::from_str(&identities).unwrap();
     assert!(identities.as_array().unwrap().iter().any(|identity| {
         identity["kind"] == "wwn" && identity["value"] == "0011223344556677"

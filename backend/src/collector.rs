@@ -41,6 +41,8 @@ pub enum CollectorError {
     Timeout,
     #[error("lsblk output is not UTF-8")]
     NonUtf8,
+    #[error("lsblk field {0} must be a positive integer")]
+    InvalidField(&'static str),
     #[error("collected inventory snapshot is invalid: {0}")]
     InvalidSnapshot(String),
 }
@@ -236,8 +238,14 @@ fn collect_device(
     if !source_keys.insert(key.clone()) {
         return Err(CollectorError::IdentityCollision);
     }
-    out.push(ObservedEntityV1 { entity_key: key, entity_type: "physical_disk".into(), identities, attributes: json!({"name":name,"model":model,"serial":serial,"wwn":wwn,"size_bytes":v.get("size"),"protocol":bounded_value(v, "tran")?,"rotation":v.get("rota"),"removable":v.get("rm"),"read_only":v.get("ro"),"path":path,"mountpoints":bounded_value(v, "mountpoints")?}), runtime: json!({}), health: json!({}) });
+    out.push(ObservedEntityV1 { entity_key: key, entity_type: "physical_disk".into(), identities, attributes: json!({"name":name,"model":model,"serial":serial,"wwn":wwn,"capacity_bytes":positive_integer(v, "size")?,"protocol":bounded_value(v, "tran")?,"rotation":v.get("rota"),"removable":v.get("rm"),"read_only":v.get("ro"),"path":path,"mountpoints":bounded_value(v, "mountpoints")?}), runtime: json!({}), health: json!({}) });
     Ok(())
+}
+fn positive_integer(v: &Value, field: &'static str) -> Result<u64, CollectorError> {
+    v.get(field)
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or(CollectorError::InvalidField(field))
 }
 fn bounded(v: &Value, field: &'static str) -> Result<Option<String>, CollectorError> {
     let Some(x) = v.get(field).and_then(Value::as_str) else {
@@ -302,6 +310,8 @@ mod tests {
         assert_eq!(s.entities[0].attributes["rotation"], true);
         assert_eq!(s.entities[0].attributes["serial"], "SERIAL-001");
         assert_eq!(s.entities[0].attributes["wwn"], "0011223344556677");
+        assert_eq!(s.entities[0].attributes["capacity_bytes"], 100);
+        assert!(s.entities[0].attributes.get("size_bytes").is_none());
     }
 
     #[test]
@@ -319,6 +329,23 @@ mod tests {
             ),
             Err(CollectorError::InvalidSnapshot(_))
         ));
+    }
+    #[test]
+    fn physical_disk_capacity_must_be_a_positive_integer() {
+        for invalid_size in [json!(null), json!(0), json!(-1), json!("100")] {
+            let mut input: Value = serde_json::from_str(FIXTURE).unwrap();
+            input["blockdevices"][0]["size"] = invalid_size;
+            assert_eq!(
+                collect_linux_fixture(&input.to_string()),
+                Err(CollectorError::InvalidField("size"))
+            );
+        }
+        let mut missing: Value = serde_json::from_str(FIXTURE).unwrap();
+        missing["blockdevices"][0].as_object_mut().unwrap().remove("size");
+        assert_eq!(
+            collect_linux_fixture(&missing.to_string()),
+            Err(CollectorError::InvalidField("size"))
+        );
     }
     #[test]
     fn malformed_oversized_and_missing_input_fail_closed() {

@@ -321,6 +321,6 @@
 
 ## C3-03 collector/CMDB capacity vocabulary parity — 2026-09-18
 
-- The Linux collector now maps `lsblk` `SIZE` to the CMDB canonical `attributes.capacity_bytes`; it no longer emits the unrelated `size_bytes` alias used by other product domains.
+- The Linux collector now maps `lsblk` `SIZE` to the CMDB canonical `attributes.capacity_bytes`; it rejects missing, null, zero, negative, and string sizes before producing a snapshot, and it no longer emits the unrelated `size_bytes` alias used by other product domains.
 - The real Axum/router/SQLite test `linux_collector_snapshot_reaches_reconciliation_classification` proves the positive capacity value persists alongside protocol, rotation, serial, and WWN evidence. `inventory_upload_rejects_semantically_invalid_snapshots` proves zero capacity returns bounded `400 bad_request` and creates no inventory snapshot.
 - Focused evidence is `integration-verified` for this collector-to-router/database contract. Supported-host systemd/device runtime, outage/restart, upgrade/rollback, release artifacts, strict Clippy/rustfmt, and complete schema-ownership verification remain blocked as previously recorded.

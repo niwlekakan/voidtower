@@ -8,6 +8,7 @@ success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")}"
+VERSION="${VERSION#v}"
 TARGETS="${TARGETS:-x86_64-unknown-linux-musl aarch64-unknown-linux-musl}"
 DIST="$ROOT/dist"
 
@@ -25,6 +26,8 @@ for TARGET in $TARGETS; do
   TMP=$(mktemp -d)
   cp "$ROOT/backend/target/$TARGET/release/voidtower" "$TMP/"
   cp -r "$ROOT/frontend/dist" "$TMP/frontend"
+  mkdir -p "$TMP/packaging/systemd"
+  cp -r "$ROOT/packaging/systemd/." "$TMP/packaging/systemd/"
   tar -czf "$DIST/$ARCHIVE" -C "$TMP" .
   rm -rf "$TMP"
   success "Packaged → dist/$ARCHIVE"

@@ -173,6 +173,12 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Release tags are published without their conventional leading `v`; accept
+# either spelling at the public CLI seam, then use the canonical form below.
+VT_VERSION="${VT_VERSION#v}"
+[[ -n "$VT_VERSION" && "$VT_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || \
+  die "Invalid version: $VT_VERSION"
+
 [[ "$WITH_VOIDWATCH" == true && "$NO_MCP" != true ]] && WITH_MCP=true
 
 _dry_run_check() {
@@ -223,7 +229,11 @@ detect_os() {
       ;;
   esac
 
-  command -v systemctl &>/dev/null && systemctl --version &>/dev/null 2>&1 && HAVE_SYSTEMD=true || true
+  if command -v systemctl &>/dev/null \
+      && systemctl --version &>/dev/null 2>&1 \
+      && systemctl show --property=Version &>/dev/null 2>&1; then
+    HAVE_SYSTEMD=true
+  fi
   command -v docker &>/dev/null && HAVE_DOCKER=true || true
   ( command -v docker-compose &>/dev/null || docker compose version &>/dev/null 2>&1 ) && HAVE_COMPOSE=true || true
 
@@ -235,14 +245,14 @@ detect_arch() {
   case "$(uname -m)" in
     x86_64)  ARCH="x86_64" ;;
     aarch64) ARCH="aarch64" ;;
-    armv7l)  ARCH="armv7" ;;
-    *) die "Unsupported architecture: $(uname -m)" ;;
+    *) die "Unsupported release architecture: $(uname -m); supported releases: x86_64 and aarch64" ;;
   esac
   info "Architecture: $ARCH"
 }
 
 # ─── Dependency install ───────────────────────────────────────────────────────
 install_deps() {
+  [[ "$OFFLINE" == true ]] && { warn "Offline mode: skipping dependency installation"; return 0; }
   local pkgs="curl tar ca-certificates unzip git"
   info "Installing base dependencies…"
   case "$PKG_MGR" in
@@ -351,6 +361,32 @@ install_docker() {
 }
 
 # ─── Binary download ──────────────────────────────────────────────────────────
+validate_tar_archive() {
+  local archive="$1" label="$2" listing verbose member
+  listing=$(mktemp)
+  verbose=$(mktemp)
+  tar -tzf "$archive" > "$listing" || {
+    rm -f "$listing" "$verbose"
+    die "${label} listing failed"
+  }
+  while IFS= read -r member; do
+    case "$member" in
+      /*|..|../*|*/../*|*/..) rm -f "$listing" "$verbose"; die "${label} contains an unsafe path" ;;
+    esac
+  done < "$listing"
+  tar -tvzf "$archive" > "$verbose" || {
+    rm -f "$listing" "$verbose"
+    die "${label} inspection failed"
+  }
+  while IFS= read -r member; do
+    case "${member:0:1}" in
+      -|d) ;;
+      *) rm -f "$listing" "$verbose"; die "${label} contains a non-regular member" ;;
+    esac
+  done < "$verbose"
+  rm -f "$listing" "$verbose"
+}
+
 download_binary() {
   [[ "$OFFLINE" == true ]] && { warn "Offline mode: skipping binary download"; return 1; }
 
@@ -372,10 +408,35 @@ download_binary() {
     die "Download failed. Check https://github.com/${REPO}/releases"
   }
 
-  tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
+  local checksums="$tmp_dir/SHA256SUMS"
+  if ! curl -fsSL "https://github.com/${REPO}/releases/download/v${VT_VERSION}/SHA256SUMS" -o "$checksums"; then
+    rm -rf "$tmp_dir"
+    die "Release checksum manifest is unavailable; refusing to install an unverified release"
+  fi
+  local expected_checksum actual_checksum
+  local checksum_count
+  checksum_count=$(awk -v name="$archive" '$2 == name {count++} END {print count + 0}' "$checksums")
+  [[ "$checksum_count" -eq 1 ]] || die "Release checksum manifest must contain exactly one entry for ${archive}"
+  expected_checksum=$(awk -v name="$archive" '$2 == name {print tolower($1); exit}' "$checksums")
+  [[ "$expected_checksum" =~ ^[0-9a-fA-F]{64}$ ]] || die "Release checksum is missing for ${archive}"
+  actual_checksum=$(sha256sum "$tmp_dir/$archive" | awk '{print $1}')
+  [[ "$actual_checksum" == "$expected_checksum" ]] || die "Release checksum mismatch for ${archive}"
+
+  validate_tar_archive "$tmp_dir/$archive" "Release archive"
+  tar --no-same-owner --no-same-permissions -xzf "$tmp_dir/$archive" -C "$tmp_dir"
+  [[ -f "$tmp_dir/${BINARY_NAME}" && ! -L "$tmp_dir/${BINARY_NAME}" ]] || die "Release binary is missing or unsafe"
   install -m 755 "$tmp_dir/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
+  if [[ -d "$tmp_dir/frontend" ]]; then
+    rm -rf "${VT_INSTALL_DIR}/frontend"
+    cp -r "$tmp_dir/frontend" "${VT_INSTALL_DIR}/frontend"
+  fi
+  if [[ -f "$tmp_dir/packaging/systemd/voidtower-agent.service" ]]; then
+    mkdir -p "${VT_INSTALL_DIR}/packaging/systemd"
+    install -m 644 "$tmp_dir/packaging/systemd/voidtower-agent.service" \
+      "${VT_INSTALL_DIR}/packaging/systemd/voidtower-agent.service"
+  fi
   rm -rf "$tmp_dir"
-  success "Binary installed to ${VT_INSTALL_DIR}/${BINARY_NAME}"
+  success "Release installed to ${VT_INSTALL_DIR}"
 }
 
 # ─── Build from source ────────────────────────────────────────────────────────
@@ -383,6 +444,7 @@ build_from_source() {
   info "No pre-built binary available. Attempting build from source…"
 
   if ! command -v cargo >/dev/null 2>&1; then
+    [[ "$OFFLINE" == true ]] && die "Offline mode: cargo is required for source builds"
     info "Rust not found — installing via rustup (this takes 2–5 min, no output is normal)…"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --default-toolchain stable
@@ -395,6 +457,7 @@ build_from_source() {
   fi
 
   if ! command -v npm >/dev/null 2>&1; then
+    [[ "$OFFLINE" == true ]] && die "Offline mode: npm is required for source builds"
     info "Node.js not found — installing…"
     case "$PKG_MGR" in
       apt)
@@ -419,19 +482,31 @@ build_from_source() {
   # When piped via curl | bash, BASH_SOURCE[0] is empty so SRC resolves to the
   # current directory which has no source tree — clone the repo instead.
   if [[ ! -d "$SRC/frontend" || ! -d "$SRC/backend" ]]; then
+    [[ "$OFFLINE" == true ]] && die "Offline mode: local source tree required"
     info "Downloading VoidTower source…"
     SRC=$(mktemp -d -p /var/tmp 2>/dev/null || mktemp -d)
     local _tarball="$SRC/source.tar.gz"
     curl -fsSL --max-time 120 -o "$_tarball" \
       "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" 2>&1
-    tar -xz --strip-components=1 -C "$SRC" -f "$_tarball"
+    validate_tar_archive "$_tarball" "Source archive"
+    tar --no-same-owner --no-same-permissions -xz --strip-components=1 -C "$SRC" -f "$_tarball"
     rm -f "$_tarball"
     success "Source downloaded"
   fi
 
+  if [[ "$OFFLINE" == true && "$VT_VERSION" != "latest" ]] \
+      && ! git -C "$SRC" describe --tags --exact-match "v${VT_VERSION}" >/dev/null 2>&1; then
+    die "Offline requested version requires local checkout at tag v${VT_VERSION}"
+  fi
+
   info "Building frontend…"
-  (cd "$SRC/frontend" && npm ci && npm run build) \
+  if [[ "$OFFLINE" == true ]]; then
+    (cd "$SRC/frontend" && npm ci --offline && npm run build) \
+      || die "Frontend offline build failed"
+  else
+    (cd "$SRC/frontend" && npm ci && npm run build) \
     || die "Frontend build failed"
+  fi
   success "Frontend built"
 
   info "Building backend (this can take 10–15 min on first build)…"
@@ -447,9 +522,15 @@ build_from_source() {
   local CARGO_BUILD_TARGET="" RUSTFLAGS=""
   if [[ "$_use_musl" == "true" ]]; then
     info "Building musl static binary (x86_64-unknown-linux-musl)…"
-    rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
+    if [[ "$OFFLINE" == true ]]; then
+      rustup target list --installed 2>/dev/null | grep -qx 'x86_64-unknown-linux-musl' \
+        || die "Offline musl build requires installed x86_64-unknown-linux-musl target"
+    else
+      rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
+    fi
     # musl-gcc is required to link any C deps (e.g. libsqlite3 bundled build)
     if ! command -v musl-gcc >/dev/null 2>&1; then
+      [[ "$OFFLINE" == true ]] && die "Offline musl build requires installed musl-gcc"
       case "$PKG_MGR" in
         apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq musl-tools ;;
         apk)    apk add --no-cache musl-dev ;;
@@ -462,11 +543,11 @@ build_from_source() {
   fi
 
   if [[ -n "$CARGO_BUILD_TARGET" ]]; then
-    (cd "$SRC/backend" && TMPDIR=/var/tmp RUSTFLAGS="$RUSTFLAGS" cargo build --release --target "$CARGO_BUILD_TARGET" 2>&1) \
+    (cd "$SRC/backend" && TMPDIR=/var/tmp RUSTFLAGS="$RUSTFLAGS" CARGO_NET_OFFLINE="$OFFLINE" cargo build --release --target "$CARGO_BUILD_TARGET" 2>&1) \
       || die "Backend build failed"
     local bin="$SRC/backend/target/${CARGO_BUILD_TARGET}/release/${BINARY_NAME}"
   else
-    (cd "$SRC/backend" && TMPDIR=/var/tmp cargo build --release 2>&1) \
+    (cd "$SRC/backend" && TMPDIR=/var/tmp CARGO_NET_OFFLINE="$OFFLINE" cargo build --release 2>&1) \
       || die "Backend build failed (exit $?)"
     local bin="$SRC/backend/target/release/${BINARY_NAME}"
   fi
@@ -478,9 +559,16 @@ build_from_source() {
   success "Binary installed"
 
   [[ -d "$SRC/frontend/dist" ]] || die "Frontend dist not found at $SRC/frontend/dist"
+  rm -rf "${VT_INSTALL_DIR}/frontend"
   cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend" \
     || die "Failed to copy frontend dist"
   success "Frontend assets installed"
+
+  if [[ -f "$SRC/packaging/systemd/voidtower-agent.service" ]]; then
+    mkdir -p "${VT_INSTALL_DIR}/packaging/systemd"
+    install -m 644 "$SRC/packaging/systemd/voidtower-agent.service" \
+      "${VT_INSTALL_DIR}/packaging/systemd/voidtower-agent.service"
+  fi
 
   git -C "$SRC" rev-parse HEAD 2>/dev/null > "${VT_INSTALL_DIR}/.commit" || true
   success "Built and installed from source"
@@ -496,6 +584,8 @@ install_catalog() {
   src_catalog=$(dirname "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo ".")")/../app-vault/apps
   if [[ -d "$src_catalog" ]]; then
     cp "$src_catalog/"*.yml "$catalog_dir/" 2>/dev/null || true
+  elif [[ "$OFFLINE" == true ]]; then
+    warn "Offline mode: skipping remote app catalog"
   else
     # Download catalog tarball from GitHub (works for binary installs).
     # Two-step: download to file first, then extract — avoids SIGPIPE from
@@ -504,8 +594,10 @@ install_catalog() {
     local _cat_tarball="$tmp_cat/catalog.tar.gz"
     if curl -fsSL -o "$_cat_tarball" \
         "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" 2>/dev/null; then
-      tar -xz -C "$catalog_dir" --strip-components=3 --wildcards \
-        "*/app-vault/apps/*.yml" -f "$_cat_tarball" 2>/dev/null || true
+      validate_tar_archive "$_cat_tarball" "Catalog archive"
+      tar --no-same-owner --no-same-permissions -xz -C "$catalog_dir" --strip-components=3 --wildcards \
+        "*/app-vault/apps/*.yml" -f "$_cat_tarball" 2>/dev/null \
+        || die "Catalog archive extraction failed"
     fi
     rm -rf "$tmp_cat"
   fi
@@ -518,13 +610,14 @@ install_catalog() {
 # ─── System setup ────────────────────────────────────────────────────────────
 setup_system() {
   info "Creating directories and system user…"
-  mkdir -p "$VT_INSTALL_DIR" "$VT_DATA_DIR" "$VT_CONFIG_DIR"
+  mkdir -p "$VT_INSTALL_DIR" "$VT_DATA_DIR" "$VT_CONFIG_DIR" "${VT_DATA_DIR}/agent"
   if ! id "$VT_USER" &>/dev/null; then
     useradd --system --no-create-home --shell /usr/sbin/nologin \
       --home-dir "$VT_DATA_DIR" "$VT_USER"
   fi
   chown -R "${VT_USER}:${VT_GROUP}" "$VT_DATA_DIR" "$VT_CONFIG_DIR"
   chmod 750 "$VT_DATA_DIR" "$VT_CONFIG_DIR"
+  chmod 700 "${VT_DATA_DIR}/agent"
 
   # Shared Docker network for inter-app routing (nginx-proxy, DNS, AI layer)
   if [[ "$HAVE_DOCKER" == true ]]; then
@@ -672,9 +765,74 @@ Type=oneshot
 ExecStart=/opt/voidtower/configure-voidwatch.sh
 EOF
 
+  install_agent_service
+
   systemctl daemon-reload || die "systemctl daemon-reload failed"
   systemctl enable voidtower.service || die "Failed to enable voidtower.service"
-  success "voidtower.service installed and enabled"
+  systemctl enable voidtower-agent.service || die "Failed to enable voidtower-agent.service"
+  success "voidtower.service and voidtower-agent.service installed and enabled"
+}
+
+# The agent is enabled during installation but starts only after enrollment has
+# created a valid state file. This keeps a fresh controller install healthy
+# while preserving the same unit for managed Linux nodes.
+install_agent_service() {
+  mkdir -p "${VT_DATA_DIR}/agent"
+  chown "${VT_USER}:${VT_GROUP}" "${VT_DATA_DIR}/agent"
+  chmod 700 "${VT_DATA_DIR}/agent"
+
+  info "Installing voidtower-agent.service…"
+  cat > "${SYSTEMD_DIR}/voidtower-agent.service" <<EOF
+[Unit]
+Description=VoidTower managed Linux agent
+Documentation=https://github.com/elwla/voidtower/blob/dev/docs/agent/linux-agent-service.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=${VT_DATA_DIR}/agent/state.json
+
+[Service]
+Type=simple
+User=${VT_USER}
+Group=${VT_GROUP}
+ExecStart=${VT_INSTALL_DIR}/${BINARY_NAME} --agent --agent-state=${VT_DATA_DIR}/agent/state.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=voidtower-agent
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=${VT_DATA_DIR}/agent
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+agent_service_stop() {
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && systemctl stop voidtower-agent.service 2>/dev/null || true
+}
+
+agent_service_start_if_enrolled() {
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] || return 0
+  [[ -f "${VT_DATA_DIR}/agent/state.json" ]] || return 0
+  info "Starting VoidTower agent…"
+  systemctl restart voidtower-agent.service
+  systemctl is-active --quiet voidtower-agent.service && success "VoidTower agent running" || \
+    warn "VoidTower agent did not start cleanly — check: journalctl -u voidtower-agent -e"
 }
 
 # ─── GPU / hardware detection ────────────────────────────────────────────────
@@ -793,6 +951,7 @@ download_llama_cpp() {
 }
 
 download_model() {
+  [[ "$OFFLINE" == true ]] && { warn "Offline mode: skipping model download"; return 1; }
   local MODELS_DIR="${VT_DATA_DIR}/models"
   mkdir -p "$MODELS_DIR"
   info "Downloading ${MODEL_NAME} (${MODEL_SIZE})…"
@@ -874,6 +1033,7 @@ pull_ollama_model() {
   local model="$1"
   [[ -z "$model" ]] && return 0
   [[ "$SKIP_MODEL_PULL" == true ]] && { info "Model pull skipped (--skip-model-pull)"; return 0; }
+  [[ "$OFFLINE" == true ]] && { warn "Offline mode: skipping Ollama model pull"; return 1; }
 
   info "Pulling Ollama model: ${model}…"
   if ollama pull "$model"; then
@@ -922,8 +1082,12 @@ install_odysseus() {
     local current_branch
     current_branch=$(git -C "$ODYSSEUS_INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     if [[ "$current_branch" == "$ODYSSEUS_BRANCH" ]]; then
-      info "Odysseus (${ODYSSEUS_BRANCH}) already installed — pulling latest"
-      git -C "$ODYSSEUS_INSTALL_DIR" pull --quiet 2>/dev/null || true
+      if [[ "$OFFLINE" == true ]]; then
+        info "Offline mode: reusing local Odysseus checkout"
+      else
+        info "Odysseus (${ODYSSEUS_BRANCH}) already installed — pulling latest"
+        git -C "$ODYSSEUS_INSTALL_DIR" pull --quiet 2>/dev/null || true
+      fi
       needs_clone=false
     else
       warn "Odysseus at ${ODYSSEUS_INSTALL_DIR} is on branch '${current_branch}', need '${ODYSSEUS_BRANCH}' — replacing"
@@ -950,26 +1114,31 @@ install_odysseus() {
   mkdir -p "$ODYSSEUS_DATA_DIR" "$ODYSSEUS_CONFIG_DIR"
   chown -R "${ODYSSEUS_USER}:${ODYSSEUS_USER}" "$ODYSSEUS_INSTALL_DIR" "$ODYSSEUS_DATA_DIR" "$ODYSSEUS_CONFIG_DIR"
 
-  # Ensure pip is available (deferred from install_deps to avoid pulling gcc on Ubuntu)
-  if ! python3 -m pip --version >/dev/null 2>&1; then
-    info "Installing python3-pip…"
-    case "$PKG_MGR" in
-      apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip ;;
-      dnf|yum) $PKG_MGR install -y -q python3-pip ;;
-      pacman) pacman -S --noconfirm --needed python-pip ;;
-      apk)    apk add --no-cache py3-pip ;;
-      zypper) zypper --non-interactive install -q python3-pip ;;
-    esac
-  fi
+  if [[ "$OFFLINE" == true ]]; then
+    [[ -x "${ODYSSEUS_INSTALL_DIR}/venv/bin/python" ]] \
+      || die "Offline mode: Odysseus virtual environment is required"
+  else
+    # Ensure pip is available (deferred from install_deps to avoid pulling gcc on Ubuntu)
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+      info "Installing python3-pip…"
+      case "$PKG_MGR" in
+        apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip ;;
+        dnf|yum) $PKG_MGR install -y -q python3-pip ;;
+        pacman) pacman -S --noconfirm --needed python-pip ;;
+        apk)    apk add --no-cache py3-pip ;;
+        zypper) zypper --non-interactive install -q python3-pip ;;
+      esac
+    fi
 
-  # Python venv
-  info "Setting up Python virtual environment…"
-  TMPDIR=/var/tmp python3 -m venv "${ODYSSEUS_INSTALL_DIR}/venv" \
-    || die "Failed to create Python venv at ${ODYSSEUS_INSTALL_DIR}/venv"
-  TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip \
-    || die "Failed to upgrade pip in Odysseus venv"
-  TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt" \
-    || die "Failed to install Odysseus Python dependencies"
+    # Python venv
+    info "Setting up Python virtual environment…"
+    TMPDIR=/var/tmp python3 -m venv "${ODYSSEUS_INSTALL_DIR}/venv" \
+      || die "Failed to create Python venv at ${ODYSSEUS_INSTALL_DIR}/venv"
+    TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip \
+      || die "Failed to upgrade pip in Odysseus venv"
+    TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt" \
+      || die "Failed to install Odysseus Python dependencies"
+  fi
 
   # Create .env if missing — track whether we wrote it fresh this run
   local env_file="${ODYSSEUS_INSTALL_DIR}/.env"
@@ -1072,9 +1241,11 @@ EOF
     success "odysseus.service installed and enabled"
 
     # Pre-cache the Playwright MCP package so Odysseus doesn't warn on first start
-    if command -v npx &>/dev/null; then
+    if command -v npx &>/dev/null && [[ "$OFFLINE" != true ]]; then
       info "Pre-caching Playwright MCP (optional, suppresses startup warning)…"
       npx -y @playwright/mcp@latest --version &>/dev/null || true
+    elif [[ "$OFFLINE" == true ]]; then
+      info "Offline mode: skipping Playwright MCP pre-cache"
     fi
   else
     warn "systemd not available — start Odysseus manually:"
@@ -1355,6 +1526,7 @@ _write_domain_cfg() {
 
 _install_avahi() {
   command -v avahi-daemon &>/dev/null && return
+  [[ "$OFFLINE" == true ]] && { warn "Offline mode: avahi is not installed; skipping mDNS"; return 1; }
   local pkg
   case "$PKG_MGR" in
     apt)    pkg="avahi-daemon libnss-mdns" ;;
@@ -1651,7 +1823,7 @@ cmd_uninstall() {
   step "Uninstall VoidTower"
 
   if [[ "$HAVE_SYSTEMD" == true ]]; then
-    for unit in voidtower odysseus voidtower-llama; do
+    for unit in voidtower voidtower-agent odysseus voidtower-llama; do
       systemctl stop    "${unit}.service" 2>/dev/null || true
       systemctl disable "${unit}.service" 2>/dev/null || true
     done
@@ -1664,6 +1836,7 @@ cmd_uninstall() {
 
   # Service unit files
   rm -f "${SYSTEMD_DIR}/voidtower.service" \
+        "${SYSTEMD_DIR}/voidtower-agent.service" \
         "${SYSTEMD_DIR}/odysseus.service" \
         "${SYSTEMD_DIR}/voidtower-llama.service" \
         "${SYSTEMD_DIR}/voidwatch-configure.service" \
@@ -1762,7 +1935,10 @@ cmd_uninstall() {
 # ─── Reset ────────────────────────────────────────────────────────────────────
 cmd_reset() {
   step "Reset VoidTower State"
-  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+  if [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]]; then
+    systemctl stop voidtower-agent.service 2>/dev/null || true
+    systemctl stop voidtower.service 2>/dev/null || true
+  fi
 
   local ans wipe_db=false wipe_envs=false wipe_secrets=false wipe_token=false wipe_apps=false
 
@@ -1789,7 +1965,7 @@ cmd_reset() {
   $wipe_token   && rm -f  "${VT_CONFIG_DIR}/bootstrap-token"          && success "Removed bootstrap token" || true
   $wipe_apps    && rm -rf "${VT_DATA_DIR}/apps"                       && success "Wiped deployed apps"   || true
 
-  if [[ "$HAVE_SYSTEMD" == true ]]; then
+  if [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]]; then
     systemctl start voidtower.service 2>/dev/null \
       && success "VoidTower restarted" \
       || warn "Failed to restart — check: journalctl -u voidtower -e"
@@ -1798,6 +1974,9 @@ cmd_reset() {
     until [[ -f "${VT_CONFIG_DIR}/bootstrap-token" || $_t -ge 15 ]]; do
       sleep 1; ((_t++)) || true
     done
+    systemctl start voidtower-agent.service 2>/dev/null \
+      && success "VoidTower agent restarted" \
+      || warn "Failed to restart agent — check: journalctl -u voidtower-agent -e"
   fi
   show_token
 }
@@ -1826,7 +2005,8 @@ install_path_symlink() {
 # ─── Repair ───────────────────────────────────────────────────────────────────
 cmd_repair() {
   step "Repair VoidTower"
-  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+  agent_service_stop
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
 
   if ! download_binary 2>/dev/null; then
     warn "Pre-built binary not found, building from source"
@@ -1843,13 +2023,14 @@ cmd_repair() {
   [[ -f "${VT_CONFIG_DIR}/secrets.key"     ]] && chmod 600 "${VT_CONFIG_DIR}/secrets.key"
   [[ -f "${VT_CONFIG_DIR}/bootstrap-token" ]] && chmod 600 "${VT_CONFIG_DIR}/bootstrap-token"
 
-  [[ "$HAVE_SYSTEMD" == true ]] && {
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && {
     systemctl daemon-reload
     systemctl restart voidtower.service
     sleep 2
     systemctl is-active --quiet voidtower.service \
       && success "VoidTower running" \
       || warn "VoidTower did not start — check: journalctl -u voidtower -e"
+    agent_service_start_if_enrolled
   }
   success "Repair complete."
 }
@@ -1862,8 +2043,8 @@ cmd_update() {
   [[ -x "${VT_INSTALL_DIR}/${BINARY_NAME}" ]] && \
     current_ver=$("${VT_INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
   info "Current: ${current_ver:-unknown}  →  Target: ${VT_VERSION}"
-
-  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+  agent_service_stop
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
 
   if ! download_binary 2>/dev/null; then
     warn "Pre-built binary not found, building from source"
@@ -1871,15 +2052,17 @@ cmd_update() {
   fi
 
   install_catalog
+  install_service
   install_path_symlink
 
-  [[ "$HAVE_SYSTEMD" == true ]] && {
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && {
     systemctl daemon-reload
     systemctl restart voidtower.service
     sleep 2
     systemctl is-active --quiet voidtower.service \
       && success "VoidTower running" \
       || warn "VoidTower did not start — check: journalctl -u voidtower -e"
+    agent_service_start_if_enrolled
   }
 
   local new_ver=""
@@ -2038,6 +2221,11 @@ main() {
     sleep 2
     systemctl is-active --quiet voidtower.service && success "VoidTower running" || \
       warn "VoidTower did not start cleanly — check: journalctl -u voidtower -e"
+
+    if [[ ! -f "${VT_DATA_DIR}/agent/state.json" ]]; then
+      info "Agent service enabled; enroll a node before starting voidtower-agent.service"
+    fi
+    agent_service_start_if_enrolled
 
     if [[ "$WITH_ODYSSEUS" == true ]]; then
       info "Starting Odysseus…"

@@ -20,6 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Validate release package contract
+        run: python3 scripts/test_release_gate.py
+
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -59,15 +62,23 @@ jobs:
           mkdir -p pkg
           cp backend/target/${{ matrix.target }}/release/voidtower pkg/
           cp -r frontend/dist pkg/frontend
+          mkdir -p pkg/packaging/systemd
+          cp -r packaging/systemd/. pkg/packaging/systemd/
           tar -czf "$ARCHIVE" -C pkg .
           sha256sum "$ARCHIVE" >> SHA256SUMS
+
+      - name: Install release-gate tooling
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Run release gate manifest
+        run: python3 scripts/release_gate.py --repo . --manifest scripts/release-gates.json --scope changed --json
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
-          path: |
-            voidtower-*.tar.gz
-            SHA256SUMS
+          path: voidtower-*.tar.gz
 
   release:
     name: Publish GitHub Release
@@ -80,7 +91,12 @@ jobs:
           path: artifacts
 
       - name: Merge checksums
-        run: cat artifacts/SHA256SUMS | sort -u > SHA256SUMS
+        run: |
+          find artifacts -type f -name 'voidtower-*.tar.gz' -print0 \
+            | while IFS= read -r -d '' archive; do
+                sha256sum "$archive" | awk -v name="$(basename "$archive")" '{print $1 "  " name}'
+              done \
+            | sort -k2 > SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:

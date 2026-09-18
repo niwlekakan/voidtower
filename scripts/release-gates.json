@@ -20,6 +20,15 @@
       "timeout_seconds": 30
     },
     {
+      "id": "agent-package-contracts",
+      "description": "Linux agent archive, installer, and systemd contract tests",
+      "subsystems": ["agent", "governance"],
+      "required": true,
+      "cwd": ".",
+      "argv": ["python3", "-m", "unittest", "scripts.test_agent_package", "-v"],
+      "timeout_seconds": 120
+    },
+    {
       "id": "repository-hygiene",
       "description": "Tracked path and migration ownership checks",
       "subsystems": ["governance", "schema"],

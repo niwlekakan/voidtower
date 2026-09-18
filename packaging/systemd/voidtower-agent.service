@@ -3,6 +3,7 @@ Description=VoidTower managed Linux agent
 Documentation=https://github.com/elwla/voidtower/blob/dev/docs/agent/linux-agent-service.md
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=/var/lib/voidtower/agent/state.json
 
 [Service]
 Type=simple

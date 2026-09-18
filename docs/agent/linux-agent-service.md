@@ -3,6 +3,7 @@ Description=VoidTower managed Linux agent
 Documentation=https://github.com/elwla/voidtower/blob/dev/docs/agent/linux-agent-service.md
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=/var/lib/voidtower/agent/state.json
 
 [Service]
 Type=simple
@@ -39,6 +40,18 @@ The unit intentionally does not use `PrivateDevices=true`: physical-disk collect
 Qualification status
 
 The service package is implemented and unit-verified, but it is not runtime- or release-qualified by this checkout. Runtime qualification requires a supported Linux host with systemd and `/run/systemd/private`; the hardened development sandbox does not provide either (`systemctl` is unavailable). Do not infer service support from the unit file or collector tests.
+
+## Release archive and installer behavior
+
+Linux release archives contain the backend binary, built `frontend/` assets, and both systemd units under `packaging/systemd/`. The release workflow and `scripts/build-release.sh` package these files together so the agent unit is not lost when a binary release is installed.
+
+The installer copies release frontend assets and the agent unit into the installation directory, creates `${VT_DATA_DIR}/agent` with mode `0700`, and generates units with the selected install, data, and service-user paths. It enables both `voidtower.service` and `voidtower-agent.service` when systemd is available. The agent unit has a `ConditionPathExists` guard and a controller-only installation does not start the agent until `${VT_DATA_DIR}/agent/state.json` exists; after node enrollment writes that owner-only state file, start it with `systemctl start voidtower-agent.service`. Update, repair, and uninstall stop/refresh/remove the agent unit with the controller lifecycle. The agent unit deliberately omits `PrivateDevices=true` because bounded physical-disk collection requires host `/dev` visibility.
+
+The installer verifies the selected release archive against the release `SHA256SUMS` manifest before extraction, rejects unsafe paths and non-regular archive members, and extracts without preserving archive ownership or permissions. The same archive validation is applied to source-build and catalog tarballs. If the release checksum manifest is unavailable or does not contain the requested archive, installation fails closed rather than silently building an unrelated branch snapshot.
+
+The checked-in `packaging/systemd/voidtower.service` is suitable for the default paths and uses `VOIDTOWER_*` environment settings rather than unsupported command-line data/config flags. The installer still renders the service unit so custom `--install-dir` and `--data-dir` values remain explicit.
+
+Release archives are currently published for `x86_64` and `aarch64` Linux targets. The installer rejects other host architectures rather than attempting to install an unpublished archive. `--offline` performs no package-manager, source, catalog, model, or MCP pre-cache network operation; it requires local `cargo`, `npm`, source/assets, and any requested optional runtime dependencies, and uses Cargo/npm offline modes. A leading `v` is accepted on `--version` and normalized before archive lookup; an explicit offline version additionally requires a local checkout exactly tagged `v<version>`. Release checksum entries are unique per archive and hexadecimal case is normalized before comparison. Reset stops the controller and agent before wiping selected state, then restarts them in controller-first order when systemd is available.
 
 On a supported qualification host, record the exact output of these bounded checks before promoting the evidence:
 

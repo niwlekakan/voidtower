@@ -10,9 +10,11 @@ User=voidtower
 Group=voidtower
 ExecStart=/opt/voidtower/voidtower \
     --bind 127.0.0.1 \
-    --port 8743 \
-    --data-dir /var/lib/voidtower \
-    --config-dir /etc/voidtower
+    --port 8743
+Environment=VOIDTOWER_DATA_DIR=/var/lib/voidtower
+Environment=VOIDTOWER_CONFIG_DIR=/etc/voidtower
+Environment=VOIDTOWER_FRONTEND_DIR=/opt/voidtower/frontend
+Environment=VOIDTOWER_CATALOG_DIR=/usr/share/voidtower/apps
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10

@@ -279,3 +279,10 @@
 - Node deletion audit details now use structured JSON for `display_name`; `node_delete_audit_details_are_structured` verifies exact preservation of commas, equals signs, and quotes.
 - `docs/agent/node-enrollment.md` documents the transaction rollback/retry contract and structured audit representation.
 - Focused `api::node_enroll::tests` passed 14 tests after the final change. Runtime/systemd/device and release qualification remain blocked by the sandbox boundary; unrelated worktree paths remain excluded.
+
+## C3-03 supported-host runtime qualification session 14 — 2026-09-18
+
+- The supported-host prerequisite was directly re-probed on commit `c8ee67eaca172259488e96fb7cc4c2691435a999`: `systemctl` is absent, `/run/systemd/private` is absent, PID 1 is Docker `docker-init -- sleep infinity`, `/dev/block` is absent, and the process runs as UID 1000. Direct `/usr/bin/lsblk` parsed four top-level devices but is not service evidence.
+- Available source/router evidence remains green without product-code changes: transport (14), supervision (4), CMDB inventory/API (13), enrollment (14), full backend (622 unit + 2 workflow-contract integration tests + example), release-gate (11), repository truth, and diff checks passed. The preceding real-router/database tests remain the source of the existing `integration-verified` baseline; this checkpoint adds no integration coverage or maturity promotion.
+- Runtime/service/release qualification remains `blocked` for systemd lifecycle, protected state, service-managed collection/upload, outage/restart, upgrade, rollback, and artifact checksum evidence. `cargo fmt --check` and strict Clippy are blocked by missing toolchain components; schema ownership emits the known missing-`rg` diagnostic; repository hygiene reports pre-existing tracked internal-history paths.
+- No product source or end-user documentation changed. The dated handoff is `docs/internal/handoffs/2026-09-18-c3-03-runtime-qualification-session-14-blocked.md`; the next dependency-ready action remains a named supported Linux host/VM run of `docs/agent/linux-agent-service.md:43-54`.

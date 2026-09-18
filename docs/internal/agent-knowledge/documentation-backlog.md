@@ -254,3 +254,10 @@
 - Future documentation remains required for named supported-host systemd installation/status, service-managed collection/upload, outage/restart recovery, upgrade/rollback, redacted evidence retention, and artifact checksums.
 - Reusable focused check: `cd backend && cargo test api::node_enroll::tests --all-features`.
 - Blockers: no supported systemd/device runtime, `cargo-fmt` unavailable for the active toolchain, and schema ownership cannot be fully trusted while the wrapper's `rg` dependency is absent.
+
+## C3-03 supported-host runtime qualification session 14 — 2026-09-18
+
+- No end-user documentation changed because the required systemd/device runtime remains unavailable. Existing Linux agent, enrollment, and inventory-upload docs remain accurate for the current unit/integration-verified boundary and do not claim runtime qualification.
+- Still required after a named supported-host run: observed systemd installation/status, owner-only state permissions, canonical host adoption, real service-managed `/usr/bin/lsblk` collection/upload, outbound-only evidence, controller outage/restart recovery, upgrade, rollback, redacted evidence retention, and artifact checksum.
+- Reusable checks: `cd backend && cargo test agent::transport --all-features`; `cd backend && cargo test agent::supervision --all-features`; `cd backend && cargo test api::cmdb::tests --all-features`; `cd backend && cargo test api::node_enroll::tests --all-features`; `cd backend && GITHUB_WORKSPACE="$PWD/.." cargo test --all-targets --all-features`; `python3 scripts/test_release_gate.py`; `python3 scripts/repo_truth.py --repo . --json --check`; `git diff --cached --check`.
+- Blockers: no `systemctl` or `/run/systemd/private`, missing `cargo-fmt`/`cargo-clippy`, and missing `rg` for fully trustworthy schema ownership. The dated handoff is `docs/internal/handoffs/2026-09-18-c3-03-runtime-qualification-session-14-blocked.md`.

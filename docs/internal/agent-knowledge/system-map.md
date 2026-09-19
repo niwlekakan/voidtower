@@ -369,3 +369,9 @@
 - `cargo fmt --check` and strict Clippy are unavailable because the active toolchain lacks `cargo-fmt` and `cargo-clippy`; schema ownership remains unverified because the wrapper emits `rg: command not found`; repository hygiene remains blocked by its pre-existing tracked internal-history policy list.
 - A concurrent full-test attempt exhausted the 512 MiB `/tmp` disposable fixture space. Removing only `/tmp/vt-p1-*` and `/tmp/voidtower-*` and rerunning serially produced the green full-test result. No product source or unrelated worktree path was changed.
 - The dated handoff is `docs/internal/handoffs/2026-09-19-c3-03-runtime-qualification-session-23-blocked.md`. The next dependency-ready action remains a named supported Linux host/VM run of `docs/agent/linux-agent-service.md:56-64`, not another source-only C3-03 implementation slice.
+
+## C3-03 state recovery integrity hardening — 2026-09-19
+
+- `AgentState::load` and `PendingSnapshotStore::load` now walk the existing parent chain through stable directory descriptors (`openat` with `O_NOFOLLOW`) and open the protected file relative to that descriptor before parsing. On Unix, every existing parent must be a real directory, contain no symlinks, avoid non-sticky group/other write permissions, and have an immediate parent owner matching the protected file owner; protected targets use nonblocking reads and reject special files without hanging.
+- The save path already enforced the directory policy; focused regression tests now prove both load seams fail closed when their parent becomes group-writable, a parent/target is symlinked, or a FIFO replaces the protected file. Error text names only the bounded security condition and no state contents.
+- Focused evidence after implementation: `cargo test --manifest-path backend/Cargo.toml agent::state::tests:: --all-features` passed 23 tests. This is unit-verified only; the supported systemd/device runtime remains blocked by the sandbox.

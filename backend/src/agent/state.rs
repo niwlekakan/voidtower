@@ -149,20 +149,21 @@ impl AgentState {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        reject_symlink_chain(path, "agent state path")?;
-        let mut options = OpenOptions::new();
-        options.read(true);
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(nix::libc::O_NOFOLLOW);
-        }
-        let file = options
-            .open(path)
-            .with_context(|| format!("failed to open agent state {}", path.display()))?;
-        let metadata = file
-            .metadata()
-            .with_context(|| format!("failed to inspect agent state {}", path.display()))?;
+        let (file, metadata) = open_protected_file(path, "agent state", false)?
+            .context("agent state file is missing")?;
+        #[cfg(not(unix))]
+        let (file, metadata) = {
+            reject_symlink_chain(path, "agent state path")?;
+            let file = OpenOptions::new()
+                .read(true)
+                .open(path)
+                .with_context(|| format!("failed to open agent state {}", path.display()))?;
+            let metadata = file
+                .metadata()
+                .with_context(|| format!("failed to inspect agent state {}", path.display()))?;
+            (file, metadata)
+        };
         if !metadata.is_file() {
             bail!("agent state path must be a regular file");
         }
@@ -225,22 +226,30 @@ impl PendingSnapshotStore {
     }
 
     pub fn load(&self) -> Result<Option<InventorySnapshotV1>> {
-        reject_symlink_chain(&self.path, "pending inventory path")?;
-        #[cfg(windows)]
-        secure_windows_path(&self.path)?;
-        let mut options = OpenOptions::new();
-        options.read(true);
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(nix::libc::O_NOFOLLOW);
-        }
-        let file = match options.open(&self.path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error).context("failed to open pending inventory snapshot"),
+        let Some((file, metadata)) = open_protected_file(
+            &self.path,
+            "pending inventory snapshot",
+            true,
+        )?
+        else {
+            return Ok(None);
         };
-        let metadata = file.metadata().context("failed to inspect pending inventory snapshot")?;
+        #[cfg(not(unix))]
+        let (file, metadata) = {
+            reject_symlink_chain(&self.path, "pending inventory path")?;
+            #[cfg(windows)]
+            secure_windows_path(&self.path)?;
+            let file = match OpenOptions::new().read(true).open(&self.path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error).context("failed to open pending inventory snapshot"),
+            };
+            let metadata = file
+                .metadata()
+                .context("failed to inspect pending inventory snapshot")?;
+            (file, metadata)
+        };
         if !metadata.is_file() || metadata.len() > MAX_PENDING_SNAPSHOT_BYTES {
             bail!("pending inventory snapshot is invalid or oversized");
         }
@@ -541,6 +550,123 @@ fn prepare_parent(parent: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn open_protected_file(
+    path: &Path,
+    label: &str,
+    missing_ok: bool,
+) -> Result<Option<(File, fs::Metadata)>> {
+    use std::{
+        ffi::CString,
+        io,
+        os::fd::{FromRawFd, AsRawFd},
+        os::unix::ffi::OsStrExt,
+        os::unix::fs::{MetadataExt, PermissionsExt},
+        path::Component,
+    };
+
+    reject_symlink_chain(path, label)?;
+    let parent = state_parent(path)?;
+    let absolute_parent = if parent.is_absolute() {
+        parent.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(parent)
+    };
+    let root = CString::new("/").expect("literal contains no NUL");
+    let root_fd = unsafe {
+        nix::libc::open(
+            root.as_ptr(),
+            nix::libc::O_RDONLY | nix::libc::O_DIRECTORY | nix::libc::O_CLOEXEC,
+        )
+    };
+    if root_fd < 0 {
+        return Err(io::Error::last_os_error()).context("failed to open filesystem root");
+    }
+    let mut directory = unsafe { File::from_raw_fd(root_fd) };
+    for component in absolute_parent.components() {
+        let Component::Normal(name) = component else {
+            if matches!(component, Component::RootDir | Component::CurDir) {
+                continue;
+            }
+            bail!("{label} parent path must not contain traversal");
+        };
+        let name = CString::new(name.as_bytes())
+            .with_context(|| format!("{label} parent path contains an invalid name"))?;
+        let fd = unsafe {
+            nix::libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                nix::libc::O_RDONLY
+                    | nix::libc::O_DIRECTORY
+                    | nix::libc::O_CLOEXEC
+                    | nix::libc::O_NOFOLLOW,
+            )
+        };
+        if fd < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(nix::libc::ELOOP) {
+                bail!("{label} parent chain must not contain symlinks");
+            }
+            if missing_ok && error.kind() == io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(error).with_context(|| format!("failed to open {label} parent directory"));
+        }
+        let next = unsafe { File::from_raw_fd(fd) };
+        let metadata = next
+            .metadata()
+            .with_context(|| format!("failed to inspect {label} parent chain"))?;
+        if !metadata.is_dir() {
+            bail!("{label} parent chain must contain only directories");
+        }
+        let mode = metadata.permissions().mode();
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            bail!("{label} parent chain contains an unsafe writable directory");
+        }
+        directory = next;
+    }
+
+    let file_name = path
+        .file_name()
+        .context("protected path must name a file")?;
+    let file_name = CString::new(file_name.as_bytes())
+        .context("protected path contains an invalid file name")?;
+    let fd = unsafe {
+        nix::libc::openat(
+            directory.as_raw_fd(),
+            file_name.as_ptr(),
+            nix::libc::O_RDONLY
+                | nix::libc::O_NONBLOCK
+                | nix::libc::O_CLOEXEC
+                | nix::libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(nix::libc::ELOOP) {
+            bail!("{label} path must not be a symlink");
+        }
+        if missing_ok && error.kind() == io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error).with_context(|| format!("failed to open protected {label}"));
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to inspect protected {label}"))?;
+    if !metadata.is_file() {
+        bail!("{label} path must be a regular file");
+    }
+    if metadata.permissions().mode() & 0o777 != 0o600 {
+        bail!("{label} permissions must be 0600");
+    }
+    if directory.metadata()?.uid() != metadata.uid() {
+        bail!("{label} parent directory owner does not match protected file");
+    }
+    Ok(Some((file, metadata)))
 }
 
 #[cfg(not(windows))]
@@ -864,6 +990,82 @@ mod tests {
             .to_string()
             .contains("symlink"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_rejects_state_with_group_writable_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_state_path("load-writable-parent");
+        state().save(&path).unwrap();
+        let parent = path.parent().unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o770)).unwrap();
+
+        let error = AgentState::load(&path).unwrap_err();
+
+        assert!(error.to_string().contains("writable"));
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_load_rejects_state_with_group_writable_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_state_path("pending-load-writable-parent");
+        let store = PendingSnapshotStore::for_state_path(&path, state().node_id).unwrap();
+        store.save(&snapshot()).unwrap();
+        let parent = path.parent().unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o770)).unwrap();
+
+        let error = store.load().unwrap_err();
+
+        assert!(error.to_string().contains("writable"));
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_rejects_a_special_state_file_without_blocking() {
+        use std::{
+            ffi::CString,
+            os::unix::ffi::OsStrExt,
+        };
+
+        let path = temp_state_path("load-special-file");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { nix::libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+        let error = AgentState::load(&path).unwrap_err();
+
+        assert!(error.to_string().contains("regular file"));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_load_rejects_a_special_sidecar_without_blocking() {
+        use std::{
+            ffi::CString,
+            os::unix::ffi::OsStrExt,
+        };
+
+        let path = temp_state_path("pending-special-file");
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        let store = PendingSnapshotStore::for_state_path(&path, state().node_id).unwrap();
+        let pending = parent.join(".state.json.pending.json");
+        let name = CString::new(pending.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { nix::libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+        let error = store.load().unwrap_err();
+
+        assert!(error.to_string().contains("regular file"));
+        fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]

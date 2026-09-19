@@ -343,3 +343,10 @@
 - Required after a named supported-host run: redacted evidence for systemd installation/status, owner-only state permissions, canonical host adoption, real service-managed `/usr/bin/lsblk` collection/upload, outbound-only behavior, controller outage and process-restart recovery, upgrade, rollback, and artifact checksum.
 - Reusable checks: `cd backend && cargo test agent:: --all-features`; `cd backend && cargo test api::cmdb::tests --all-features`; `cd backend && cargo test cmdb::contracts::tests:: --all-features`; `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_agent_package scripts.test_release_gate -v`; `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `python3 scripts/repo_truth.py --repo . --json --check`; `bash -n scripts/install.sh scripts/build-release.sh`; `python3 -m json.tool scripts/release-gates.json`; and `git diff --check`.
 - Blockers: no `systemctl`/systemd private socket or `/dev/block`; missing active-toolchain `cargo-fmt`/`cargo-clippy`; missing `rg` for fully trustworthy schema ownership; and pre-existing repository-hygiene policy failures. Do not promote runtime or release qualification from this sandbox.
+
+## C3-03 state recovery integrity hardening — 2026-09-19
+
+- End-user/operator documentation updated: `docs/agent/linux-agent-service.md` now states the Unix parent-chain and owner-match checks applied before state or pending-sidecar recovery.
+- Future documentation required: a named supported-host run must still record actual systemd installation/status, owner-only state permissions, service-managed collection/upload, controller outage/process-restart recovery, upgrade, rollback, and artifact checksum.
+- Reusable check: `cargo test --manifest-path backend/Cargo.toml agent::state::tests:: --all-features`.
+- Limitation: this source hardening is unit-verified only; runtime/release qualification remains blocked by unavailable systemd, host `/dev`, and packaged-artifact boundaries.

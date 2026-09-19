@@ -79,6 +79,17 @@ async fn insert_session(db: &SqlitePool, user_id: &str) -> String {
 /// Inserts a scoped API token directly (bypassing the HTTP create-token
 /// endpoint, which is what's under test elsewhere) and returns the raw token.
 async fn insert_token(db: &SqlitePool, user_id: &str, scopes: &[&str]) -> String {
+    insert_token_with_expiry(db, user_id, scopes, None)
+        .await
+        .1
+}
+
+async fn insert_token_with_expiry(
+    db: &SqlitePool,
+    user_id: &str,
+    scopes: &[&str],
+    expires_at: Option<i64>,
+) -> (String, String) {
     let raw = format!("vt_test_{}", uuid::Uuid::new_v4().simple());
     let mut h = Sha256::new();
     h.update(raw.as_bytes());
@@ -88,17 +99,18 @@ async fn insert_token(db: &SqlitePool, user_id: &str, scopes: &[&str]) -> String
     let scopes_json = serde_json::to_string(scopes).unwrap();
     sqlx::query(
         "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at)
-         VALUES (?, ?, 'test-token', ?, ?, NULL, ?)",
+         VALUES (?, ?, 'test-token', ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
     .bind(&hash)
     .bind(&scopes_json)
+    .bind(expires_at)
     .bind(now)
     .execute(db)
     .await
     .unwrap();
-    raw
+    (id, raw)
 }
 
 /// Stores a *validly* encrypted value under the same all-zero key
@@ -602,4 +614,63 @@ async fn model_job_status_routes_are_session_only_for_bearer_clients() {
             .unwrap();
         assert_insufficient_scope(res, &format!("GET {path}")).await;
     }
+}
+
+#[tokio::test]
+async fn revoking_a_cached_token_denies_the_next_real_router_request() {
+    let db = setup_db().await;
+    let admin = insert_user(&db, "admin").await;
+    let admin_session = insert_session(&db, &admin).await;
+    let (token_id, token) =
+        insert_token_with_expiry(&db, &admin, &["diagnostics:read"], None).await;
+    let app = crate::api::router(test_support::build(db));
+
+    let first = app
+        .clone()
+        .oneshot(bearer_req("GET", "/api/system/version", &token, None))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let revoke = app
+        .clone()
+        .oneshot(cookie_req(
+            "DELETE",
+            &format!("/api/integrations/tokens/{token_id}"),
+            &admin_session,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), StatusCode::OK);
+
+    let after_revoke = app
+        .oneshot(bearer_req("GET", "/api/system/version", &token, None))
+        .await
+        .unwrap();
+    assert_eq!(after_revoke.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn an_expired_cached_token_denies_the_next_real_router_request() {
+    let db = setup_db().await;
+    let admin = insert_user(&db, "admin").await;
+    let (_, token) =
+        insert_token_with_expiry(&db, &admin, &["diagnostics:read"], Some(unix_now() + 1)).await;
+    let app = crate::api::router(test_support::build(db));
+
+    let first = app
+        .clone()
+        .oneshot(bearer_req("GET", "/api/system/version", &token, None))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let after_expiry = app
+        .oneshot(bearer_req("GET", "/api/system/version", &token, None))
+        .await
+        .unwrap();
+    assert_eq!(after_expiry.status(), StatusCode::UNAUTHORIZED);
 }

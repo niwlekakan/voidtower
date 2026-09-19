@@ -357,3 +357,9 @@
 - Future documentation required: supported-host evidence must still record systemd installation/status, protected state permissions, service-managed collection/upload, outage/process-restart recovery, upgrade, rollback, and artifact checksum; this source-only hardening does not advance C3-03 runtime/release maturity.
 - Reusable checks: `cargo test --manifest-path backend/Cargo.toml agent::tests --all-features`; `cargo test --manifest-path backend/Cargo.toml lifecycle_tests --all-features`; `cargo test --manifest-path backend/Cargo.toml error::tests --all-features`; `cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `python3 scripts/repo_truth.py --repo . --json --check`; and `git diff --check`.
 - Limitation: the compatibility `--pairing-code VALUE` path remains process-argv visible by design until a future breaking CLI change; operational guidance must use stdin.
+## API-token cache invalidation hardening — 2026-09-19
+
+- End-user documentation changed: `docs/api-tokens.md` now states that revocation removes the database row, invalidates the in-memory compatibility session, and returns `401 Unauthorized` on the next Bearer request; token expiry is checked independently from the temporary session lifetime.
+- Reusable focused check: `cargo test --manifest-path backend/Cargo.toml scope_bypass_tests --all-features`.
+- Future documentation remains required for the supported-host C3-03 systemd/device/release runbook; this authentication hardening does not promote that blocked runtime boundary.
+- Evidence status: integration-verified on the real Axum router and full-backend test target; source truth, diff hygiene, and independent security/logic review passed. `cargo fmt --check` and strict Clippy remain blocked because the active Rust toolchain lacks `cargo-fmt` and `cargo-clippy`.

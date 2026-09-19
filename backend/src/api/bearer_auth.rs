@@ -25,6 +25,9 @@ pub struct AuthenticatedApiToken {
 pub struct CachedTokenSession {
     pub session_id: String,
     pub expires_at: i64,
+    /// The API-token expiry is checked separately from the compatibility session expiry. A
+    /// token must not remain usable for the lifetime of its temporary session.
+    pub token_expires_at: Option<i64>,
     pub token: AuthenticatedApiToken,
 }
 
@@ -59,6 +62,7 @@ fn has_session_cookie(headers: &HeaderMap) -> bool {
 
 async fn resolve_session(state: &AppState, headers: &HeaderMap) -> Option<CachedTokenSession> {
     let raw_token = bearer_token(headers)?;
+    let _cache_guard = state.token_session_lock.lock().await;
 
     // Hash for cache lookup
     let mut h = Sha256::new();
@@ -71,7 +75,11 @@ async fn resolve_session(state: &AppState, headers: &HeaderMap) -> Option<Cached
     {
         let cache = state.token_sessions.read().await;
         if let Some(cached) = cache.get(&token_hash) {
-            if cached.expires_at > now {
+            if cached.expires_at > now
+                && cached
+                    .token_expires_at
+                    .map_or(true, |token_expires_at| token_expires_at > now)
+            {
                 return Some(cached.clone());
             }
         }
@@ -92,6 +100,7 @@ async fn resolve_session(state: &AppState, headers: &HeaderMap) -> Option<Cached
     let cached = CachedTokenSession {
         session_id,
         expires_at,
+        token_expires_at: identity.expires_at,
         token: AuthenticatedApiToken {
             token_id: identity.token_id,
             user_id: identity.user_id,

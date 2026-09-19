@@ -61,6 +61,9 @@ pub struct AppState {
     pub agents_tx: api::agents::AgentBroadcaster,
     pub secrets_key: Arc<[u8; 32]>,
     pub token_sessions: Arc<RwLock<TokenSessionCache>>,
+    /// Serializes token cache resolution with revocation invalidation. The guard spans the
+    /// database validation and cache insertion so a revoke cannot race a cache miss.
+    pub token_session_lock: Arc<tokio::sync::Mutex<()>>,
     pub login_limiter: Arc<std::sync::Mutex<HashMap<std::net::IpAddr, LoginAttempts>>>,
     pub deploy_registry: containers::DeployRegistry,
     pub operation_adapters: Arc<operations::adapters::AdapterRegistry>,
@@ -530,6 +533,7 @@ async fn main() -> Result<()> {
         agents_tx: agents_tx.clone(),
         secrets_key,
         token_sessions: Arc::new(RwLock::new(HashMap::new())),
+        token_session_lock: Arc::new(tokio::sync::Mutex::new(())),
         login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
         deploy_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         operation_adapters,

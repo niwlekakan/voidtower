@@ -28,6 +28,7 @@ pub(crate) fn build(db: SqlitePool) -> AppState {
         agents_tx: broadcast::channel(1).0,
         secrets_key,
         token_sessions: Arc::new(RwLock::new(HashMap::new())),
+        token_session_lock: Arc::new(tokio::sync::Mutex::new(())),
         login_limiter: Arc::new(std::sync::Mutex::new(HashMap::new())),
         deploy_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         operation_adapters,

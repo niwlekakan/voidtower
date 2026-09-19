@@ -150,7 +150,9 @@ Tokens without a secret restriction (the default) can list all secrets if they h
 
 ## Revoking a token
 
-Go to **Settings → Integrations → API Tokens** and click **Revoke** next to the token. The revocation is immediate — the token hash is deleted from the database. All active requests using that token will fail on the next call.
+Go to **Settings → Integrations → API Tokens** and click **Revoke** next to the token. The revocation is immediate: the token hash is deleted from the database and any in-memory compatibility session for that token is invalidated before the response completes. The next request using the revoked Bearer value returns `401 Unauthorized`; active requests that already passed authentication are not interrupted.
+
+Token expiry is checked independently from the temporary compatibility session lifetime. A cached token cannot remain usable after its own `expires_at`; the next request after expiry returns `401 Unauthorized` and does not expose the token value or database details.
 
 ---
 

@@ -398,6 +398,9 @@ pub async fn revoke_token(
     Path(token_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
+    // Hold the same lifecycle guard used by Bearer resolution across deletion and cache removal.
+    // This prevents a concurrent cache hit or miss from surviving the revoke response.
+    let _token_session_guard = state.token_session_lock.lock().await;
 
     let deleted = sqlx::query("DELETE FROM api_tokens WHERE id = ?")
         .bind(&token_id)
@@ -409,6 +412,12 @@ pub async fn revoke_token(
     if deleted == 0 {
         return Err(AppError::NotFound);
     }
+
+    state
+        .token_sessions
+        .write()
+        .await
+        .retain(|_, cached| cached.token.token_id != token_id);
 
     audit::log(
         &state.db,

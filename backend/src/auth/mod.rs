@@ -42,6 +42,7 @@ pub struct Session {
 pub struct ApiTokenIdentity {
     pub token_id: String,
     pub user_id: String,
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -354,7 +355,7 @@ pub async fn validate_api_token_identity(
 
     let now = unix_now();
     if let Some(exp) = row.expires_at {
-        if exp < now {
+        if exp <= now {
             return Err(anyhow::anyhow!("Token expired"));
         }
     }
@@ -368,6 +369,7 @@ pub async fn validate_api_token_identity(
     Ok(ApiTokenIdentity {
         token_id: row.id,
         user_id: row.user_id,
+        expires_at: row.expires_at,
     })
 }
 
@@ -434,7 +436,7 @@ pub async fn validate_api_token(
 
     let now = unix_now();
     if let Some(exp) = row.expires_at {
-        if exp < now {
+        if exp <= now {
             return Err(anyhow::anyhow!("Token expired"));
         }
     }

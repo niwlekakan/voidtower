@@ -350,3 +350,10 @@
 - Future documentation required: a named supported-host run must still record actual systemd installation/status, owner-only state permissions, service-managed collection/upload, controller outage/process-restart recovery, upgrade, rollback, and artifact checksum.
 - Reusable check: `cargo test --manifest-path backend/Cargo.toml agent::state::tests:: --all-features`.
 - Limitation: this source hardening is unit-verified only; runtime/release qualification remains blocked by unavailable systemd, host `/dev`, and packaged-artifact boundaries.
+
+## C3-03 enrollment input and diagnostic hardening — 2026-09-19
+
+- End-user documentation changed: `docs/agent/node-enrollment.md` now documents `--pairing-code-stdin`, its newline-terminated one-line/512-byte contract, first-line-only consumption, and the argv exposure limitation of legacy `--pairing-code`; `docs/agent/linux-agent-service.md` now states that special CA paths fail promptly under nonblocking Unix opens.
+- Future documentation required: supported-host evidence must still record systemd installation/status, protected state permissions, service-managed collection/upload, outage/process-restart recovery, upgrade, rollback, and artifact checksum; this source-only hardening does not advance C3-03 runtime/release maturity.
+- Reusable checks: `cargo test --manifest-path backend/Cargo.toml agent::tests --all-features`; `cargo test --manifest-path backend/Cargo.toml lifecycle_tests --all-features`; `cargo test --manifest-path backend/Cargo.toml error::tests --all-features`; `cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `python3 scripts/repo_truth.py --repo . --json --check`; and `git diff --check`.
+- Limitation: the compatibility `--pairing-code VALUE` path remains process-argv visible by design until a future breaking CLI change; operational guidance must use stdin.

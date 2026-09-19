@@ -66,6 +66,9 @@ Agent response contracts are fail-closed: heartbeat accepts only a successful JS
 
 If a custom CA file is supplied during enrollment, it must be a regular, non-symlinked
 UTF-8 PEM file no larger than 64 KiB with owner-only `0600` permissions. The agent
-rejects group/world-readable CA files before constructing the HTTP client.
+rejects group/world-readable CA files before constructing the HTTP client. The CA path
+is opened with nonblocking semantics on Unix, so FIFOs, sockets, devices, and other
+non-regular paths fail promptly instead of hanging enrollment while waiting for a
+writer.
 
 Until those checks run on a named supported host, the highest valid C3-03 label is `unit-verified`; service installation, controller outage/restart recovery, upgrade, rollback, and release support remain `blocked`.

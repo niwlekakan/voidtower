@@ -26,11 +26,17 @@ mod updates;
 mod vms;
 mod voidwatch;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use monitoring::{MetricsBroadcaster, MetricsCollector, MetricsSnapshot};
 use sqlx::SqlitePool;
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    io::Read,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
@@ -145,8 +151,16 @@ enum AgentCommand {
     Enroll {
         #[arg(long)]
         server_url: String,
-        #[arg(long, allow_hyphen_values = true)]
-        pairing_code: PairingCode,
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            conflicts_with = "pairing_code_stdin",
+            required_unless_present = "pairing_code_stdin"
+        )]
+        pairing_code: Option<PairingCode>,
+        /// Read the one-time pairing code from stdin instead of exposing it in argv.
+        #[arg(long, conflicts_with = "pairing_code")]
+        pairing_code_stdin: bool,
         #[arg(long)]
         display_name: String,
         #[arg(long, default_value = "other")]
@@ -183,6 +197,52 @@ impl PairingCode {
     fn into_inner(self) -> String {
         self.0
     }
+}
+
+const MAX_PAIRING_CODE_BYTES: usize = 512;
+
+fn read_pairing_code_from_reader<R: Read>(reader: &mut R) -> Result<String> {
+    let mut bytes = Vec::with_capacity(MAX_PAIRING_CODE_BYTES + 1);
+    let mut byte = [0_u8; 1];
+    loop {
+        let count = reader
+            .read(&mut byte)
+            .context("failed to read pairing code from stdin")?;
+        if count == 0 {
+            anyhow::bail!("pairing code from stdin must end with a newline");
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        if byte[0] == b'\r' {
+            let mut line_feed = [0_u8; 1];
+            let count = reader
+                .read(&mut line_feed)
+                .context("failed to read pairing code from stdin")?;
+            if count == 0 || line_feed[0] != b'\n' {
+                anyhow::bail!("pairing code from stdin must end with a newline");
+            }
+            break;
+        }
+        bytes.push(byte[0]);
+        if bytes.len() > MAX_PAIRING_CODE_BYTES {
+            anyhow::bail!("pairing code from stdin exceeds {MAX_PAIRING_CODE_BYTES} bytes");
+        }
+    }
+
+    let value = String::from_utf8(bytes).context("pairing code from stdin must be UTF-8")?;
+    if value.contains(['\r', '\n']) {
+        anyhow::bail!("pairing code from stdin must be a single line");
+    }
+    if value.is_empty() || value.len() > MAX_PAIRING_CODE_BYTES {
+        anyhow::bail!("pairing code from stdin exceeds {MAX_PAIRING_CODE_BYTES} bytes");
+    }
+    Ok(value.to_string())
+}
+
+fn read_pairing_code_from_stdin() -> Result<String> {
+    let stdin = std::io::stdin();
+    read_pairing_code_from_reader(&mut stdin.lock())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +352,7 @@ async fn main() -> Result<()> {
                     AgentCommand::Enroll {
                         server_url,
                         pairing_code,
+                        pairing_code_stdin,
                         display_name,
                         device_type,
                         ca_path,
@@ -302,9 +363,14 @@ async fn main() -> Result<()> {
             else {
                 unreachable!("startup path guarantees agent enrollment");
             };
+            let pairing_code = match (pairing_code, pairing_code_stdin) {
+                (Some(pairing_code), false) => pairing_code.into_inner(),
+                (None, true) => read_pairing_code_from_stdin()?,
+                _ => unreachable!("Clap enforces exactly one pairing-code source"),
+            };
             agent::enroll(agent::EnrollmentOptions {
                 server_url,
-                pairing_code: pairing_code.into_inner(),
+                pairing_code,
                 display_name,
                 device_type,
                 ca_path,
@@ -1398,6 +1464,150 @@ mod lifecycle_tests {
         let debug = format!("{cli:?}");
         assert!(!debug.contains(credential));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn agent_enroll_cli_accepts_stdin_pairing_code_without_an_argv_credential() {
+        let cli = Cli::try_parse_from([
+            "voidtower",
+            "agent",
+            "enroll",
+            "--server-url",
+            "https://controller.example.test",
+            "--pairing-code-stdin",
+            "--display-name",
+            "lab-node",
+        ])
+        .unwrap();
+
+        let debug = format!("{cli:?}");
+        assert!(debug.contains("pairing_code_stdin: true"));
+        assert!(!debug.contains("pairing-code"));
+    }
+
+    #[test]
+    fn agent_enroll_cli_requires_exactly_one_pairing_code_source() {
+        let missing = Cli::try_parse_from([
+            "voidtower",
+            "agent",
+            "enroll",
+            "--server-url",
+            "https://controller.example.test",
+            "--display-name",
+            "lab-node",
+        ]);
+        assert!(missing.is_err());
+
+        let conflicting = Cli::try_parse_from([
+            "voidtower",
+            "agent",
+            "enroll",
+            "--server-url",
+            "https://controller.example.test",
+            "--pairing-code",
+            "compatibility-code",
+            "--pairing-code-stdin",
+            "--display-name",
+            "lab-node",
+        ]);
+        assert!(conflicting.is_err());
+    }
+
+    #[test]
+    fn stdin_pairing_code_reader_stops_at_line_ending() {
+        let mut input = std::io::Cursor::new(b"pairing-code-value\r\ntrailing".to_vec());
+
+        let value = read_pairing_code_from_reader(&mut input).unwrap();
+
+        assert_eq!(value, "pairing-code-value");
+    }
+
+    #[test]
+    fn stdin_pairing_code_reader_accepts_the_exact_limit_with_crlf() {
+        let mut input = std::io::Cursor::new(
+            [vec![b'Q'; MAX_PAIRING_CODE_BYTES], b"\r\n".to_vec()].concat(),
+        );
+
+        let value = read_pairing_code_from_reader(&mut input).unwrap();
+
+        assert_eq!(value.len(), MAX_PAIRING_CODE_BYTES);
+    }
+
+    #[test]
+    fn stdin_pairing_code_reader_rejects_empty_and_invalid_utf8_without_echoing() {
+        for input in [vec![b'\n'], vec![0xff, b'\n']] {
+            let mut input = std::io::Cursor::new(input);
+            let error = read_pairing_code_from_reader(&mut input).unwrap_err();
+            assert!(!error.to_string().contains("0xff"));
+        }
+    }
+
+    #[test]
+    fn stdin_pairing_code_reader_does_not_wait_for_eof_after_a_line() {
+        struct OpenAfterLine {
+            bytes: &'static [u8],
+            offset: usize,
+        }
+
+        impl std::io::Read for OpenAfterLine {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                if self.offset == self.bytes.len() {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    return Ok(0);
+                }
+                target[0] = self.bytes[self.offset];
+                self.offset += 1;
+                Ok(1)
+            }
+        }
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut input = OpenAfterLine {
+                bytes: b"pairing-code-value\n",
+                offset: 0,
+            };
+            sender.send(read_pairing_code_from_reader(&mut input)).unwrap();
+        });
+
+        let value = receiver
+            .recv_timeout(std::time::Duration::from_millis(250))
+            .expect("line-bounded stdin reads must not wait for EOF")
+            .unwrap();
+        assert_eq!(value, "pairing-code-value");
+    }
+
+    #[test]
+    fn stdin_pairing_code_reader_rejects_an_oversized_open_line_without_waiting() {
+        struct OpenAfterBytes {
+            bytes: &'static [u8],
+            offset: usize,
+        }
+
+        impl std::io::Read for OpenAfterBytes {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                if self.offset == self.bytes.len() {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    return Ok(0);
+                }
+                target[0] = self.bytes[self.offset];
+                self.offset += 1;
+                Ok(1)
+            }
+        }
+
+        let bytes = Box::leak(vec![b'Q'; MAX_PAIRING_CODE_BYTES + 1].into_boxed_slice());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut input = OpenAfterBytes { bytes, offset: 0 };
+            sender.send(read_pairing_code_from_reader(&mut input)).unwrap();
+        });
+
+        let error = receiver
+            .recv_timeout(std::time::Duration::from_millis(250))
+            .expect("oversized stdin must fail without waiting for EOF")
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds 512 bytes"));
     }
 
     #[test]

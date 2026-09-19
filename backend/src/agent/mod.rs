@@ -94,7 +94,7 @@ fn read_ca_certificate(path: &std::path::Path) -> Result<Vec<u8>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(nix::libc::O_NOFOLLOW);
+        options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
     }
     let file = options
         .open(path)
@@ -220,6 +220,38 @@ mod tests {
         let error = read_ca_certificate(&path).unwrap_err();
 
         assert!(error.to_string().contains("0600"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ca_read_rejects_a_fifo_without_blocking() {
+        use std::{
+            ffi::CString,
+            os::unix::ffi::OsStrExt,
+            sync::mpsc,
+            thread,
+            time::Duration,
+        };
+
+        let root = std::env::temp_dir().join(format!(
+            "voidtower-agent-ca-fifo-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("ca.pem");
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { nix::libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            sender.send(read_ca_certificate(&path).map(|_| ())).unwrap();
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_millis(250))
+            .expect("CA FIFO validation must not block");
+
+        assert!(result.unwrap_err().to_string().contains("regular file"));
+        worker.join().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

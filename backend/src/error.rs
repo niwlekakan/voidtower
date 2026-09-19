@@ -6,7 +6,7 @@ use axum::{
 use serde_json::json;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum AppError {
     #[error("Not found")]
     NotFound,
@@ -28,10 +28,20 @@ pub enum AppError {
     TooManyRequests,
     #[error("TOTP code required")]
     TotpRequired,
-    #[error("Database error: {0}")]
+    #[error("Database error")]
     Database(#[from] sqlx::Error),
-    #[error("Internal error: {0}")]
+    #[error("Internal error")]
     Internal(#[from] anyhow::Error),
+}
+
+impl std::fmt::Debug for AppError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Database(_) => formatter.write_str("AppError::Database(<redacted>)"),
+            Self::Internal(_) => formatter.write_str("AppError::Internal(<redacted>)"),
+            _ => formatter.write_str("AppError(<redacted>)"),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -64,7 +74,8 @@ impl IntoResponse for AppError {
                 "TOTP code required".to_string(),
             ),
             AppError::Database(e) => {
-                tracing::error!("Database error: {e}");
+                let _ = e;
+                tracing::error!(error_code = "database_error", "database operation failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "database_error",
@@ -72,7 +83,8 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::Internal(e) => {
-                tracing::error!("Internal error: {e:#}");
+                let _ = e;
+                tracing::error!(error_code = "internal_error", "internal operation failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal_error",
@@ -102,6 +114,8 @@ mod tests {
             AppError::Database(sqlx::Error::Protocol("secret SQL details".into())),
             AppError::Internal(anyhow::anyhow!("provider token and SQL details")),
         ] {
+            let rendered = error.to_string();
+            let debug = format!("{error:?}");
             let response = error.into_response();
             let body = to_bytes(response.into_body(), 4096).await.unwrap();
             let text = String::from_utf8(body.to_vec()).unwrap();
@@ -109,6 +123,10 @@ mod tests {
             assert!(!text.contains("provider token"));
             assert!(text.contains("internal_error") || text.contains("database_error"));
             assert!(text.len() < 256);
+            assert!(!rendered.contains("secret SQL details"));
+            assert!(!rendered.contains("provider token"));
+            assert!(!debug.contains("secret SQL details"));
+            assert!(!debug.contains("provider token"));
         }
     }
 }

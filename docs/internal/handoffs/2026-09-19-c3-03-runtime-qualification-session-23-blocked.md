@@ -3,7 +3,7 @@
 Status: blocked; no runtime or release maturity promotion
 Tracked slice: C3-03 Linux agent supervision and service package qualification
 Base commit before this continuity record: 0422bf34f60e3abfc4b1c154f9c5cd07bbad4dc2
-Continuity record commit: 9d15106f5a981cdd32f23d0abc6f242414019fc3
+Continuity record commit: 9d1510643e5719b68d830834c8c567aaa651e0b4
 Branch: dev
 
 Active slice and boundary

@@ -60,11 +60,16 @@ returns the canonical trimmed ID:
 
 Reconciliation persists the snapshot and observations transactionally. Strong
 identity evidence is linked deterministically; weak or ambiguous evidence is
-retained for review. Missing observations are marked missing only during a
-successful non-empty snapshot convergence. Administrator-owned CMDB fields
-(name, description, notes, lifecycle, condition, location, and ownership) are
-not overwritten by discovery evidence. Durable audit and event records carry
-correlation evidence; events are signals, not authoritative CMDB state.
+retained for review. A valid host-only snapshot with zero entities is recorded
+successfully but is non-converging: its response always reports `missing: 0`,
+and it cannot mark an existing observation or asset missing. This protects the
+CMDB from treating an empty or host-only collection as authoritative absence.
+Only a successful non-empty snapshot may converge omitted observations to
+`missing`. Administrator-owned CMDB fields (name, description, notes,
+lifecycle, condition, location, and ownership) are not overwritten by
+discovery evidence. Durable audit and event records carry the same correlation
+ID and identify the node actor; events are signals, not authoritative CMDB
+state.
 
 Operational qualification is not established by the router tests. C3-03 still
 owns supervised upload scheduling, bounded backoff, service installation,

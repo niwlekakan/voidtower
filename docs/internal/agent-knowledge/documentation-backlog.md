@@ -363,3 +363,9 @@
 - Reusable focused check: `cargo test --manifest-path backend/Cargo.toml scope_bypass_tests --all-features`.
 - Future documentation remains required for the supported-host C3-03 systemd/device/release runbook; this authentication hardening does not promote that blocked runtime boundary.
 - Evidence status: integration-verified on the real Axum router and full-backend test target; source truth, diff hygiene, and independent security/logic review passed. `cargo fmt --check` and strict Clippy remain blocked because the active Rust toolchain lacks `cargo-fmt` and `cargo-clippy`.
+
+## C3-02 inventory convergence safety — 2026-09-19
+
+- End-user documentation changed: `docs/agent/inventory-upload.md` now distinguishes valid host-only uploads from non-empty convergence, documents `missing: 0` for empty entity sets, and states that inventory audit/events share correlation and node attribution.
+- Future documentation remains required for the named supported-host C3-03 runbook: systemd installation/status, protected state permissions, service-managed collection/upload, outage and process-restart recovery, upgrade, rollback, and artifact checksum. This source/real-router slice does not promote runtime or release maturity.
+- Reusable focused check: `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml api::cmdb::tests --all-features`; final applicable checks must also include full backend, repository truth, and diff hygiene.

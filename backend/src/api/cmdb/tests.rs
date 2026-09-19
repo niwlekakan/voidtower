@@ -422,7 +422,7 @@ async fn linux_collector_snapshot_reaches_reconciliation_classification() {
     let (attributes, identities): (String, String) = sqlx::query_as(
         "SELECT attributes_json, identity_json FROM cmdb_observations WHERE source_resource_id = ? AND entity_type = 'physical_disk'",
     )
-    .bind(host_id)
+    .bind(&host_id)
     .fetch_one(&db)
     .await
     .unwrap();
@@ -437,6 +437,193 @@ async fn linux_collector_snapshot_reaches_reconciliation_classification() {
     assert!(identities.as_array().unwrap().iter().any(|identity| {
         identity["kind"] == "wwn" && identity["value"] == "0011223344556677"
     }));
+
+    let (request_id, audit_actor_type, audit_actor_id, audit_source): (
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT request_id, actor_type, user_id, source FROM audit_log \
+         WHERE action = 'cmdb.inventory.ingest' \
+         ORDER BY timestamp DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(audit_actor_type, "node");
+    assert_eq!(audit_actor_id.as_deref(), Some(node_id.as_str()));
+    assert_eq!(audit_source.as_deref(), Some("inventory_agent"));
+    let (correlation_id, actor_type, actor_id, actor_source, payload): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = sqlx::query_as(
+        "SELECT correlation_id, actor_type, actor_id, actor_source, payload_json \
+         FROM events WHERE event_type = 'cmdb.asset.created.v1' AND resource_id IN \
+           (SELECT resource_id FROM cmdb_observations WHERE source_resource_id = ? AND entity_type = 'physical_disk') \
+         ORDER BY sequence DESC LIMIT 1",
+    )
+    .bind(&host_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(request_id.as_deref(), Some(correlation_id.as_str()));
+    assert_eq!(actor_type, "node");
+    assert_eq!(actor_id.as_deref(), Some(node_id.as_str()));
+    assert_eq!(actor_source.as_deref(), Some("inventory_agent"));
+    assert!(!payload.contains(&token));
+}
+
+#[tokio::test]
+async fn empty_inventory_snapshot_does_not_mark_existing_inventory_missing() {
+    let (db, app) = setup().await;
+    let (node_id, token, host_id) = enrolled_agent_host(&db).await;
+    let first = send_node_raw(
+        &app,
+        &format!("/api/nodes/{node_id}/inventory"),
+        &token,
+        linux_collector_snapshot().to_string(),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(json_body(first).await["registered"], 1);
+
+    let snapshot = inventory_snapshot(&uuid::Uuid::new_v4().to_string(), "fixture-host");
+    let empty = send_node_raw(
+        &app,
+        &format!("/api/nodes/{node_id}/inventory"),
+        &token,
+        snapshot.to_string(),
+    )
+    .await;
+    assert_eq!(empty.status(), StatusCode::OK);
+    let result = json_body(empty).await;
+    assert_eq!(result["missing"], 0);
+    assert_eq!(result["linked"], 0);
+    assert_eq!(result["registered"], 0);
+
+    let (observation_state, discovery_status): (String, String) = sqlx::query_as(
+        "SELECT o.state, a.discovery_status FROM cmdb_observations o \
+         JOIN cmdb_assets a ON a.resource_id = o.resource_id \
+         WHERE o.source_resource_id = ? AND o.entity_type = 'physical_disk'",
+    )
+    .bind(&host_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(observation_state, "online");
+    assert_eq!(discovery_status, "online");
+}
+
+#[tokio::test]
+async fn inventory_reconciliation_preserves_administrator_owned_asset_fields() {
+    let (db, app) = setup().await;
+    let (node_id, token, host_id) = enrolled_agent_host(&db).await;
+    let first = send_node_raw(
+        &app,
+        &format!("/api/nodes/{node_id}/inventory"),
+        &token,
+        linux_collector_snapshot().to_string(),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let disk_id: String = sqlx::query_scalar(
+        "SELECT resource_id FROM cmdb_observations WHERE source_resource_id = ? AND entity_type = 'physical_disk'",
+    )
+    .bind(&host_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE resources SET display_name = ? WHERE id = ?")
+        .bind("Admin disk title")
+        .bind(&disk_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let location_id = "admin-location";
+    sqlx::query(
+        "INSERT INTO cmdb_locations (id, parent_id, name, description, created_at, updated_at) \
+         VALUES (?, NULL, ?, NULL, 0, 0)",
+    )
+    .bind(location_id)
+    .bind("Admin location")
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE cmdb_assets SET friendly_name = ?, description = ?, manufacturer = ?, model = ?, \
+         serial_number = ?, part_number = ?, lifecycle_status = 'deployed', condition_status = 'good', \
+         location_id = ?, metadata_json = ?, notes = ? WHERE resource_id = ?",
+    )
+    .bind("Admin friendly")
+    .bind("Admin description")
+    .bind("Admin maker")
+    .bind("Admin model")
+    .bind("ADMIN-SERIAL")
+    .bind("ADMIN-PART")
+    .bind(location_id)
+    .bind(r#"{"owner":"admin"}"#)
+    .bind("Admin notes")
+    .bind(&disk_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let mut followup = linux_collector_snapshot();
+    followup["snapshot_id"] = json!(uuid::Uuid::new_v4().to_string());
+    let response = send_node_raw(
+        &app,
+        &format!("/api/nodes/{node_id}/inventory"),
+        &token,
+        followup.to_string(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let fields: (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+    ) = sqlx::query_as(
+        "SELECT r.display_name, a.friendly_name, a.description, a.manufacturer, a.model, \
+         a.serial_number, a.part_number, a.lifecycle_status, a.condition_status, a.location_id, \
+         a.metadata_json, a.notes \
+         FROM resources r JOIN cmdb_assets a ON a.resource_id = r.id WHERE r.id = ?",
+    )
+    .bind(&disk_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        fields,
+        (
+            "Admin disk title".into(),
+            Some("Admin friendly".into()),
+            Some("Admin description".into()),
+            Some("Admin maker".into()),
+            Some("Admin model".into()),
+            Some("ADMIN-SERIAL".into()),
+            Some("ADMIN-PART".into()),
+            "deployed".into(),
+            "good".into(),
+            Some(location_id.into()),
+            r#"{"owner":"admin"}"#.into(),
+            "Admin notes".into(),
+        )
+    );
 }
 
 #[tokio::test]

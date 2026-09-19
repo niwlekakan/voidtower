@@ -1041,6 +1041,12 @@ async fn converge_missing(
     context: &MutationContext,
     now: i64,
 ) -> Result<usize> {
+    // An empty entity set is a valid host-only snapshot at this boundary, but
+    // it cannot distinguish an empty inventory from a failed/partial
+    // collection. Never infer missing assets from that evidence.
+    if input.snapshot.entities.is_empty() {
+        return Ok(0);
+    }
     let omitted: Vec<(String, String)> = sqlx::query_as(
         "SELECT id, resource_id FROM cmdb_observations \
          WHERE provider = ? AND source_resource_id = ? AND scope_key = ? \
@@ -2003,7 +2009,23 @@ mod tests {
         .unwrap();
         let result = ingest(
             &pool,
-            input(&host, node_id, snapshot("linux", vec![])),
+            input(
+                &host,
+                node_id,
+                snapshot(
+                    "linux",
+                    vec![disk(
+                        "disk-b",
+                        Some("50:00:c5:00:ab:cd:66:66"),
+                        None,
+                        "Replacement Disk",
+                        true,
+                        "sata",
+                        "3_5",
+                        "/dev/sdb",
+                    )],
+                ),
+            ),
             context(node_id),
         )
         .await
@@ -2012,7 +2034,7 @@ mod tests {
         let disk: (String, String, String) = sqlx::query_as(
             "SELECT a.resource_id, a.discovery_status, o.state FROM cmdb_assets a \
              JOIN cmdb_observations o ON o.resource_id = a.resource_id \
-             WHERE a.class_key = 'hw'",
+             WHERE a.class_key = 'hw' AND o.entity_key = 'disk-a'",
         )
         .fetch_one(&pool)
         .await

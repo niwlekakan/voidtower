@@ -123,6 +123,23 @@ async fn run_inventory(
     cancellation: Cancellation,
     state_path: Option<std::path::PathBuf>,
 ) {
+    run_inventory_with_program(
+        state,
+        transport,
+        cancellation,
+        state_path,
+        std::path::PathBuf::from(collector::LSBLK_PROGRAM),
+    )
+    .await;
+}
+
+async fn run_inventory_with_program(
+    state: AgentState,
+    transport: AgentTransport,
+    cancellation: Cancellation,
+    state_path: Option<std::path::PathBuf>,
+    collector_program: std::path::PathBuf,
+) {
     let interval = Duration::from_secs(state.schedule.inventory_interval_seconds);
     let mut backoff = Backoff::new(
         Duration::from_secs(1),
@@ -167,10 +184,17 @@ async fn run_inventory(
                 .duration_since(UNIX_EPOCH)
                 .map(|value| value.as_secs() as i64)
                 .unwrap_or(0);
-            let collection = tokio::select! {
-                result = collector::collect_linux_command(&snapshot_id, collected_at, &host_key) => result,
-                _ = cancellation.cancelled() => return,
-            };
+            // The collector owns a child process and explicitly kills and
+            // reaps it on timeout. Let that bounded operation finish instead
+            // of dropping it from a cancellation branch; cancellation is
+            // observed before the next iteration and at every retry wait.
+            let collection = collector::collect_linux_program(
+                &collector_program,
+                &snapshot_id,
+                collected_at,
+                &host_key,
+            )
+            .await;
             match collection {
                 Ok(snapshot) => {
                     if let Some((store, _)) = pending_store.as_ref() {
@@ -258,6 +282,99 @@ pub async fn wait_or_cancel(cancellation: &Cancellation, duration: Duration) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 2048];
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0, "controller closed before receiving the request");
+            request.extend_from_slice(&buffer[..read]);
+            let Some(header_end) = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end + 4]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + content_length {
+                return String::from_utf8(request).unwrap();
+            }
+        }
+    }
+
+    async fn inventory_server(
+        response: Option<String>,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Receiver<String>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (snapshot_tx, snapshot_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = request.split("\r\n\r\n").nth(1).unwrap();
+            let snapshot: serde_json::Value = serde_json::from_str(body).unwrap();
+            let snapshot_id = snapshot["snapshot_id"].as_str().unwrap().to_string();
+            snapshot_tx.send(snapshot_id.clone()).unwrap();
+            if let Some(response) = response {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(), response
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{address}"), snapshot_rx, server)
+    }
+
+    fn inventory_test_state() -> AgentState {
+        AgentState {
+            server_url: "https://controller.example.test".into(),
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: crate::agent::state::HeartbeatToken::new(
+                "supervision-inventory-token".into(),
+            )
+            .unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule {
+                inventory_interval_seconds: 60,
+                max_backoff_seconds: 1,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    fn collector_fixture() -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".voidtower-supervision-collector-{}.sh", Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nprintf '%s' '{\"blockdevices\":[{\"name\":\"sda\",\"type\":\"disk\",\"size\":100,\"serial\":\"SERIAL-001\"}]}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
 
     #[test]
     fn exponential_backoff_is_jittered_and_bounded() {
@@ -353,5 +470,87 @@ mod tests {
         )
         .await
         .expect("invalid state should stop without starting network loops");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn pending_inventory_snapshot_is_reused_after_ambiguous_upload() {
+        let root = std::env::temp_dir().join(format!("voidtower-agent-recovery-{}", Uuid::new_v4()));
+        let state_path = root.join("state.json");
+        let state = inventory_test_state();
+        let collector_program = collector_fixture();
+        let (first_url, first_snapshot_rx, first_server) = inventory_server(None).await;
+        let first_transport = AgentTransport::new_loopback_test(&first_url, None).unwrap();
+        let first_cancel = Cancellation::new();
+        let first_run = tokio::spawn(run_inventory_with_program(
+            state.clone(),
+            first_transport,
+            first_cancel.clone(),
+            Some(state_path.clone()),
+            collector_program.clone(),
+        ));
+        let first_snapshot_id = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            first_snapshot_rx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        first_cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(2), first_run)
+            .await
+            .unwrap()
+            .unwrap();
+        first_server.await.unwrap();
+
+        let response = serde_json::json!({
+            "snapshot_id": first_snapshot_id,
+            "replayed": false,
+            "linked": 1,
+            "registered": 0,
+            "review_required": 0,
+            "missing": 0
+        })
+        .to_string();
+        let (second_url, second_snapshot_rx, second_server) = inventory_server(Some(response)).await;
+        let second_transport = AgentTransport::new_loopback_test(&second_url, None).unwrap();
+        let second_cancel = Cancellation::new();
+        let second_run = tokio::spawn(run_inventory_with_program(
+            state.clone(),
+            second_transport,
+            second_cancel.clone(),
+            Some(state_path.clone()),
+            collector_program.clone(),
+        ));
+        let second_snapshot_id = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            second_snapshot_rx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let store = PendingSnapshotStore::for_state_path(&state_path, state.node_id).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if store.load().unwrap().is_none() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        second_cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(2), second_run)
+            .await
+            .unwrap()
+            .unwrap();
+        second_server.await.unwrap();
+
+        let store = PendingSnapshotStore::for_state_path(&state_path, state.node_id).unwrap();
+        assert_eq!(second_snapshot_id, first_snapshot_id);
+        assert!(store.load().unwrap().is_none());
+        std::fs::remove_file(collector_program).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

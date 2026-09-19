@@ -54,20 +54,38 @@ pub async fn collect_linux_command(
     collected_at: i64,
     host_key: &str,
 ) -> Result<InventorySnapshotV1, CollectorError> {
-    collect_linux_program(
+    collect_linux_program_with_timeout(
         Path::new(LSBLK_PROGRAM),
         snapshot_id,
         collected_at,
         host_key,
+        LSBLK_TIMEOUT,
     )
     .await
 }
 
-async fn collect_linux_program(
+pub(crate) async fn collect_linux_program(
     program: &Path,
     snapshot_id: &str,
     collected_at: i64,
     host_key: &str,
+) -> Result<InventorySnapshotV1, CollectorError> {
+    collect_linux_program_with_timeout(
+        program,
+        snapshot_id,
+        collected_at,
+        host_key,
+        LSBLK_TIMEOUT,
+    )
+    .await
+}
+
+async fn collect_linux_program_with_timeout(
+    program: &Path,
+    snapshot_id: &str,
+    collected_at: i64,
+    host_key: &str,
+    timeout: Duration,
 ) -> Result<InventorySnapshotV1, CollectorError> {
     use tokio::process::Command;
     let mut child = Command::new(program)
@@ -96,9 +114,17 @@ async fn collect_linux_program(
             .map_err(|_| CollectorError::CommandFailed)?;
         Ok::<_, CollectorError>((status.success(), out, err))
     };
-    let (success, output, _diagnostic) = tokio::time::timeout(LSBLK_TIMEOUT, read)
-        .await
-        .map_err(|_| CollectorError::Timeout)??;
+    let (success, output, _diagnostic) = match tokio::time::timeout(timeout, read).await {
+        Ok(result) => result?,
+        Err(_) => {
+            // Dropping a timed-out future with `kill_on_drop` requests a kill,
+            // but does not reap the child. Kill and wait explicitly so a retry
+            // cannot start while the previous collector process is lingering.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(CollectorError::Timeout);
+        }
+    };
     if output.len() > MAX_LSBLK_BYTES || _diagnostic.len() > 4096 {
         return Err(CollectorError::Oversized);
     }
@@ -372,6 +398,88 @@ mod tests {
 
         let empty = collect_linux_program(Path::new("true"), "snapshot", 0, "host").await;
         assert_eq!(empty, Err(CollectorError::Empty));
+    }
+
+    #[cfg(unix)]
+    fn executable_fixture(body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".voidtower-collector-{}.sh", uuid::Uuid::new_v4()));
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_runner_bounds_diagnostics_and_rejects_nonzero_exit() {
+        let path = executable_fixture("printf 'diagnostic-fixture' >&2; exit 7");
+        let result = collect_linux_program(&path, "snapshot", 1, "host").await;
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(result, Err(CollectorError::CommandFailed));
+        assert!(!CollectorError::CommandFailed.to_string().contains("diagnostic-fixture"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_runner_rejects_non_utf8_output() {
+        let path = executable_fixture("printf '\\377'");
+        let result = collect_linux_program(&path, "snapshot", 1, "host").await;
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(result, Err(CollectorError::NonUtf8));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_runner_rejects_stderr_overflow_without_parsing_stdout() {
+        let path = executable_fixture("printf '{\\\"blockdevices\\\":[]}' ; printf '%*s' 4097 '' >&2");
+        let result = collect_linux_program(&path, "snapshot", 1, "host").await;
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(result, Err(CollectorError::Oversized));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn command_runner_timeout_kills_the_child_before_returning() {
+        let pid_path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".voidtower-collector-pid-{}", uuid::Uuid::new_v4()));
+        let path = executable_fixture(&format!(
+            "printf '%s' \"$$\" > '{}'; exec /bin/sleep 30",
+            pid_path.display()
+        ));
+        let result = collect_linux_program_with_timeout(
+            &path,
+            "snapshot",
+            1,
+            "host",
+            Duration::from_millis(25),
+        )
+        .await;
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(result, Err(CollectorError::Timeout));
+        let pid = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(&pid_path) {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let pid = pid.trim();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}/stat")).exists(),
+            "timed-out collector must be reaped before returning"
+        );
+        std::fs::remove_file(pid_path).unwrap();
     }
 
     #[tokio::test]

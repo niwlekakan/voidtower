@@ -3,7 +3,9 @@
 Status: implemented, unit-verified, and integration-verified at the backend/frontend source and test boundaries; runtime-verified: blocked; release-qualified: blocked.
 
 Implementation commit: `def4ffdde2bad593605b3147709d8d3afaa1ddd7`
-Branch: `dev` (ahead of `origin/dev` by 3; not pushed)
+Documentation commits: `d98f6ad0a016eefc382f99995b475a092e7aff00`, `c82fb360c35d0ee07321a3236c870d526ec6b393`
+Final handoff tip: `c82fb360c35d0ee07321a3236c870d526ec6b393`
+Branch: `dev` (ahead of `origin/dev` by 5; not pushed)
 
 Active slice and authority resolution
 

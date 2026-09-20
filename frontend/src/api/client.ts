@@ -244,7 +244,7 @@ export const api = {
     remove:   (p: string) => request<{ ok: boolean }>(`/api/apps/${p}`,          { method: 'DELETE' }),
     logs:    (p: string) => request<{ lines: string[] }>(`/api/apps/${p}/logs`),
     status:  (p: string) => request<{ containers: import('./types').ComposeContainer[] }>(`/api/apps/${p}/status`),
-    getCompose:    (p: string) => request<{ compose_path: string; content: string }>(`/api/apps/${p}/compose`),
+    getCompose:    (p: string) => request<{ content: string }>(`/api/apps/${p}/compose`),
     updateCompose: (p: string, content: string) =>
       request<{ ok: boolean }>(`/api/apps/${p}/compose`, { method: 'POST', body: JSON.stringify({ content }) }),
     deployCustom: (body: {
@@ -265,7 +265,7 @@ export const api = {
       }),
     detectExternal: () =>
       request<import('./types').ExternalStack[]>('/api/apps/detect-external'),
-    adoptApp: (body: { project_name: string; app_name: string; compose_path?: string; primary_port?: number }) =>
+    adoptApp: (body: { project_name: string; app_name: string; primary_port?: number }) =>
       request<{ ok: boolean }>('/api/apps/adopt', { method: 'POST', body: JSON.stringify(body) }),
     convertApp: (projectName: string) =>
       request<{ ok: boolean }>(`/api/apps/${projectName}/convert`, { method: 'POST' }),
@@ -360,7 +360,7 @@ export const api = {
 
   members: {
     list: () => request<{ members: import('./types').MemberListEntry[] }>('/api/members'),
-    myAccess: () => request<import('./types').MemberAccessSummary>('/api/members/me/access'),
+    myAccess: () => request<import('./types').MemberSelfAccessSummary>('/api/members/me/access'),
     myNodes: () => request<{ nodes: import('./types').MemberNodeOption[] }>('/api/members/me/nodes'),
     access: (userId: string) => request<import('./types').MemberAccessSummary>(`/api/members/${userId}/access`),
     grantAccess: (userId: string, appId: string) =>

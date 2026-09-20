@@ -7,16 +7,16 @@ use crate::{
 };
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{ConnectInfo, Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::HashMap, io::Read, net::SocketAddr, path::Path as StdPath, sync::OnceLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiIntegration {
@@ -119,16 +119,9 @@ pub struct DeployedApp {
     pub project_name: String,
     pub status: String,
     pub deployed_at: i64,
-    pub compose_path: String,
     pub primary_port: Option<i64>,
     #[serde(default = "default_origin")]
     pub origin: String,
-    /// Self-hosting hub tenancy (all nullable — NULL means "admin-deployed on
-    /// the primary host", i.e. every deploy before this feature existed).
-    #[serde(default)]
-    pub owner_user_id: Option<String>,
-    #[serde(default)]
-    pub storage_root: Option<String>,
     #[serde(default)]
     pub target_node_id: Option<String>,
 }
@@ -154,7 +147,7 @@ fn first_port_from_compose(compose: &Value) -> Option<u16> {
             }
             // Long syntax: { published: 3000, target: 80 }
             if let Some(p) = entry.get("published").and_then(|v| v.as_u64()) {
-                if p > 0 { return Some(p as u16); }
+                if p > 0 && p <= u64::from(u16::MAX) { return Some(p as u16); }
             }
         }
     }
@@ -266,9 +259,22 @@ pub async fn detect_llm_endpoint() -> Option<DetectedLlm> {
 
     for &(port, path, label, v1_url) in LLM_PROBES {
         let url = format!("http://127.0.0.1:{port}{path}");
-        if client.get(&url).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
-            return Some(DetectedLlm { label: label.into(), port, url: v1_url.into() });
+        let Ok(mut response) = client.get(&url).send().await else { continue };
+        if !response.status().is_success() { continue; }
+        let mut body = Vec::new();
+        loop {
+            let Ok(chunk) = response.chunk().await else { body.clear(); break; };
+            let Some(chunk) = chunk else { break; };
+            if body.len().saturating_add(chunk.len()) > 64 * 1024 {
+                body.clear();
+                break;
+            }
+            body.extend_from_slice(&chunk);
         }
+        if body.is_empty() { continue; }
+        let Ok(body) = std::str::from_utf8(&body) else { continue };
+        if serde_json::from_str::<Value>(body).is_err() { continue; }
+        return Some(DetectedLlm { label: label.into(), port, url: v1_url.into() });
     }
     None
 }
@@ -289,22 +295,73 @@ pub async fn detect_llm_endpoint() -> Option<DetectedLlm> {
 ///      the `nvidia` runtime on its Docker daemon when a GPU is assigned to
 ///      apps in System Settings → Advanced.
 pub async fn detect_gpu() -> bool {
-    let local = tokio::process::Command::new("nvidia-smi")
-        .arg("-L")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if local {
-        return true;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+    use std::process::Stdio;
+
+    async fn bounded_probe_output(mut reader: impl tokio::io::AsyncRead + Unpin) -> Option<Vec<u8>> {
+        const MAX_BYTES: usize = 64 * 1024;
+        let mut output = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = reader.read(&mut buffer).await.ok()?;
+            if read == 0 { break; }
+            if output.len() < MAX_BYTES {
+                let retained = (MAX_BYTES - output.len()).min(read);
+                output.extend_from_slice(&buffer[..retained]);
+                if retained < read { return None; }
+            } else {
+                return None;
+            }
+        }
+        Some(output)
     }
 
-    tokio::process::Command::new("docker")
-        .args(["info", "--format", "{{json .Runtimes}}"])
-        .output()
+    async fn run_probe(program: &str, args: &[&str], capture_stdout: bool) -> Option<Vec<u8>> {
+        let mut command = tokio::process::Command::new(program);
+        command.args(args).kill_on_drop(true).stderr(Stdio::null());
+        if capture_stdout { command.stdout(Stdio::piped()); } else { command.stdout(Stdio::null()); }
+        let mut child = command.spawn().ok()?;
+        if !capture_stdout {
+            return tokio::time::timeout(Duration::from_secs(2), child.wait())
+                .await.ok()?.ok().filter(|status| status.success()).map(|_| Vec::new());
+        }
+        let stdout = child.stdout.take()?;
+        let mut output_task = tokio::spawn(bounded_probe_output(stdout));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut wait = Box::pin(child.wait());
+            tokio::select! {
+                output = &mut output_task => {
+                    let output = match output {
+                        Ok(Some(output)) => output,
+                        _ => {
+                            drop(wait);
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            let _ = output_task.await;
+                            return None;
+                        }
+                    };
+                    let status = wait.await.ok()?;
+                    status.success().then_some(output)
+                }
+                status = &mut wait => {
+                    let status = status.ok()?;
+                    let output = output_task.await.ok()??;
+                    status.success().then_some(output)
+                }
+            }
+        }).await.ok().flatten()
+    }
+
+    if run_probe("nvidia-smi", &["-L"], false).await.is_some() {
+        return true;
+    }
+    run_probe("docker", &["info", "--format", "{{json .Runtimes}}"], true)
         .await
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("nvidia"))
-        .unwrap_or(false)
+        .and_then(|output| serde_json::from_slice::<Value>(&output).ok())
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|runtimes| runtimes.contains_key("nvidia"))
 }
 
 /// If any service references vt-proxy in its networks section, inject the
@@ -829,7 +886,8 @@ pub async fn detect_env(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    require_app_read_role(&user)?;
     let llm = detect_llm_endpoint().await;
     let gpu = detect_gpu().await;
     Ok(Json(serde_json::json!({
@@ -843,6 +901,7 @@ pub async fn catalog(
     jar: CookieJar,
 ) -> Result<Json<CatalogResponse>> {
     let user = require_user(&state, &jar).await?;
+    require_app_read_role(&user)?;
     let mut apps = load_catalog(&state.config.catalog_dir);
 
     // Members only ever see catalog apps an admin explicitly granted them —
@@ -868,8 +927,7 @@ pub async fn deployed(
     jar: CookieJar,
 ) -> Result<Json<DeployedResponse>> {
     let user = require_user(&state, &jar).await?;
-
-    let docker_available = containers::is_docker_available();
+    require_app_read_role(&user)?;
 
     // Members only ever see their own deployed apps (owner_user_id = self);
     // every other role keeps seeing everything, exactly as before.
@@ -889,6 +947,7 @@ pub async fn deployed(
         .await
         .map_err(AppError::Database)?
     };
+    let docker_available = containers::is_docker_available();
     let apps = rows.into_iter().map(row_to_app).collect();
 
     Ok(Json(DeployedResponse { apps, docker_available }))
@@ -898,9 +957,8 @@ fn row_to_app(r: DeployedAppRow) -> DeployedApp {
     DeployedApp {
         id: r.id, app_id: r.app_id, app_name: r.app_name,
         project_name: r.project_name, status: r.status,
-        deployed_at: r.deployed_at, compose_path: r.compose_path,
-        primary_port: r.primary_port, origin: r.origin,
-        owner_user_id: r.owner_user_id, storage_root: r.storage_root, target_node_id: r.target_node_id,
+        deployed_at: r.deployed_at, primary_port: r.primary_port, origin: r.origin,
+        target_node_id: r.target_node_id,
     }
 }
 
@@ -910,14 +968,41 @@ const SELECT_DEPLOYED: &str =
      COALESCE(origin, 'voidtower') AS origin, \
      owner_user_id, storage_root, target_node_id FROM deployed_apps";
 
-/// Non-admin `member` callers may only ever see/manage apps they own
-/// (`owner_user_id` matches their own id); every other role's visibility is
-/// unaffected (this only gates when `role == "member"`).
-fn require_app_owner_or_admin(user: &auth::User, row: &DeployedAppRow) -> Result<()> {
-    if user.role == "member" && row.owner_user_id.as_deref() != Some(user.id.as_str()) {
+fn require_app_read_role(user: &auth::User) -> Result<()> {
+    if !matches!(
+        user.role.as_str(),
+        "owner" | "admin" | "operator" | "viewer" | "guest" | "demo" | "member"
+    ) {
         return Err(AppError::Forbidden);
     }
     Ok(())
+}
+
+fn require_app_deploy_role(user: &auth::User) -> Result<()> {
+    if !matches!(user.role.as_str(), "owner" | "admin" | "operator" | "member") {
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
+}
+
+fn require_app_operator(user: &auth::User) -> Result<()> {
+    if !matches!(user.role.as_str(), "owner" | "admin" | "operator") {
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
+}
+
+fn require_app_owner_or_admin(user: &auth::User, row: &DeployedAppRow) -> Result<()> {
+    require_app_read_role(user)?;
+    if user.role == "member" && row.owner_user_id.as_deref() != Some(user.id.as_str()) {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
+}
+
+fn parse_json_body<T: DeserializeOwned>(body: Bytes) -> Result<T> {
+    serde_json::from_slice(&body)
+        .map_err(|_| AppError::BadRequest("invalid JSON request body".into()))
 }
 
 /// Runs `hook.command` inside the target container, retrying every 3s until it
@@ -979,9 +1064,23 @@ pub async fn deploy(
     State(state): State<AppState>,
     jar: CookieJar,
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
-    Json(_req): Json<DeployRequest>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
-    let _user = require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    require_app_deploy_role(&user)?;
+    let req: DeployRequest = parse_json_body(body)?;
+    if user.role == "member" {
+        let allowed = sqlx::query_scalar::<_, String>(
+            "SELECT app_id FROM member_app_access WHERE user_id = ? AND app_id = ?",
+        )
+        .bind(&user.id)
+        .bind(&req.app_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AppError::Database)?
+        .is_some();
+        if !allowed { return Err(AppError::Forbidden); }
+    }
     Err(AppError::FeatureUnavailable(
         "App deployment requires a canonical operation adapter".into(),
     ))
@@ -997,6 +1096,7 @@ pub async fn cancel_deploy(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
+    require_app_operator(&user)?;
     let ip = addr.ip().to_string();
 
     let cancelled = containers::cancel_deploy(&state.deploy_registry, &project_name).await;
@@ -1028,9 +1128,24 @@ pub async fn deploy_custom(
     State(state): State<AppState>,
     jar: CookieJar,
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
-    Json(req): Json<CustomDeployRequest>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
-    let _user = require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    require_app_deploy_role(&user)?;
+    let req: CustomDeployRequest = parse_json_body(body)?;
+    if user.role == "member" {
+        let allowed = sqlx::query_scalar::<_, bool>(
+            "SELECT can_deploy_custom FROM member_settings WHERE user_id = ?",
+        )
+        .bind(&user.id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AppError::Database)?
+        .unwrap_or(false);
+        if !allowed { return Err(AppError::Forbidden); }
+        super::members::resolve_member_storage_root(&state, &user.id, req.storage_drive_id.as_deref()).await?;
+        super::members::resolve_member_target_node(&state, &user.id, req.target_node_id.as_deref()).await?;
+    }
     let _ = (
         &req.name,
         &req.image,
@@ -1052,6 +1167,7 @@ pub async fn start_app(
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
+    require_app_deploy_role(&user)?;
     super::role_guard::require_operator(&user)?;
     Err(AppError::FeatureUnavailable(
         "App start requires a canonical operation adapter".into(),
@@ -1103,6 +1219,7 @@ pub async fn app_logs(
     Path(project_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
+    require_app_read_role(&user)?;
 
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
@@ -1117,10 +1234,29 @@ pub async fn app_logs(
     let compose_path = std::path::PathBuf::from(&row.compose_path);
     let logs = containers::logs_compose(&project_name, &compose_path, 300)
         .await
-        .unwrap_or_else(|e| format!("Error fetching logs: {e}"));
+        .map_err(|_| AppError::FeatureUnavailable("App logs are unavailable".into()))?;
 
-    let lines: Vec<&str> = logs.lines().collect();
+    let bounded = bound_log_output(&logs);
+    let lines: Vec<&str> = bounded.lines().take(300).collect();
     Ok(Json(serde_json::json!({ "lines": lines })))
+}
+
+const MAX_LOG_BYTES: usize = 64 * 1024;
+
+fn bound_log_output(logs: &str) -> String {
+    bound_utf8_bytes(logs, MAX_LOG_BYTES)
+}
+
+fn bound_utf8_bytes(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 pub async fn app_status(
@@ -1129,6 +1265,7 @@ pub async fn app_status(
     Path(project_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
+    require_app_read_role(&user)?;
 
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
@@ -1143,7 +1280,7 @@ pub async fn app_status(
     let compose_path = std::path::PathBuf::from(&row.compose_path);
     let containers = containers::status_compose(&project_name, &compose_path)
         .await
-        .unwrap_or_default();
+        .map_err(|_| AppError::FeatureUnavailable("App status is unavailable".into()))?;
 
     Ok(Json(serde_json::json!({ "containers": containers })))
 }
@@ -1167,6 +1304,7 @@ pub async fn get_compose(
     Path(project_name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
+    require_app_read_role(&user)?;
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
     )
@@ -1177,9 +1315,308 @@ pub async fn get_compose(
     .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
 
-    let content = std::fs::read_to_string(&row.compose_path)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(serde_json::json!({ "compose_path": row.compose_path, "content": content })))
+    let content = read_bounded_compose(StdPath::new(&row.compose_path))?;
+    Ok(Json(serde_json::json!({ "content": content })))
+}
+
+const MAX_COMPOSE_BYTES: usize = 256 * 1024;
+const SENSITIVE_COMPOSE_KEYS: &[&str] = &[
+    "api_key",
+    "api-key",
+    "apikey",
+    "access_key",
+    "access-key",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "private_key",
+    "private-key",
+    "secret_key",
+    "secret-key",
+    "encryption_key",
+    "encryption-key",
+    "signing_key",
+    "signing-key",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "credential",
+    "database_url",
+    "database-url",
+    "connection_string",
+    "connection-string",
+    "client_secret",
+    "client-secret",
+    "authorization",
+    "bearer",
+];
+
+fn is_sensitive_compose_key(key: &str) -> bool {
+    let key = key.trim().trim_start_matches('-').trim().to_ascii_lowercase();
+    SENSITIVE_COMPOSE_KEYS
+        .iter()
+        .any(|candidate| key.contains(candidate))
+}
+
+fn redact_inline_sensitive_assignments(value: &str) -> String {
+    let mut output = value.to_string();
+    let mut search_from = 0;
+    while let Some(relative) = output[search_from..].find('=') {
+        let delimiter = search_from + relative;
+        let key_start = output[..delimiter]
+            .char_indices()
+            .rev()
+            .find(|(_, character)| character.is_whitespace() || matches!(character, '"' | '\'' | '[' | ','))
+            .map(|(offset, character)| offset + character.len_utf8())
+            .unwrap_or(0);
+        let key = &output[key_start..delimiter];
+        if !is_sensitive_compose_key(key) {
+            search_from = delimiter + 1;
+            continue;
+        }
+        let mut value_start = delimiter + 1;
+        let quoted = output.as_bytes().get(value_start).is_some_and(|byte| *byte == b'"' || *byte == b'\'');
+        if quoted {
+            let quote = output.as_bytes()[value_start];
+            value_start += 1;
+            let value_end = output[value_start..]
+                .find(quote as char)
+                .map(|offset| value_start + offset)
+                .unwrap_or(output.len());
+            output.replace_range(value_start..value_end, "[redacted]");
+            search_from = value_start + "[redacted]".len();
+        } else {
+            let value_end = output[value_start..]
+                .find(|character: char| character.is_whitespace() || matches!(character, ',' | ']'))
+                .map(|offset| value_start + offset)
+                .unwrap_or(output.len());
+            output.replace_range(value_start..value_end, "[redacted]");
+            search_from = value_start + "[redacted]".len();
+        }
+    }
+    output
+}
+
+fn redact_command_scalar(value: &str) -> String {
+    const FLAGS: &[&str] = &["--header", "--password", "--token", "--api-key", "--secret", "--private-key", "--env", "--environment", "-e", "-H"];
+    let mut output = value.to_string();
+    for flag in FLAGS {
+        let mut search_from = 0;
+        loop {
+            let lower = output.to_ascii_lowercase();
+            let flag_lower = flag.to_ascii_lowercase();
+            let Some(relative) = lower[search_from..].find(&flag_lower) else { break; };
+            let flag_start = search_from + relative;
+            let mut value_start = flag_start + flag.len();
+            while output.as_bytes().get(value_start).is_some_and(|byte| *byte == b' ' || *byte == b'\t' || *byte == b'=') {
+                value_start += 1;
+            }
+            if value_start >= output.len() { break; }
+            let is_header_flag = flag.eq_ignore_ascii_case("--header") || flag.eq_ignore_ascii_case("-H");
+            let (value_end, replacement) = if output.as_bytes()[value_start] == b'"' || output.as_bytes()[value_start] == b'\'' {
+                let quote = output.as_bytes()[value_start];
+                let end = output[value_start + 1..].find(quote as char).map(|offset| value_start + 2 + offset).unwrap_or(output.len());
+                (end, format!("{}[redacted]{}", quote as char, quote as char))
+            } else {
+                let end = if is_header_flag {
+                    output.len()
+                } else {
+                    output[value_start..].find(char::is_whitespace).map(|offset| value_start + offset).unwrap_or(output.len())
+                };
+                (end, "[redacted]".to_string())
+            };
+            output.replace_range(value_start..value_end, &replacement);
+            search_from = value_start + replacement.len();
+        }
+    }
+    for flag in ["-e=", "--env=", "--environment="] {
+        let lower = output.to_ascii_lowercase();
+        if let Some(start) = lower.find(flag) {
+            let value_start = start + flag.len();
+            if value_start < output.len() {
+                output.replace_range(value_start.., "[redacted]");
+            }
+        }
+    }
+    output = redact_inline_sensitive_assignments(&output);
+    let trailing_newline = output.ends_with('\n');
+    let mut redacted = output.lines().map(redact_compose_line).collect::<Vec<_>>().join("\n");
+    if trailing_newline { redacted.push('\n'); }
+    redacted
+}
+
+fn is_sensitive_command_flag(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    ["--password", "--token", "--api-key", "--secret", "--private-key", "--env", "--environment", "-e", "-h", "--header"]
+        .iter()
+        .any(|flag| value == *flag || value.starts_with(&format!("{flag}=")))
+}
+
+fn redact_command_value(value: &mut serde_yaml::Value) {
+    match value {
+        serde_yaml::Value::Sequence(sequence) => {
+            let mut redact_next = false;
+            for child in sequence {
+                if let Some(entry) = child.as_str() {
+                    if redact_next {
+                        *child = serde_yaml::Value::String("[redacted]".into());
+                        redact_next = false;
+                    } else {
+                        redact_next = is_sensitive_command_flag(entry);
+                        *child = serde_yaml::Value::String(redact_command_scalar(entry));
+                    }
+                } else {
+                    redact_next = false;
+                }
+            }
+        }
+        serde_yaml::Value::String(text) => *text = redact_command_scalar(text),
+        _ => {}
+    }
+}
+
+fn redact_compose_line(line: &str) -> String {
+    let lower_line = line.to_ascii_lowercase();
+    let Some((delimiter_offset, delimiter)) = [':', '=']
+        .iter()
+        .filter_map(|delimiter| line.find(*delimiter).map(|offset| (offset, *delimiter)))
+        .min_by_key(|(offset, _)| *offset)
+    else {
+        return line.to_string();
+    };
+
+    let sensitive = is_sensitive_compose_key(&lower_line[..delimiter_offset]);
+    if !sensitive {
+        return line.to_string();
+    }
+
+    format!(
+        "{}{}{}",
+        &line[..delimiter_offset],
+        delimiter,
+        if delimiter == ':' { " [redacted]" } else { "[redacted]" },
+    )
+}
+
+fn redact_flow_compose_content(content: &str) -> Option<String> {
+    if !content
+        .lines()
+        .any(|line| line.contains('[') || line.contains('{'))
+    {
+        return None;
+    }
+
+    let mut value = serde_yaml::from_str::<serde_yaml::Value>(content).ok()?;
+    fn redact(value: &mut serde_yaml::Value) {
+        match value {
+            serde_yaml::Value::Mapping(mapping) => {
+                for (key, child) in mapping.iter_mut() {
+                    if key.as_str().is_some_and(is_sensitive_compose_key) {
+                        *child = serde_yaml::Value::String("[redacted]".into());
+                    } else if key.as_str().is_some_and(|key| matches!(key.to_ascii_lowercase().as_str(), "command" | "entrypoint")) {
+                        redact_command_value(child);
+                    } else {
+                        redact(child);
+                    }
+                }
+            }
+            serde_yaml::Value::Sequence(sequence) => {
+                for child in sequence {
+                    if let Some(entry) = child.as_str() {
+                        *child = serde_yaml::Value::String(redact_compose_line(entry));
+                    } else {
+                        redact(child);
+                    }
+                }
+            }
+            serde_yaml::Value::String(text) => {
+                *text = redact_command_scalar(&redact_compose_line(text));
+            }
+            _ => {}
+        }
+    }
+
+    redact(&mut value);
+    serde_yaml::to_string(&value).ok()
+}
+
+fn redact_compose_content(content: &str) -> String {
+    if let Some(flow_redacted) = redact_flow_compose_content(content) {
+        return flow_redacted;
+    }
+
+    let mut block_indent: Option<usize> = None;
+    let mut redacted = Vec::new();
+    for line in content.lines() {
+        let indent = line.len() - line.trim_start().len();
+        if let Some(parent_indent) = block_indent {
+            if !line.trim().is_empty() && indent <= parent_indent {
+                block_indent = None;
+            } else if !line.trim().is_empty() {
+                redacted.push(format!("{}[redacted]", &line[..indent]));
+                continue;
+            }
+        }
+
+        let safe_line = redact_command_scalar(&redact_compose_line(line));
+        let value = line
+            .split_once(':')
+            .map(|(_, value)| value.trim())
+            .unwrap_or_default();
+        let indicator = value.split('#').next().unwrap_or_default().trim();
+        let is_block_value = indicator.starts_with('|') || indicator.starts_with('>');
+        if safe_line != line && is_block_value {
+            block_indent = Some(indent);
+        }
+        redacted.push(safe_line);
+    }
+
+    redacted.join("\n") + if content.ends_with('\n') { "\n" } else { "" }
+}
+
+fn read_bounded_compose(path: &StdPath) -> Result<String> {
+    let file = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+                .open(path)
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::File::open(path)
+        }
+    }
+    .map_err(|error| AppError::Internal(error.into()))?;
+    if !file
+        .metadata()
+        .map_err(|error| AppError::Internal(error.into()))?
+        .is_file()
+    {
+        return Err(AppError::BadRequest("compose path is not a regular file".into()));
+    }
+    if file
+        .metadata()
+        .map_err(|error| AppError::Internal(error.into()))?
+        .len()
+        > MAX_COMPOSE_BYTES as u64
+    {
+        return Err(AppError::PayloadTooLarge);
+    }
+
+    let mut bytes = Vec::with_capacity(MAX_COMPOSE_BYTES.min(8192));
+    file.take((MAX_COMPOSE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AppError::Internal(error.into()))?;
+    if bytes.len() > MAX_COMPOSE_BYTES {
+        return Err(AppError::PayloadTooLarge);
+    }
+
+    let content = String::from_utf8(bytes)
+        .map_err(|_| AppError::BadRequest("compose file is not valid UTF-8".into()))?;
+    Ok(bound_utf8_bytes(&redact_compose_content(&content), MAX_COMPOSE_BYTES))
 }
 
 #[derive(Deserialize)]
@@ -1195,21 +1632,83 @@ pub struct OpenUiRequest {
     pub primary_port: u16,
 }
 
+fn validate_ui_host(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty()
+        || raw
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '/' | '?' | '#' | '@' | '\\'))
+    {
+        return None;
+    }
+
+    if raw.starts_with('[') {
+        let end = raw.find(']')?;
+        if raw[1..end].parse::<std::net::Ipv6Addr>().is_err() {
+            return None;
+        }
+        let suffix = &raw[end + 1..];
+        if !suffix.is_empty()
+            && (!suffix.starts_with(':') || suffix[1..].parse::<u16>().ok().filter(|port| *port > 0).is_none())
+        {
+            return None;
+        }
+        return Some(raw[..=end].to_string());
+    }
+    if raw.matches(':').count() > 1 {
+        return None;
+    }
+
+    let host = if let Some((host, port)) = raw.rsplit_once(':') {
+        if port.parse::<u16>().ok().filter(|value| *value > 0).is_none() {
+            return None;
+        }
+        host
+    } else {
+        raw
+    };
+    (!host.is_empty()).then(|| host.to_string())
+}
+
 pub async fn open_ui(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: HeaderMap,
-    Json(req): Json<OpenUiRequest>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    require_app_read_role(&user)?;
+    let req: OpenUiRequest = parse_json_body(body)?;
+    if req.primary_port == 0
+        || req.project_name.is_empty()
+        || req.project_name.trim() != req.project_name
+    {
+        return Err(AppError::BadRequest("invalid app identifier or port".into()));
+    }
+    let row = sqlx::query_as::<_, DeployedAppRow>(
+        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"),
+    )
+    .bind(&req.project_name)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or(AppError::NotFound)?;
+    require_app_owner_or_admin(&user, &row)?;
+    if row.primary_port != Some(i64::from(req.primary_port)) {
+        return Err(AppError::BadRequest("port does not match deployed app".into()));
+    }
 
     // Use the Host header so the returned URL works from any machine on the LAN,
     // not just localhost. Strip the port portion if present.
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .map(|h| h.rsplit_once(':').map(|(h, _)| h).unwrap_or(h).to_string())
-        .unwrap_or_else(|| "localhost".to_string());
+    let host = match headers.get("host") {
+        Some(value) => validate_ui_host(
+            value
+                .to_str()
+                .map_err(|_| AppError::BadRequest("invalid host header".into()))?,
+        )
+        .ok_or_else(|| AppError::BadRequest("invalid host header".into()))?,
+        None => "localhost".to_string(),
+    };
 
     let direct_url = format!("http://{}:{}", host, req.primary_port);
 
@@ -1252,10 +1751,11 @@ pub async fn update_compose(
     jar: CookieJar,
     Path(_project_name): Path<String>,
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
-    Json(_req): Json<UpdateComposeRequest>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
+    let _req: UpdateComposeRequest = parse_json_body(body)?;
     Err(AppError::FeatureUnavailable(
         "App compose update requires a canonical operation adapter".into(),
     ))
@@ -1263,18 +1763,47 @@ pub async fn update_compose(
 
 // ── Embed proxy — strips X-Frame-Options so App Vault iframes load ────────────
 
+fn build_embed_target_url(port: u16, path: &str, query: Option<&str>) -> String {
+    let query_suffix = query
+        .filter(|value| !value.is_empty())
+        .map(|value| if value.starts_with('?') { value.to_string() } else { format!("?{value}") })
+        .unwrap_or_default();
+    format!("http://localhost:{port}/{path}{query_suffix}")
+}
+
+fn embed_error(status: StatusCode, code: &'static str, message: &'static str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "error": { "code": code, "message": message }
+        })),
+    )
+        .into_response()
+}
+
+const MAX_EMBED_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_EMBED_PATH_BYTES: usize = 4096;
+const MAX_EMBED_QUERY_BYTES: usize = 8192;
+const MAX_EMBED_HEADER_COUNT: usize = 64;
+const MAX_EMBED_HEADER_BYTES: usize = 32 * 1024;
+static EMBED_CONCURRENCY: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+
 pub async fn embed_proxy(
     State(state): State<AppState>,
     jar: CookieJar,
     Path((project_name, path)): Path<(String, String)>,
-) -> impl IntoResponse {
-    let session_id = match jar.get("vt_session").map(|c| c.value().to_string()) {
-        Some(s) => s,
-        None => return (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+    uri: Uri,
+) -> Response {
+    let session_id = match jar.get("vt_session").map(|cookie| cookie.value().to_string()) {
+        Some(session_id) => session_id,
+        None => return embed_error(StatusCode::UNAUTHORIZED, "unauthorized", "Unauthorized"),
     };
-    match auth::validate_session(&state.db, &session_id).await {
-        Ok(Some(_)) => {}
-        _ => return (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+    let user = match auth::validate_session(&state.db, &session_id).await {
+        Ok(Some(user)) => user,
+        _ => return embed_error(StatusCode::UNAUTHORIZED, "unauthorized", "Unauthorized"),
+    };
+    if require_app_read_role(&user).is_err() {
+        return embed_error(StatusCode::FORBIDDEN, "forbidden", "Forbidden");
     }
 
     let row = match sqlx::query_as::<_, DeployedAppRow>(
@@ -1284,44 +1813,185 @@ pub async fn embed_proxy(
     .fetch_optional(&state.db)
     .await
     {
-        Ok(Some(r)) => r,
-        Ok(None) => return (StatusCode::NOT_FOUND, "app not found").into_response(),
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response(),
+        Ok(Some(row)) => row,
+        Ok(None) => return embed_error(StatusCode::NOT_FOUND, "not_found", "Not found"),
+        Err(_) => {
+            return embed_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "database_error",
+                "A database error occurred",
+            )
+        }
     };
+
+    if require_app_owner_or_admin(&user, &row).is_err() {
+        return embed_error(StatusCode::NOT_FOUND, "not_found", "Not found");
+    }
 
     let port = match row.primary_port {
-        Some(p) if p > 0 => p as u16,
-        _ => return (StatusCode::BAD_GATEWAY, "no port configured").into_response(),
+        Some(port) if port > 0 && port <= i64::from(u16::MAX) => port as u16,
+        _ => {
+            return embed_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream_unavailable",
+                "Embedded app is unavailable",
+            )
+        }
     };
 
-    let upstream_url = format!("http://localhost:{}/{}", port, path);
-
-    let client = reqwest::Client::new();
+    let _permit = match EMBED_CONCURRENCY
+        .get_or_init(|| tokio::sync::Semaphore::new(16))
+        .try_acquire()
+    {
+        Ok(permit) => permit,
+        Err(_) => {
+            return embed_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "upstream_busy",
+                "Embedded app is busy",
+            )
+        }
+    };
+    if path.contains('?') || path.contains('#') || path.contains('\0') {
+        return embed_error(StatusCode::BAD_REQUEST, "invalid_path", "Invalid embedded path");
+    }
+    if path.len() > MAX_EMBED_PATH_BYTES
+        || uri.query().is_some_and(|query| query.len() > MAX_EMBED_QUERY_BYTES)
+    {
+        return embed_error(StatusCode::BAD_REQUEST, "invalid_path", "Embedded path or query is too large");
+    }
+    let upstream_url = build_embed_target_url(port, &path, uri.query());
+    let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return embed_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream_unavailable",
+                "Embedded app is unavailable",
+            )
+        }
+    };
     let upstream_resp = match client
         .get(&upstream_url)
         .header("X-Forwarded-For", "127.0.0.1")
         .send()
         .await
     {
-        Ok(r) => r,
-        Err(_) => return (StatusCode::BAD_GATEWAY, "upstream error").into_response(),
+        Ok(response) => response,
+        Err(_) => {
+            return embed_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream_unavailable",
+                "Embedded app is unavailable",
+            )
+        }
     };
 
-    let status = upstream_resp.status();
-    let mut resp_headers = axum::http::HeaderMap::new();
-
-    for (name, value) in upstream_resp.headers() {
-        let n = name.as_str().to_lowercase();
-        if n == "x-frame-options" || n == "content-security-policy" { continue; }
-        resp_headers.insert(name.clone(), value.clone());
+    if !upstream_resp.status().is_success() {
+        return embed_error(
+            StatusCode::BAD_GATEWAY,
+            "upstream_error",
+            "Embedded app returned an unsuccessful response",
+        );
     }
-    resp_headers.insert(
-        axum::http::header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("frame-ancestors *"),
-    );
+    if upstream_resp
+        .content_length()
+        .is_some_and(|length| length > MAX_EMBED_RESPONSE_BYTES as u64)
+    {
+        return embed_error(
+            StatusCode::BAD_GATEWAY,
+            "upstream_response_too_large",
+            "Embedded app response exceeds the allowed size",
+        );
+    }
 
-    let body = Body::from_stream(upstream_resp.bytes_stream());
-    (status, resp_headers, body).into_response()
+    let upstream_status = StatusCode::from_u16(upstream_resp.status().as_u16())
+        .unwrap_or(StatusCode::OK);
+    let upstream_headers = upstream_resp.headers().clone();
+    use futures_util::StreamExt;
+    let mut stream = upstream_resp.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                return embed_error(
+                    StatusCode::BAD_GATEWAY,
+                    "upstream_error",
+                    "Embedded app is unavailable",
+                )
+            }
+        };
+        if body.len().saturating_add(chunk.len()) > MAX_EMBED_RESPONSE_BYTES {
+            return embed_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream_response_too_large",
+                "Embedded app response exceeds the allowed size",
+            );
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    let mut connection_tokens = std::collections::HashSet::new();
+    for value in upstream_headers.get_all("connection").iter() {
+        if let Ok(value) = value.to_str() {
+            connection_tokens.extend(
+                value
+                    .split(',')
+                    .map(|token| token.trim().to_ascii_lowercase())
+                    .filter(|token| !token.is_empty()),
+            );
+        }
+    }
+
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'self'"),
+    );
+    let mut response_header_bytes = axum::http::header::CONTENT_SECURITY_POLICY.as_str().len()
+        + "frame-ancestors 'self'".len();
+    for (name, value) in &upstream_headers {
+        let name_lower = name.as_str().to_ascii_lowercase();
+        if matches!(
+            name_lower.as_str(),
+            "x-frame-options"
+                | "content-security-policy"
+                | "location"
+                | "set-cookie"
+                | "transfer-encoding"
+                | "connection"
+                | "keep-alive"
+                | "proxy-authenticate"
+                | "proxy-authorization"
+                | "proxy-connection"
+                | "te"
+                | "trailer"
+                | "upgrade"
+                | "content-length"
+        ) || connection_tokens.contains(&name_lower)
+        {
+            continue;
+        }
+        if response_headers.len() >= MAX_EMBED_HEADER_COUNT
+            || response_header_bytes.saturating_add(name.as_str().len()).saturating_add(value.len()) > MAX_EMBED_HEADER_BYTES
+        {
+            return embed_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream_headers_too_large",
+                "Embedded app response headers exceed the allowed size",
+            );
+        }
+        response_header_bytes = response_header_bytes
+            .saturating_add(name.as_str().len())
+            .saturating_add(value.len());
+        response_headers.insert(name.clone(), value.clone());
+    }
+    (upstream_status, response_headers, Body::from(body)).into_response()
 }
 
 // ── External app detection ────────────────────────────────────────────────────
@@ -1338,7 +2008,7 @@ pub struct ExternalContainer {
 #[derive(Serialize)]
 pub struct ExternalStack {
     pub project_name: String,
-    pub compose_path: Option<String>,
+    pub compose_available: bool,
     pub containers: Vec<ExternalContainer>,
     pub primary_port: Option<u16>,
 }
@@ -1372,22 +2042,40 @@ fn parse_docker_ports(s: &str) -> Vec<String> {
     out
 }
 
+fn parse_external_container_output(output: &[u8]) -> anyhow::Result<Vec<Value>> {
+    let text = String::from_utf8(output.to_vec())?;
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let value = serde_json::from_str::<Value>(line.trim())?;
+            let object = value
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("docker container record is not an object"))?;
+            for key in ["ID", "Names", "Image", "State", "Ports", "Labels"] {
+                if !object.get(key).is_some_and(Value::is_string) {
+                    anyhow::bail!("docker container record is missing a required field");
+                }
+            }
+            Ok(value)
+        })
+        .collect()
+}
+
 pub async fn detect_external(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<Vec<ExternalStack>>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    require_app_operator(&user)?;
 
     if !containers::is_docker_available() {
         return Ok(Json(vec![]));
     }
 
-    // Fetch all containers including stopped ones
-    let out = tokio::process::Command::new("docker")
-        .args(["ps", "-a", "--format", "{{json .}}"])
-        .output()
+    // Fetch all containers including stopped ones through the bounded Docker seam.
+    let output = containers::list_external_containers()
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .map_err(|error| AppError::Internal(error.into()))?;
 
     // Already-managed project names
     let managed: std::collections::HashSet<String> = sqlx::query_scalar(
@@ -1395,18 +2083,16 @@ pub async fn detect_external(
     )
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default()
+    .map_err(AppError::Database)?
     .into_iter()
     .collect();
 
     // Group containers by compose project
-    let mut groups: std::collections::HashMap<String, (Option<String>, Vec<ExternalContainer>)> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<String, (bool, Vec<ExternalContainer>)> = std::collections::HashMap::new();
 
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let line = line.trim();
-        if line.is_empty() { continue; }
-        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-
+    let records = parse_external_container_output(&output)
+        .map_err(|error| AppError::Internal(error.into()))?;
+    for obj in records {
         let id    = obj["ID"].as_str().unwrap_or("").to_string();
         let name  = obj["Names"].as_str().unwrap_or("").to_string();
         let image = obj["Image"].as_str().unwrap_or("").to_string();
@@ -1423,17 +2109,12 @@ pub async fn detect_external(
         // Skip anything already managed by VoidTower
         if project.starts_with("vt-") || managed.contains(&project) { continue; }
 
-        let compose_path = labels
-            .get("com.docker.compose.project.working_dir")
-            .and_then(|dir| {
-                for f in &["docker-compose.yml","docker-compose.yaml","compose.yml","compose.yaml"] {
-                    let p = std::path::Path::new(dir).join(f);
-                    if p.exists() { return Some(p.to_string_lossy().into_owned()); }
-                }
-                None
-            });
-
-        let entry = groups.entry(project).or_insert((compose_path, vec![]));
+        let compose_available = labels
+            .get("com.docker.compose.project.config_files")
+            .or_else(|| labels.get("com.docker.compose.project.working_dir"))
+            .is_some_and(|value| !value.trim().is_empty());
+        let entry = groups.entry(project).or_insert((false, Vec::new()));
+        entry.0 |= compose_available;
         entry.1.push(ExternalContainer {
             id, name, image, state: state_str,
             ports: parse_docker_ports(ports_str),
@@ -1442,12 +2123,12 @@ pub async fn detect_external(
 
     let mut stacks: Vec<ExternalStack> = groups
         .into_iter()
-        .map(|(project_name, (compose_path, containers))| {
+        .map(|(project_name, (compose_available, containers))| {
             let primary_port = containers.iter()
                 .flat_map(|c| c.ports.iter())
                 .filter_map(|p| p.split(':').next()?.parse::<u16>().ok())
                 .min();
-            ExternalStack { project_name, compose_path, containers, primary_port }
+            ExternalStack { project_name, compose_available, containers, primary_port }
         })
         .collect();
     stacks.sort_by(|a, b| a.project_name.cmp(&b.project_name));
@@ -1462,16 +2143,17 @@ pub async fn detect_external(
 pub struct AdoptRequest {
     pub project_name: String,
     pub app_name: String,
-    pub compose_path: Option<String>,
     pub primary_port: Option<i64>,
 }
 
 pub async fn adopt_app(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(_req): Json<AdoptRequest>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    super::role_guard::require_operator(&user)?;
+    let _req: AdoptRequest = parse_json_body(body)?;
     Err(AppError::FeatureUnavailable(
         "App adoption requires a canonical operation adapter".into(),
     ))
@@ -1485,7 +2167,8 @@ pub async fn convert_app(
     Path(_project_name): Path<String>,
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    super::role_guard::require_operator(&user)?;
     Err(AppError::FeatureUnavailable(
         "App conversion requires a canonical operation adapter".into(),
     ))
@@ -1509,7 +2192,8 @@ pub async fn pull_app(
     Path(_project_name): Path<String>,
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    super::role_guard::require_operator(&user)?;
     Err(AppError::FeatureUnavailable(
         "App pull requires a canonical operation adapter".into(),
     ))
@@ -1520,10 +2204,11 @@ pub async fn patch_app_env(
     jar: CookieJar,
     Path(_project_name): Path<String>,
     ConnectInfo(_addr): ConnectInfo<SocketAddr>,
-    Json(_req): Json<serde_json::Value>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
+    let _req: serde_json::Value = parse_json_body(body)?;
     Err(AppError::FeatureUnavailable(
         "App environment patch requires a canonical operation adapter".into(),
     ))
@@ -1534,16 +2219,20 @@ pub async fn expose_app(
     jar: CookieJar,
     Path(project_name): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<ExposeAppRequest>,
+    body: Bytes,
 ) -> super::operation_adoption::CompatibilityResult<Response> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_admin(&user)?;
+    let req: ExposeAppRequest = parse_json_body(body)
+        .map_err(super::operation_adoption::CompatibilityError::from)?;
     let row = sqlx::query_as::<_, DeployedAppRow>(
         &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
         .bind(&project_name).fetch_optional(&state.db).await
         .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
-    let port = row.primary_port.filter(|&p| p > 0)
-        .ok_or_else(|| AppError::BadRequest("No port configured for this app".into()))? as u16;
+    let port = row.primary_port
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port > 0)
+        .ok_or_else(|| AppError::BadRequest("No valid port configured for this app".into()))?;
     let upstream = format!("http://localhost:{port}");
     let credential = super::actions::credential(&state, &jar, None).await?;
     crate::api::proxy::create_with_credential(
@@ -2623,5 +3312,260 @@ mod tests {
         ] {
             assert!(!handler.contains(marker), "adopt handler marker: {marker}");
         }
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+        routing::any,
+        Router,
+    };
+    use tower::ServiceExt;
+
+    async fn json_body(response: axum::response::Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[test]
+    fn member_embed_access_requires_ownership() {
+        let member = auth::User { id: "member-1".into(), username: "member".into(), role: "member".into(), password_hash: String::new(), force_password_change: false, totp_enabled: false, totp_secret: None, created_at: 0, updated_at: 0, expires_at: None };
+        let owned = DeployedAppRow { id: "a".into(), app_id: "a".into(), app_name: "a".into(), project_name: "p".into(), status: "running".into(), deployed_at: 0, compose_path: "/tmp/a".into(), primary_port: Some(1), origin: "voidtower".into(), owner_user_id: Some("member-1".into()), storage_root: Some("/srv/private".into()), target_node_id: None };
+        let other = DeployedAppRow { id: "a".into(), app_id: "a".into(), app_name: "a".into(), project_name: "p".into(), status: "running".into(), deployed_at: 0, compose_path: "/tmp/a".into(), primary_port: Some(1), origin: "voidtower".into(), owner_user_id: Some("member-2".into()), storage_root: None, target_node_id: None };
+        assert!(require_app_owner_or_admin(&member, &owned).is_ok());
+        assert!(matches!(require_app_owner_or_admin(&member, &other), Err(AppError::NotFound)));
+        let public = serde_json::to_value(row_to_app(owned)).unwrap();
+        assert!(public.get("compose_path").is_none());
+        assert!(public.get("storage_root").is_none());
+    }
+
+    #[test]
+    fn unknown_app_roles_fail_closed() {
+        let unknown = auth::User { id: "unknown-1".into(), username: "unknown".into(), role: "future-role".into(), password_hash: String::new(), force_password_change: false, totp_enabled: false, totp_secret: None, created_at: 0, updated_at: 0, expires_at: None };
+        assert!(matches!(require_app_read_role(&unknown), Err(AppError::Forbidden)));
+    }
+
+    #[test]
+    fn external_container_parser_rejects_invalid_utf8_and_json() {
+        assert!(parse_external_container_output(&[0xff]).is_err());
+        assert!(parse_external_container_output(b"{\"ID\":\"ok\"}\n{not-json}").is_err());
+    }
+
+    #[test]
+    fn external_stack_response_does_not_disclose_host_compose_path() {
+        let value = serde_json::to_value(ExternalStack {
+            project_name: "demo".into(),
+            compose_available: false,
+            containers: Vec::new(),
+            primary_port: None,
+        })
+        .unwrap();
+
+        assert!(value.get("compose_path").is_none());
+    }
+
+    #[test]
+    fn compose_content_is_bounded_and_redacts_sensitive_environment_values() {
+        let content = "services:\n  app:\n    environment:\n      - API_TOKEN=do-not-return\n      PASSWORD: do-not-return\n      API-KEY: do-not-return\n      ordinary: keep-me\n    PRIVATE_KEY: |\n      BEGIN PRIVATE KEY do-not-return\n";
+
+        let safe = redact_compose_content(content);
+
+        assert!(!safe.contains("do-not-return"));
+        assert!(safe.contains("API_TOKEN=[redacted]"));
+        assert!(safe.contains("PASSWORD: [redacted]"));
+        assert!(safe.contains("API-KEY: [redacted]"));
+        assert!(!safe.contains("BEGIN PRIVATE KEY"));
+        assert!(safe.contains("ordinary: keep-me"));
+        assert!(safe.len() <= MAX_COMPOSE_BYTES);
+    }
+    #[test]
+    fn flow_style_compose_environment_values_are_redacted() {
+        let content = "services:\n  app:\n    environment: [\"API_TOKEN=do-not-return\", \"AWS_ACCESS_KEY_ID=do-not-return\", \"DATABASE_URL=postgres://user:secret@db/app\", \"ordinary=keep-me\"]\n    labels: {PASSWORD: do-not-return, safe: keep-me}\n";
+        let safe = redact_compose_content(content);
+
+        assert!(!safe.contains("do-not-return"));
+        assert!(!safe.contains("postgres://user:secret"));
+        assert!(safe.contains("ordinary=keep-me"));
+        assert!(safe.contains("safe: keep-me"));
+    }
+
+    #[test]
+    fn flow_redaction_does_not_recurse_on_compose_interpolation_scalars() {
+        let content = "services:\n  app:\n    image: \"registry.example/app:${APP_TAG}\"\n    labels: {safe: keep-me}\n";
+        let safe = redact_compose_content(content);
+
+        assert!(safe.contains("${APP_TAG}"));
+        assert!(safe.contains("safe: keep-me"));
+    }
+
+    #[test]
+    fn command_and_entrypoint_arguments_are_redacted_in_scalar_and_flow_forms() {
+        let content = "services:\n  app:\n    command: \"API_TOKEN=do-not-return curl --header 'Authorization: Bearer do-not-return'\"\n    entrypoint: [\"-e\", \"API_TOKEN=do-not-return\", \"-H\", \"Authorization: Bearer do-not-return\", \"--safe\"]\n";
+        let safe = redact_compose_content(content);
+        assert!(!safe.contains("do-not-return"));
+        assert!(safe.contains("--safe"));
+    }
+
+    #[test]
+    fn compose_block_scalar_modifiers_and_comments_are_redacted() {
+        let content = "PRIVATE_KEY: |- # preserve the YAML shape\n  secret-body-do-not-return\nordinary: keep-me\n";
+        let safe = redact_compose_content(content);
+
+        assert!(!safe.contains("secret-body-do-not-return"));
+        assert!(safe.contains("ordinary: keep-me"));
+    }
+
+    #[test]
+    fn flow_yaml_does_not_bypass_generic_block_scalar_redaction() {
+        let content = "services:\n  app:\n    labels: {safe: keep-me}\n    command: API_TOKEN=inline-secret-do-not-return\n    entrypoint: --HEADER Authorization: Bearer header-secret-do-not-return\n    command: |\n      PASSWORD=block-secret-do-not-return\n";
+        let safe = redact_compose_content(content);
+
+        assert!(!safe.contains("inline-secret-do-not-return"));
+        assert!(!safe.contains("header-secret-do-not-return"));
+        assert!(!safe.contains("block-secret-do-not-return"));
+        assert!(safe.contains("safe: keep-me"));
+    }
+
+    #[test]
+    fn oversized_compose_files_fail_before_their_contents_are_returned() {
+        let path = std::env::temp_dir().join(format!("voidtower-compose-{}.yml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "x".repeat(MAX_COMPOSE_BYTES + 1)).unwrap();
+
+        let result = read_bounded_compose(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(result, Err(AppError::PayloadTooLarge)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compose_fifo_paths_fail_without_blocking() {
+        let path = std::env::temp_dir().join(format!("voidtower-compose-fifo-{}", uuid::Uuid::new_v4()));
+        let path_string = path.to_string_lossy().into_owned();
+        let path_c = std::ffi::CString::new(path_string).unwrap();
+        assert_eq!(unsafe { nix::libc::mkfifo(path_c.as_ptr(), 0o600) }, 0);
+
+        let result = read_bounded_compose(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn embed_target_url_preserves_the_incoming_query_string() {
+        assert_eq!(
+            build_embed_target_url(8080, "login", Some("?next=%2Fadmin")),
+            "http://localhost:8080/login?next=%2Fadmin"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_proxy_uses_the_public_error_envelope() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/embed/example/login?next=%2Fadmin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "unauthorized");
+        assert_eq!(payload["error"]["message"], "Unauthorized");
+    }
+
+    #[tokio::test]
+    async fn embed_proxy_forwards_query_and_filters_upstream_headers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let upstream = Router::new().fallback(any(|uri: Uri| async move {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+            headers.insert("set-cookie", HeaderValue::from_static("secret=do-not-forward"));
+            headers.insert("connection", HeaderValue::from_static("x-upstream-secret"));
+            headers.insert("x-upstream-secret", HeaderValue::from_static("do-not-forward"));
+            (headers, format!("{}?{}", uri.path(), uri.query().unwrap_or_default()))
+        }));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, upstream).await.unwrap();
+        });
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        sqlx::query(
+            "INSERT INTO deployed_apps (id, app_id, app_name, project_name, status, deployed_at, compose_path, primary_port, origin, owner_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("app-1")
+        .bind("catalog-app")
+        .bind("Catalog App")
+        .bind("catalog-app")
+        .bind("running")
+        .bind(0_i64)
+        .bind("/tmp/compose.yml")
+        .bind(i64::from(port))
+        .bind("voidtower")
+        .bind("u1")
+        .execute(&pool)
+        .await
+        .unwrap();
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/embed/catalog-app/login?next=%2Fadmin")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let headers = response.headers().clone();
+        let body = to_bytes(response.into_body(), MAX_EMBED_RESPONSE_BYTES).await.unwrap();
+
+        server.abort();
+        assert_eq!(body, "/login?next=%2Fadmin");
+        assert_eq!(headers.get("content-security-policy").unwrap(), "frame-ancestors 'self'");
+        assert!(headers.get("x-frame-options").is_none());
+        assert!(headers.get("set-cookie").is_none());
+        assert!(headers.get("connection").is_none());
+        assert!(headers.get("x-upstream-secret").is_none());
+    }
+
+    #[test]
+    fn log_output_bound_is_a_utf8_safe_byte_limit() {
+        let bounded = bound_log_output(&"é".repeat(MAX_LOG_BYTES));
+
+        assert!(bounded.len() <= MAX_LOG_BYTES);
+        assert!(bounded.is_char_boundary(bounded.len()));
+    }
+
+    #[test]
+    fn redacted_compose_output_remains_within_the_public_byte_bound() {
+        let content = format!("SECRET: {}\n", "x".repeat(MAX_COMPOSE_BYTES - 8));
+        let safe = bound_utf8_bytes(&redact_compose_content(&content), MAX_COMPOSE_BYTES);
+
+        assert!(safe.len() <= MAX_COMPOSE_BYTES);
+        assert!(safe.is_char_boundary(safe.len()));
+        assert!(!safe.contains(&"x".repeat(32)));
+    }
+
+    #[test]
+    fn ui_host_validation_preserves_bracketed_ipv6_and_rejects_authority_injection() {
+        assert_eq!(validate_ui_host("[::1]:8743").as_deref(), Some("[::1]"));
+        assert_eq!(validate_ui_host("[::1]").as_deref(), Some("[::1]"));
+        assert!(validate_ui_host("[]").is_none());
+        assert!(validate_ui_host("[not-an-ip]").is_none());
+        assert!(validate_ui_host("attacker.example/@voidtower").is_none());
+        assert!(validate_ui_host("2001:db8::1").is_none());
     }
 }

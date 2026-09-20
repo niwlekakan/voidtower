@@ -222,6 +222,20 @@ App exposure submits `proxy.rule.create` and returns a durable job. `open-ui` is
 it returns an existing valid embed proxy when available and never creates proxy, nginx, database,
 or firewall state. Its response includes `proxy_available`; `proxy_created` is always `false`.
 
+App Vault read responses use the standard `{ "error": { "code", "message" } }` envelope on failure.
+Member sessions can only read and proxy their own deployed apps; requests for another member's app use the same not-found envelope as a missing app. Recognized application roles are enforced before Docker or filesystem access, and host-wide external-stack discovery is limited to owner/admin/operator sessions. Compose reads return `{ "content" }` only, are capped at 256 KiB, and
+redact values on sensitive keys such as passwords, secrets, tokens, and API keys. The self-access response at
+`/api/members/me/access` uses a separate DTO that omits administrator-only drive host paths. Deployed-app and
+external-stack responses do not expose host compose paths or storage roots. App logs are capped at 64 KiB by UTF-8-safe
+bytes, and Docker status/log failures return a bounded `503` instead of a successful empty/fallback
+response; Docker command output is drained concurrently, capped at 64 KiB per stream, and terminated
+after 30 seconds; Docker external discovery is capped at 1 MiB of container metadata and uses the same
+timeout. `open-ui` validates the recognized application-role and member-ownership boundary, requires the requested port
+to match the stored app, and rejects malformed Host authorities before constructing its URL. The embed
+proxy preserves the incoming query string, disables redirects, removes cookies and hop-by-hop/frame-policy
+headers, rejects non-success upstream responses and oversized paths/queries, and caps successful bodies at 4 MiB.
+Compatibility mutation routes fail closed at the role boundary: deploy and custom deploy accept owner/admin/operator/member sessions, with member custom deploy additionally requiring `member_settings.can_deploy_custom`; adopt, convert, pull, and cancel require an operator-capable session. Host-wide external discovery requires owner/admin/operator. These routes still stop at the canonical operation-adapter boundary before provider mutation.
+
 ## Models
 
 ```

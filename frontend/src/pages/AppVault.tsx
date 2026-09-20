@@ -6,7 +6,7 @@ import {
   Plus, X, Box, Tag as TagIcon, Search, Download, ArrowDownToLine,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/api/client'
-import type { AppDef, DeployedApp, ComposeContainer, Tag, TagMap, ExternalStack, DriveSummary, MemberNodeOption } from '@/api/types'
+import type { AppDef, DeployedApp, ComposeContainer, Tag, TagMap, ExternalStack, MemberSelfDriveSummary, MemberNodeOption } from '@/api/types'
 import { notify } from '@/store/notifications'
 import { useAuthStore } from '@/store/auth'
 import { useEmbedStore } from '@/store/embedStore'
@@ -583,12 +583,15 @@ function DiscoverTab({ catalogApps, deployedIds, dockerAvailable, onDeploy, depl
 
 type AppPanelTab = 'containers' | 'compose' | 'logs'
 
-function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () => void }) {
+function DeployedAppPanel({ app, role, onRefresh }: { app: DeployedApp; role?: string; onRefresh: () => void }) {
   const [tab, setTab] = useState<AppPanelTab>('containers')
   const [acting, setActing] = useState<string | null>(null)
+  const canOperate = role === 'owner' || role === 'admin' || role === 'operator'
+  const canManage = role === 'owner' || role === 'admin'
 
   // Containers tab
   const [containers, setContainers] = useState<ComposeContainer[] | null>(null)
+  const [containersError, setContainersError] = useState<string | null>(null)
   const [containersLoading, setContainersLoading] = useState(false)
 
   // Compose tab
@@ -601,12 +604,16 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
   const [logsLoading, setLogsLoading] = useState(false)
   const logsRef = useRef<HTMLPreElement>(null)
 
-  const loadTab = useCallback(async (t: AppPanelTab) => {
+  const loadTab = useCallback(async (t: AppPanelTab, force = false) => {
     const p = app.project_name
-    if (t === 'containers' && containers === null) {
+    if (t === 'containers' && (containers === null || force)) {
       setContainersLoading(true)
+      setContainersError(null)
       try { setContainers((await api.apps.status(p)).containers) }
-      catch { setContainers([]) }
+      catch (error) {
+        setContainers(null)
+        setContainersError(error instanceof ApiClientError ? error.message : 'Failed to fetch container status')
+      }
       finally { setContainersLoading(false) }
     }
     if (t === 'compose' && compose === null) {
@@ -647,8 +654,8 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
       onRefresh()
       // Reload containers after action
       if (tab === 'containers') {
-        setContainers(null)
-        setTimeout(() => loadTab('containers'), 1500)
+        setContainersError(null)
+        setTimeout(() => loadTab('containers', true), 1500)
       }
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : `${kind} failed`)
@@ -674,30 +681,30 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
     <div className="mt-2 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)' }}>
       {/* Action bar */}
       <div className="flex items-center gap-2 px-4 py-2.5" style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-panel)' }}>
-        {!running && (
+        {canOperate && !running && (
           <Button size="sm" variant="primary" loading={acting === 'start'} onClick={() => action('start')}>
             <Play size={11} className="mr-1" /> Start
           </Button>
         )}
-        {running && (
+        {canOperate && running && (
           <Button size="sm" variant="ghost" loading={acting === 'stop'} onClick={() => action('stop')}>
             <Square size={11} className="mr-1" /> Stop
           </Button>
         )}
-        {running && (
+        {canOperate && running && (
           <Button size="sm" variant="ghost" loading={acting === 'restart'} onClick={() => action('restart')}>
             <RotateCw size={11} className="mr-1" /> Restart
           </Button>
         )}
-        <Button size="sm" variant="ghost" loading={acting === 'redeploy'} onClick={() => action('redeploy')}
+        {canOperate && <Button size="sm" variant="ghost" loading={acting === 'redeploy'} onClick={() => action('redeploy')}
           title="Re-read catalog YAML and run docker compose up --build (picks up config changes)">
           <RotateCw size={11} className="mr-1" /> Redeploy
-        </Button>
-        <Button size="sm" variant="ghost" loading={acting === 'remove'}
+        </Button>}
+        {canManage && <Button size="sm" variant="ghost" loading={acting === 'remove'}
           onClick={() => action('remove')}
           style={{ color: 'var(--accent-danger)', marginLeft: 'auto' }}>
           <Trash2 size={11} className="mr-1" /> Remove
-        </Button>
+        </Button>}
       </div>
 
       {/* Sub-tabs */}
@@ -722,7 +729,7 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
       {tab === 'containers' && (
         <div className="p-3">
           <div className="flex justify-end mb-2">
-            <button onClick={() => { setContainers(null); loadTab('containers') }}
+            <button onClick={() => { setContainersError(null); loadTab('containers', true) }}
               className="flex items-center gap-1 text-xs hover:opacity-80"
               style={{ color: 'var(--text-muted)' }}>
               <RefreshCw size={11} /> Refresh
@@ -730,6 +737,8 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
           </div>
           {containersLoading ? (
             <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</p>
+          ) : containersError ? (
+            <p className="text-xs py-4 text-center" style={{ color: 'var(--accent-danger)' }}>{containersError}</p>
           ) : !containers || containers.length === 0 ? (
             <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
               {running ? 'No container data — is Docker accessible?' : 'App is stopped.'}
@@ -780,6 +789,7 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
         <div className="p-3 space-y-2">
           <textarea
             value={compose ?? ''}
+            readOnly={!canOperate}
             onChange={e => { setCompose(e.target.value); setComposeDirty(true) }}
             spellCheck={false}
             className="w-full font-mono text-xs outline-none rounded p-3 resize-none"
@@ -791,10 +801,10 @@ function DeployedAppPanel({ app, onRefresh }: { app: DeployedApp; onRefresh: () 
             }}
           />
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="primary" loading={composeSaving}
+            {canOperate && <Button size="sm" variant="primary" loading={composeSaving}
               disabled={!composeDirty} onClick={saveCompose}>
               Save &amp; apply
-            </Button>
+            </Button>}
             {composeDirty && (
               <span className="text-xs" style={{ color: 'var(--accent-warning)' }}>Unsaved changes</span>
             )}
@@ -869,7 +879,6 @@ function ExternalTab({ onAdopted }: { onAdopted: () => void }) {
       await api.apps.adoptApp({
         project_name: stack.project_name,
         app_name: stack.project_name,
-        compose_path: stack.compose_path ?? undefined,
         primary_port: stack.primary_port ?? undefined,
       })
       setAdopted(prev => new Set([...prev, stack.project_name]))
@@ -932,7 +941,7 @@ function ExternalTab({ onAdopted }: { onAdopted: () => void }) {
                   )}
                 </div>
                 <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                  {stack.compose_path ?? 'No compose file detected'}
+                  {stack.compose_available ? 'Compose metadata is available without exposing host paths' : 'No compose file detected'}
                 </div>
                 <div className="flex flex-wrap gap-2 mt-2">
                   {stack.containers.map(c => (
@@ -957,12 +966,10 @@ function ExternalTab({ onAdopted }: { onAdopted: () => void }) {
                     onClick={() => adopt(stack)} title="Register in VoidTower and connect to internal network">
                     <Download size={12} /> Invite
                   </Button>
-                  {stack.compose_path && (
-                    <Button size="sm" variant="ghost" loading={converting === stack.project_name} disabled={isBusy}
-                      onClick={() => setConfirmConvert(stack)} title="Copy compose file to VoidTower and manage fully">
-                      <ArrowDownToLine size={12} /> Convert
-                    </Button>
-                  )}
+                  {stack.compose_available && <Button size="sm" variant="ghost" loading={converting === stack.project_name} disabled={isBusy}
+                    onClick={() => setConfirmConvert(stack)} title="Copy compose file to VoidTower and manage fully">
+                    <ArrowDownToLine size={12} /> Convert
+                  </Button>}
                 </div>
               )}
             </div>
@@ -1018,9 +1025,10 @@ function ExternalTab({ onAdopted }: { onAdopted: () => void }) {
   )
 }
 
-function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, onRefresh, onTagsChanged }: {
+function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, role, onRefresh, onTagsChanged }: {
   deployed: DeployedApp[]; catalogApps: AppDef[];
   allTags: Tag[]; tagMap: TagMap; globalTag: string | null;
+  role?: string;
   onRefresh: () => void; onTagsChanged: () => void
 }) {
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -1156,7 +1164,7 @@ function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, onRefr
               </span>
             </button>
 
-            {open && <DeployedAppPanel app={app} onRefresh={() => { setExpanded(null); onRefresh() }} />}
+            {open && <DeployedAppPanel app={app} role={role} onRefresh={() => { setExpanded(null); onRefresh() }} />}
           </div>
         )
       })}
@@ -1173,7 +1181,7 @@ function DeployedTab({ deployed, catalogApps, allTags, tagMap, globalTag, onRefr
 // both storage and node placement.
 
 function useMemberDeployOptions(isMember: boolean) {
-  const [drives, setDrives] = useState<DriveSummary[]>([])
+  const [drives, setDrives] = useState<MemberSelfDriveSummary[]>([])
   const [nodes, setNodes] = useState<MemberNodeOption[]>([])
   const [canDeployCustom, setCanDeployCustom] = useState(false)
   const [driveId, setDriveId] = useState('')
@@ -1238,8 +1246,15 @@ export default function AppVaultPage() {
   const [allTags, setAllTags]           = useState<Tag[]>([])
   const [tagMap, setTagMap]             = useState<TagMap>({})
   const globalTag = useFiltersStore((s) => s.globalTag)
-  const isMember = useAuthStore((s) => s.user?.role) === 'member'
+  const role = useAuthStore((s) => s.user?.role)
+  const isMember = role === 'member'
+  const canScanExternal = role === 'owner' || role === 'admin' || role === 'operator'
+  const canDeploy = role === 'owner' || role === 'admin' || role === 'operator' || role === 'member'
+  const canSeeDiscover = canDeploy && !isMember
+  const canDeployProxmox = role === 'owner' || role === 'admin'
   const memberOpts = useMemberDeployOptions(isMember)
+  const canSeeCustom = canDeploy && (!isMember || memberOpts.canDeployCustom)
+  const activeTab = (tab === 'external' && !canScanExternal) || (tab === 'discover' && !canSeeDiscover) || (tab === 'custom' && !canSeeCustom) ? 'deployed' : tab
 
   const loadTags = useCallback(async () => {
     try {
@@ -1317,18 +1332,18 @@ export default function AppVaultPage() {
           { id: 'deployed', label: `Deployed (${deployed.length})` },
           { id: 'catalog',  label: `Catalog (${apps.length})` },
           ...(isMember ? [] : [
-            { id: 'external', label: '⇣ External' } as const,
-            { id: 'discover', label: '✦ AI Discover' } as const,
+            ...(canScanExternal ? [{ id: 'external', label: '⇣ External' } as const] : []),
+            ...(canSeeDiscover ? [{ id: 'discover', label: '✦ AI Discover' } as const] : []),
           ]),
-          ...((!isMember || memberOpts.canDeployCustom) ? [{ id: 'custom', label: '⊕ Custom Deploy' } as const] : []),
+          ...((canDeploy && (!isMember || memberOpts.canDeployCustom)) ? [{ id: 'custom', label: '⊕ Custom Deploy' } as const] : []),
         ] as const).map(({ id, label }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
             className="px-4 py-2 text-xs transition-colors border-b-2 -mb-px"
             style={{
-              color: tab === id ? 'var(--accent-primary)' : 'var(--text-muted)',
-              borderColor: tab === id ? 'var(--accent-primary)' : 'transparent',
+              color: activeTab === id ? 'var(--accent-primary)' : 'var(--text-muted)',
+              borderColor: activeTab === id ? 'var(--accent-primary)' : 'transparent',
             }}
           >
             {label}
@@ -1336,9 +1351,9 @@ export default function AppVaultPage() {
         ))}
       </div>
 
-      {isMember && tab === 'catalog' && <MemberDeployOptions opts={memberOpts} />}
+      {isMember && activeTab === 'catalog' && <MemberDeployOptions opts={memberOpts} />}
 
-      {tab === 'catalog' && (
+      {activeTab === 'catalog' && (
         <>
           {!dockerAvailable && (
             <div className="card text-xs" style={{ color: 'var(--accent-warning)', borderColor: 'var(--accent-warning)' }}>
@@ -1411,6 +1426,7 @@ export default function AppVaultPage() {
                         size="sm"
                         variant="ghost"
                         loading={deploying === app.id}
+                        disabled={!canDeploy}
                         onClick={async () => {
                           const dep = deployed.find(d => d.app_id === app.id)
                           if (!dep) return
@@ -1430,14 +1446,15 @@ export default function AppVaultPage() {
                     ) : (
                       <Button
                         size="sm"
-                        disabled={!dockerAvailable}
+                        disabled={!dockerAvailable || !canDeploy}
                         onClick={() => setConfigModalApp(app)}
                       >
                         Deploy
                       </Button>
                     )}
                     <button
-                      onClick={() => setProxmoxDeployApp(app)}
+                      onClick={() => canDeployProxmox && setProxmoxDeployApp(app)}
+                      disabled={!canDeployProxmox}
                       className="text-xs px-2 py-1 rounded"
                       style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-muted)', cursor: 'pointer' }}
                       title="Deploy to Proxmox LXC"
@@ -1456,22 +1473,22 @@ export default function AppVaultPage() {
             })}
             {filtered.length === 0 && !loading && (
               <div className="col-span-3 py-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
-                No apps match. Try <button onClick={() => setTab('discover')} className="underline" style={{ color: 'var(--accent-primary)' }}>AI Discover</button> to find more.
+                No apps match. Try {canSeeDiscover && <button onClick={() => setTab('discover')} className="underline" style={{ color: 'var(--accent-primary)' }}>AI Discover</button>} {canSeeDiscover ? 'to find more.' : 'Try another filter.'}
               </div>
             )}
           </div>
         </>
       )}
 
-      {tab === 'deployed' && (
-        <DeployedTab deployed={deployed} catalogApps={apps} allTags={allTags} tagMap={tagMap} globalTag={globalTag} onRefresh={load} onTagsChanged={loadTags} />
+      {activeTab === 'deployed' && (
+        <DeployedTab deployed={deployed} catalogApps={apps} allTags={allTags} tagMap={tagMap} globalTag={globalTag} role={role} onRefresh={load} onTagsChanged={loadTags} />
       )}
 
-      {tab === 'external' && (
+      {activeTab === 'external' && (
         <ExternalTab onAdopted={load} />
       )}
 
-      {tab === 'custom' && (
+      {activeTab === 'custom' && (
         <CustomDeployTab
           onDeployed={() => { load(); setTab('deployed') }}
           isMember={isMember}
@@ -1479,7 +1496,7 @@ export default function AppVaultPage() {
         />
       )}
 
-      {tab === 'discover' && (
+      {activeTab === 'discover' && (
         <DiscoverTab
           catalogApps={apps}
           deployedIds={deployedIds}

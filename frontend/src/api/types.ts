@@ -226,11 +226,26 @@ export interface DriveSummary {
   last_check_at: number | null
 }
 
+export interface MemberSelfDriveSummary {
+  id: string
+  label: string
+  total_bytes: number | null
+  free_bytes: number | null
+  last_check_at: number | null
+}
+
 export interface MemberAccessSummary {
   app_ids: string[]
   can_deploy_custom: boolean
   storage: StorageSummary
   drives: DriveSummary[]
+}
+
+export interface MemberSelfAccessSummary {
+  app_ids: string[]
+  can_deploy_custom: boolean
+  storage: StorageSummary
+  drives: MemberSelfDriveSummary[]
 }
 
 export interface MemberListEntry {
@@ -395,11 +410,8 @@ export interface DeployedApp {
   project_name: string
   status: string
   deployed_at: number
-  compose_path: string
   primary_port: number | null
   origin: string  // 'voidtower' | 'adopted' | 'custom'
-  owner_user_id?: string | null
-  storage_root?: string | null
   target_node_id?: string | null
 }
 
@@ -413,7 +425,7 @@ export interface ExternalContainer {
 
 export interface ExternalStack {
   project_name: string
-  compose_path: string | null
+  compose_available: boolean
   containers: ExternalContainer[]
   primary_port: number | null
 }

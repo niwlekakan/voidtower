@@ -357,6 +357,14 @@
 - Future documentation required: supported-host evidence must still record systemd installation/status, protected state permissions, service-managed collection/upload, outage/process-restart recovery, upgrade, rollback, and artifact checksum; this source-only hardening does not advance C3-03 runtime/release maturity.
 - Reusable checks: `cargo test --manifest-path backend/Cargo.toml agent::tests --all-features`; `cargo test --manifest-path backend/Cargo.toml lifecycle_tests --all-features`; `cargo test --manifest-path backend/Cargo.toml error::tests --all-features`; `cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `python3 scripts/repo_truth.py --repo . --json --check`; and `git diff --check`.
 - Limitation: the compatibility `--pairing-code VALUE` path remains process-argv visible by design until a future breaking CLI change; operational guidance must use stdin.
+
+## C3-03 enrollment input and diagnostic hardening handoff — 2026-09-19
+
+- End-user documentation changed: `docs/agent/node-enrollment.md` recommends `--pairing-code-stdin` and documents its one-line/512-byte/UTF-8 behavior, while `docs/agent/linux-agent-service.md` documents fail-fast handling for special CA paths and redacted diagnostics.
+- Future documentation required: the supported-host evidence runbook must record systemd installation/status, protected state permissions, service-managed collection/upload, controller outage and process-restart recovery, upgrade, rollback, and artifact checksum. No source-only test substitutes for that runbook.
+- Reusable checks: `cargo test --manifest-path backend/Cargo.toml agent:: --all-features`; `cargo test --manifest-path backend/Cargo.toml lifecycle_tests --all-features`; `cargo test --manifest-path backend/Cargo.toml error::tests --all-features`; `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_agent_package scripts.test_release_gate -v`; `python3 scripts/repo_truth.py --repo . --json --check`; shell/JSON syntax checks; and `git diff --check`.
+- Limitation: runtime/release qualification remains blocked by the Docker sandbox's absent systemd/private socket/host device boundary; strict Clippy/rustfmt and trustworthy schema ownership are also unavailable here.
+
 ## API-token cache invalidation hardening — 2026-09-19
 
 - End-user documentation changed: `docs/api-tokens.md` now states that revocation removes the database row, invalidates the in-memory compatibility session, and returns `401 Unauthorized` on the next Bearer request; token expiry is checked independently from the temporary session lifetime.
@@ -369,3 +377,24 @@
 - End-user documentation changed: `docs/agent/inventory-upload.md` now distinguishes valid host-only uploads from non-empty convergence, documents `missing: 0` for empty entity sets, and states that inventory audit/events share correlation and node attribution.
 - Future documentation remains required for the named supported-host C3-03 runbook: systemd installation/status, protected state permissions, service-managed collection/upload, outage and process-restart recovery, upgrade, rollback, and artifact checksum. This source/real-router slice does not promote runtime or release maturity.
 - Reusable focused check: `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml api::cmdb::tests --all-features`; final applicable checks must also include full backend, repository truth, and diff hygiene.
+
+## M1-04 App Vault response and proxy contract hardening — 2026-09-19
+
+- End-user API documentation changed: `docs/api.md` now documents owner-scoped App Vault reads, the 256 KiB redacted compose response, 64 KiB UTF-8-safe logs, bounded and timed Docker command failures and external discovery metadata, safe DTOs without host paths, validated `open-ui` URL construction, and the 4 MiB query-preserving embed proxy contract.
+- Future documentation required: runtime Docker/App Vault/browser qualification and the eventual canonical durable operation schemas for deploy/adopt/compose mutations.
+- Reusable checks: `cargo test --manifest-path backend/Cargo.toml api::apps --all-features`; `npm run type-check`; `git diff --check`.
+- Limitation: this slice has real-router/loopback evidence but no host Docker/browser runtime qualification; C3-03 supported-host systemd qualification remains separately blocked.
+
+## M1-04 App Vault review remediation — 2026-09-20
+
+- End-user API documentation changed: `docs/api.md` now documents that `/api/members/me/access` omits drive host paths and that Docker status failures remain visible as bounded errors instead of being rendered as an empty successful status.
+- Future documentation required: runtime Docker/App Vault/browser qualification and the eventual canonical durable operation schemas for deploy/adopt/compose mutations.
+- Reusable checks: `cargo test --manifest-path backend/Cargo.toml api::apps::security_tests:: --all-features`; `cargo test --manifest-path backend/Cargo.toml containers::log_output_tests --all-features`; `cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `(cd frontend && npm test && npm run type-check && npm run build && npm run lint)`; `python3 scripts/repo_truth.py --repo . --json --check`; release-gate/schema/shell/JSON checks; and `git diff --check`.
+- Review remediation evidence: inline command/header redaction and kill-on-overflow behavior are unit-tested. Runtime/browser/Docker qualification remains blocked; `cargo-fmt`/`cargo-clippy` are unavailable in the active toolchain, and the schema wrapper reports missing `rg` despite its exit status.
+
+## M1-04 App Vault final trust-boundary hardening — 2026-09-20
+
+- Public API documentation should retain the rule that authorization precedes JSON validation on App Vault/member-management body routes; malformed unauthenticated requests receive auth errors before parser or host-path behavior.
+- Future documentation required: explain process-group cancellation semantics and the distinction between bounded loopback/integration evidence and host Docker qualification. Canonical durable operation schemas for deploy/adopt/compose mutations remain a separate milestone.
+- Reusable checks: `cargo test --manifest-path backend/Cargo.toml containers::log_output_tests --all-features`; `cargo test --manifest-path backend/Cargo.toml api::apps::security_tests:: --all-features`; `GITHUB_WORKSPACE="$PWD" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `python3 scripts/repo_truth.py --repo . --json --check`; `python3 scripts/test_release_gate.py -v`; and `git diff --check`.
+- Environment limitations: direct release-gate execution is not release-qualified here because `/tmp` can exhaust the 512 MiB sandbox tmpfs during parallel SQLite/frontend output, `cargo-clippy`/`cargo-deny`/rustfmt are unavailable, and unrelated worktree changes are preserved. Runtime/browser/Docker qualification remains blocked.

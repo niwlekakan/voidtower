@@ -13,17 +13,23 @@ use crate::{
     AppState,
 };
 use axum::{
+    body::Bytes,
     extract::{Path, State},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Matches the `member_storage` table's own column defaults — used when a
 /// member has never had a quota row written for them yet.
 const DEFAULT_QUOTA_BYTES: i64 = 5 * 1024 * 1024 * 1024; // 5 GiB
 const DEFAULT_MAX_APPS: i64 = 5;
+
+fn parse_json_body<T: DeserializeOwned>(body: Bytes) -> Result<T> {
+    serde_json::from_slice(&body)
+        .map_err(|_| AppError::BadRequest("invalid JSON request body".into()))
+}
 
 /// Host port range reserved for member custom-tier deploys. Kept well away
 /// from catalog apps' own (arbitrary, YAML-declared) ports and from anything
@@ -80,11 +86,28 @@ pub struct DriveSummary {
 }
 
 #[derive(Serialize)]
+pub struct MemberSelfDriveSummary {
+    pub id: String,
+    pub label: String,
+    pub total_bytes: Option<i64>,
+    pub free_bytes: Option<i64>,
+    pub last_check_at: Option<i64>,
+}
+
+#[derive(Serialize)]
 pub struct MemberAccessSummary {
     pub app_ids: Vec<String>,
     pub can_deploy_custom: bool,
     pub storage: StorageSummary,
     pub drives: Vec<DriveSummary>,
+}
+
+#[derive(Serialize)]
+pub struct MemberSelfAccessSummary {
+    pub app_ids: Vec<String>,
+    pub can_deploy_custom: bool,
+    pub storage: StorageSummary,
+    pub drives: Vec<MemberSelfDriveSummary>,
 }
 
 async fn build_access_summary(state: &AppState, user_id: &str) -> Result<MemberAccessSummary> {
@@ -185,9 +208,19 @@ pub async fn get_access(
 pub async fn get_my_access(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> Result<Json<MemberAccessSummary>> {
+) -> Result<Json<MemberSelfAccessSummary>> {
     let user = require_user(&state, &jar).await?;
-    Ok(Json(build_access_summary(&state, &user.id).await?))
+    let summary = build_access_summary(&state, &user.id).await?;
+    let drives = summary.drives.into_iter().map(|drive| MemberSelfDriveSummary {
+        id: drive.id, label: drive.label, total_bytes: drive.total_bytes,
+        free_bytes: drive.free_bytes, last_check_at: drive.last_check_at,
+    }).collect::<Vec<_>>();
+    Ok(Json(MemberSelfAccessSummary {
+        app_ids: summary.app_ids,
+        can_deploy_custom: summary.can_deploy_custom,
+        storage: summary.storage,
+        drives,
+    }))
 }
 
 /// A member's own `agent_capable` nodes, best (most free storage) first, so
@@ -250,9 +283,10 @@ pub async fn grant_access(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(user_id): Path<String>,
-    Json(req): Json<GrantAccessReq>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
     let admin = require_admin(&state, &jar).await?;
+    let req: GrantAccessReq = parse_json_body(body)?;
     let now = unix_now();
 
     sqlx::query("INSERT OR IGNORE INTO member_app_access (user_id, app_id, granted_at) VALUES (?, ?, ?)")
@@ -304,9 +338,10 @@ pub async fn set_custom_deploy(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(user_id): Path<String>,
-    Json(req): Json<SetCustomDeployReq>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
     let admin = require_admin(&state, &jar).await?;
+    let req: SetCustomDeployReq = parse_json_body(body)?;
     let now = unix_now();
 
     sqlx::query(
@@ -339,9 +374,10 @@ pub async fn set_quota(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(user_id): Path<String>,
-    Json(req): Json<SetQuotaReq>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
     let admin = require_admin(&state, &jar).await?;
+    let req: SetQuotaReq = parse_json_body(body)?;
     if req.quota_bytes < 0 || req.max_apps < 0 {
         return Err(AppError::BadRequest("quota_bytes and max_apps must be non-negative".into()));
     }
@@ -393,9 +429,10 @@ pub async fn add_drive(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(user_id): Path<String>,
-    Json(req): Json<AddDriveReq>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>> {
     let admin = require_admin(&state, &jar).await?;
+    let req: AddDriveReq = parse_json_body(body)?;
     let label = req.label.trim().to_string();
     let host_path = req.host_path.trim().to_string();
     if label.is_empty() {

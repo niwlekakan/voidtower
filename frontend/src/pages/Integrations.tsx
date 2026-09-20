@@ -598,7 +598,7 @@ function OdysseusSection() {
 
       {/* Odysseus base URL */}
       <div>
-        <label className="text-xs text-zinc-400 mb-1 block">Odysseus base URL (optional, for CORS validation)</label>
+        <label className="text-xs text-zinc-400 mb-1 block">Odysseus base URL (theme sync and legacy AI fallback)</label>
         <div className="flex gap-2">
           <input
             className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-violet-500"

@@ -642,6 +642,11 @@ pub async fn save_config(
             "regenerate_webhook_secret and revoke_webhook_secret cannot be combined".into(),
         ));
     }
+    if let Some(url) = req.allowed_url.as_deref().filter(|url| !url.is_empty()) {
+        crate::ai::egress::validate_local_endpoint(url)
+            .await
+            .map_err(AppError::BadRequest)?;
+    }
 
     if let Some(e) = req.enabled {
         set_setting(&state, "odysseus.enabled", if e { "true" } else { "false" }).await?;
@@ -1378,28 +1383,43 @@ pub async fn sync_theme(
     let base = raw_url.trim_end_matches('/');
     let endpoint = format!("{base}/api/prefs/theme");
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let client = crate::ai::egress::client_for_local(&raw_url, std::time::Duration::from_secs(5))
+        .await
+        .map_err(|_| AppError::BadRequest("Odysseus endpoint is unavailable".into()))?;
 
     let resp = client
         .get(&endpoint)
         .send()
         .await
-        .map_err(|e| AppError::BadRequest(format!("Odysseus unreachable: {e}")))?;
+        .map_err(|_| AppError::BadRequest("Odysseus theme request failed".into()))?;
 
     if !resp.status().is_success() {
-        return Err(AppError::BadRequest(format!(
-            "Odysseus returned {}",
-            resp.status()
-        )));
+        return Err(AppError::BadRequest("Odysseus theme request failed".into()));
     }
 
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Invalid response: {e}")))?;
+    const MAX_THEME_RESPONSE_BYTES: usize = 64 * 1024;
+    if resp
+        .content_length()
+        .is_some_and(|length| length > MAX_THEME_RESPONSE_BYTES as u64)
+    {
+        return Err(AppError::BadRequest(
+            "Odysseus theme response is too large".into(),
+        ));
+    }
+    let mut stream = resp.bytes_stream();
+    let mut raw_body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk =
+            chunk.map_err(|_| AppError::BadRequest("Odysseus theme response failed".into()))?;
+        if raw_body.len().saturating_add(chunk.len()) > MAX_THEME_RESPONSE_BYTES {
+            return Err(AppError::BadRequest(
+                "Odysseus theme response is too large".into(),
+            ));
+        }
+        raw_body.extend_from_slice(&chunk);
+    }
+    let body: serde_json::Value = serde_json::from_slice(&raw_body)
+        .map_err(|_| AppError::BadRequest("Odysseus theme response is invalid".into()))?;
 
     let name = body
         .get("value")
@@ -1585,6 +1605,136 @@ mod tests {
             .await
             .unwrap();
         assert!(disabled);
+    }
+
+    #[tokio::test]
+    async fn odysseus_config_rejects_unsafe_endpoint_without_persisting() {
+        let db = setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "admin").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        for url in [
+            "http://169.254.169.254",
+            "http://user:password@127.0.0.1:11434",
+            "http://127.0.0.1:11434/?unsafe=query",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/integrations/odysseus/config")
+                        .header("content-type", "application/json")
+                        .header("cookie", format!("vt_session={session}"))
+                        .body(axum::body::Body::from(format!(
+                            r#"{{"allowed_url":"{url}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::BAD_REQUEST,
+                "{url}"
+            );
+        }
+
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.allowed_url'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(stored.is_none());
+    }
+
+    #[tokio::test]
+    async fn odysseus_config_allows_clearing_the_endpoint() {
+        let db = setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "admin").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        for url in ["http://127.0.0.1:11434", ""] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/integrations/odysseus/config")
+                        .header("content-type", "application/json")
+                        .header("cookie", format!("vt_session={session}"))
+                        .body(axum::body::Body::from(format!(
+                            r#"{{"allowed_url":"{url}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{url}");
+        }
+
+        let stored: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.allowed_url'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(stored.is_empty());
+    }
+
+    #[tokio::test]
+    async fn odysseus_theme_route_uses_validated_local_endpoint() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/api/prefs/theme",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "value": { "name": "light" } }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let db = setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "admin").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(format!(
+                        r#"{{"allowed_url":"http://{}"}}"#,
+                        address
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/integrations/odysseus/theme")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["name"], "light");
+
+        upstream.abort();
     }
 
     #[tokio::test]

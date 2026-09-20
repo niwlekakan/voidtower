@@ -12,7 +12,7 @@ VoidTower already ships with Odysseus integration support:
 - Scoped API tokens (25 scopes)
 - Tool manifest endpoint
 - Server-Sent Events for real-time alerts
-- Signed webhook outbound support
+- Signed webhook inbound support
 - Agent action audit trail
 
 ---
@@ -124,7 +124,7 @@ VoidTower exposes a dedicated Odysseus config endpoint:
 
 ```
 GET  /api/integrations/odysseus/config   → Current Odysseus integration config
-POST /api/integrations/odysseus/config   → Update config (enable, disable, webhook secret, emergency disable)
+POST /api/integrations/odysseus/config   → Update config (enable, URL, webhook secret, emergency disable)
 GET  /api/integrations/odysseus/manifest → Public tool manifest (no auth required)
 ```
 
@@ -132,12 +132,30 @@ GET  /api/integrations/odysseus/manifest → Public tool manifest (no auth requi
 
 ---
 
-## Webhook Configuration
+## Odysseus URL and Webhook Configuration
 
-To send events from VoidTower to Odysseus:
+The `allowed_url` value is the Odysseus base URL used by the legacy AI fallback and the
+administrator-only theme synchronization route. It is not an arbitrary server-side fetch target.
+VoidTower validates it when saved and revalidates it immediately before each outbound request:
+
+- only `http://` and `https://` URLs are accepted;
+- credentials, query strings, fragments, and values longer than 2048 bytes are rejected;
+- the hostname is resolved before use and every resolved address must avoid link-local, metadata,
+  multicast, documentation, and other special-purpose ranges;
+- loopback and RFC1918 addresses are allowed only for a self-hosted Odysseus instance; link-local,
+  metadata, and other prohibited ranges remain blocked;
+- the resolved addresses are pinned for the request, ambient proxy settings are ignored, and
+  redirects are not followed.
+
+Non-empty invalid values return the standard `400 bad_request` error envelope and are not persisted.
+Submitting an empty `allowed_url` explicitly clears the stored endpoint. A runtime validation or
+request failure returns a bounded generic error; transport diagnostics and the configured URL are
+not echoed to the caller.
+
+To configure the URL and inbound webhook credential:
 
 1. In VoidTower: **Settings → Integrations → Odysseus Config**
-2. Set **Allowed Odysseus URL** (e.g. `http://odysseus-host:7000`)
+2. Set **Odysseus base URL** (for example `http://odysseus-host:7000` on a trusted private LAN)
 3. Enable **MCP**
 4. Click **Regenerate** under **Webhook secret** and copy the returned value immediately. The value
    is shown once; VoidTower stores only its encrypted secret-manager representation.
@@ -148,19 +166,10 @@ In Odysseus: **Settings → Integrations → Voidwatch**
 - Set `webhook_secret` to the copied one-time value
 - Ensure `webhook_enabled: true`
 
-VoidTower sends `POST` to `{odysseus_url}/api/voidwatch/webhook` with:
-```
-X-VoidTower-Signature: sha256=<hmac>
-Content-Type: application/json
-
-{
-  "event_type": "service_failed",
-  "timestamp": 1234567890,
-  "resource": { ... }
-}
-```
-
-Event types: `node_down`, `high_cpu`, `high_memory`, `disk_nearly_full`, `service_failed`, `container_unhealthy`, `backup_failed`, `certificate_expiring`, `suspicious_login`, `automation_completed`, `security_finding`, `app_deployment_failed`, `config_drift_detected`.
+`GET /api/integrations/odysseus/theme` uses the configured base URL and returns `{ "name": "…" }`
+when Odysseus responds with a valid bounded theme payload. Non-success, oversized, malformed, or
+unreachable upstream responses return a bounded `400 bad_request` response. Redirect responses are
+not followed.
 
 ### Triggering VoidTower from Odysseus
 

@@ -177,7 +177,7 @@ pub(crate) async fn discard_compatibility_secret(state: &AppState, id: &str) {
 // ── host + token loader ───────────────────────────────────────────────────────
 
 struct HostInfo {
-    url:  String,
+    url: String,
     node: String,
     token: String,
 }
@@ -202,14 +202,10 @@ async fn get_host_and_token(state: &AppState, host_id: &str) -> Result<HostInfo>
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::BadRequest(format!("No token configured for host {host_id}")))?;
 
-    let token = crate::api::secrets::resolve(
-        &state.db,
-        &state.secrets_key,
-        &secret_id,
-        "proxmox_api",
-    )
-    .await
-    .map_err(|error| AppError::BadRequest(format!("Proxmox token unavailable: {error}")))?;
+    let token =
+        crate::api::secrets::resolve(&state.db, &state.secrets_key, &secret_id, "proxmox_api")
+            .await
+            .map_err(|error| AppError::BadRequest(format!("Proxmox token unavailable: {error}")))?;
 
     Ok(HostInfo { url, node, token })
 }
@@ -281,10 +277,10 @@ async fn detect_vm_kind(
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct ProxmoxHost {
-    pub id:          String,
-    pub name:        String,
-    pub url:         String,
-    pub node:        String,
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub node: String,
     pub fingerprint: Option<String>,
 }
 
@@ -299,50 +295,72 @@ pub async fn run_vm_state_monitor(state: crate::AppState) {
         interval.tick().await;
 
         let hosts: Vec<(String,)> = match sqlx::query_as("SELECT id FROM proxmox_hosts")
-            .fetch_all(&state.db).await { Ok(h) => h, Err(_) => continue };
+            .fetch_all(&state.db)
+            .await
+        {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
 
         for (host_id,) in &hosts {
             let host = match get_host_and_token(&state, host_id).await {
-                Ok(h) => h, Err(_) => continue,
+                Ok(h) => h,
+                Err(_) => continue,
             };
-            let client = match build_client() { Ok(c) => c, Err(_) => continue };
+            let client = match build_client() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
             let base = proxmox_base(&host.url);
             let auth = format!("PVEAPIToken={}", host.token);
 
             let nodes = match pve_get(&client, &format!("{}/nodes", base), &auth).await {
-                Ok(v) => v, Err(_) => continue,
+                Ok(v) => v,
+                Err(_) => continue,
             };
-            let node_names: Vec<String> = nodes.as_array().unwrap_or(&vec![])
-                .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+            let node_names: Vec<String> = nodes
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .filter_map(|n| n["node"].as_str().map(String::from))
+                .collect();
 
             for node in &node_names {
                 for kind in &["qemu", "lxc"] {
-                    let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/{}", base, node, kind), &auth).await
-                        else { continue };
+                    let Ok(data) =
+                        pve_get(&client, &format!("{}/nodes/{}/{}", base, node, kind), &auth).await
+                    else {
+                        continue;
+                    };
                     for vm in data.as_array().unwrap_or(&vec![]) {
                         let vmid = vm["vmid"].as_u64().unwrap_or(0);
-                        if vmid == 0 { continue; }
+                        if vmid == 0 {
+                            continue;
+                        }
                         let status = vm["status"].as_str().unwrap_or("unknown").to_string();
-                        let name   = vm["name"].as_str().unwrap_or("unknown").to_string();
-                        let key    = format!("{}/{}", host_id, vmid);
+                        let name = vm["name"].as_str().unwrap_or("unknown").to_string();
+                        let key = format!("{}/{}", host_id, vmid);
 
                         if initialised {
                             if let Some(prev) = known.get(&key) {
                                 if *prev != status {
                                     let (title, sev) = match (prev.as_str(), status.as_str()) {
-                                        ("running", s) if s != "running" =>
-                                            (format!("VM stopped: {name}"), "warning"),
-                                        (_, "running") =>
-                                            (format!("VM started: {name}"), "info"),
-                                        _ =>
-                                            (format!("VM state changed: {name}"), "info"),
+                                        ("running", s) if s != "running" => {
+                                            (format!("VM stopped: {name}"), "warning")
+                                        }
+                                        (_, "running") => (format!("VM started: {name}"), "info"),
+                                        _ => (format!("VM state changed: {name}"), "info"),
                                     };
                                     super::alerts::create_alert(
-                                        &state.db, &title,
+                                        &state.db,
+                                        &title,
                                         &format!("{name} on {node} ({host_id}): {prev} → {status}"),
-                                        sev, "containers",
-                                        Some("proxmox_vm"), Some(&vmid.to_string()),
-                                    ).await;
+                                        sev,
+                                        "containers",
+                                        Some("proxmox_vm"),
+                                        Some(&vmid.to_string()),
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -371,14 +389,13 @@ pub async fn list_hosts(
 
 #[derive(Deserialize)]
 pub struct CreateHostRequest {
-    pub name:        String,
-    pub url:         String,
-    pub node:        Option<String>,
+    pub name: String,
+    pub url: String,
+    pub node: Option<String>,
     pub fingerprint: Option<String>,
-    pub token_id:    String,
+    pub token_id: String,
     pub token_secret: String,
 }
-
 
 pub async fn create_host(
     State(state): State<AppState>,
@@ -443,14 +460,23 @@ pub async fn delete_host(
 
 /// GET a Proxmox API endpoint, unwrap `data`, propagate HTTP errors as 502.
 async fn pve_get(client: &reqwest::Client, url: &str, auth: &str) -> Result<serde_json::Value> {
-    let res = client.get(url).header("Authorization", auth)
-        .send().await.map_err(|e| AppError::BadRequest(format!("Proxmox unreachable: {}", e)))?;
+    let res = client
+        .get(url)
+        .header("Authorization", auth)
+        .send()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Proxmox unreachable: {}", e)))?;
     let status = res.status();
-    let body: serde_json::Value = res.json().await
+    let body: serde_json::Value = res
+        .json()
+        .await
         .map_err(|e| AppError::BadRequest(format!("Proxmox response parse error: {}", e)))?;
     if !status.is_success() {
         let msg = body["errors"].to_string();
-        return Err(AppError::BadRequest(format!("Proxmox {} — {}", status, msg)));
+        return Err(AppError::BadRequest(format!(
+            "Proxmox {} — {}",
+            status, msg
+        )));
     }
     Ok(body["data"].clone())
 }
@@ -463,13 +489,17 @@ pub async fn list_nodes(
     require_admin(&state, &jar).await?;
     let host = get_host_and_token(&state, &host_id).await?;
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let auth  = format!("PVEAPIToken={}", host.token);
-    let base  = proxmox_base(&host.url);
+    let auth = format!("PVEAPIToken={}", host.token);
+    let base = proxmox_base(&host.url);
 
     // Step 1: list node names
     let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await?;
-    let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
-        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+    let names: Vec<String> = node_list
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|n| n["node"].as_str().map(String::from))
+        .collect();
 
     // Step 2: fetch full status per node (includes cpu/mem/disk metrics + kversion)
     let mut result = Vec::new();
@@ -477,11 +507,17 @@ pub async fn list_nodes(
         match pve_get(&client, &format!("{}/nodes/{}/status", base, name), &auth).await {
             Ok(status) => {
                 let mut entry = status.clone();
-                entry["node"]   = serde_json::json!(name);
+                entry["node"] = serde_json::json!(name);
                 entry["status"] = serde_json::json!("online");
 
                 // Subscription is a separate per-node endpoint, not part of /status
-                if let Ok(sub) = pve_get(&client, &format!("{}/nodes/{}/subscription", base, name), &auth).await {
+                if let Ok(sub) = pve_get(
+                    &client,
+                    &format!("{}/nodes/{}/subscription", base, name),
+                    &auth,
+                )
+                .await
+                {
                     entry["subscription_status"] = sub["status"].clone();
                 }
 
@@ -491,7 +527,10 @@ pub async fn list_nodes(
             // metrics-less basic listing — the frontend used to guess "needs Sys.Audit"
             // regardless of the actual cause, which is wrong as often as it's right.
             Err(e) => {
-                if let Some(basic) = node_list.as_array().and_then(|a| a.iter().find(|n| n["node"].as_str() == Some(name.as_str()))) {
+                if let Some(basic) = node_list
+                    .as_array()
+                    .and_then(|a| a.iter().find(|n| n["node"].as_str() == Some(name.as_str())))
+                {
                     let mut entry = basic.clone();
                     entry["status_error"] = serde_json::json!(e.to_string());
                     result.push(entry);
@@ -515,13 +554,19 @@ pub async fn list_vms(
 
     // Discover node names, then query qemu+lxc per node for complete data
     let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await?;
-    let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
-        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+    let names: Vec<String> = node_list
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|n| n["node"].as_str().map(String::from))
+        .collect();
 
     let mut all: Vec<serde_json::Value> = Vec::new();
     for node in &names {
         for kind in &["qemu", "lxc"] {
-            if let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/{}", base, node, kind), &auth).await {
+            if let Ok(data) =
+                pve_get(&client, &format!("{}/nodes/{}/{}", base, node, kind), &auth).await
+            {
                 if let Some(arr) = data.as_array() {
                     for vm in arr {
                         let mut v = vm.clone();
@@ -541,23 +586,33 @@ pub async fn list_vms(
     });
     let correlation_id = uuid::Uuid::new_v4().to_string();
     for vm in &all {
-        let Some(vmid) = vm["vmid"].as_u64() else { continue };
+        let Some(vmid) = vm["vmid"].as_u64() else {
+            continue;
+        };
         let node = vm["node"].as_str().unwrap_or(&host.node);
         let kind = vm["type"].as_str().unwrap_or("qemu");
-        let name = vm["name"].as_str().map(str::to_owned)
+        let name = vm["name"]
+            .as_str()
+            .map(str::to_owned)
             .unwrap_or_else(|| format!("{kind} {vmid}"));
         let scope = format!("{host_id}/{node}");
         let alias = format!("{kind}:{vmid}");
         crate::operations::resources::observe(
             &state.db,
             crate::operations::resources::ObserveResource {
-                kind: "proxmox_guest", display_name: &name, node_id: None,
-                provider: Some("proxmox"), namespace: "proxmox.guest",
-                scope_key: &scope, alias: &alias,
+                kind: "proxmox_guest",
+                display_name: &name,
+                node_id: None,
+                provider: Some("proxmox"),
+                namespace: "proxmox.guest",
+                scope_key: &scope,
+                alias: &alias,
             },
             actor.clone(),
             &correlation_id,
-        ).await.map_err(AppError::Internal)?;
+        )
+        .await
+        .map_err(AppError::Internal)?;
     }
     Ok(Json(serde_json::json!(all)))
 }
@@ -575,13 +630,18 @@ pub async fn list_storage(
 
     // Discover nodes, collect storage from each
     let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await?;
-    let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
-        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+    let names: Vec<String> = node_list
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|n| n["node"].as_str().map(String::from))
+        .collect();
 
     let mut all: Vec<serde_json::Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for node in &names {
-        if let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/storage", base, node), &auth).await {
+        if let Ok(data) = pve_get(&client, &format!("{}/nodes/{}/storage", base, node), &auth).await
+        {
             if let Some(arr) = data.as_array() {
                 for s in arr {
                     let key = s["storage"].as_str().unwrap_or("").to_string();
@@ -590,16 +650,23 @@ pub async fn list_storage(
                         crate::operations::resources::observe(
                             &state.db,
                             crate::operations::resources::ObserveResource {
-                                kind: "proxmox_storage", display_name: &key, node_id: None,
-                                provider: Some("proxmox"), namespace: "proxmox.storage",
-                                scope_key: &scope, alias: &key,
+                                kind: "proxmox_storage",
+                                display_name: &key,
+                                node_id: None,
+                                provider: Some("proxmox"),
+                                namespace: "proxmox.storage",
+                                scope_key: &scope,
+                                alias: &key,
                             },
                             Some(crate::operations::contracts::ActorRef {
                                 actor_type: crate::operations::contracts::ActorType::Human,
-                                id: Some(user.id.clone()), source: Some("proxmox_inventory".into()),
+                                id: Some(user.id.clone()),
+                                source: Some("proxmox_inventory".into()),
                             }),
                             &uuid::Uuid::new_v4().to_string(),
-                        ).await.map_err(AppError::Internal)?;
+                        )
+                        .await
+                        .map_err(AppError::Internal)?;
                     }
                     if seen.insert(key) {
                         let mut entry = s.clone();
@@ -625,18 +692,33 @@ pub async fn list_tasks(
     let auth = format!("PVEAPIToken={}", host.token);
 
     let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await?;
-    let names: Vec<String> = node_list.as_array().unwrap_or(&vec![])
-        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+    let names: Vec<String> = node_list
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|n| n["node"].as_str().map(String::from))
+        .collect();
 
     let mut all_tasks: Vec<serde_json::Value> = Vec::new();
     for node in &names {
-        if let Ok(tasks) = pve_get(&client, &format!("{}/nodes/{}/tasks?limit=50", base, node), &auth).await {
+        if let Ok(tasks) = pve_get(
+            &client,
+            &format!("{}/nodes/{}/tasks?limit=50", base, node),
+            &auth,
+        )
+        .await
+        {
             if let Some(arr) = tasks.as_array() {
                 all_tasks.extend(arr.iter().cloned());
             }
         }
     }
-    all_tasks.sort_by(|a, b| b["starttime"].as_u64().unwrap_or(0).cmp(&a["starttime"].as_u64().unwrap_or(0)));
+    all_tasks.sort_by(|a, b| {
+        b["starttime"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["starttime"].as_u64().unwrap_or(0))
+    });
     all_tasks.truncate(50);
     Ok(Json(serde_json::json!(all_tasks)))
 }
@@ -655,27 +737,45 @@ pub async fn list_backup_jobs(
     let auth = format!("PVEAPIToken={}", host.token);
 
     // Cluster-level scheduled backup jobs
-    let jobs = pve_get(&client, &format!("{}/cluster/backup", base), &auth).await
+    let jobs = pve_get(&client, &format!("{}/cluster/backup", base), &auth)
+        .await
         .unwrap_or(serde_json::json!([]));
 
     // Backup archives: query each node's storages and collect backup content
-    let node_list = pve_get(&client, &format!("{}/nodes", base), &auth).await
+    let node_list = pve_get(&client, &format!("{}/nodes", base), &auth)
+        .await
         .unwrap_or(serde_json::json!([]));
-    let nodes: Vec<String> = node_list.as_array().unwrap_or(&vec![])
-        .iter().filter_map(|n| n["node"].as_str().map(String::from)).collect();
+    let nodes: Vec<String> = node_list
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|n| n["node"].as_str().map(String::from))
+        .collect();
 
     let mut archives: Vec<serde_json::Value> = Vec::new();
     for node in &nodes {
-        if let Ok(storages) = pve_get(&client, &format!("{}/nodes/{}/storage", base, node), &auth).await {
-            let storage_names: Vec<String> = storages.as_array().unwrap_or(&vec![])
+        if let Ok(storages) =
+            pve_get(&client, &format!("{}/nodes/{}/storage", base, node), &auth).await
+        {
+            let storage_names: Vec<String> = storages
+                .as_array()
+                .unwrap_or(&vec![])
                 .iter()
-                .filter(|s| s["content"].as_str().map(|c| c.contains("backup")).unwrap_or(false)
-                    && s["active"].as_u64().unwrap_or(0) == 1)
+                .filter(|s| {
+                    s["content"]
+                        .as_str()
+                        .map(|c| c.contains("backup"))
+                        .unwrap_or(false)
+                        && s["active"].as_u64().unwrap_or(0) == 1
+                })
                 .filter_map(|s| s["storage"].as_str().map(String::from))
                 .collect();
 
             for storage in &storage_names {
-                let url = format!("{}/nodes/{}/storage/{}/content?content=backup", base, node, storage);
+                let url = format!(
+                    "{}/nodes/{}/storage/{}/content?content=backup",
+                    base, node, storage
+                );
                 if let Ok(content) = pve_get(&client, &url, &auth).await {
                     if let Some(arr) = content.as_array() {
                         for item in arr {
@@ -690,7 +790,12 @@ pub async fn list_backup_jobs(
         }
     }
 
-    archives.sort_by(|a, b| b["ctime"].as_u64().unwrap_or(0).cmp(&a["ctime"].as_u64().unwrap_or(0)));
+    archives.sort_by(|a, b| {
+        b["ctime"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["ctime"].as_u64().unwrap_or(0))
+    });
 
     Ok(Json(serde_json::json!({
         "jobs": jobs,
@@ -706,65 +811,94 @@ pub struct DryRunBody {
     pub dry_run: bool,
 }
 
-
 pub async fn vm_start(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     guest_action(&state, &jar, &headers, host_id, vmid, "start", body).await
 }
 
 pub async fn vm_stop(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     guest_action(&state, &jar, &headers, host_id, vmid, "stop", body).await
 }
 
 pub async fn vm_shutdown(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     guest_action(&state, &jar, &headers, host_id, vmid, "shutdown", body).await
 }
 
 pub async fn vm_reboot(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     guest_action(&state, &jar, &headers, host_id, vmid, "reboot", body).await
 }
 
 pub async fn vm_reset(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     guest_action(&state, &jar, &headers, host_id, vmid, "reset", body).await
 }
 
 pub async fn vm_suspend(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, vmid)): Path<(String, u64)>, body: Option<Json<DryRunBody>>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     guest_action(&state, &jar, &headers, host_id, vmid, "suspend", body).await
 }
 
 pub async fn vm_resume(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
     Path((host_id, vmid)): Path<(String, u64)>,
 ) -> CompatibilityResult<Response> {
     guest_action(&state, &jar, &headers, host_id, vmid, "resume", None).await
 }
 
 async fn guest_action(
-    state: &AppState, jar: &CookieJar, headers: &HeaderMap,
-    host_id: String, vmid: u64, action: &str, body: Option<Json<DryRunBody>>,
+    state: &AppState,
+    jar: &CookieJar,
+    headers: &HeaderMap,
+    host_id: String,
+    vmid: u64,
+    action: &str,
+    body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     prepare_or_submit(
-        state, jar, headers, &format!("proxmox.guest.{action}"),
-        guest_selector(host_id, vmid), serde_json::json!({}),
+        state,
+        jar,
+        headers,
+        &format!("proxmox.guest.{action}"),
+        guest_selector(host_id, vmid),
+        serde_json::json!({}),
         body.is_some_and(|body| body.dry_run),
-    ).await
+    )
+    .await
 }
 #[derive(Deserialize)]
 pub struct SnapshotBody {
@@ -774,41 +908,61 @@ pub struct SnapshotBody {
     pub dry_run: bool,
 }
 
-
 pub async fn vm_snapshot(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, vmid)): Path<(String, u64)>, Json(req): Json<SnapshotBody>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    Json(req): Json<SnapshotBody>,
 ) -> CompatibilityResult<Response> {
     prepare_or_submit(
-        &state, &jar, &headers, "proxmox.snapshot.create",
+        &state,
+        &jar,
+        &headers,
+        "proxmox.snapshot.create",
         guest_selector(host_id, vmid),
         serde_json::json!({"name": req.name, "description": req.description}),
         req.dry_run,
-    ).await
+    )
+    .await
 }
 
 pub async fn vm_rollback(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
     Path((host_id, vmid, snapname)): Path<(String, u64, String)>,
     body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     prepare_or_submit(
-        &state, &jar, &headers, "proxmox.snapshot.rollback",
-        guest_selector(host_id, vmid), serde_json::json!({"name": snapname}),
+        &state,
+        &jar,
+        &headers,
+        "proxmox.snapshot.rollback",
+        guest_selector(host_id, vmid),
+        serde_json::json!({"name": snapname}),
         body.is_some_and(|body| body.dry_run),
-    ).await
+    )
+    .await
 }
 
 pub async fn vm_delete_snapshot(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
     Path((host_id, vmid, snapname)): Path<(String, u64, String)>,
     body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     prepare_or_submit(
-        &state, &jar, &headers, "proxmox.snapshot.delete",
-        guest_selector(host_id, vmid), serde_json::json!({"name": snapname}),
+        &state,
+        &jar,
+        &headers,
+        "proxmox.snapshot.delete",
+        guest_selector(host_id, vmid),
+        serde_json::json!({"name": snapname}),
         body.is_some_and(|body| body.dry_run),
-    ).await
+    )
+    .await
 }
 pub async fn vm_vncproxy(
     State(state): State<AppState>,
@@ -822,7 +976,13 @@ pub async fn vm_vncproxy(
     let auth_header = format!("PVEAPIToken={}", host.token);
 
     let kind = detect_vm_kind(&client, &base, &host.node, vmid, &auth_header).await?;
-    let url = format!("{}/nodes/{}/{}/{}/vncproxy", base, host.node, kind.path_segment(), vmid);
+    let url = format!(
+        "{}/nodes/{}/{}/{}/vncproxy",
+        base,
+        host.node,
+        kind.path_segment(),
+        vmid
+    );
 
     let res = client
         .post(&url)
@@ -834,25 +994,42 @@ pub async fn vm_vncproxy(
 
     if !res.status().is_success() {
         let msg = res.text().await.unwrap_or_default();
-        return Err(AppError::Internal(anyhow::anyhow!("vncproxy error: {}", msg)));
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "vncproxy error: {}",
+            msg
+        )));
     }
 
-    let body: serde_json::Value = res.json().await
+    let body: serde_json::Value = res
+        .json()
+        .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("vncproxy parse: {}", e)))?;
 
     let data = &body["data"];
     let ticket = data["ticket"].as_str().unwrap_or("").to_string();
-    let port   = data["port"].as_u64().unwrap_or(5900);
+    let port = data["port"].as_u64().unwrap_or(5900);
 
     audit::log(
-        &state.db, Some(&user.id), &user.username,
-        "proxmox.vnc.ticket.issue", Some("proxmox_guest"), Some(&vmid.to_string()),
-        "success", None,
-        Some(&format!("host={} node={} kind={}", host_id, host.node, kind.as_str())),
-    ).await;
+        &state.db,
+        Some(&user.id),
+        &user.username,
+        "proxmox.vnc.ticket.issue",
+        Some("proxmox_guest"),
+        Some(&vmid.to_string()),
+        "success",
+        None,
+        Some(&format!(
+            "host={} node={} kind={}",
+            host_id,
+            host.node,
+            kind.as_str()
+        )),
+    )
+    .await;
 
     // Strip scheme so the frontend can build wss:// from it
-    let proxmox_host = host.url
+    let proxmox_host = host
+        .url
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .trim_end_matches('/')
@@ -884,19 +1061,32 @@ pub struct DeployToLxcRequest {
     pub disk_gb: u32,
 }
 
-fn lxc_default_cores()   -> u32    { 2 }
-fn lxc_default_memory()  -> u32    { 1024 }
-fn lxc_default_storage() -> String { "local-lvm".into() }
-fn lxc_default_disk()    -> u32    { 20 }
-
+fn lxc_default_cores() -> u32 {
+    2
+}
+fn lxc_default_memory() -> u32 {
+    1024
+}
+fn lxc_default_storage() -> String {
+    "local-lvm".into()
+}
+fn lxc_default_disk() -> u32 {
+    20
+}
 
 pub async fn deploy_app_to_lxc(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path(host_id): Path<String>, Json(req): Json<DeployToLxcRequest>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path(host_id): Path<String>,
+    Json(req): Json<DeployToLxcRequest>,
 ) -> CompatibilityResult<Response> {
     let _compose_yaml = req.compose_yaml;
     prepare_or_submit(
-        &state, &jar, &headers, "proxmox.lxc.deploy",
+        &state,
+        &jar,
+        &headers,
+        "proxmox.lxc.deploy",
         ProxmoxSelector::Host { host_id },
         serde_json::json!({
             "node": req.node,
@@ -908,7 +1098,8 @@ pub async fn deploy_app_to_lxc(
             "disk_gb": req.disk_gb,
         }),
         false,
-    ).await
+    )
+    .await
 }
 pub async fn list_snapshots(
     State(state): State<AppState>,
@@ -921,7 +1112,13 @@ pub async fn list_snapshots(
     let client = build_client().map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let auth = format!("PVEAPIToken={}", host.token);
     let kind = params.get("kind").map(|s| s.as_str()).unwrap_or("qemu");
-    let url = format!("{}/nodes/{}/{}/{}/snapshot", proxmox_base(&host.url), host.node, kind, vmid);
+    let url = format!(
+        "{}/nodes/{}/{}/{}/snapshot",
+        proxmox_base(&host.url),
+        host.node,
+        kind,
+        vmid
+    );
     let data = pve_get(&client, &url, &auth).await?;
     Ok(Json(data))
 }
@@ -943,26 +1140,36 @@ pub async fn list_storage_content(
     Ok(Json(data))
 }
 
-
 pub async fn upload_storage_content(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
     Path((host_id, node, storage)): Path<(String, String, String)>,
     request: axum::extract::Request,
 ) -> CompatibilityResult<Response> {
     use tokio::io::AsyncWriteExt;
 
     let credential = super::actions::credential(&state, &jar, None).await?;
-    let selector = ProxmoxSelector::Storage { host_id, node, storage };
+    let selector = ProxmoxSelector::Storage {
+        host_id,
+        node,
+        storage,
+    };
     proxmox_adoption::resolve_target(
-        &state.db, state.secrets_key.clone(), &credential,
-        "proxmox.storage.upload", selector.clone(),
-    ).await?;
+        &state.db,
+        state.secrets_key.clone(),
+        &credential,
+        "proxmox.storage.upload",
+        selector.clone(),
+    )
+    .await?;
     let mut multipart = Multipart::from_request(request, &state)
         .await
         .map_err(|error| AppError::BadRequest(format!("Invalid upload: {error}")))?;
 
     let root = state.config.data_dir.join("proxmox-uploads");
-    tokio::fs::create_dir_all(&root).await
+    tokio::fs::create_dir_all(&root)
+        .await
         .map_err(|error| AppError::Internal(error.into()))?;
     let mut content = None;
     let mut staged_name: Option<String> = None;
@@ -992,14 +1199,27 @@ pub async fn upload_storage_content(
             Some("filename") => {
                 if let Some(name) = &staged_name {
                     let _ = tokio::fs::remove_file(root.join(name)).await;
-                    return Err(AppError::BadRequest("Only one upload file is allowed".into()).into());
+                    return Err(
+                        AppError::BadRequest("Only one upload file is allowed".into()).into(),
+                    );
                 }
-                let safe_name: String = field.file_name().unwrap_or("upload.bin").chars()
-                    .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
-                    .take(180).collect();
+                let safe_name: String = field
+                    .file_name()
+                    .unwrap_or("upload.bin")
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .take(180)
+                    .collect();
                 let name = format!("{}--{}", uuid::Uuid::new_v4(), safe_name);
                 let path = root.join(&name);
-                let mut file = tokio::fs::File::create(&path).await
+                let mut file = tokio::fs::File::create(&path)
+                    .await
                     .map_err(|error| AppError::Internal(error.into()))?;
                 let mut length = 0u64;
                 loop {
@@ -1007,7 +1227,9 @@ pub async fn upload_storage_content(
                         Ok(chunk) => chunk,
                         Err(error) => {
                             let _ = tokio::fs::remove_file(&path).await;
-                            return Err(AppError::BadRequest(format!("Invalid upload: {error}")).into());
+                            return Err(
+                                AppError::BadRequest(format!("Invalid upload: {error}")).into()
+                            );
                         }
                     };
                     let Some(chunk) = chunk else { break };
@@ -1030,8 +1252,8 @@ pub async fn upload_storage_content(
             _ => {}
         }
     }
-    let staged_name = staged_name
-        .ok_or_else(|| AppError::BadRequest("Missing filename field".into()))?;
+    let staged_name =
+        staged_name.ok_or_else(|| AppError::BadRequest("Missing filename field".into()))?;
     let content = match content {
         Some(content) => content,
         None => {
@@ -1041,9 +1263,15 @@ pub async fn upload_storage_content(
     };
     let input = serde_json::json!({"content": content, "staged_file": staged_name});
     let result = prepare_or_submit_with_credential(
-        &state, &credential, &headers, "proxmox.storage.upload",
-        selector, input, false,
-    ).await;
+        &state,
+        &credential,
+        &headers,
+        "proxmox.storage.upload",
+        selector,
+        input,
+        false,
+    )
+    .await;
     if result.is_err() {
         let _ = tokio::fs::remove_file(root.join(&staged_name)).await;
     }
@@ -1054,18 +1282,28 @@ pub struct VolidQuery {
     pub volid: String,
 }
 
-
 pub async fn delete_storage_content(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
     Path((host_id, node, storage)): Path<(String, String, String)>,
-    Query(q): Query<VolidQuery>, body: Option<Json<DryRunBody>>,
+    Query(q): Query<VolidQuery>,
+    body: Option<Json<DryRunBody>>,
 ) -> CompatibilityResult<Response> {
     prepare_or_submit(
-        &state, &jar, &headers, "proxmox.storage.delete",
-        ProxmoxSelector::Storage { host_id, node, storage },
+        &state,
+        &jar,
+        &headers,
+        "proxmox.storage.delete",
+        ProxmoxSelector::Storage {
+            host_id,
+            node,
+            storage,
+        },
         serde_json::json!({"volid": q.volid}),
         body.is_some_and(|body| body.dry_run),
-    ).await
+    )
+    .await
 }
 // ── physical disk management ──────────────────────────────────────────────────
 
@@ -1085,24 +1323,37 @@ pub async fn list_node_disks(
         let correlation_id = uuid::Uuid::new_v4().to_string();
         let scope = format!("{host_id}/{node}");
         for disk in disks {
-            let path = disk["devpath"].as_str()
-                .or_else(|| disk["device"].as_str()).unwrap_or("");
-            if path.is_empty() { continue; }
-            let display_name = disk["model"].as_str()
-                .filter(|value| !value.is_empty()).unwrap_or(path);
+            let path = disk["devpath"]
+                .as_str()
+                .or_else(|| disk["device"].as_str())
+                .unwrap_or("");
+            if path.is_empty() {
+                continue;
+            }
+            let display_name = disk["model"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .unwrap_or(path);
             crate::operations::resources::observe(
                 &state.db,
                 crate::operations::resources::ObserveResource {
-                    kind: "proxmox_disk", display_name, node_id: None,
-                    provider: Some("proxmox"), namespace: "proxmox.disk",
-                    scope_key: &scope, alias: path,
+                    kind: "proxmox_disk",
+                    display_name,
+                    node_id: None,
+                    provider: Some("proxmox"),
+                    namespace: "proxmox.disk",
+                    scope_key: &scope,
+                    alias: path,
                 },
                 Some(crate::operations::contracts::ActorRef {
                     actor_type: crate::operations::contracts::ActorType::Human,
-                    id: Some(user.id.clone()), source: Some("proxmox_inventory".into()),
+                    id: Some(user.id.clone()),
+                    source: Some("proxmox_inventory".into()),
                 }),
                 &correlation_id,
-            ).await.map_err(AppError::Internal)?;
+            )
+            .await
+            .map_err(AppError::Internal)?;
         }
     }
     Ok(Json(data))
@@ -1138,16 +1389,27 @@ pub struct WipeDiskBody {
     pub dry_run: bool,
 }
 
-
 pub async fn wipe_disk(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, node)): Path<(String, String)>, Json(req): Json<WipeDiskBody>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, node)): Path<(String, String)>,
+    Json(req): Json<WipeDiskBody>,
 ) -> CompatibilityResult<Response> {
     prepare_or_submit(
-        &state, &jar, &headers, "proxmox.disk.wipe",
-        ProxmoxSelector::Disk { host_id, node, disk: req.disk },
-        serde_json::json!({}), req.dry_run,
-    ).await
+        &state,
+        &jar,
+        &headers,
+        "proxmox.disk.wipe",
+        ProxmoxSelector::Disk {
+            host_id,
+            node,
+            disk: req.disk,
+        },
+        serde_json::json!({}),
+        req.dry_run,
+    )
+    .await
 }
 #[derive(Deserialize)]
 pub struct InitDiskBody {
@@ -1160,21 +1422,31 @@ pub struct InitDiskBody {
     pub dry_run: bool,
 }
 
-
 pub async fn init_disk_storage(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, node)): Path<(String, String)>, Json(req): Json<InitDiskBody>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, node)): Path<(String, String)>,
+    Json(req): Json<InitDiskBody>,
 ) -> CompatibilityResult<Response> {
     prepare_or_submit(
-        &state, &jar, &headers, "proxmox.disk.initialize",
-        ProxmoxSelector::Disk { host_id, node, disk: req.disk },
+        &state,
+        &jar,
+        &headers,
+        "proxmox.disk.initialize",
+        ProxmoxSelector::Disk {
+            host_id,
+            node,
+            disk: req.disk,
+        },
         serde_json::json!({
             "fstype": req.fstype,
             "name": req.name,
             "raidlevel": req.raidlevel,
         }),
         req.dry_run,
-    ).await
+    )
+    .await
 }
 // ── disk passthrough to VM ────────────────────────────────────────────────────
 
@@ -1192,15 +1464,22 @@ fn default_passthrough_bus() -> String {
 }
 
 pub async fn vm_disk_passthrough(
-    State(state): State<AppState>, jar: CookieJar, headers: HeaderMap,
-    Path((host_id, vmid)): Path<(String, u64)>, Json(req): Json<DiskPassthroughBody>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((host_id, vmid)): Path<(String, u64)>,
+    Json(req): Json<DiskPassthroughBody>,
 ) -> CompatibilityResult<Response> {
     prepare_or_submit(
-        &state, &jar, &headers, "proxmox.disk.attach",
+        &state,
+        &jar,
+        &headers,
+        "proxmox.disk.attach",
         guest_selector(host_id, vmid),
         serde_json::json!({"disk_path": req.disk_path, "bus": req.bus}),
         req.dry_run,
-    ).await
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -1269,20 +1548,28 @@ mod tests {
                 token_id: "root@pam!voidtower".into(),
                 token_secret: "supersecret".into(),
             }),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let hosts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM proxmox_hosts")
-            .fetch_one(&pool).await.unwrap();
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(hosts, 0);
-        let input: String = sqlx::query_scalar(
-            "SELECT input_json FROM jobs WHERE action = 'proxmox.host.create'",
-        ).fetch_one(&pool).await.unwrap();
+        let input: String =
+            sqlx::query_scalar("SELECT input_json FROM jobs WHERE action = 'proxmox.host.create'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!(!input.contains("supersecret"));
         assert!(!input.contains("root@pam!voidtower="));
         assert!(input.contains("token_secret_id"));
-        let encrypted: String = sqlx::query_scalar(
-            "SELECT value_enc FROM secrets WHERE name LIKE 'proxmox_staged_%'",
-        ).fetch_one(&pool).await.unwrap();
+        let encrypted: String =
+            sqlx::query_scalar("SELECT value_enc FROM secrets WHERE name LIKE 'proxmox_staged_%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(
             crate::api::secrets::decrypt(&state.secrets_key, &encrypted).unwrap(),
             "root@pam!voidtower=supersecret"
@@ -1365,12 +1652,23 @@ mod tests {
         }
 
         for action in [
-            "proxmox.host.create", "proxmox.host.delete", "proxmox.guest.{action}",
-            "proxmox.snapshot.create", "proxmox.snapshot.rollback", "proxmox.snapshot.delete",
-            "proxmox.disk.attach", "proxmox.lxc.deploy", "proxmox.storage.upload",
-            "proxmox.storage.delete", "proxmox.disk.wipe", "proxmox.disk.initialize",
+            "proxmox.host.create",
+            "proxmox.host.delete",
+            "proxmox.guest.{action}",
+            "proxmox.snapshot.create",
+            "proxmox.snapshot.rollback",
+            "proxmox.snapshot.delete",
+            "proxmox.disk.attach",
+            "proxmox.lxc.deploy",
+            "proxmox.storage.upload",
+            "proxmox.storage.delete",
+            "proxmox.disk.wipe",
+            "proxmox.disk.initialize",
         ] {
-            assert!(source.contains(action), "missing compatibility mapping {action}");
+            assert!(
+                source.contains(action),
+                "missing compatibility mapping {action}"
+            );
         }
     }
 }

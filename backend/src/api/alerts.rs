@@ -1,6 +1,5 @@
 use crate::{
-    audit,
-    auth,
+    audit, auth,
     error::{AppError, Result},
     AppState,
 };
@@ -40,7 +39,9 @@ pub struct ListQuery {
     pub offset: i64,
 }
 
-fn default_limit() -> i64 { 100 }
+fn default_limit() -> i64 {
+    100
+}
 
 #[derive(Serialize)]
 pub struct AlertsResponse {
@@ -145,7 +146,8 @@ pub async fn acknowledge(
         &state.db,
         "alert.acked",
         &format!("Alert {id} acknowledged by {}", user.username),
-    ).await;
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -161,7 +163,7 @@ pub async fn resolve(
     let now = unix_now();
 
     sqlx::query(
-        "UPDATE alerts SET state = 'resolved', resolved_at = ?, updated_at = ? WHERE id = ?"
+        "UPDATE alerts SET state = 'resolved', resolved_at = ?, updated_at = ? WHERE id = ?",
     )
     .bind(now)
     .bind(now)
@@ -187,7 +189,8 @@ pub async fn resolve(
         &state.db,
         "alert.resolved",
         &format!("Alert {id} resolved by {}", user.username),
-    ).await;
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -247,9 +250,11 @@ pub async fn create_alert(
             // Inherit tags from the source resource (if any)
             if let (Some(rtype), Some(rid)) = (resource_type, resource_id) {
                 #[derive(sqlx::FromRow)]
-                struct TagId { tag_id: String }
+                struct TagId {
+                    tag_id: String,
+                }
                 if let Ok(tag_ids) = sqlx::query_as::<_, TagId>(
-                    "SELECT tag_id FROM resource_tags WHERE resource_type = ? AND resource_id = ?"
+                    "SELECT tag_id FROM resource_tags WHERE resource_type = ? AND resource_id = ?",
                 )
                 .bind(rtype)
                 .bind(rid)

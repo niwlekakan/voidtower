@@ -520,11 +520,7 @@ mod tests {
         let state = crate::api::mcp::test_support::build(pool);
         let jar = CookieJar::new().add(Cookie::new("vt_session", session));
 
-        let result = local_action(
-            State(state),
-            jar,
-        )
-        .await;
+        let result = local_action(State(state), jar).await;
 
         assert!(
             matches!(result, Err(AppError::FeatureUnavailable(ref message)) if message.contains("canonical operation")),

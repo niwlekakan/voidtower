@@ -16,11 +16,7 @@ use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use serde::Serialize;
 use sqlx::SqlitePool;
-use std::{
-    process::Stdio,
-    sync::Arc,
-    time::Duration,
-};
+use std::{process::Stdio, sync::Arc, time::Duration};
 
 const ACTION: &str = "automation.run";
 const RESOURCE_KIND: &str = "automation_job";
@@ -86,7 +82,10 @@ impl AutomationAdapter {
             "automation.run requires an automation_job resource"
         );
         ensure!(
-            request.input.as_object().is_some_and(serde_json::Map::is_empty),
+            request
+                .input
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty),
             "automation.run input must be an empty object"
         );
         Ok(())
@@ -119,7 +118,8 @@ impl OperationAdapter for AutomationAdapter {
             timeout_secs: record.timeout_secs,
             enabled: record.enabled,
         };
-        let metadata = action_registry::action(ACTION).context("automation action metadata missing")?;
+        let metadata =
+            action_registry::action(ACTION).context("automation action metadata missing")?;
         Ok(OperationPlanV1 {
             schema_version: 1,
             title: format!("Run automation {}", record.name),
@@ -139,8 +139,17 @@ impl OperationAdapter for AutomationAdapter {
             steps: vec![PlannedStepV1 {
                 kind: "execute".into(),
                 name: ACTION.into(),
-                retry_class: metadata.retry.context("automation action retry metadata missing")?.class.as_str().into(),
-                recovery_class: metadata.recovery.context("automation action recovery metadata missing")?.as_str().into(),
+                retry_class: metadata
+                    .retry
+                    .context("automation action retry metadata missing")?
+                    .class
+                    .as_str()
+                    .into(),
+                recovery_class: metadata
+                    .recovery
+                    .context("automation action recovery metadata missing")?
+                    .as_str()
+                    .into(),
             }],
         })
     }
@@ -166,9 +175,18 @@ impl OperationAdapter for AutomationAdapter {
 
     async fn execute_step(&self, request: StepRequest) -> Result<StepOutcome> {
         ensure!(request.action == ACTION, "unsupported automation action");
-        ensure!(request.resource.kind == RESOURCE_KIND, "invalid automation resource kind");
-        ensure!(request.step.kind == "execute", "unsupported automation step kind");
-        ensure!(request.step.name == ACTION, "automation step/action mismatch");
+        ensure!(
+            request.resource.kind == RESOURCE_KIND,
+            "invalid automation resource kind"
+        );
+        ensure!(
+            request.step.kind == "execute",
+            "unsupported automation step kind"
+        );
+        ensure!(
+            request.step.name == ACTION,
+            "automation step/action mismatch"
+        );
         let record = self.record(&request.resource.id).await?;
         ensure!(record.enabled, "automation job is disabled");
         ensure!(
@@ -200,24 +218,26 @@ impl OperationAdapter for AutomationAdapter {
         .await?
         .rows_affected();
         if inserted == 0 {
-            return self.reconcile_existing_run(&request.job_id).await.map(|outcome| match outcome {
-                ReconcileOutcome::Succeeded { result } => StepOutcome::Succeeded {
-                    result,
-                    external_operation_id: None,
+            return self.reconcile_existing_run(&request.job_id).await.map(
+                |outcome| match outcome {
+                    ReconcileOutcome::Succeeded { result } => StepOutcome::Succeeded {
+                        result,
+                        external_operation_id: None,
+                    },
+                    ReconcileOutcome::Failed { code, message } => StepOutcome::Failed {
+                        code,
+                        message,
+                        retryable: false,
+                        diagnostic: None,
+                    },
+                    ReconcileOutcome::StillUncertain { message } => StepOutcome::Uncertain {
+                        code: "automation_run_already_exists".into(),
+                        message,
+                        external_operation_id: None,
+                        diagnostic: None,
+                    },
                 },
-                ReconcileOutcome::Failed { code, message } => StepOutcome::Failed {
-                    code,
-                    message,
-                    retryable: false,
-                    diagnostic: None,
-                },
-                ReconcileOutcome::StillUncertain { message } => StepOutcome::Uncertain {
-                    code: "automation_run_already_exists".into(),
-                    message,
-                    external_operation_id: None,
-                    diagnostic: None,
-                },
-            });
+            );
         }
 
         let timeout = Duration::from_secs(record.timeout_secs as u64);
@@ -229,13 +249,19 @@ impl OperationAdapter for AutomationAdapter {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let child = command.spawn().context("failed to spawn automation process")?;
+        let child = command
+            .spawn()
+            .context("failed to spawn automation process")?;
         let pid = child.id();
         let command_result = tokio::time::timeout(timeout, child.wait_with_output()).await;
         let (status, exit_code, output) = match command_result {
             Ok(Ok(output)) => {
                 let exit_code = output.status.code().map(i64::from);
-                let status = if output.status.success() { "success" } else { "failure" };
+                let status = if output.status.success() {
+                    "success"
+                } else {
+                    "failure"
+                };
                 let combined = format!(
                     "{}{}",
                     String::from_utf8_lossy(&output.stdout),
@@ -333,12 +359,11 @@ impl AutomationAdapter {
     }
 
     async fn reconcile_existing_run(&self, run_id: &str) -> Result<ReconcileOutcome> {
-        let row: Option<(String, Option<i64>, String)> = sqlx::query_as(
-            "SELECT status, exit_code, output FROM automation_runs WHERE id = ?",
-        )
-        .bind(run_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String, Option<i64>, String)> =
+            sqlx::query_as("SELECT status, exit_code, output FROM automation_runs WHERE id = ?")
+                .bind(run_id)
+                .fetch_optional(&self.pool)
+                .await?;
         let Some((status, exit_code, output)) = row else {
             return Ok(ReconcileOutcome::Failed {
                 code: "automation_run_missing".into(),
@@ -437,7 +462,9 @@ mod tests {
             .await
             .unwrap();
         assert!(!plan.title.contains("sensitive-command"));
-        assert!(!serde_json::to_string(&plan).unwrap().contains("sensitive-command"));
+        assert!(!serde_json::to_string(&plan)
+            .unwrap()
+            .contains("sensitive-command"));
     }
 
     #[tokio::test]
@@ -489,12 +516,11 @@ mod tests {
         };
         assert_eq!(result["status"], "success");
         assert_eq!(result["output"], "canonical-output");
-        let status: String = sqlx::query_scalar(
-            "SELECT status FROM automation_runs WHERE id = 'operation-job-1'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM automation_runs WHERE id = 'operation-job-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(status, "success");
 
         sqlx::query(

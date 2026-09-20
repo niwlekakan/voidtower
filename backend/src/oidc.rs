@@ -25,7 +25,10 @@ pub struct OidcSettings {
 }
 
 #[allow(clippy::type_complexity)]
-pub async fn load_settings(db: &SqlitePool, secrets_key: &[u8; 32]) -> Result<Option<OidcSettings>> {
+pub async fn load_settings(
+    db: &SqlitePool,
+    secrets_key: &[u8; 32],
+) -> Result<Option<OidcSettings>> {
     let row: Option<(
         bool,
         Option<String>,
@@ -92,8 +95,8 @@ pub async fn load_settings(db: &SqlitePool, secrets_key: &[u8; 32]) -> Result<Op
 }
 
 pub async fn build_client(settings: &OidcSettings) -> Result<CoreClient> {
-    let issuer =
-        IssuerUrl::new(settings.issuer_url.clone()).map_err(|e| anyhow!("invalid issuer_url: {e}"))?;
+    let issuer = IssuerUrl::new(settings.issuer_url.clone())
+        .map_err(|e| anyhow!("invalid issuer_url: {e}"))?;
     let metadata = CoreProviderMetadata::discover_async(issuer, async_http_client)
         .await
         .map_err(|e| anyhow!("OIDC discovery failed: {e}"))?;
@@ -114,11 +117,15 @@ pub async fn build_client(settings: &OidcSettings) -> Result<CoreClient> {
 /// Separately exposes the userinfo endpoint URL discovered for a client's issuer,
 /// since `CoreClient` doesn't expose it directly after construction.
 pub async fn discover_userinfo_endpoint(issuer_url: &str) -> Result<Option<String>> {
-    let issuer = IssuerUrl::new(issuer_url.to_string()).map_err(|e| anyhow!("invalid issuer_url: {e}"))?;
+    let issuer =
+        IssuerUrl::new(issuer_url.to_string()).map_err(|e| anyhow!("invalid issuer_url: {e}"))?;
     let metadata = CoreProviderMetadata::discover_async(issuer, async_http_client)
         .await
         .map_err(|e| anyhow!("OIDC discovery failed: {e}"))?;
-    Ok(metadata.userinfo_endpoint().as_ref().map(|u| u.url().to_string()))
+    Ok(metadata
+        .userinfo_endpoint()
+        .as_ref()
+        .map(|u| u.url().to_string()))
 }
 
 pub struct AuthFlowStart {
@@ -224,16 +231,22 @@ pub async fn fetch_role_claim_values(
     claim: &str,
 ) -> Vec<String> {
     let client = reqwest::Client::new();
-    let Ok(resp) = client.get(userinfo_url).bearer_auth(access_token).send().await else {
+    let Ok(resp) = client
+        .get(userinfo_url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+    else {
         return Vec::new();
     };
     let Ok(body) = resp.json::<serde_json::Value>().await else {
         return Vec::new();
     };
     match body.get(claim) {
-        Some(serde_json::Value::Array(arr)) => {
-            arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-        }
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         Some(serde_json::Value::String(s)) => vec![s.clone()],
         _ => Vec::new(),
     }
@@ -242,7 +255,11 @@ pub async fn fetch_role_claim_values(
 /// Maps a set of Authentik group names to a VoidTower role using the admin-configured
 /// role_map, preferring the most-privileged matching role when a user belongs to
 /// multiple mapped groups.
-pub fn map_role(groups: &[String], role_map: &HashMap<String, String>, default_role: &str) -> String {
+pub fn map_role(
+    groups: &[String],
+    role_map: &HashMap<String, String>,
+    default_role: &str,
+) -> String {
     const PRIORITY: [&str; 4] = ["owner", "admin", "operator", "viewer"];
     let matched: HashSet<&str> = groups
         .iter()

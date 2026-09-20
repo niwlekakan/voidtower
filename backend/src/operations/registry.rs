@@ -38,44 +38,234 @@ pub struct DeferredMutationException {
 
 /// Compatibility mutations intentionally unavailable until their canonical adapters exist.
 pub const DEFERRED_MUTATION_EXCEPTIONS: &[DeferredMutationException] = &[
-    DeferredMutationException { method: HttpMethod::Get, route: "/api/containers/:id/exec", source: "containers::exec_ws", reason: "container shell adapter" },
-    DeferredMutationException { method: HttpMethod::Get, route: "/api/terminal/ws", source: "terminal::ws_handler", reason: "local shell adapter" },
-    DeferredMutationException { method: HttpMethod::Get, route: "/api/terminal/ssh/ws", source: "terminal::ssh_ws_handler", reason: "SSH session adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/download", source: "models::start_download", reason: "model file lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Delete, route: "/api/models/:filename", source: "models::delete_model", reason: "model file lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/load", source: "models::load_model", reason: "model process lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/llama-config", source: "models::save_llama_config", reason: "model runtime configuration adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/ollama-config", source: "models::save_ollama_config", reason: "model runtime configuration adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/ollama/pull", source: "models::start_ollama_pull", reason: "Ollama provider lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/models/ollama/create", source: "models::start_ollama_create", reason: "Ollama provider lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/ai/llama/unload", source: "ai::llama_unload", reason: "AI process lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/studio/image/generate", source: "studio::image_generate", reason: "AI image generation adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/studio/tts/generate", source: "studio::tts_generate", reason: "AI speech generation adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/studio/stt/transcribe", source: "studio::stt_transcribe", reason: "AI speech transcription adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/system/restart", source: "system::restart", reason: "system lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/files/write", source: "files::write_file", reason: "filesystem resource adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/files/mkdir", source: "files::mkdir", reason: "filesystem resource adapter" },
-    DeferredMutationException { method: HttpMethod::Delete, route: "/api/files/delete", source: "files::delete", reason: "filesystem resource adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/files/rename", source: "files::rename", reason: "filesystem resource adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/plugins", source: "plugins::install", reason: "plugin lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Patch, route: "/api/plugins/:id", source: "plugins::update", reason: "plugin lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Delete, route: "/api/plugins/:id", source: "plugins::uninstall", reason: "plugin lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/mods/fetch", source: "mods::fetch_mod", reason: "repository-mod adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/mods/apply", source: "mods::apply_mod", reason: "repository-mod adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/mods/rollback", source: "mods::rollback_mod", reason: "repository-mod adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/services/:name/action", source: "services::action", reason: "service lifecycle adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/lxc/:vmid/action", source: "lxc::action", reason: "local LXC adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/vms/local/action", source: "vms::local_action", reason: "local VM adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/wireguard/peers", source: "wireguard::add_peer", reason: "WireGuard adapter" },
-    DeferredMutationException { method: HttpMethod::Delete, route: "/api/wireguard/peers/:id", source: "wireguard::delete_peer", reason: "WireGuard adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/mount", source: "storage::mount_device", reason: "storage adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/umount", source: "storage::umount_device", reason: "storage adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/fstab", source: "storage::add_fstab", reason: "storage adapter" },
-    DeferredMutationException { method: HttpMethod::Delete, route: "/api/storage/fstab/:idx", source: "storage::remove_fstab", reason: "storage adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/raid/create", source: "storage::create_raid", reason: "storage adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/raid/stop", source: "storage::stop_raid", reason: "storage adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/format", source: "storage::format_device", reason: "storage adapter" },
-    DeferredMutationException { method: HttpMethod::Post, route: "/api/storage/paths", source: "storage::set_storage_paths", reason: "storage adapter" },
+    DeferredMutationException {
+        method: HttpMethod::Get,
+        route: "/api/containers/:id/exec",
+        source: "containers::exec_ws",
+        reason: "container shell adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Get,
+        route: "/api/terminal/ws",
+        source: "terminal::ws_handler",
+        reason: "local shell adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Get,
+        route: "/api/terminal/ssh/ws",
+        source: "terminal::ssh_ws_handler",
+        reason: "SSH session adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/download",
+        source: "models::start_download",
+        reason: "model file lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/models/:filename",
+        source: "models::delete_model",
+        reason: "model file lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/load",
+        source: "models::load_model",
+        reason: "model process lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/llama-config",
+        source: "models::save_llama_config",
+        reason: "model runtime configuration adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/ollama-config",
+        source: "models::save_ollama_config",
+        reason: "model runtime configuration adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/ollama/pull",
+        source: "models::start_ollama_pull",
+        reason: "Ollama provider lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/ollama/create",
+        source: "models::start_ollama_create",
+        reason: "Ollama provider lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/ai/llama/unload",
+        source: "ai::llama_unload",
+        reason: "AI process lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/studio/image/generate",
+        source: "studio::image_generate",
+        reason: "AI image generation adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/studio/tts/generate",
+        source: "studio::tts_generate",
+        reason: "AI speech generation adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/studio/stt/transcribe",
+        source: "studio::stt_transcribe",
+        reason: "AI speech transcription adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/system/restart",
+        source: "system::restart",
+        reason: "system lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/files/write",
+        source: "files::write_file",
+        reason: "filesystem resource adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/files/mkdir",
+        source: "files::mkdir",
+        reason: "filesystem resource adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/files/delete",
+        source: "files::delete",
+        reason: "filesystem resource adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/files/rename",
+        source: "files::rename",
+        reason: "filesystem resource adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/plugins",
+        source: "plugins::install",
+        reason: "plugin lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Patch,
+        route: "/api/plugins/:id",
+        source: "plugins::update",
+        reason: "plugin lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/plugins/:id",
+        source: "plugins::uninstall",
+        reason: "plugin lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/mods/fetch",
+        source: "mods::fetch_mod",
+        reason: "repository-mod adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/mods/apply",
+        source: "mods::apply_mod",
+        reason: "repository-mod adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/mods/rollback",
+        source: "mods::rollback_mod",
+        reason: "repository-mod adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/services/:name/action",
+        source: "services::action",
+        reason: "service lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/lxc/:vmid/action",
+        source: "lxc::action",
+        reason: "local LXC adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/vms/local/action",
+        source: "vms::local_action",
+        reason: "local VM adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/wireguard/peers",
+        source: "wireguard::add_peer",
+        reason: "WireGuard adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/wireguard/peers/:id",
+        source: "wireguard::delete_peer",
+        reason: "WireGuard adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/mount",
+        source: "storage::mount_device",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/umount",
+        source: "storage::umount_device",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/fstab",
+        source: "storage::add_fstab",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/storage/fstab/:idx",
+        source: "storage::remove_fstab",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/raid/create",
+        source: "storage::create_raid",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/raid/stop",
+        source: "storage::stop_raid",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/format",
+        source: "storage::format_device",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/paths",
+        source: "storage::set_storage_paths",
+        reason: "storage adapter",
+    },
 ];
 
 /// Compatibility routes included in the approved six-domain adoption. POST routes that only plan
@@ -429,7 +619,8 @@ fn validate_route_mappings() -> Result<()> {
                 }
                 SessionPolicy::HandlerManaged => {
                     ensure!(
-                        route.credential == crate::api::mcp::action_registry::CredentialPolicy::WebhookHmac
+                        route.credential
+                            == crate::api::mcp::action_registry::CredentialPolicy::WebhookHmac
                             && action.ingresses.contains(&ActionIngress::Webhook),
                         "mapped handler-managed route {} {} is not bound to webhook action {}",
                         route.method.as_str(),
@@ -504,7 +695,11 @@ mod tests {
     #[test]
     fn operation_registry_is_complete_and_consistent() {
         validate().expect("operation registry should be valid");
-        assert_eq!(ADOPTED_ROUTES.len(), 49, "the adopted route inventory drifted");
+        assert_eq!(
+            ADOPTED_ROUTES.len(),
+            49,
+            "the adopted route inventory drifted"
+        );
     }
 
     #[test]
@@ -683,7 +878,11 @@ mod tests {
             ("containers::pull_compose(", 0),
             ("std::fs::remove_dir_all(", 0),
         ] {
-            assert_eq!(occurrences(apps, needle), expected, "App Vault bypass drift: {needle}");
+            assert_eq!(
+                occurrences(apps, needle),
+                expected,
+                "App Vault bypass drift: {needle}"
+            );
         }
         assert!(apps.contains("pub async fn update_compose("));
 
@@ -695,7 +894,10 @@ mod tests {
             .map(|(handler, _)| handler)
             .expect("Ollama create handler");
         for marker in ["api/create", "do_ollama_create(", "tokio::spawn"] {
-            assert!(!ollama_create.contains(marker), "Ollama create bypass drift: {marker}");
+            assert!(
+                !ollama_create.contains(marker),
+                "Ollama create bypass drift: {marker}"
+            );
         }
 
         let settings = include_str!("../api/settings.rs");
@@ -710,7 +912,10 @@ mod tests {
             "write_ai_proxy_conf(",
             "patch_nginx_compose_port(",
         ] {
-            assert!(!production.contains(needle), "settings bypass drift: {needle}");
+            assert!(
+                !production.contains(needle),
+                "settings bypass drift: {needle}"
+            );
         }
     }
 
@@ -721,11 +926,29 @@ mod tests {
             assert!(!exception.route.is_empty());
             assert!(!exception.reason.is_empty());
             let route = action_registry::route(exception.method.as_str(), exception.route)
-                .unwrap_or_else(|| panic!("missing route metadata for {} {}", exception.method.as_str(), exception.route));
-            assert!(route.canonical_actions.is_empty(), "deferred route must not claim a canonical action: {} {}", exception.method.as_str(), exception.route);
-            let (module, handler) = exception.source.split_once("::").expect("module::handler source");
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing route metadata for {} {}",
+                        exception.method.as_str(),
+                        exception.route
+                    )
+                });
+            assert!(
+                route.canonical_actions.is_empty(),
+                "deferred route must not claim a canonical action: {} {}",
+                exception.method.as_str(),
+                exception.route
+            );
+            let (module, handler) = exception
+                .source
+                .split_once("::")
+                .expect("module::handler source");
             let api_routes = include_str!("../api/mod.rs");
-            assert!(api_routes.contains(exception.source), "{} is not registered in the API router", exception.source);
+            assert!(
+                api_routes.contains(exception.source),
+                "{} is not registered in the API router",
+                exception.source
+            );
             let source = match module {
                 "files" => include_str!("../api/files.rs"),
                 "plugins" => include_str!("../api/plugins.rs"),
@@ -743,19 +966,45 @@ mod tests {
                 "studio" => include_str!("../api/studio.rs"),
                 _ => panic!("unclassified deferred module {module}"),
             };
-            let start = source.find(&format!("pub async fn {handler}"))
+            let start = source
+                .find(&format!("pub async fn {handler}"))
                 .unwrap_or_else(|| panic!("missing deferred handler {}", exception.source));
-            let body = source[start..].split("\n}\n").next().unwrap_or(&source[start..]);
-            assert!(body.contains("FeatureUnavailable"), "{} must fail closed", exception.source);
-            for marker in ["std::fs::", "tokio::fs::", "Command::new", "handle_terminal_ws(", "handle_ssh_ws(", "run_checked(", "reqwest::", "sqlx::query(", "audit::log("] {
-                assert!(!body.contains(marker), "{} retains direct mutation marker {}", exception.source, marker);
+            let body = source[start..]
+                .split("\n}\n")
+                .next()
+                .unwrap_or(&source[start..]);
+            assert!(
+                body.contains("FeatureUnavailable"),
+                "{} must fail closed",
+                exception.source
+            );
+            for marker in [
+                "std::fs::",
+                "tokio::fs::",
+                "Command::new",
+                "handle_terminal_ws(",
+                "handle_ssh_ws(",
+                "run_checked(",
+                "reqwest::",
+                "sqlx::query(",
+                "audit::log(",
+            ] {
+                assert!(
+                    !body.contains(marker),
+                    "{} retains direct mutation marker {}",
+                    exception.source,
+                    marker
+                );
             }
         }
     }
 
     #[tokio::test]
     async fn deferred_mutation_routes_preserve_authentication_then_fail_closed() {
-        use axum::{body::{to_bytes, Body}, http::{header, Request, StatusCode}};
+        use axum::{
+            body::{to_bytes, Body},
+            http::{header, Request, StatusCode},
+        };
         use tower::ServiceExt;
 
         let pool = crate::api::mcp::test_support::setup_db().await;
@@ -768,16 +1017,32 @@ mod tests {
             ("POST", "/api/models/download", "not-json"),
             ("DELETE", "/api/models/model.gguf", ""),
             ("POST", "/api/models/load", "not-json"),
-            ("POST", "/api/models/llama-config", r#"{"base_url":"http://127.0.0.1:8080"}"#),
-            ("POST", "/api/models/ollama-config", r#"{"base_url":"http://127.0.0.1:11434"}"#),
+            (
+                "POST",
+                "/api/models/llama-config",
+                r#"{"base_url":"http://127.0.0.1:8080"}"#,
+            ),
+            (
+                "POST",
+                "/api/models/ollama-config",
+                r#"{"base_url":"http://127.0.0.1:11434"}"#,
+            ),
             ("POST", "/api/models/ollama/pull", "not-json"),
-            ("POST", "/api/models/ollama/create", r#"{"filename":"model.gguf"}"#),
+            (
+                "POST",
+                "/api/models/ollama/create",
+                r#"{"filename":"model.gguf"}"#,
+            ),
             ("POST", "/api/ai/llama/unload", ""),
             ("POST", "/api/studio/image/generate", "not-json"),
             ("POST", "/api/studio/tts/generate", "not-json"),
             ("POST", "/api/studio/stt/transcribe", ""),
             ("POST", "/api/system/restart", ""),
-            ("POST", "/api/services/fixture.service/action", r#"{"action":"start"}"#),
+            (
+                "POST",
+                "/api/services/fixture.service/action",
+                r#"{"action":"start"}"#,
+            ),
             ("POST", "/api/lxc/101/action", r#"{"action":"start"}"#),
             ("POST", "/api/files/write", "not-json"),
             ("POST", "/api/files/mkdir", "not-json"),
@@ -797,16 +1062,49 @@ mod tests {
             ("POST", "/api/storage/raid/stop", "not-json"),
             ("POST", "/api/storage/format", "not-json"),
             ("POST", "/api/storage/paths", "not-json"),
-            ("POST", "/api/storage/mount", r#"{"device":"/dev/sdb","mountpoint":"/mnt/x","fstype":"ext4"}"#),
-            ("POST", "/api/wireguard/peers", r#"{"name":"fixture","interface":"wg0"}"#),
+            (
+                "POST",
+                "/api/storage/mount",
+                r#"{"device":"/dev/sdb","mountpoint":"/mnt/x","fstype":"ext4"}"#,
+            ),
+            (
+                "POST",
+                "/api/wireguard/peers",
+                r#"{"name":"fixture","interface":"wg0"}"#,
+            ),
             ("DELETE", "/api/wireguard/peers/fixture", ""),
         ];
         for (method, uri, body) in cases {
-            let unauthenticated = app.clone().oneshot(Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+            let unauthenticated = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED, "{uri}");
-            let response = app.clone().oneshot(Request::builder().method(method).uri(uri).header(header::COOKIE, format!("vt_session={session}")).header(header::CONTENT_TYPE, "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(header::COOKIE, format!("vt_session={session}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
-            let payload: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+            let payload: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
             assert_eq!(payload["error"]["code"], "feature_unavailable", "{uri}");
         }
     }
@@ -836,7 +1134,10 @@ mod tests {
                 let start = source
                     .find(&format!("pub async fn {handler}"))
                     .unwrap_or_else(|| panic!("{module}::{handler} handler missing"));
-                let body = source[start..].split("\n}\n").next().unwrap_or(&source[start..]);
+                let body = source[start..]
+                    .split("\n}\n")
+                    .next()
+                    .unwrap_or(&source[start..]);
                 assert!(
                     body.contains("FeatureUnavailable"),
                     "{module}::{handler} must fail closed until its canonical adapter exists"
@@ -860,15 +1161,26 @@ mod tests {
 
     #[tokio::test]
     async fn local_host_mutation_routes_fail_closed_at_real_router() {
-        use axum::{body::{to_bytes, Body}, http::{header, Request, StatusCode}};
+        use axum::{
+            body::{to_bytes, Body},
+            http::{header, Request, StatusCode},
+        };
         use tower::ServiceExt;
 
         let pool = crate::api::mcp::test_support::setup_db().await;
         let session = crate::api::mcp::test_support::user_with_session(&pool).await;
         let app = crate::api::router(crate::api::mcp::test_support::build(pool));
         let cases = [
-            ("POST", "/api/files/write", r#"{"path":"/tmp/voidtower-test","content":"x"}"#),
-            ("POST", "/api/plugins", r#"{"url":"https://example.invalid/plugin.zip"}"#),
+            (
+                "POST",
+                "/api/files/write",
+                r#"{"path":"/tmp/voidtower-test","content":"x"}"#,
+            ),
+            (
+                "POST",
+                "/api/plugins",
+                r#"{"url":"https://example.invalid/plugin.zip"}"#,
+            ),
             ("POST", "/api/mods/apply", ""),
         ];
 
@@ -887,10 +1199,9 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
-            let payload: serde_json::Value = serde_json::from_slice(
-                &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
-            )
-            .unwrap();
+            let payload: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
             assert_eq!(payload["error"]["code"], "feature_unavailable", "{uri}");
             assert!(
                 payload["error"]["message"]
@@ -904,26 +1215,77 @@ mod tests {
     #[test]
     fn shipped_domain_clients_follow_accepted_jobs() {
         let clients = [
-            ("Containers", include_str!("../../../frontend/src/pages/Containers.tsx")),
-            ("Container detail", include_str!("../../../frontend/src/pages/ContainerDetail.tsx")),
-            ("Firewall", include_str!("../../../frontend/src/pages/Firewall.tsx")),
-            ("Proxies", include_str!("../../../frontend/src/pages/Proxies.tsx")),
-            ("Backups", include_str!("../../../frontend/src/pages/Backups.tsx")),
-            ("Dashboard", include_str!("../../../frontend/src/pages/Dashboard.tsx")),
-            ("Updates", include_str!("../../../frontend/src/pages/Updates.tsx")),
-            ("Settings", include_str!("../../../frontend/src/pages/Settings.tsx")),
-            ("Proxmox", include_str!("../../../frontend/src/pages/ProxmoxPage.tsx")),
+            (
+                "Containers",
+                include_str!("../../../frontend/src/pages/Containers.tsx"),
+            ),
+            (
+                "Container detail",
+                include_str!("../../../frontend/src/pages/ContainerDetail.tsx"),
+            ),
+            (
+                "Firewall",
+                include_str!("../../../frontend/src/pages/Firewall.tsx"),
+            ),
+            (
+                "Proxies",
+                include_str!("../../../frontend/src/pages/Proxies.tsx"),
+            ),
+            (
+                "Backups",
+                include_str!("../../../frontend/src/pages/Backups.tsx"),
+            ),
+            (
+                "Dashboard",
+                include_str!("../../../frontend/src/pages/Dashboard.tsx"),
+            ),
+            (
+                "Updates",
+                include_str!("../../../frontend/src/pages/Updates.tsx"),
+            ),
+            (
+                "Settings",
+                include_str!("../../../frontend/src/pages/Settings.tsx"),
+            ),
+            (
+                "Proxmox",
+                include_str!("../../../frontend/src/pages/ProxmoxPage.tsx"),
+            ),
             ("VMs", include_str!("../../../frontend/src/pages/VMs.tsx")),
-            ("native containers", include_str!("../../../frontend/src/aios/panels/containers.tsx")),
-            ("native firewall", include_str!("../../../frontend/src/aios/panels/firewall.tsx")),
-            ("native proxies", include_str!("../../../frontend/src/aios/panels/proxies.tsx")),
-            ("native backups", include_str!("../../../frontend/src/aios/panels/backups.tsx")),
-            ("native Proxmox", include_str!("../../../frontend/src/aios/panels/proxmox.tsx")),
-            ("native VMs", include_str!("../../../frontend/src/aios/panels/vms.tsx")),
+            (
+                "native containers",
+                include_str!("../../../frontend/src/aios/panels/containers.tsx"),
+            ),
+            (
+                "native firewall",
+                include_str!("../../../frontend/src/aios/panels/firewall.tsx"),
+            ),
+            (
+                "native proxies",
+                include_str!("../../../frontend/src/aios/panels/proxies.tsx"),
+            ),
+            (
+                "native backups",
+                include_str!("../../../frontend/src/aios/panels/backups.tsx"),
+            ),
+            (
+                "native Proxmox",
+                include_str!("../../../frontend/src/aios/panels/proxmox.tsx"),
+            ),
+            (
+                "native VMs",
+                include_str!("../../../frontend/src/aios/panels/vms.tsx"),
+            ),
         ];
         for (name, source) in clients {
-            assert!(source.contains("useDurableJobTracker"), "{name} does not track jobs");
-            assert!(source.contains("DurableJobNotice"), "{name} does not expose job state");
+            assert!(
+                source.contains("useDurableJobTracker"),
+                "{name} does not track jobs"
+            );
+            assert!(
+                source.contains("DurableJobNotice"),
+                "{name} does not expose job state"
+            );
         }
     }
 
@@ -936,7 +1298,10 @@ mod tests {
             "path=\"approvals\"",
             "path=\"approvals/:id\"",
         ] {
-            assert!(app.contains(route), "missing shared operation route {route}");
+            assert!(
+                app.contains(route),
+                "missing shared operation route {route}"
+            );
         }
         assert!(app.contains("allowed={OPERATOR_ROLES}"));
         assert!(app.contains("allowed={ADMIN_ROLES}"));
@@ -968,9 +1333,7 @@ mod tests {
     #[test]
     fn durable_event_delivery_and_shared_invalidations_are_source_enforced() {
         let routes = include_str!("../api/mod.rs");
-        assert!(routes.contains(
-            ".route(\"/api/events/stream\", get(events::stream_handler))"
-        ));
+        assert!(routes.contains(".route(\"/api/events/stream\", get(events::stream_handler))"));
         assert!(routes.contains(
             ".route(\"/api/integrations/events\",                  get(events::stream_handler))"
         ));
@@ -987,7 +1350,10 @@ mod tests {
             ".event(\"durable_event\")",
             ".id(envelope.sequence.to_string())",
         ] {
-            assert!(backend.contains(contract), "missing durable stream contract {contract}");
+            assert!(
+                backend.contains(contract),
+                "missing durable stream contract {contract}"
+            );
         }
 
         let client = include_str!("../../../frontend/src/operations/durableEvents.ts");

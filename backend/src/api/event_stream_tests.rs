@@ -10,9 +10,7 @@ use sqlx::SqlitePool;
 use std::time::Duration;
 use tower::ServiceExt;
 
-use crate::operations::events::{
-    PendingEvent, MAX_EVENT_FRAME_BYTES,
-};
+use crate::operations::events::{PendingEvent, MAX_EVENT_FRAME_BYTES};
 
 use super::mcp::test_support;
 
@@ -266,10 +264,7 @@ async fn durable_aliases_reject_query_string_api_tokens() {
     for path in ["/api/events/stream", "/api/integrations/events"] {
         let response = app
             .clone()
-            .oneshot(request(
-                &format!("{path}?token={allowed}"),
-                Some(&session),
-            ))
+            .oneshot(request(&format!("{path}?token={allowed}"), Some(&session)))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
@@ -343,7 +338,10 @@ async fn no_cursor_is_live_only_and_explicit_cursor_replays_identically_on_alias
         .await
         .unwrap();
     assert_eq!(live.headers().get("x-voidtower-api-version").unwrap(), "1");
-    assert_eq!(live.headers().get(header::CONTENT_TYPE).unwrap(), "text/event-stream");
+    assert_eq!(
+        live.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/event-stream"
+    );
     let live = first_chunk(live).await;
     assert!(live.contains(&format!(r#""cursor":{sequence}"#)));
     assert!(!live.contains("event: durable_event"));
@@ -382,8 +380,14 @@ async fn real_router_serializes_source_owned_event_frames_exactly() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "text/event-stream");
-    assert_eq!(response.headers().get("x-voidtower-api-version").unwrap(), "1");
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/event-stream"
+    );
+    assert_eq!(
+        response.headers().get("x-voidtower-api-version").unwrap(),
+        "1"
+    );
     let body = through_durable_event(response).await;
     assert!(body.contains("event: stream.ready\ndata: {\"cursor\":0,\"high_water\":1}\n\n"));
     assert!(body.contains(&format!("id: {sequence}\nevent: durable_event\ndata: ")));
@@ -424,8 +428,13 @@ async fn real_router_serializes_source_owned_event_frames_exactly() {
         .await
         .unwrap();
     assert_eq!(gap.status(), StatusCode::OK);
-    assert_eq!(gap.headers().get(header::CONTENT_TYPE).unwrap(), "text/event-stream");
-    let body = axum::body::to_bytes(gap.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        gap.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/event-stream"
+    );
+    let body = axum::body::to_bytes(gap.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(
         body.as_ref(),
         br#"event: stream.gap

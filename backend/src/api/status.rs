@@ -51,7 +51,10 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
-pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+pub async fn list(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
     require_user(&state, &jar).await?;
     let checks = sqlx::query_as::<_, StatusCheck>(
         "SELECT id, name, type, target, interval_secs, enabled, last_checked_at, last_status, last_latency_ms, created_at FROM status_checks ORDER BY created_at DESC"
@@ -93,7 +96,10 @@ pub async fn delete(
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_admin(&user)?;
     sqlx::query("DELETE FROM status_checks WHERE id = ?")
-        .bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .map_err(AppError::Database)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -119,8 +125,12 @@ pub async fn run_check(pool: &sqlx::SqlitePool, check: &StatusCheck) {
             pool,
             &format!("Check Failed: {}", check.name),
             &format!("{} ({}) is unreachable", check.name, check.target),
-            "critical", "status", Some("check"), Some(&check.id),
-        ).await;
+            "critical",
+            "status",
+            Some("check"),
+            Some(&check.id),
+        )
+        .await;
     }
 }
 
@@ -129,17 +139,22 @@ async fn do_check(check: &StatusCheck) -> String {
     match check.r#type.as_str() {
         "http" | "https" => {
             // Simple TCP connect to the host:port then check HTTP status
-            let Ok(url) = check.target.parse::<reqwest_like::Url>() else { return "error".into(); };
+            let Ok(url) = check.target.parse::<reqwest_like::Url>() else {
+                return "error".into();
+            };
             let host = url.host_str().unwrap_or("");
             let port = url.port_or_known_default().unwrap_or(80);
-            match tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host, port))).await {
+            match tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host, port))).await
+            {
                 Ok(Ok(_)) => "up".into(),
                 _ => "down".into(),
             }
         }
         "tcp" => {
             // target is "host:port"
-            match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&*check.target)).await {
+            match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&*check.target))
+                .await
+            {
                 Ok(Ok(_)) => "up".into(),
                 _ => "down".into(),
             }
@@ -163,8 +178,12 @@ pub async fn public_page(State(state): State<AppState>) -> axum::response::Html<
         .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .unwrap_or_else(|_| "VoidTower".to_string());
 
-    let all_up = checks.iter().all(|c| c.last_status.as_deref() == Some("up"));
-    let any_down = checks.iter().any(|c| c.last_status.as_deref() == Some("down"));
+    let all_up = checks
+        .iter()
+        .all(|c| c.last_status.as_deref() == Some("up"));
+    let any_down = checks
+        .iter()
+        .any(|c| c.last_status.as_deref() == Some("down"));
     let (overall_label, overall_color) = if checks.is_empty() {
         ("No checks configured", "#6b7280")
     } else if any_down {
@@ -177,10 +196,10 @@ pub async fn public_page(State(state): State<AppState>) -> axum::response::Html<
 
     fn status_dot(s: Option<&str>) -> (&'static str, &'static str) {
         match s {
-            Some("up")    => ("#22c55e", "Up"),
-            Some("down")  => ("#ef4444", "Down"),
+            Some("up") => ("#22c55e", "Up"),
+            Some("down") => ("#ef4444", "Down"),
             Some("error") => ("#f59e0b", "Error"),
-            _             => ("#6b7280", "Unknown"),
+            _ => ("#6b7280", "Unknown"),
         }
     }
 
@@ -195,15 +214,20 @@ pub async fn public_page(State(state): State<AppState>) -> axum::response::Html<
             .unwrap_or_default()
             .as_secs() as i64;
         let secs = (now - ts).max(0);
-        if secs < 120 { format!("{secs}s ago") }
-        else if secs < 7200 { format!("{}m ago", secs / 60) }
-        else { format!("{}h ago", secs / 3600) }
+        if secs < 120 {
+            format!("{secs}s ago")
+        } else if secs < 7200 {
+            format!("{}m ago", secs / 60)
+        } else {
+            format!("{}h ago", secs / 3600)
+        }
     }
 
     let rows: String = if checks.is_empty() {
         r#"<tr><td colspan="4" style="padding:32px;text-align:center;color:#6b7280">
             No status checks configured yet. Add them in the VoidTower dashboard.
-           </td></tr>"#.into()
+           </td></tr>"#
+            .into()
     } else {
         checks.iter().map(|c| {
             let (dot_color, dot_label) = status_dot(c.last_status.as_deref());
@@ -228,12 +252,16 @@ pub async fn public_page(State(state): State<AppState>) -> axum::response::Html<
 
     let now_str = {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         // Simple UTC time display
         format!("Updated {} UTC", secs)
     };
 
-    let html = format!(r#"<!doctype html>
+    let html = format!(
+        r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -284,7 +312,8 @@ pub async fn public_page(State(state): State<AppState>) -> axum::response::Html<
   <p class="footer">Powered by <a href="https://github.com/elwla/voidtower">VoidTower</a></p>
 </div>
 </body>
-</html>"#);
+</html>"#
+    );
 
     axum::response::Html(html)
 }
@@ -300,11 +329,13 @@ mod reqwest_like {
     }
 
     impl Url {
-        pub fn host_str(&self) -> Option<&str> { Some(&self.host) }
+        pub fn host_str(&self) -> Option<&str> {
+            Some(&self.host)
+        }
         pub fn port_or_known_default(&self) -> Option<u16> {
             self.port.or(match self.scheme.as_str() {
                 "https" => Some(443),
-                "http"  => Some(80),
+                "http" => Some(80),
                 _ => None,
             })
         }
@@ -314,8 +345,15 @@ mod reqwest_like {
         type Err = ();
         fn from_str(s: &str) -> Result<Self, ()> {
             // Minimal "scheme://host:port/path" parser
-            let s = s.trim_start_matches("http://").trim_start_matches("https://");
-            let scheme = if s.starts_with("https") { "https" } else { "http" }.to_string();
+            let s = s
+                .trim_start_matches("http://")
+                .trim_start_matches("https://");
+            let scheme = if s.starts_with("https") {
+                "https"
+            } else {
+                "http"
+            }
+            .to_string();
             let host_part = s.split('/').next().unwrap_or(s);
             let (host, port) = if let Some((h, p)) = host_part.rsplit_once(':') {
                 (h.to_string(), p.parse::<u16>().ok())

@@ -102,7 +102,11 @@ fn parse_lsblk_device(v: &serde_json::Value) -> BlockDevice {
     let size_bytes: u64 = v
         .get("size")
         .and_then(|x| x.as_u64())
-        .or_else(|| v.get("size").and_then(|x| x.as_str()).and_then(|s| s.parse().ok()))
+        .or_else(|| {
+            v.get("size")
+                .and_then(|x| x.as_str())
+                .and_then(|s| s.parse().ok())
+        })
         .unwrap_or(0);
 
     let name = str_field("name").unwrap_or_default();
@@ -136,8 +140,10 @@ fn parse_lsblk_device(v: &serde_json::Value) -> BlockDevice {
 pub async fn list_block_devices() -> Vec<BlockDevice> {
     let output = Command::new("lsblk")
         .args([
-            "-J", "-b",
-            "-o", "NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,LABEL,UUID,MODEL,SERIAL,VENDOR,RM,RO,STATE,PATH",
+            "-J",
+            "-b",
+            "-o",
+            "NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,LABEL,UUID,MODEL,SERIAL,VENDOR,RM,RO,STATE,PATH",
         ])
         .output()
         .await;
@@ -165,10 +171,24 @@ pub async fn list_block_devices() -> Vec<BlockDevice> {
 fn is_pseudo_fs(fstype: &str, mountpoint: &str) -> bool {
     matches!(
         fstype,
-        "proc" | "sysfs" | "devtmpfs" | "devpts" | "securityfs"
-            | "pstore" | "efivarfs" | "bpf" | "autofs" | "mqueue"
-            | "hugetlbfs" | "debugfs" | "tracefs" | "configfs"
-            | "fusectl" | "fuse.portal" | "ramfs" | "overlay"
+        "proc"
+            | "sysfs"
+            | "devtmpfs"
+            | "devpts"
+            | "securityfs"
+            | "pstore"
+            | "efivarfs"
+            | "bpf"
+            | "autofs"
+            | "mqueue"
+            | "hugetlbfs"
+            | "debugfs"
+            | "tracefs"
+            | "configfs"
+            | "fusectl"
+            | "fuse.portal"
+            | "ramfs"
+            | "overlay"
     ) || fstype.starts_with("cgroup")
         || fstype.starts_with("fuse.")
         || mountpoint.starts_with("/sys/")
@@ -184,7 +204,9 @@ fn is_pseudo_fs(fstype: &str, mountpoint: &str) -> bool {
 
 pub async fn list_mounts() -> Vec<MountInfo> {
     // Parse /proc/mounts
-    let proc_mounts = tokio::fs::read_to_string("/proc/mounts").await.unwrap_or_default();
+    let proc_mounts = tokio::fs::read_to_string("/proc/mounts")
+        .await
+        .unwrap_or_default();
     let mut raw: Vec<(String, String, String, String)> = Vec::new(); // device, mp, fstype, opts
 
     for line in proc_mounts.lines() {
@@ -215,7 +237,8 @@ pub async fn list_mounts() -> Vec<MountInfo> {
         .ok();
 
     // Build a lookup: mountpoint -> (size, used, avail)
-    let mut df_map: std::collections::HashMap<String, (u64, u64, u64)> = std::collections::HashMap::new();
+    let mut df_map: std::collections::HashMap<String, (u64, u64, u64)> =
+        std::collections::HashMap::new();
     if let Some(out) = df_out {
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines().skip(1) {
@@ -330,11 +353,7 @@ pub async fn list_raid() -> Vec<RaidArray> {
 
         let detail = String::from_utf8_lossy(&detail_out.stdout);
         let mut array = RaidArray {
-            name: path
-                .split('/')
-                .next_back()
-                .unwrap_or("md0")
-                .to_string(),
+            name: path.split('/').next_back().unwrap_or("md0").to_string(),
             path: path.clone(),
             level: String::new(),
             state: String::new(),
@@ -448,17 +467,15 @@ pub async fn smart_info(dev: &str) -> SmartInfo {
             .await;
         match direct {
             Ok(o) if o.status.success() || !o.stdout.is_empty() => o,
-            _ => {
-                Command::new("sudo")
-                    .args(["-n", "smartctl", "-a", &dev_path])
-                    .output()
-                    .await
-                    .unwrap_or_else(|_| std::process::Output {
-                        status: std::process::ExitStatus::default(),
-                        stdout: Vec::new(),
-                        stderr: Vec::new(),
-                    })
-            }
+            _ => Command::new("sudo")
+                .args(["-n", "smartctl", "-a", &dev_path])
+                .output()
+                .await
+                .unwrap_or_else(|_| std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                }),
         }
     };
 
@@ -506,7 +523,11 @@ pub async fn smart_info(dev: &str) -> SmartInfo {
         } else if line.starts_with("SMART Health Status:") {
             // NVMe: "SMART Health Status: OK"
             if info.health == "unknown" {
-                info.health = if line.contains("OK") { "healthy".into() } else { "failing".into() };
+                info.health = if line.contains("OK") {
+                    "healthy".into()
+                } else {
+                    "failing".into()
+                };
             }
         } else if line.starts_with("190 ") || line.starts_with("194 ") {
             // Temperature attribute — field 10 (0-indexed) is the raw value
@@ -535,12 +556,13 @@ pub async fn smart_info(dev: &str) -> SmartInfo {
                 info.power_on_hours = h.replace(',', "").parse().ok();
             }
         } else if (line.starts_with("  5 ") || line.starts_with("5 "))
-            && line.contains("Reallocated_Sector") {
-                let cols: Vec<&str> = line.split_whitespace().collect();
-                if let Some(raw) = cols.get(9) {
-                    info.reallocated_sectors = raw.parse().ok();
-                }
+            && line.contains("Reallocated_Sector")
+        {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if let Some(raw) = cols.get(9) {
+                info.reallocated_sectors = raw.parse().ok();
             }
+        }
     }
 
     info

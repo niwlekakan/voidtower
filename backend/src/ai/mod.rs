@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-pub mod providers;
 pub mod egress;
 pub mod orchestrator;
+pub mod providers;
 pub mod router;
 
 use async_trait::async_trait;
@@ -39,7 +39,7 @@ impl AiRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiCapabilities {
-    pub reasoning: u8,  // 0-10
+    pub reasoning: u8, // 0-10
     pub coding: u8,
     pub tool_use: bool,
     pub vision: bool,
@@ -60,10 +60,7 @@ pub trait AiProvider: Send + Sync {
 
     /// Streaming completion — returns an SSE/NDJSON byte stream compatible with
     /// the OpenAI streaming format so the frontend can consume it unchanged.
-    async fn stream(
-        &self,
-        req: &AiRequest,
-    ) -> std::result::Result<reqwest::Response, String>;
+    async fn stream(&self, req: &AiRequest) -> std::result::Result<reqwest::Response, String>;
 
     /// Quick connectivity check — returns Ok(()) if the provider is reachable.
     async fn health_check(&self) -> std::result::Result<(), String>;
@@ -74,13 +71,13 @@ pub trait AiProvider: Send + Sync {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ProviderConfig {
     pub id: String,
-    pub kind: String,       // "odysseus" | "openai" | "anthropic" | "local"
+    pub kind: String, // "odysseus" | "openai" | "anthropic" | "local"
     pub name: String,
     pub enabled: bool,
     pub base_url: Option<String>,
-    pub api_key_ref: Option<String>,  // key name in secrets table
+    pub api_key_ref: Option<String>, // key name in secrets table
     pub model: Option<String>,
-    pub priority: i64,      // lower = preferred
+    pub priority: i64, // lower = preferred
     pub created_at: i64,
     pub updated_at: i64,
 }

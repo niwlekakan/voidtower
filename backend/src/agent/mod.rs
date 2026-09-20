@@ -69,12 +69,8 @@ pub async fn run(state_path: PathBuf) -> Result<()> {
         state.ca_certificate_pem.as_deref().map(str::as_bytes),
     )?;
     let cancellation = Cancellation::new();
-    let supervision = supervision::run_with_state_path(
-        state,
-        transport,
-        cancellation.clone(),
-        Some(state_path),
-    );
+    let supervision =
+        supervision::run_with_state_path(state, transport, cancellation.clone(), Some(state_path));
     tokio::pin!(supervision);
 
     tokio::select! {
@@ -225,18 +221,10 @@ mod tests {
 
     #[test]
     fn ca_read_rejects_a_fifo_without_blocking() {
-        use std::{
-            ffi::CString,
-            os::unix::ffi::OsStrExt,
-            sync::mpsc,
-            thread,
-            time::Duration,
-        };
+        use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, thread, time::Duration};
 
-        let root = std::env::temp_dir().join(format!(
-            "voidtower-agent-ca-fifo-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("voidtower-agent-ca-fifo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("ca.pem");
         let name = CString::new(path.as_os_str().as_bytes()).unwrap();

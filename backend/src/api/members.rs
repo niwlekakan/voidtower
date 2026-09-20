@@ -119,14 +119,13 @@ async fn build_access_summary(state: &AppState, user_id: &str) -> Result<MemberA
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let can_deploy_custom: bool = sqlx::query_scalar(
-        "SELECT can_deploy_custom FROM member_settings WHERE user_id = ?",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?
-    .unwrap_or(false);
+    let can_deploy_custom: bool =
+        sqlx::query_scalar("SELECT can_deploy_custom FROM member_settings WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .unwrap_or(false);
 
     let storage_row: Option<(i64, i64, i64, Option<i64>)> = sqlx::query_as(
         "SELECT quota_bytes, max_apps, used_bytes, last_check_at FROM member_storage WHERE user_id = ?",
@@ -138,13 +137,12 @@ async fn build_access_summary(state: &AppState, user_id: &str) -> Result<MemberA
     let (quota_bytes, max_apps, used_bytes, last_check_at) =
         storage_row.unwrap_or((DEFAULT_QUOTA_BYTES, DEFAULT_MAX_APPS, 0, None));
 
-    let app_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM deployed_apps WHERE owner_user_id = ?",
-    )
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let app_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM deployed_apps WHERE owner_user_id = ?")
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
     let drives: Vec<DriveSummary> = sqlx::query_as(
         "SELECT id, label, host_path, total_bytes, free_bytes, last_check_at \
@@ -158,7 +156,13 @@ async fn build_access_summary(state: &AppState, user_id: &str) -> Result<MemberA
     Ok(MemberAccessSummary {
         app_ids,
         can_deploy_custom,
-        storage: StorageSummary { quota_bytes, max_apps, used_bytes, last_check_at, app_count },
+        storage: StorageSummary {
+            quota_bytes,
+            max_apps,
+            used_bytes,
+            last_check_at,
+            app_count,
+        },
         drives,
     })
 }
@@ -171,12 +175,11 @@ pub async fn list_members(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    let users: Vec<(String, String)> = sqlx::query_as(
-        "SELECT id, username FROM users WHERE role = 'member' ORDER BY username",
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let users: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, username FROM users WHERE role = 'member' ORDER BY username")
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut out = Vec::with_capacity(users.len());
     for (id, username) in users {
@@ -211,10 +214,17 @@ pub async fn get_my_access(
 ) -> Result<Json<MemberSelfAccessSummary>> {
     let user = require_user(&state, &jar).await?;
     let summary = build_access_summary(&state, &user.id).await?;
-    let drives = summary.drives.into_iter().map(|drive| MemberSelfDriveSummary {
-        id: drive.id, label: drive.label, total_bytes: drive.total_bytes,
-        free_bytes: drive.free_bytes, last_check_at: drive.last_check_at,
-    }).collect::<Vec<_>>();
+    let drives = summary
+        .drives
+        .into_iter()
+        .map(|drive| MemberSelfDriveSummary {
+            id: drive.id,
+            label: drive.label,
+            total_bytes: drive.total_bytes,
+            free_bytes: drive.free_bytes,
+            last_check_at: drive.last_check_at,
+        })
+        .collect::<Vec<_>>();
     Ok(Json(MemberSelfAccessSummary {
         app_ids: summary.app_ids,
         can_deploy_custom: summary.can_deploy_custom,
@@ -266,7 +276,12 @@ pub async fn list_my_nodes(
                 .as_deref()
                 .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
                 .and_then(|v| v.get("storage_free_bytes").and_then(|x| x.as_i64()));
-            MemberNodeOption { id: r.id, display_name: r.display_name, storage_free_bytes, last_seen: r.last_seen }
+            MemberNodeOption {
+                id: r.id,
+                display_name: r.display_name,
+                storage_free_bytes,
+                last_seen: r.last_seen,
+            }
         })
         .collect();
     options.sort_by_key(|o| std::cmp::Reverse(o.storage_free_bytes.unwrap_or(0)));
@@ -289,19 +304,28 @@ pub async fn grant_access(
     let req: GrantAccessReq = parse_json_body(body)?;
     let now = unix_now();
 
-    sqlx::query("INSERT OR IGNORE INTO member_app_access (user_id, app_id, granted_at) VALUES (?, ?, ?)")
-        .bind(&user_id)
-        .bind(&req.app_id)
-        .bind(now)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO member_app_access (user_id, app_id, granted_at) VALUES (?, ?, ?)",
+    )
+    .bind(&user_id)
+    .bind(&req.app_id)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&admin.id), "human", "members.access.grant",
-        Some("member"), Some(&user_id), "success", None,
+        &state.db,
+        Some(&admin.id),
+        "human",
+        "members.access.grant",
+        Some("member"),
+        Some(&user_id),
+        "success",
+        None,
         Some(&format!("app_id={}", req.app_id)),
-    ).await;
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -321,10 +345,17 @@ pub async fn revoke_access(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&admin.id), "human", "members.access.revoke",
-        Some("member"), Some(&user_id), "success", None,
+        &state.db,
+        Some(&admin.id),
+        "human",
+        "members.access.revoke",
+        Some("member"),
+        Some(&user_id),
+        "success",
+        None,
         Some(&format!("app_id={app_id}")),
-    ).await;
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -356,12 +387,21 @@ pub async fn set_custom_deploy(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&admin.id), "human", "members.custom_deploy.set",
-        Some("member"), Some(&user_id), "success", None,
+        &state.db,
+        Some(&admin.id),
+        "human",
+        "members.custom_deploy.set",
+        Some("member"),
+        Some(&user_id),
+        "success",
+        None,
         Some(&format!("enabled={}", req.enabled)),
-    ).await;
+    )
+    .await;
 
-    Ok(Json(serde_json::json!({ "ok": true, "enabled": req.enabled })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "enabled": req.enabled }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -379,7 +419,9 @@ pub async fn set_quota(
     let admin = require_admin(&state, &jar).await?;
     let req: SetQuotaReq = parse_json_body(body)?;
     if req.quota_bytes < 0 || req.max_apps < 0 {
-        return Err(AppError::BadRequest("quota_bytes and max_apps must be non-negative".into()));
+        return Err(AppError::BadRequest(
+            "quota_bytes and max_apps must be non-negative".into(),
+        ));
     }
 
     sqlx::query(
@@ -394,10 +436,20 @@ pub async fn set_quota(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&admin.id), "human", "members.quota.set",
-        Some("member"), Some(&user_id), "success", None,
-        Some(&format!("quota_bytes={},max_apps={}", req.quota_bytes, req.max_apps)),
-    ).await;
+        &state.db,
+        Some(&admin.id),
+        "human",
+        "members.quota.set",
+        Some("member"),
+        Some(&user_id),
+        "success",
+        None,
+        Some(&format!(
+            "quota_bytes={},max_apps={}",
+            req.quota_bytes, req.max_apps
+        )),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -406,10 +458,26 @@ pub async fn set_quota(
 /// accidentally hand a whole system directory to a member as "their storage".
 fn validate_host_path(path: &str) -> Result<()> {
     if !path.starts_with('/') {
-        return Err(AppError::BadRequest("host_path must be an absolute path".into()));
+        return Err(AppError::BadRequest(
+            "host_path must be an absolute path".into(),
+        ));
     }
-    if matches!(path, "/" | "/etc" | "/proc" | "/sys" | "/dev" | "/root" | "/var" | "/usr" | "/bin" | "/boot" | "/home") {
-        return Err(AppError::BadRequest("Refusing to register a system directory as a drive".into()));
+    if matches!(
+        path,
+        "/" | "/etc"
+            | "/proc"
+            | "/sys"
+            | "/dev"
+            | "/root"
+            | "/var"
+            | "/usr"
+            | "/bin"
+            | "/boot"
+            | "/home"
+    ) {
+        return Err(AppError::BadRequest(
+            "Refusing to register a system directory as a drive".into(),
+        ));
     }
     if !std::path::Path::new(path).is_dir() {
         return Err(AppError::BadRequest(
@@ -463,10 +531,17 @@ pub async fn add_drive(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&admin.id), "human", "members.drive.add",
-        Some("member"), Some(&user_id), "success", None,
+        &state.db,
+        Some(&admin.id),
+        "human",
+        "members.drive.add",
+        Some("member"),
+        Some(&user_id),
+        "success",
+        None,
         Some(&format!("label={label},host_path={host_path}")),
-    ).await;
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
@@ -478,13 +553,12 @@ pub async fn remove_drive(
 ) -> Result<Json<serde_json::Value>> {
     let admin = require_admin(&state, &jar).await?;
 
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT user_id, label FROM member_drives WHERE id = ?",
-    )
-    .bind(&drive_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT user_id, label FROM member_drives WHERE id = ?")
+            .bind(&drive_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
     let (user_id, label) = row.ok_or_else(|| AppError::BadRequest("Drive not found".into()))?;
 
     sqlx::query("DELETE FROM member_drives WHERE id = ?")
@@ -494,17 +568,28 @@ pub async fn remove_drive(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&admin.id), "human", "members.drive.remove",
-        Some("member"), Some(&user_id), "success", None,
+        &state.db,
+        Some(&admin.id),
+        "human",
+        "members.drive.remove",
+        Some("member"),
+        Some(&user_id),
+        "success",
+        None,
         Some(&format!("label={label}")),
-    ).await;
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ─── Deploy-path resolution helpers (used by api::apps) ──────────────────────
 
-pub(crate) async fn check_member_app_access(state: &AppState, user_id: &str, app_id: &str) -> Result<()> {
+pub(crate) async fn check_member_app_access(
+    state: &AppState,
+    user_id: &str,
+    app_id: &str,
+) -> Result<()> {
     let exists: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM member_app_access WHERE user_id = ? AND app_id = ?",
     )
@@ -541,7 +626,8 @@ pub(crate) async fn check_member_quota(state: &AppState, user_id: &str) -> Resul
     .fetch_optional(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
-    let (quota_bytes, max_apps, used_bytes) = row.unwrap_or((DEFAULT_QUOTA_BYTES, DEFAULT_MAX_APPS, 0));
+    let (quota_bytes, max_apps, used_bytes) =
+        row.unwrap_or((DEFAULT_QUOTA_BYTES, DEFAULT_MAX_APPS, 0));
 
     if used_bytes >= quota_bytes {
         return Err(AppError::BadRequest(format!(
@@ -549,15 +635,16 @@ pub(crate) async fn check_member_quota(state: &AppState, user_id: &str) -> Resul
         )));
     }
 
-    let app_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM deployed_apps WHERE owner_user_id = ?",
-    )
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let app_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM deployed_apps WHERE owner_user_id = ?")
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
     if app_count >= max_apps {
-        return Err(AppError::BadRequest(format!("App limit reached ({max_apps} apps max)")));
+        return Err(AppError::BadRequest(format!(
+            "App limit reached ({max_apps} apps max)"
+        )));
     }
 
     Ok(())
@@ -579,26 +666,27 @@ pub(crate) async fn resolve_member_storage_root(
     override_drive_id: Option<&str>,
 ) -> Result<StorageResolution> {
     if let Some(drive_id) = override_drive_id.filter(|s| !s.is_empty()) {
-        let host_path: Option<String> = sqlx::query_scalar(
-            "SELECT host_path FROM member_drives WHERE id = ? AND user_id = ?",
-        )
-        .bind(drive_id)
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        let host_path: Option<String> =
+            sqlx::query_scalar("SELECT host_path FROM member_drives WHERE id = ? AND user_id = ?")
+                .bind(drive_id)
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
         let host_path = host_path
             .ok_or_else(|| AppError::BadRequest("Drive not found or not assigned to you".into()))?;
-        return Ok(StorageResolution { path: host_path, drive_id: Some(drive_id.to_string()) });
+        return Ok(StorageResolution {
+            path: host_path,
+            drive_id: Some(drive_id.to_string()),
+        });
     }
 
-    let drives: Vec<(String, String)> = sqlx::query_as(
-        "SELECT id, host_path FROM member_drives WHERE user_id = ?",
-    )
-    .bind(user_id)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let drives: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, host_path FROM member_drives WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
     if !drives.is_empty() {
         let mut best: Option<(String, String, u64)> = None;
@@ -609,13 +697,19 @@ pub(crate) async fn resolve_member_storage_root(
             }
         }
         if let Some((id, host_path, _)) = best {
-            return Ok(StorageResolution { path: host_path, drive_id: Some(id) });
+            return Ok(StorageResolution {
+                path: host_path,
+                drive_id: Some(id),
+            });
         }
     }
 
     let quota_dir = state.config.data_dir.join("members").join(user_id);
     std::fs::create_dir_all(&quota_dir).map_err(|e| AppError::Internal(e.into()))?;
-    Ok(StorageResolution { path: quota_dir.to_string_lossy().to_string(), drive_id: None })
+    Ok(StorageResolution {
+        path: quota_dir.to_string_lossy().to_string(),
+        drive_id: None,
+    })
 }
 
 /// Validates (and, if given, applies) a manual target-node override for a
@@ -644,7 +738,9 @@ pub(crate) async fn resolve_member_target_node(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
     if ok == 0 {
-        return Err(AppError::BadRequest("Node not found, not yours, or not agent-capable".into()));
+        return Err(AppError::BadRequest(
+            "Node not found, not yours, or not agent-capable".into(),
+        ));
     }
     Ok(Some(node_id.to_string()))
 }
@@ -658,7 +754,10 @@ pub(crate) async fn allocate_member_port(state: &AppState) -> Result<u16> {
     .fetch_one(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
-    Ok((next as u16).clamp(*MEMBER_CUSTOM_PORT_RANGE.start(), *MEMBER_CUSTOM_PORT_RANGE.end()))
+    Ok((next as u16).clamp(
+        *MEMBER_CUSTOM_PORT_RANGE.start(),
+        *MEMBER_CUSTOM_PORT_RANGE.end(),
+    ))
 }
 
 // ─── Filesystem polling (mirrors backup_configs.last_check_at) ───────────────
@@ -684,9 +783,15 @@ fn statvfs_bytes(path: &str) -> Option<(u64, u64)> {
 /// `du`-style recursive size, with a manual walk fallback for hosts without
 /// `du` (e.g. a minimal container image).
 fn dir_size_bytes(path: &std::path::Path) -> u64 {
-    if let Ok(out) = std::process::Command::new("du").args(["-sb", &path.to_string_lossy()]).output() {
+    if let Ok(out) = std::process::Command::new("du")
+        .args(["-sb", &path.to_string_lossy()])
+        .output()
+    {
         if out.status.success() {
-            if let Some(field) = String::from_utf8_lossy(&out.stdout).split_whitespace().next() {
+            if let Some(field) = String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .next()
+            {
                 if let Ok(n) = field.parse::<u64>() {
                     return n;
                 }
@@ -694,7 +799,9 @@ fn dir_size_bytes(path: &std::path::Path) -> u64 {
         }
     }
     let mut total = 0u64;
-    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
     for entry in entries.flatten() {
         let p = entry.path();
         if let Ok(meta) = entry.metadata() {
@@ -721,16 +828,22 @@ pub async fn poll_member_storage(state: AppState) {
     for user_id in user_ids {
         let dir = state.config.data_dir.join("members").join(&user_id);
         let used = tokio::task::spawn_blocking(move || {
-            if dir.is_dir() { dir_size_bytes(&dir) } else { 0 }
+            if dir.is_dir() {
+                dir_size_bytes(&dir)
+            } else {
+                0
+            }
         })
         .await
         .unwrap_or(0);
-        let _ = sqlx::query("UPDATE member_storage SET used_bytes = ?, last_check_at = ? WHERE user_id = ?")
-            .bind(used as i64)
-            .bind(now)
-            .bind(&user_id)
-            .execute(&state.db)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE member_storage SET used_bytes = ?, last_check_at = ? WHERE user_id = ?",
+        )
+        .bind(used as i64)
+        .bind(now)
+        .bind(&user_id)
+        .execute(&state.db)
+        .await;
     }
 
     let drives: Vec<(String, String)> = sqlx::query_as("SELECT id, host_path FROM member_drives")

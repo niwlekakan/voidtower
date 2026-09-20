@@ -70,14 +70,8 @@ pub(crate) async fn collect_linux_program(
     collected_at: i64,
     host_key: &str,
 ) -> Result<InventorySnapshotV1, CollectorError> {
-    collect_linux_program_with_timeout(
-        program,
-        snapshot_id,
-        collected_at,
-        host_key,
-        LSBLK_TIMEOUT,
-    )
-    .await
+    collect_linux_program_with_timeout(program, snapshot_id, collected_at, host_key, LSBLK_TIMEOUT)
+        .await
 }
 
 async fn collect_linux_program_with_timeout(
@@ -347,12 +341,7 @@ mod tests {
             Err(CollectorError::InvalidSnapshot(_))
         ));
         assert!(matches!(
-            collect_linux_snapshot(
-                FIXTURE,
-                "00000000-0000-0000-0000-000000000001",
-                0,
-                "host"
-            ),
+            collect_linux_snapshot(FIXTURE, "00000000-0000-0000-0000-000000000001", 0, "host"),
             Err(CollectorError::InvalidSnapshot(_))
         ));
     }
@@ -367,7 +356,10 @@ mod tests {
             );
         }
         let mut missing: Value = serde_json::from_str(FIXTURE).unwrap();
-        missing["blockdevices"][0].as_object_mut().unwrap().remove("size");
+        missing["blockdevices"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("size");
         assert_eq!(
             collect_linux_fixture(&missing.to_string()),
             Err(CollectorError::InvalidField("size"))
@@ -419,7 +411,9 @@ mod tests {
         std::fs::remove_file(path).unwrap();
 
         assert_eq!(result, Err(CollectorError::CommandFailed));
-        assert!(!CollectorError::CommandFailed.to_string().contains("diagnostic-fixture"));
+        assert!(!CollectorError::CommandFailed
+            .to_string()
+            .contains("diagnostic-fixture"));
     }
 
     #[cfg(unix)]
@@ -435,7 +429,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn command_runner_rejects_stderr_overflow_without_parsing_stdout() {
-        let path = executable_fixture("printf '{\\\"blockdevices\\\":[]}' ; printf '%*s' 4097 '' >&2");
+        let path =
+            executable_fixture("printf '{\\\"blockdevices\\\":[]}' ; printf '%*s' 4097 '' >&2");
         let result = collect_linux_program(&path, "snapshot", 1, "host").await;
         std::fs::remove_file(path).unwrap();
 

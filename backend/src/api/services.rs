@@ -17,6 +17,7 @@ pub struct ServicesResponse {
     pub systemd_available: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct ActionRequest {
     pub action: ServiceAction,
@@ -27,10 +28,7 @@ pub struct LogsResponse {
     pub lines: Vec<String>,
 }
 
-pub async fn list(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<ServicesResponse>> {
+pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<ServicesResponse>> {
     let user = require_user(&state, &jar).await?;
     let _ = user;
 
@@ -81,8 +79,7 @@ pub async fn logs(
     Path(name): Path<String>,
 ) -> Result<Json<LogsResponse>> {
     require_user(&state, &jar).await?;
-    let lines = services::get_service_logs(&name, 200)
-        .map_err(AppError::Internal)?;
+    let lines = services::get_service_logs(&name, 200).map_err(AppError::Internal)?;
     Ok(Json(LogsResponse { lines }))
 }
 
@@ -109,12 +106,7 @@ mod tests {
         let state = crate::api::mcp::test_support::build(pool);
         let jar = CookieJar::new().add(Cookie::new("vt_session", session));
 
-        let result = action(
-            State(state),
-            jar,
-            Path("fixture.service".into()),
-        )
-        .await;
+        let result = action(State(state), jar, Path("fixture.service".into())).await;
 
         assert!(
             matches!(result, Err(AppError::FeatureUnavailable(ref message)) if message.contains("canonical operation")),

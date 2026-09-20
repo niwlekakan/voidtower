@@ -14,14 +14,21 @@ impl OdysseusProvider {
     }
 
     fn completions_url(&self) -> String {
-        format!("{}/api/chat/completions", self.base_url.trim_end_matches('/'))
+        format!(
+            "{}/api/chat/completions",
+            self.base_url.trim_end_matches('/')
+        )
     }
 }
 
 #[async_trait]
 impl AiProvider for OdysseusProvider {
-    fn id(&self) -> &str { &self.id }
-    fn display_name(&self) -> &str { &self.name }
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn display_name(&self) -> &str {
+        &self.name
+    }
 
     fn capabilities(&self) -> AiCapabilities {
         AiCapabilities {
@@ -36,13 +43,15 @@ impl AiProvider for OdysseusProvider {
 
     async fn complete(&self, req: &AiRequest) -> std::result::Result<String, String> {
         let body = build_openai_body(req, false);
-        let client = egress::client_for(&self.base_url, std::time::Duration::from_secs(120)).await?;
+        let client =
+            egress::client_for(&self.base_url, std::time::Duration::from_secs(120)).await?;
 
         let resp = client
             .post(self.completions_url())
             .header("Content-Type", "application/json")
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("Odysseus unreachable: {e}"))?;
 
         if !resp.status().is_success() {
@@ -54,26 +63,35 @@ impl AiProvider for OdysseusProvider {
 
     async fn stream(&self, req: &AiRequest) -> std::result::Result<reqwest::Response, String> {
         let body = build_openai_body(req, true);
-        let client = egress::client_for(&self.base_url, std::time::Duration::from_secs(300)).await?;
+        let client =
+            egress::client_for(&self.base_url, std::time::Duration::from_secs(300)).await?;
 
         let resp = client
             .post(self.completions_url())
             .header("Content-Type", "application/json")
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("Odysseus unreachable: {e}"))?;
         if !resp.status().is_success() {
-            return Err(format!("Odysseus request failed with HTTP {}", resp.status()));
+            return Err(format!(
+                "Odysseus request failed with HTTP {}",
+                resp.status()
+            ));
         }
         Ok(resp)
     }
 
     async fn health_check(&self) -> std::result::Result<(), String> {
-        let client = egress::client_for(&self.base_url, std::time::Duration::from_millis(3000)).await?;
+        let client =
+            egress::client_for(&self.base_url, std::time::Duration::from_millis(3000)).await?;
         let url = format!("{}/api/health", self.base_url.trim_end_matches('/'));
         let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-        if resp.status().is_success() { Ok(()) }
-        else { Err(format!("HTTP {}", resp.status())) }
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("HTTP {}", resp.status()))
+        }
     }
 }
 

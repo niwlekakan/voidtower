@@ -16,9 +16,14 @@ use serde_json::Value;
 use std::io::Read;
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
+    let sid = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &sid)
-        .await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
     if !matches!(user.role.as_str(), "owner" | "admin") {
         return Err(AppError::Forbidden);
     }
@@ -26,9 +31,14 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
 }
 
 async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
+    let sid = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
     auth::validate_session(&state.db, &sid)
-        .await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)
 }
 
 #[derive(sqlx::FromRow, Serialize, Clone)]
@@ -62,9 +72,13 @@ struct PluginManifest {
 }
 
 #[allow(dead_code)]
-fn default_version() -> String { "1.0.0".into() }
+fn default_version() -> String {
+    "1.0.0".into()
+}
 #[allow(dead_code)]
-fn default_entry() -> String { "index.html".into() }
+fn default_entry() -> String {
+    "index.html".into()
+}
 
 #[allow(dead_code)]
 #[derive(Deserialize)]
@@ -83,10 +97,7 @@ fn plugins_dir(state: &AppState) -> std::path::PathBuf {
     state.config.data_dir.join("plugins")
 }
 
-pub async fn list(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<Vec<Plugin>>> {
+pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Vec<Plugin>>> {
     require_user(&state, &jar).await?;
     let rows = sqlx::query_as::<_, Plugin>(
         "SELECT id, name, description, version, author, entry, icon, nav_group, enabled, installed_at \
@@ -97,10 +108,7 @@ pub async fn list(
     Ok(Json(rows))
 }
 
-pub async fn install(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<Plugin>> {
+pub async fn install(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Plugin>> {
     require_admin(&state, &jar).await?;
     Err(AppError::FeatureUnavailable(
         "plugin mutations require a canonical operation adapter".into(),
@@ -226,8 +234,7 @@ fn extract_zip(
     }
 
     let plugin_dir = plugins_base.join(&manifest.id);
-    std::fs::create_dir_all(&plugin_dir)
-        .map_err(|e| format!("Cannot create plugin dir: {e}"))?;
+    std::fs::create_dir_all(&plugin_dir).map_err(|e| format!("Cannot create plugin dir: {e}"))?;
 
     // Second pass: extract all files
     for i in 0..archive.len() {

@@ -325,7 +325,8 @@ async fn inventory_upload_rejects_semantically_invalid_snapshots() {
     )
     .await;
 
-    let mut invalid_capacity = inventory_snapshot(&uuid::Uuid::new_v4().to_string(), "fixture-host");
+    let mut invalid_capacity =
+        inventory_snapshot(&uuid::Uuid::new_v4().to_string(), "fixture-host");
     invalid_capacity["entities"] = json!([{
         "entity_key": "disk-1",
         "entity_type": "physical_disk",
@@ -434,9 +435,11 @@ async fn linux_collector_snapshot_reaches_reconciliation_classification() {
     assert_eq!(attributes["capacity_bytes"], 100);
     assert!(attributes.get("size_bytes").is_none());
     let identities: Value = serde_json::from_str(&identities).unwrap();
-    assert!(identities.as_array().unwrap().iter().any(|identity| {
-        identity["kind"] == "wwn" && identity["value"] == "0011223344556677"
-    }));
+    assert!(identities
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|identity| { identity["kind"] == "wwn" && identity["value"] == "0011223344556677" }));
 
     let (request_id, audit_actor_type, audit_actor_id, audit_source): (
         Option<String>,
@@ -584,7 +587,7 @@ async fn inventory_reconciliation_preserves_administrator_owned_asset_fields() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let fields: (
+    type ProtectedFields = (
         String,
         Option<String>,
         Option<String>,
@@ -597,7 +600,8 @@ async fn inventory_reconciliation_preserves_administrator_owned_asset_fields() {
         Option<String>,
         String,
         String,
-    ) = sqlx::query_as(
+    );
+    let fields: ProtectedFields = sqlx::query_as(
         "SELECT r.display_name, a.friendly_name, a.description, a.manufacturer, a.model, \
          a.serial_number, a.part_number, a.lifecycle_status, a.condition_status, a.location_id, \
          a.metadata_json, a.notes \

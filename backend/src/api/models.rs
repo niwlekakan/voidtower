@@ -236,6 +236,7 @@ pub async fn list_models(
     Ok(Json(models))
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct DownloadReq {
     pub url: String,
@@ -252,6 +253,7 @@ pub async fn start_download(
     ))
 }
 
+#[allow(dead_code)]
 async fn download_file(
     id: &str,
     url: &str,
@@ -388,6 +390,7 @@ pub async fn load_model(
 
 // ─── Ollama pull ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct OllamaPullReq {
     pub model: String,
@@ -403,6 +406,7 @@ pub async fn start_ollama_pull(
     ))
 }
 
+#[allow(dead_code)]
 async fn do_ollama_pull(id: &str, model: &str) -> std::result::Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(7200))
@@ -1035,7 +1039,10 @@ mod tests {
             "do_ollama_create(",
             "audit::log(",
         ] {
-            assert!(!handler.contains(marker), "start-ollama-create marker: {marker}");
+            assert!(
+                !handler.contains(marker),
+                "start-ollama-create marker: {marker}"
+            );
         }
     }
 
@@ -1231,7 +1238,10 @@ mod tests {
             "containers::",
             "audit::log(",
         ] {
-            assert!(!handler.contains(marker), "load-model handler marker: {marker}");
+            assert!(
+                !handler.contains(marker),
+                "load-model handler marker: {marker}"
+            );
         }
     }
 
@@ -1275,7 +1285,10 @@ mod tests {
             "tokio::spawn",
             "audit::log(",
         ] {
-            assert!(!handler.contains(marker), "OpenAI chat handler marker: {marker}");
+            assert!(
+                !handler.contains(marker),
+                "OpenAI chat handler marker: {marker}"
+            );
         }
     }
 }

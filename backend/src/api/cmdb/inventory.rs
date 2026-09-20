@@ -38,10 +38,7 @@ pub async fn upload(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
     headers: HeaderMap,
-    body: std::result::Result<
-        axum::body::Bytes,
-        axum::extract::rejection::BytesRejection,
-    >,
+    body: std::result::Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<Value>> {
     node_enroll::verify_node_token(state.clone(), node_id.clone(), headers.clone()).await?;
     let body = match body {

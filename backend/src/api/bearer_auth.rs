@@ -78,7 +78,7 @@ async fn resolve_session(state: &AppState, headers: &HeaderMap) -> Option<Cached
             if cached.expires_at > now
                 && cached
                     .token_expires_at
-                    .map_or(true, |token_expires_at| token_expires_at > now)
+                    .is_none_or(|token_expires_at| token_expires_at > now)
             {
                 return Some(cached.clone());
             }

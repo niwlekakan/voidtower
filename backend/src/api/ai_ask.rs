@@ -87,14 +87,12 @@ pub async fn ask(
 /// Kept for backwards compatibility with existing Odysseus integrations that
 /// predate the provider abstraction.
 async fn legacy_odysseus_fallback(state: &AppState, ai_req: &AiRequest) -> Result<Response> {
-    let odysseus_url = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM settings WHERE key = ?",
-    )
-    .bind("odysseus.allowed_url")
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?
-    .unwrap_or_default();
+    let odysseus_url = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind("odysseus.allowed_url")
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .unwrap_or_default();
 
     if odysseus_url.is_empty() {
         return Ok((
@@ -123,7 +121,10 @@ async fn legacy_odysseus_fallback(state: &AppState, ai_req: &AiRequest) -> Resul
         "stream": true,
     });
 
-    let upstream_url = format!("{}/api/chat/completions", odysseus_url.trim_end_matches('/'));
+    let upstream_url = format!(
+        "{}/api/chat/completions",
+        odysseus_url.trim_end_matches('/')
+    );
     let client = crate::ai::egress::client_for(&odysseus_url, std::time::Duration::from_secs(300))
         .await
         .map_err(|_| AppError::BadRequest("legacy AI provider endpoint is unavailable".into()))?;
@@ -135,7 +136,9 @@ async fn legacy_odysseus_fallback(state: &AppState, ai_req: &AiRequest) -> Resul
         .await
         .map_err(|_| AppError::BadRequest("legacy AI provider request failed".into()))?;
     if !upstream_res.status().is_success() {
-        return Err(AppError::BadRequest("legacy AI provider request failed".into()));
+        return Err(AppError::BadRequest(
+            "legacy AI provider request failed".into(),
+        ));
     }
 
     let status = upstream_res.status();

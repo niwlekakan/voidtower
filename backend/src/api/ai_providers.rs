@@ -4,7 +4,10 @@ use crate::{
     error::{AppError, Result},
     AppState,
 };
-use axum::{extract::{Path, State}, Json};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
@@ -49,7 +52,13 @@ pub async fn create(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
     validate_kind(&req.kind)?;
-    validate_provider_fields(&req.kind, &req.name, req.base_url.as_deref(), req.model.as_deref(), req.priority.unwrap_or(50))?;
+    validate_provider_fields(
+        &req.kind,
+        &req.name,
+        req.base_url.as_deref(),
+        req.model.as_deref(),
+        req.priority.unwrap_or(50),
+    )?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
@@ -102,6 +111,15 @@ pub struct UpdateProviderReq {
     pub priority: Option<i64>,
 }
 
+type ProviderRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    Option<String>,
+);
+
 pub async fn update(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -110,14 +128,21 @@ pub async fn update(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
     let mut tx = state.db.begin().await.map_err(AppError::Database)?;
-    let current: Option<(String, String, Option<String>, Option<String>, i64, Option<String>)> = sqlx::query_as(
+    let current: Option<ProviderRow> = sqlx::query_as(
         "SELECT kind, name, base_url, model, priority, api_key_ref FROM ai_providers WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(AppError::Database)?;
-    let (current_kind, current_name, current_base_url, current_model, current_priority, current_ref) = current.ok_or(AppError::NotFound)?;
+    let (
+        current_kind,
+        current_name,
+        current_base_url,
+        current_model,
+        current_priority,
+        current_ref,
+    ) = current.ok_or(AppError::NotFound)?;
     validate_provider_fields(
         &current_kind,
         req.name.as_deref().unwrap_or(&current_name),
@@ -129,28 +154,48 @@ pub async fn update(
 
     if let Some(name) = &req.name {
         sqlx::query("UPDATE ai_providers SET name=?, updated_at=? WHERE id=?")
-            .bind(name).bind(now).bind(&id)
-            .execute(&mut *tx).await.map_err(AppError::Database)?;
+            .bind(name)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(enabled) = req.enabled {
         sqlx::query("UPDATE ai_providers SET enabled=?, updated_at=? WHERE id=?")
-            .bind(enabled).bind(now).bind(&id)
-            .execute(&mut *tx).await.map_err(AppError::Database)?;
+            .bind(enabled)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(base_url) = &req.base_url {
         sqlx::query("UPDATE ai_providers SET base_url=?, updated_at=? WHERE id=?")
-            .bind(base_url).bind(now).bind(&id)
-            .execute(&mut *tx).await.map_err(AppError::Database)?;
+            .bind(base_url)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(model) = &req.model {
         sqlx::query("UPDATE ai_providers SET model=?, updated_at=? WHERE id=?")
-            .bind(model).bind(now).bind(&id)
-            .execute(&mut *tx).await.map_err(AppError::Database)?;
+            .bind(model)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(priority) = req.priority {
         sqlx::query("UPDATE ai_providers SET priority=?, updated_at=? WHERE id=?")
-            .bind(priority).bind(now).bind(&id)
-            .execute(&mut *tx).await.map_err(AppError::Database)?;
+            .bind(priority)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if req.api_key_ref.is_some() || req.api_key_value.is_some() {
         let secret_id = persist_secret_reference(
@@ -190,7 +235,9 @@ pub async fn delete(
         .await
         .map_err(AppError::Database)?
         .rows_affected();
-    if rows == 0 { return Err(AppError::NotFound); }
+    if rows == 0 {
+        return Err(AppError::NotFound);
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -211,8 +258,16 @@ pub async fn health(
     require_admin(&state, &jar).await?;
     let orchestrator = crate::ai::AiOrchestrator::new(state.db.clone(), state.secrets_key.clone());
     match orchestrator.health_check(&id).await {
-        Ok(()) => Ok(Json(HealthResult { id, ok: true, error: None })),
-        Err(e) => Ok(Json(HealthResult { id, ok: false, error: Some(redact_health_error(&e)) })),
+        Ok(()) => Ok(Json(HealthResult {
+            id,
+            ok: true,
+            error: None,
+        })),
+        Err(e) => Ok(Json(HealthResult {
+            id,
+            ok: false,
+            error: Some(redact_health_error(&e)),
+        })),
     }
 }
 
@@ -232,15 +287,17 @@ async fn persist_secret_reference(
             return Err(AppError::BadRequest("api key value required".into()));
         }
         if value.len() > crate::api::secrets::MAX_SECRET_VALUE_BYTES {
-            return Err(AppError::BadRequest("api key value exceeds size limit".into()));
+            return Err(AppError::BadRequest(
+                "api key value exceeds size limit".into(),
+            ));
         }
     }
 
     let secret_id = match (requested_ref, value) {
         (Some(secret_id), Some(value)) => {
             validate_secret_id(secret_id)?;
-            let encrypted = crate::api::secrets::encrypt(secrets_key, value)
-                .map_err(AppError::Internal)?;
+            let encrypted =
+                crate::api::secrets::encrypt(secrets_key, value).map_err(AppError::Internal)?;
             let changed = sqlx::query(
                 "UPDATE secrets SET value_enc=?, version=version+1, updated_at=? WHERE id=?",
             )
@@ -270,8 +327,8 @@ async fn persist_secret_reference(
         }
         (None, Some(value)) => {
             let secret_id = uuid::Uuid::new_v4().to_string();
-            let encrypted = crate::api::secrets::encrypt(secrets_key, value)
-                .map_err(AppError::Internal)?;
+            let encrypted =
+                crate::api::secrets::encrypt(secrets_key, value).map_err(AppError::Internal)?;
             let name = format!("ai-provider-{provider_id}");
             sqlx::query(
                 "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
@@ -300,17 +357,76 @@ fn validate_secret_id(secret_id: &str) -> Result<()> {
 }
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
-    let user = auth::validate_session(&state.db, &sid).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
-    if !matches!(user.role.as_str(), "owner" | "admin") { return Err(AppError::Forbidden); }
+    let sid = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    let user = auth::validate_session(&state.db, &sid)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
+    if !matches!(user.role.as_str(), "owner" | "admin") {
+        return Err(AppError::Forbidden);
+    }
     Ok(user)
 }
 
-fn validate_provider_fields(kind: &str, name: &str, base_url: Option<&str>, model: Option<&str>, priority: i64) -> Result<()> { if name.trim().is_empty() || name.len() > 200 { return Err(AppError::BadRequest("provider name is invalid".into())); } if priority < 0 { return Err(AppError::BadRequest("provider priority must be non-negative".into())); } if let Some(value) = model { if value.trim().is_empty() || value.len() > 200 { return Err(AppError::BadRequest("provider model is invalid".into())); } } if let Some(raw) = base_url { if raw.len() > 500 { return Err(AppError::BadRequest("provider base URL is too long".into())); } let url = reqwest::Url::parse(raw).map_err(|_| AppError::BadRequest("provider base URL is invalid".into()))?; if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() { return Err(AppError::BadRequest("provider base URL must be an HTTP(S) URL without credentials".into())); } let host = url.host_str().unwrap_or_default().trim_end_matches('.'); if kind != "local" && (host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") || host.parse::<std::net::IpAddr>().is_ok()) { return Err(AppError::BadRequest("provider base URL cannot target a local or private address".into())); } } Ok(()) } fn redact_health_error(_error: &str) -> String { "provider health check failed".into() } fn validate_kind(kind: &str) -> Result<()> {
+fn validate_provider_fields(
+    kind: &str,
+    name: &str,
+    base_url: Option<&str>,
+    model: Option<&str>,
+    priority: i64,
+) -> Result<()> {
+    if name.trim().is_empty() || name.len() > 200 {
+        return Err(AppError::BadRequest("provider name is invalid".into()));
+    }
+    if priority < 0 {
+        return Err(AppError::BadRequest(
+            "provider priority must be non-negative".into(),
+        ));
+    }
+    if let Some(value) = model {
+        if value.trim().is_empty() || value.len() > 200 {
+            return Err(AppError::BadRequest("provider model is invalid".into()));
+        }
+    }
+    if let Some(raw) = base_url {
+        if raw.len() > 500 {
+            return Err(AppError::BadRequest("provider base URL is too long".into()));
+        }
+        let url = reqwest::Url::parse(raw)
+            .map_err(|_| AppError::BadRequest("provider base URL is invalid".into()))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(AppError::BadRequest(
+                "provider base URL must be an HTTP(S) URL without credentials".into(),
+            ));
+        }
+        let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+        if kind != "local"
+            && (host.eq_ignore_ascii_case("localhost")
+                || host.ends_with(".localhost")
+                || host.parse::<std::net::IpAddr>().is_ok())
+        {
+            return Err(AppError::BadRequest(
+                "provider base URL cannot target a local or private address".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+fn redact_health_error(_error: &str) -> String {
+    "provider health check failed".into()
+}
+fn validate_kind(kind: &str) -> Result<()> {
     match kind {
         "odysseus" | "openai" | "anthropic" | "local" => Ok(()),
         _ => Err(AppError::BadRequest(format!(
-            "Unknown provider kind '{}'. Valid: odysseus, openai, anthropic, local", kind
+            "Unknown provider kind '{}'. Valid: odysseus, openai, anthropic, local",
+            kind
         ))),
     }
 }
@@ -333,15 +449,46 @@ mod tests {
     #[test]
     fn provider_validation_rejects_unsafe_endpoint_and_invalid_metadata() {
         assert!(super::validate_provider_fields("openai", " ", None, None, 1).is_err());
-        assert!(super::validate_provider_fields("openai", "provider", Some("file:///etc/passwd"), None, 1).is_err());
-        assert!(super::validate_provider_fields("openai", "provider", Some("http://127.0.0.1:8080"), None, 1).is_err());
-        assert!(super::validate_provider_fields("local", "provider", Some("http://127.0.0.1:11434"), Some("model"), 0).is_ok());
-        assert!(super::validate_provider_fields("openai", "provider", Some("https://api.example.test"), Some("model"), 0).is_ok());
+        assert!(super::validate_provider_fields(
+            "openai",
+            "provider",
+            Some("file:///etc/passwd"),
+            None,
+            1
+        )
+        .is_err());
+        assert!(super::validate_provider_fields(
+            "openai",
+            "provider",
+            Some("http://127.0.0.1:8080"),
+            None,
+            1
+        )
+        .is_err());
+        assert!(super::validate_provider_fields(
+            "local",
+            "provider",
+            Some("http://127.0.0.1:11434"),
+            Some("model"),
+            0
+        )
+        .is_ok());
+        assert!(super::validate_provider_fields(
+            "openai",
+            "provider",
+            Some("https://api.example.test"),
+            Some("model"),
+            0
+        )
+        .is_ok());
     }
 
     #[test]
     fn provider_health_failure_is_redacted() {
-        assert_eq!(super::redact_health_error("database password at http://10.0.0.1"), "provider health check failed");
+        assert_eq!(
+            super::redact_health_error("database password at http://10.0.0.1"),
+            "provider health check failed"
+        );
     }
 
     #[tokio::test]
@@ -389,14 +536,16 @@ mod tests {
 
         assert!(uuid::Uuid::parse_str(&secret_id).is_ok());
         assert_ne!(value_enc, secret_value);
-        assert_eq!(crate::api::secrets::decrypt(&state.secrets_key, &value_enc).unwrap(), secret_value);
-        let plaintext: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM settings WHERE value = ?",
-        )
-        .bind(secret_value)
-        .fetch_optional(&db)
-        .await
-        .unwrap();
+        assert_eq!(
+            crate::api::secrets::decrypt(&state.secrets_key, &value_enc).unwrap(),
+            secret_value
+        );
+        let plaintext: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE value = ?")
+                .bind(secret_value)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
         assert!(plaintext.is_none());
     }
 }

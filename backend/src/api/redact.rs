@@ -70,9 +70,7 @@ pub(crate) async fn known_secret_values_from(db: &SqlitePool, key: &[u8; 32]) ->
 /// Fetch and resolve every canonical secret for configuration export. Any
 /// unusable record makes the inventory incomplete because the export may contain
 /// stale plaintext copies that cannot be safely checked.
-pub(crate) async fn known_secret_values_for_export(
-    state: &AppState,
-) -> KnownSecretValues {
+pub(crate) async fn known_secret_values_for_export(state: &AppState) -> KnownSecretValues {
     known_secret_values_for_export_from(&state.db, &state.secrets_key).await
 }
 
@@ -102,7 +100,7 @@ async fn collect_known_secret_values(
         match crate::api::secrets::resolve(db, key, &secret_id, "redaction").await {
             Ok(value) if !value.is_empty() => values.push(value),
             Ok(_) if fail_on_unusable => return KnownSecretValues::default(),
-            Ok(_) => {},
+            Ok(_) => {}
             Err(crate::api::secrets::ResolveError::Database) => {
                 return KnownSecretValues::default();
             }

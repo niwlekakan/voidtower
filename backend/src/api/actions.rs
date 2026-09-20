@@ -504,8 +504,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(response.headers().get("x-voidtower-api-version").unwrap(), "1");
-        assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "application/json");
+        assert_eq!(
+            response.headers().get("x-voidtower-api-version").unwrap(),
+            "1"
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();

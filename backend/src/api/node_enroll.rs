@@ -356,10 +356,7 @@ pub async fn heartbeat(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
     headers: HeaderMap,
-    body: std::result::Result<
-        axum::body::Bytes,
-        axum::extract::rejection::BytesRejection,
-    >,
+    body: std::result::Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<serde_json::Value>> {
     verify_node_token(state.clone(), node_id.clone(), headers.clone()).await?;
     let body = match body {
@@ -417,10 +414,14 @@ fn validate_heartbeat_request(req: &HeartbeatRequest) -> Result<()> {
     if req.battery.is_some_and(|battery| {
         !battery.is_finite() || !(0.0..=MAX_BATTERY_PERCENT).contains(&battery)
     }) {
-        return Err(AppError::BadRequest("battery must be between 0 and 100".into()));
+        return Err(AppError::BadRequest(
+            "battery must be between 0 and 100".into(),
+        ));
     }
     if req.storage_free_bytes.is_some_and(|bytes| bytes < 0) {
-        return Err(AppError::BadRequest("storage_free_bytes must be non-negative".into()));
+        return Err(AppError::BadRequest(
+            "storage_free_bytes must be non-negative".into(),
+        ));
     }
     Ok(())
 }
@@ -538,12 +539,12 @@ mod tests {
             let response = app
                 .clone()
                 .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/nodes/missing/heartbeat")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/nodes/missing/heartbeat")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
                 )
                 .await
                 .unwrap();
@@ -780,13 +781,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let used_at: Option<i64> = sqlx::query_scalar(
-            "SELECT used_at FROM node_pairing_codes WHERE token_hash = ?",
-        )
-        .bind(sha256_hex("expired-at-boundary"))
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let used_at: Option<i64> =
+            sqlx::query_scalar("SELECT used_at FROM node_pairing_codes WHERE token_hash = ?")
+                .bind(sha256_hex("expired-at-boundary"))
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(used_at, None);
     }
 
@@ -841,13 +841,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let used_at: Option<i64> = sqlx::query_scalar(
-            "SELECT used_at FROM node_pairing_codes WHERE token_hash = ?",
-        )
-        .bind(sha256_hex("missing-owner-code"))
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let used_at: Option<i64> =
+            sqlx::query_scalar("SELECT used_at FROM node_pairing_codes WHERE token_hash = ?")
+                .bind(sha256_hex("missing-owner-code"))
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(used_at, None);
         let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
             .fetch_one(&db)

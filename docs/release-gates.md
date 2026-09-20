@@ -62,11 +62,14 @@ escape the repository, and rejects migrations that are not tracked by Git. A
 missing tool or malformed migration layout must fail the gate rather than print
 a success line.
 
-These checks establish repository/source governance only. CI installs and
-qualifies `cargo-deny@0.20.2` because current RustSec advisories use CVSS 4.0
-metadata that older cargo-deny releases cannot parse. Rust lint components,
-frontend dependencies, a host supervisor, Docker, a browser, and a packaged
-runtime remain explicit prerequisites in the machine-readable report.
+These checks establish repository/source governance only. The release manifest
+declares both `backend-clippy` and `backend-format`; a passing backend quality
+gate therefore requires strict Clippy and `cargo fmt --all -- --check` in the
+same evidence run. CI installs and qualifies `cargo-deny@0.20.2` because current
+RustSec advisories use CVSS 4.0 metadata that older cargo-deny releases cannot
+parse. Rust lint components, frontend dependencies, a host supervisor, Docker,
+a browser, and a packaged runtime remain explicit prerequisites in the
+machine-readable report.
 
 ## Verification
 

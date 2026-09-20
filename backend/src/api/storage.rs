@@ -1,8 +1,7 @@
 use crate::{
     auth,
     error::{AppError, Result},
-    storage,
-    AppState,
+    storage, AppState,
 };
 use axum::{
     extract::{Path, State},
@@ -162,7 +161,9 @@ pub async fn get_raid(
         ));
     }
     let arrays = storage::list_raid().await;
-    Ok(Json(serde_json::json!({ "available": true, "arrays": arrays })))
+    Ok(Json(
+        serde_json::json!({ "available": true, "arrays": arrays }),
+    ))
 }
 
 // ─── POST /api/storage/raid/create ───────────────────────────────────────────
@@ -235,11 +236,7 @@ mod tests {
         let state = crate::api::mcp::test_support::build(pool);
         let jar = CookieJar::new().add(Cookie::new("vt_session", session));
 
-        let result = format_device(
-            State(state),
-            jar,
-        )
-        .await;
+        let result = format_device(State(state), jar).await;
 
         assert!(
             matches!(result, Err(AppError::FeatureUnavailable(ref message)) if message.contains("canonical operation")),
@@ -329,8 +326,14 @@ mod tests {
                 .find(&format!("pub async fn {name}"))
                 .expect("storage mutation handler must exist");
             let body = &source[start..source[start..].find("\n}\n").unwrap() + start + 3];
-            assert!(body.contains("require_admin"), "{name} must keep auth first");
-            assert!(body.contains("FeatureUnavailable"), "{name} must fail closed");
+            assert!(
+                body.contains("require_admin"),
+                "{name} must keep auth first"
+            );
+            assert!(
+                body.contains("FeatureUnavailable"),
+                "{name} must fail closed"
+            );
             assert!(
                 !body.contains("Command::new") && !body.contains("run_privileged"),
                 "{name} must not execute a provider"
@@ -358,9 +361,9 @@ pub async fn get_storage_paths(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
     let containers = db_get_path(&state, "storage.paths.containers").await;
-    let appvault   = db_get_path(&state, "storage.paths.appvault").await;
-    let vms        = db_get_path(&state, "storage.paths.vms").await;
-    let backups    = db_get_path(&state, "storage.paths.backups").await;
+    let appvault = db_get_path(&state, "storage.paths.appvault").await;
+    let vms = db_get_path(&state, "storage.paths.vms").await;
+    let backups = db_get_path(&state, "storage.paths.backups").await;
     Ok(Json(serde_json::json!({
         "containers": containers,
         "appvault":   appvault,
@@ -373,9 +376,9 @@ pub async fn get_storage_paths(
 #[derive(Deserialize)]
 pub struct SetStoragePathsReq {
     pub containers: Option<String>,
-    pub appvault:   Option<String>,
-    pub vms:        Option<String>,
-    pub backups:    Option<String>,
+    pub appvault: Option<String>,
+    pub vms: Option<String>,
+    pub backups: Option<String>,
 }
 
 pub async fn set_storage_paths(

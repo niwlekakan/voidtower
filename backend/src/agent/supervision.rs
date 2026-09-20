@@ -1,8 +1,14 @@
-use crate::{agent::{state::{AgentState, PendingSnapshotStore}, transport::AgentTransport}, collector};
+use crate::{
+    agent::{
+        state::{AgentState, PendingSnapshotStore},
+        transport::AgentTransport,
+    },
+    collector,
+};
 use rand::Rng;
-use std::{time::{Duration, SystemTime, UNIX_EPOCH}};
-use uuid::Uuid;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Cancellation {
@@ -65,6 +71,7 @@ impl Backoff {
     }
 }
 
+#[allow(dead_code)]
 pub async fn run(state: AgentState, transport: AgentTransport, cancellation: Cancellation) {
     run_with_state_path(state, transport, cancellation, None).await;
 }
@@ -92,28 +99,44 @@ pub async fn run_with_state_path(
     let inventory_transport = transport;
     let inventory_cancel = cancellation.clone();
     let inventory = tokio::spawn(async move {
-        run_inventory(inventory_state, inventory_transport, inventory_cancel, state_path).await;
+        run_inventory(
+            inventory_state,
+            inventory_transport,
+            inventory_cancel,
+            state_path,
+        )
+        .await;
     });
     let _ = tokio::join!(heartbeat, inventory);
 }
 
 async fn run_heartbeat(state: AgentState, transport: AgentTransport, cancellation: Cancellation) {
     let interval = Duration::from_secs(state.schedule.heartbeat_interval_seconds);
-    let mut backoff = Backoff::new(Duration::from_secs(1), Duration::from_secs(state.schedule.max_backoff_seconds));
+    let mut backoff = Backoff::new(
+        Duration::from_secs(1),
+        Duration::from_secs(state.schedule.max_backoff_seconds),
+    );
     loop {
-        if cancellation.is_cancelled() { return; }
+        if cancellation.is_cancelled() {
+            return;
+        }
         let result = tokio::select! {
             result = transport.heartbeat(&state) => result,
             _ = cancellation.cancelled() => return,
         };
         let delay = match result {
-            Ok(()) => { backoff.reset(); interval }
+            Ok(()) => {
+                backoff.reset();
+                interval
+            }
             Err(_) => {
                 tracing::warn!(event_code = "agent_heartbeat_failed", node_id = %state.node_id);
                 backoff.next_delay()
             }
         };
-        if wait_or_cancel(&cancellation, delay).await { return; }
+        if wait_or_cancel(&cancellation, delay).await {
+            return;
+        }
     }
 }
 
@@ -173,7 +196,9 @@ async fn run_inventory_with_program(
         },
         None => None,
     };
-    let mut pending_snapshot = pending_store.as_ref().and_then(|(_, snapshot)| snapshot.clone());
+    let mut pending_snapshot = pending_store
+        .as_ref()
+        .and_then(|(_, snapshot)| snapshot.clone());
     loop {
         if cancellation.is_cancelled() {
             return;
@@ -248,7 +273,11 @@ async fn run_inventory_with_program(
                     pending_snapshot = None;
                     backoff.reset();
                 }
-                let delay = if cleared { interval } else { backoff.next_delay() };
+                let delay = if cleared {
+                    interval
+                } else {
+                    backoff.next_delay()
+                };
                 if wait_or_cancel(&cancellation, delay).await {
                     return;
                 }
@@ -291,9 +320,7 @@ mod tests {
             let read = stream.read(&mut buffer).await.unwrap();
             assert!(read > 0, "controller closed before receiving the request");
             request.extend_from_slice(&buffer[..read]);
-            let Some(header_end) = request
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
             else {
                 continue;
             };
@@ -364,9 +391,10 @@ mod tests {
     fn collector_fixture() -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = std::env::current_dir()
-            .unwrap()
-            .join(format!(".voidtower-supervision-collector-{}.sh", Uuid::new_v4()));
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".voidtower-supervision-collector-{}.sh",
+            Uuid::new_v4()
+        ));
         std::fs::write(
             &path,
             "#!/bin/sh\nprintf '%s' '{\"blockdevices\":[{\"name\":\"sda\",\"type\":\"disk\",\"size\":100,\"serial\":\"SERIAL-001\"}]}'\n",
@@ -475,7 +503,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn pending_inventory_snapshot_is_reused_after_ambiguous_upload() {
-        let root = std::env::temp_dir().join(format!("voidtower-agent-recovery-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("voidtower-agent-recovery-{}", Uuid::new_v4()));
         let state_path = root.join("state.json");
         let state = inventory_test_state();
         let collector_program = collector_fixture();
@@ -489,13 +518,11 @@ mod tests {
             Some(state_path.clone()),
             collector_program.clone(),
         ));
-        let first_snapshot_id = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            first_snapshot_rx,
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let first_snapshot_id =
+            tokio::time::timeout(std::time::Duration::from_secs(5), first_snapshot_rx)
+                .await
+                .unwrap()
+                .unwrap();
         first_cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(2), first_run)
             .await
@@ -512,7 +539,8 @@ mod tests {
             "missing": 0
         })
         .to_string();
-        let (second_url, second_snapshot_rx, second_server) = inventory_server(Some(response)).await;
+        let (second_url, second_snapshot_rx, second_server) =
+            inventory_server(Some(response)).await;
         let second_transport = AgentTransport::new_loopback_test(&second_url, None).unwrap();
         let second_cancel = Cancellation::new();
         let second_run = tokio::spawn(run_inventory_with_program(
@@ -522,13 +550,11 @@ mod tests {
             Some(state_path.clone()),
             collector_program.clone(),
         ));
-        let second_snapshot_id = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            second_snapshot_rx,
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let second_snapshot_id =
+            tokio::time::timeout(std::time::Duration::from_secs(5), second_snapshot_rx)
+                .await
+                .unwrap()
+                .unwrap();
         let store = PendingSnapshotStore::for_state_path(&state_path, state.node_id).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {

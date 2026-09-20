@@ -91,24 +91,22 @@ pub struct ConfigExport {
 // POST /api/disaster/export-config
 // ---------------------------------------------------------------------------
 
-pub async fn export_config(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Response> {
+pub async fn export_config(State(state): State<AppState>, jar: CookieJar) -> Result<Response> {
     require_owner(&state, &jar).await?;
     let known_secrets = crate::api::mcp::redact::known_secret_values_for_export(&state).await;
     if !known_secrets.complete {
-        return Err(AppError::Internal(anyhow::anyhow!("secret vault unavailable")));
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "secret vault unavailable"
+        )));
     }
 
-    let instance_name: String = sqlx::query_scalar(
-        "SELECT value FROM settings WHERE key = 'instance_name'",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?
-    .flatten()
-    .unwrap_or_else(|| "VoidTower".into());
+    let instance_name: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'instance_name'")
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .flatten()
+            .unwrap_or_else(|| "VoidTower".into());
     let instance_name = redact_export_text(&instance_name, &known_secrets.values);
 
     // Proxy rules
@@ -201,18 +199,17 @@ pub async fn export_config(
         name: String,
         color: String,
     }
-    let tags: Vec<ExportedTag> = sqlx::query_as::<_, TagRow>(
-        "SELECT name, color FROM tags ORDER BY created_at",
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?
-    .into_iter()
-    .map(|r| ExportedTag {
-        name: redact_export_text(&r.name, &known_secrets.values),
-        color: redact_export_text(&r.color, &known_secrets.values),
-    })
-    .collect();
+    let tags: Vec<ExportedTag> =
+        sqlx::query_as::<_, TagRow>("SELECT name, color FROM tags ORDER BY created_at")
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .into_iter()
+            .map(|r| ExportedTag {
+                name: redact_export_text(&r.name, &known_secrets.values),
+                color: redact_export_text(&r.color, &known_secrets.values),
+            })
+            .collect();
 
     let version = option_env!("VOIDTOWER_VERSION")
         .unwrap_or("unknown")
@@ -228,8 +225,7 @@ pub async fn export_config(
         tags,
     };
 
-    let json = serde_json::to_string_pretty(&export)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let json = serde_json::to_string_pretty(&export).map_err(|e| AppError::Internal(e.into()))?;
 
     let ts = export.exported_at;
     let filename = format!("voidtower-config-{ts}.json");
@@ -397,8 +393,7 @@ pub async fn emergency_reset_admin(
     let (target_id, target_username) = target;
 
     let temp_password = random_alphanum(16);
-    let new_hash = auth::hash_password(&temp_password)
-        .map_err(AppError::Internal)?;
+    let new_hash = auth::hash_password(&temp_password).map_err(AppError::Internal)?;
 
     let now = unix_now();
     sqlx::query(
@@ -465,14 +460,13 @@ pub async fn emergency_disable(
     .await;
 
     // Disable all enabled automation jobs
-    let automations_disabled = sqlx::query(
-        "UPDATE automation_jobs SET enabled = 0, updated_at = ? WHERE enabled = 1",
-    )
-    .bind(now)
-    .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?
-    .rows_affected();
+    let automations_disabled =
+        sqlx::query("UPDATE automation_jobs SET enabled = 0, updated_at = ? WHERE enabled = 1")
+            .bind(now)
+            .execute(&state.db)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .rows_affected();
 
     audit::log(
         &state.db,
@@ -509,21 +503,27 @@ pub async fn cli_export(
         crate::api::mcp::redact::known_secret_values_for_export_from(pool, secrets_key).await;
     anyhow::ensure!(known_secrets.complete, "secret vault unavailable");
 
-    let instance_name: String = sqlx::query_scalar(
-        "SELECT value FROM settings WHERE key = 'instance_name'",
-    )
-    .fetch_optional(pool)
-    .await?
-    .flatten()
-    .unwrap_or_else(|| "VoidTower".into());
+    let instance_name: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'instance_name'")
+            .fetch_optional(pool)
+            .await?
+            .flatten()
+            .unwrap_or_else(|| "VoidTower".into());
     let instance_name = redact_export_text(&instance_name, &known_secrets.values);
 
     #[derive(sqlx::FromRow)]
-    struct ProxyRow { domain: String, upstream: String, ssl: bool, allow_embed: bool, enabled: bool }
+    struct ProxyRow {
+        domain: String,
+        upstream: String,
+        ssl: bool,
+        allow_embed: bool,
+        enabled: bool,
+    }
     let proxy_rules: Vec<ExportedProxyRule> = sqlx::query_as::<_, ProxyRow>(
         "SELECT domain, upstream, ssl, allow_embed, enabled FROM proxy_configs ORDER BY created_at",
     )
-    .fetch_all(pool).await?
+    .fetch_all(pool)
+    .await?
     .into_iter()
     .map(|r| ExportedProxyRule {
         domain: redact_export_text(&r.domain, &known_secrets.values),
@@ -535,7 +535,14 @@ pub async fn cli_export(
     .collect();
 
     #[derive(sqlx::FromRow)]
-    struct AutoRow { name: String, description: Option<String>, command: String, schedule: Option<String>, enabled: bool, timeout_secs: i64 }
+    struct AutoRow {
+        name: String,
+        description: Option<String>,
+        command: String,
+        schedule: Option<String>,
+        enabled: bool,
+        timeout_secs: i64,
+    }
     let automation_jobs: Vec<ExportedAutomationJob> = sqlx::query_as::<_, AutoRow>(
         "SELECT name, description, command, schedule, enabled, timeout_secs FROM automation_jobs ORDER BY created_at",
     )
@@ -552,34 +559,48 @@ pub async fn cli_export(
     .collect();
 
     #[derive(sqlx::FromRow)]
-    struct AlertRow { id: String, name: Option<String>, severity: String, state: String }
+    struct AlertRow {
+        id: String,
+        name: Option<String>,
+        severity: String,
+        state: String,
+    }
     let alert_rules: Vec<ExportedAlertRule> = sqlx::query_as::<_, AlertRow>(
         "SELECT id, title AS name, severity, state FROM alerts ORDER BY created_at",
     )
-    .fetch_all(pool).await?
+    .fetch_all(pool)
+    .await?
     .into_iter()
     .map(|r| ExportedAlertRule {
         id: redact_export_text(&r.id, &known_secrets.values),
-        name: r.name.as_deref().map(|value| redact_export_text(value, &known_secrets.values)),
+        name: r
+            .name
+            .as_deref()
+            .map(|value| redact_export_text(value, &known_secrets.values)),
         severity: redact_export_text(&r.severity, &known_secrets.values),
         state: redact_export_text(&r.state, &known_secrets.values),
     })
     .collect();
 
     #[derive(sqlx::FromRow)]
-    struct TagRow { name: String, color: String }
-    let tags: Vec<ExportedTag> = sqlx::query_as::<_, TagRow>(
-        "SELECT name, color FROM tags ORDER BY created_at",
-    )
-    .fetch_all(pool).await?
-    .into_iter()
-    .map(|r| ExportedTag {
-        name: redact_export_text(&r.name, &known_secrets.values),
-        color: redact_export_text(&r.color, &known_secrets.values),
-    })
-    .collect();
+    struct TagRow {
+        name: String,
+        color: String,
+    }
+    let tags: Vec<ExportedTag> =
+        sqlx::query_as::<_, TagRow>("SELECT name, color FROM tags ORDER BY created_at")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| ExportedTag {
+                name: redact_export_text(&r.name, &known_secrets.values),
+                color: redact_export_text(&r.color, &known_secrets.values),
+            })
+            .collect();
 
-    let version = option_env!("VOIDTOWER_VERSION").unwrap_or("unknown").to_string();
+    let version = option_env!("VOIDTOWER_VERSION")
+        .unwrap_or("unknown")
+        .to_string();
     let export = ConfigExport {
         voidtower_version: version,
         exported_at: unix_now(),
@@ -656,8 +677,12 @@ pub async fn cli_import(pool: &sqlx::SqlitePool, input_path: &str) -> anyhow::Re
             "INSERT INTO tags (id, name, color, created_at) VALUES (?, ?, ?, ?)
              ON CONFLICT(name) DO UPDATE SET color = excluded.color",
         )
-        .bind(&id).bind(&tag.name).bind(&tag.color).bind(now)
-        .execute(pool).await?;
+        .bind(&id)
+        .bind(&tag.name)
+        .bind(&tag.color)
+        .bind(now)
+        .execute(pool)
+        .await?;
         tags += 1;
     }
 

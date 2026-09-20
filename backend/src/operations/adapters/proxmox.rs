@@ -282,13 +282,12 @@ impl HttpProxmoxProvider {
                 .await?
                 .context("Proxmox host is not configured")?;
         let secret_name = format!("proxmox_token_{id}");
-        let (secret_id, version): (String, i64) = sqlx::query_as(
-            "SELECT id, version FROM secrets WHERE name = ?",
-        )
-        .bind(secret_name)
-        .fetch_optional(&self.pool)
-        .await?
-        .context("Proxmox host token is not configured")?;
+        let (secret_id, version): (String, i64) =
+            sqlx::query_as("SELECT id, version FROM secrets WHERE name = ?")
+                .bind(secret_name)
+                .fetch_optional(&self.pool)
+                .await?
+                .context("Proxmox host token is not configured")?;
         let token = secrets::resolve(
             &self.pool,
             &self.secrets_key,

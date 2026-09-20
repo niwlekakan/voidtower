@@ -262,9 +262,7 @@ impl AgentTransport {
         let mut writer = BoundedJsonWriter::new(MAX_INVENTORY_REQUEST_BYTES);
         if let Err(error) = serde_json::to_writer(&mut writer, snapshot) {
             if writer.overflowed {
-                bail!(
-                    "inventory snapshot exceeds {MAX_INVENTORY_REQUEST_BYTES} bytes"
-                );
+                bail!("inventory snapshot exceeds {MAX_INVENTORY_REQUEST_BYTES} bytes");
             }
             return Err(error).context("failed to serialize inventory snapshot");
         }
@@ -484,11 +482,15 @@ mod tests {
             "platform": "linux", "collected_at": 0,
             "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
             "entities": []
-        })).unwrap();
+        }))
+        .unwrap();
         let result = transport.upload_inventory(&state, &snapshot).await.unwrap();
         assert!(!result.replayed);
         let request = request_rx.await.unwrap();
-        assert!(request.starts_with(&format!("POST /api/nodes/{}/inventory HTTP/1.1", state.node_id)));
+        assert!(request.starts_with(&format!(
+            "POST /api/nodes/{}/inventory HTTP/1.1",
+            state.node_id
+        )));
         assert!(request.to_ascii_lowercase().contains("authorization"));
         assert!(request.contains("snapshot-1"));
     }
@@ -511,16 +513,21 @@ mod tests {
             "platform": "linux", "collected_at": 0,
             "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
             "entities": []
-        })).unwrap();
+        }))
+        .unwrap();
         snapshot.host.runtime = serde_json::Value::String("x".repeat(MAX_INVENTORY_REQUEST_BYTES));
 
-        let error = transport.upload_inventory(&state, &snapshot).await.unwrap_err();
+        let error = transport
+            .upload_inventory(&state, &snapshot)
+            .await
+            .unwrap_err();
 
         assert!(error.to_string().contains("inventory snapshot exceeds"));
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_millis(25),
-            listener.accept()
-        ).await.is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), listener.accept())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -594,9 +601,13 @@ mod tests {
             "platform": "linux", "collected_at": 0,
             "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
             "entities": []
-        })).unwrap();
+        }))
+        .unwrap();
 
-        let error = transport.upload_inventory(&state, &snapshot).await.unwrap_err();
+        let error = transport
+            .upload_inventory(&state, &snapshot)
+            .await
+            .unwrap_err();
         assert!(format!("{error:#}").contains("missing field `linked`"));
     }
 
@@ -621,15 +632,20 @@ mod tests {
             "platform": "linux", "collected_at": 0,
             "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
             "entities": []
-        })).unwrap();
+        }))
+        .unwrap();
 
-        let error = transport.upload_inventory(&state, &snapshot).await.unwrap_err();
+        let error = transport
+            .upload_inventory(&state, &snapshot)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("different inventory snapshot"));
     }
 
     #[test]
     fn enrollment_validation_matches_controller_pairing_code_limit() {
-        let request = EnrollmentRequest::new("x".repeat(513), "test-node".into(), "pi".into(), false);
+        let request =
+            EnrollmentRequest::new("x".repeat(513), "test-node".into(), "pi".into(), false);
         let error = request.validate().unwrap_err();
         assert!(error.to_string().contains("512"));
     }

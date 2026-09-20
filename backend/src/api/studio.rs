@@ -193,9 +193,9 @@ pub async fn image_generate(
     _request: Request,
 ) -> Result<Json<ImageGenResponse>> {
     require_user(&state, &jar).await?;
-    return Err(AppError::FeatureUnavailable(
+    Err(AppError::FeatureUnavailable(
         "AI image generation requires a canonical operation adapter".into(),
-    ));
+    ))
 }
 
 pub async fn serve_image(
@@ -230,9 +230,9 @@ pub async fn tts_generate(
     _request: Request,
 ) -> Result<Json<TtsResponse>> {
     require_user(&state, &jar).await?;
-    return Err(AppError::FeatureUnavailable(
+    Err(AppError::FeatureUnavailable(
         "AI speech generation requires a canonical operation adapter".into(),
-    ));
+    ))
 }
 
 pub async fn serve_audio(
@@ -264,9 +264,9 @@ pub async fn stt_transcribe(
     _request: Request,
 ) -> Result<Json<SttResponse>> {
     require_user(&state, &jar).await?;
-    return Err(AppError::FeatureUnavailable(
+    Err(AppError::FeatureUnavailable(
         "AI speech transcription requires a canonical operation adapter".into(),
-    ));
+    ))
 }
 
 // ── gallery ───────────────────────────────────────────────────────────────────

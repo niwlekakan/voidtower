@@ -1,6 +1,5 @@
 use crate::{
-    audit,
-    auth,
+    audit, auth,
     error::{AppError, Result},
     AppState,
 };
@@ -19,7 +18,9 @@ pub struct ListQuery {
     pub offset: i64,
 }
 
-fn default_limit() -> i64 { 50 }
+fn default_limit() -> i64 {
+    50
+}
 
 #[derive(Serialize)]
 pub struct AuditResponse {

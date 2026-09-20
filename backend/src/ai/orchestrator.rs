@@ -1,5 +1,5 @@
 use crate::{
-    ai::{AiProvider, AiRequest, ProviderConfig, build_provider},
+    ai::{build_provider, AiProvider, AiRequest, ProviderConfig},
     api::secrets,
     error::{AppError, Result},
 };
@@ -51,11 +51,10 @@ impl AiOrchestrator {
     /// Stream a chat request through the best available provider.
     /// Returns the raw `reqwest::Response` so the caller can pipe it back to
     /// the browser unchanged (SSE / NDJSON).
-    pub async fn stream(
-        &self,
-        req: &AiRequest,
-    ) -> Result<(String, reqwest::Response)> {
-        let (configs, providers) = self.load_providers().await
+    pub async fn stream(&self, req: &AiRequest) -> Result<(String, reqwest::Response)> {
+        let (configs, providers) = self
+            .load_providers()
+            .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
         let provider = crate::ai::router::select(&providers, req, &configs).ok_or_else(|| {
@@ -67,7 +66,9 @@ impl AiOrchestrator {
         })?;
 
         let provider_id = provider.id().to_string();
-        let resp = provider.stream(req).await
+        let resp = provider
+            .stream(req)
+            .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
         Ok((provider_id, resp))
@@ -75,7 +76,9 @@ impl AiOrchestrator {
 
     /// Return (provider_id, text) via a non-streaming call.
     pub async fn complete(&self, req: &AiRequest) -> Result<(String, String)> {
-        let (configs, providers) = self.load_providers().await
+        let (configs, providers) = self
+            .load_providers()
+            .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
         let provider = crate::ai::router::select(&providers, req, &configs).ok_or_else(|| {
@@ -87,7 +90,9 @@ impl AiOrchestrator {
         })?;
 
         let provider_id = provider.id().to_string();
-        let text = provider.complete(req).await
+        let text = provider
+            .complete(req)
+            .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
         Ok((provider_id, text))

@@ -8,9 +8,9 @@ mod automation;
 mod backups;
 mod cluster;
 pub mod cmdb;
+pub mod collector;
 mod config;
 mod containers;
-pub mod collector;
 mod db;
 mod error;
 mod monitoring;
@@ -30,13 +30,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use monitoring::{MetricsBroadcaster, MetricsCollector, MetricsSnapshot};
 use sqlx::SqlitePool;
-use std::{
-    collections::HashMap,
-    io::Read,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, io::Read, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
@@ -1528,9 +1522,8 @@ mod lifecycle_tests {
 
     #[test]
     fn stdin_pairing_code_reader_accepts_the_exact_limit_with_crlf() {
-        let mut input = std::io::Cursor::new(
-            [vec![b'Q'; MAX_PAIRING_CODE_BYTES], b"\r\n".to_vec()].concat(),
-        );
+        let mut input =
+            std::io::Cursor::new([vec![b'Q'; MAX_PAIRING_CODE_BYTES], b"\r\n".to_vec()].concat());
 
         let value = read_pairing_code_from_reader(&mut input).unwrap();
 
@@ -1571,7 +1564,9 @@ mod lifecycle_tests {
                 bytes: b"pairing-code-value\n",
                 offset: 0,
             };
-            sender.send(read_pairing_code_from_reader(&mut input)).unwrap();
+            sender
+                .send(read_pairing_code_from_reader(&mut input))
+                .unwrap();
         });
 
         let value = receiver
@@ -1604,7 +1599,9 @@ mod lifecycle_tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut input = OpenAfterBytes { bytes, offset: 0 };
-            sender.send(read_pairing_code_from_reader(&mut input)).unwrap();
+            sender
+                .send(read_pairing_code_from_reader(&mut input))
+                .unwrap();
         });
 
         let error = receiver

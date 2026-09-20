@@ -123,13 +123,18 @@ impl MetricsCollector {
         let uptime_secs = System::uptime();
         let cpu_usage = sys.global_cpu_info().cpu_usage();
         let cpu_count = sys.cpus().len();
-        let cpu_model = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+        let cpu_model = sys
+            .cpus()
+            .first()
+            .map(|c| c.brand().to_string())
+            .unwrap_or_default();
         let ram_total = sys.total_memory();
         let ram_used = sys.used_memory();
         let swap_total = sys.total_swap();
         let swap_used = sys.used_swap();
         let process_count = sys.processes().len();
-        let os_name = System::long_os_version().unwrap_or_else(|| System::name().unwrap_or_else(|| "Linux".to_string()));
+        let os_name = System::long_os_version()
+            .unwrap_or_else(|| System::name().unwrap_or_else(|| "Linux".to_string()));
         let kernel_version = System::kernel_version().unwrap_or_default();
 
         let load_avg = System::load_average();
@@ -172,22 +177,34 @@ impl MetricsCollector {
 
         // Top processes by CPU
         let mut procs: Vec<_> = sys.processes().values().collect();
-        procs.sort_by(|a, b| b.cpu_usage().partial_cmp(&a.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
-        let top_cpu_procs: Vec<ProcessInfo> = procs.iter().take(5).map(|p| ProcessInfo {
-            pid: p.pid().as_u32(),
-            name: p.name().to_string(),
-            cpu_usage: p.cpu_usage(),
-            memory_bytes: p.memory(),
-        }).collect();
+        procs.sort_by(|a, b| {
+            b.cpu_usage()
+                .partial_cmp(&a.cpu_usage())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let top_cpu_procs: Vec<ProcessInfo> = procs
+            .iter()
+            .take(5)
+            .map(|p| ProcessInfo {
+                pid: p.pid().as_u32(),
+                name: p.name().to_string(),
+                cpu_usage: p.cpu_usage(),
+                memory_bytes: p.memory(),
+            })
+            .collect();
 
         // Top processes by memory
         procs.sort_by_key(|p| std::cmp::Reverse(p.memory()));
-        let top_mem_procs: Vec<ProcessInfo> = procs.iter().take(5).map(|p| ProcessInfo {
-            pid: p.pid().as_u32(),
-            name: p.name().to_string(),
-            cpu_usage: p.cpu_usage(),
-            memory_bytes: p.memory(),
-        }).collect();
+        let top_mem_procs: Vec<ProcessInfo> = procs
+            .iter()
+            .take(5)
+            .map(|p| ProcessInfo {
+                pid: p.pid().as_u32(),
+                name: p.name().to_string(),
+                cpu_usage: p.cpu_usage(),
+                memory_bytes: p.memory(),
+            })
+            .collect();
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -260,17 +260,22 @@ pub async fn test_webhook(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
 
-    let row = sqlx::query_as::<_, (String, String)>(
-        "SELECT url, type FROM webhook_configs WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or(AppError::NotFound)?;
+    let row =
+        sqlx::query_as::<_, (String, String)>("SELECT url, type FROM webhook_configs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or(AppError::NotFound)?;
 
     let (url, wh_type) = row;
-    let result = dispatch_one(&url, &wh_type, "webhook.test", "This is a test notification from VoidTower.").await;
+    let result = dispatch_one(
+        &url,
+        &wh_type,
+        "webhook.test",
+        "This is a test notification from VoidTower.",
+    )
+    .await;
 
     match result {
         Ok(_) => Ok(Json(serde_json::json!({ "ok": true }))),
@@ -294,16 +299,14 @@ async fn dispatch_one(
     let title = "VoidTower Alert";
 
     let resp = match wh_type {
-        "ntfy" => {
-            client
-                .post(url)
-                .header("Title", title)
-                .header("Priority", "high")
-                .body(format!("[{event}] {message}"))
-                .send()
-                .await
-                .map_err(|e| e.to_string())?
-        }
+        "ntfy" => client
+            .post(url)
+            .header("Title", title)
+            .header("Priority", "high")
+            .body(format!("[{event}] {message}"))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?,
         "discord" => {
             let color: u32 = if event.contains("resolved") {
                 0x57F287 // green
@@ -323,25 +326,23 @@ async fn dispatch_one(
                 .await
                 .map_err(|e| e.to_string())?
         }
-        "slack" => {
-            client
-                .post(url)
-                .json(&serde_json::json!({
-                    "text": format!("*{title}*\n{message}"),
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": format!("*{title}* — `{event}`\n{message}"),
-                            }
+        "slack" => client
+            .post(url)
+            .json(&serde_json::json!({
+                "text": format!("*{title}*\n{message}"),
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": format!("*{title}* — `{event}`\n{message}"),
                         }
-                    ]
-                }))
-                .send()
-                .await
-                .map_err(|e| e.to_string())?
-        }
+                    }
+                ]
+            }))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?,
         _ => {
             // generic
             let ts = now();

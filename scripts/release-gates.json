@@ -65,6 +65,15 @@
       "timeout_seconds": 600
     },
     {
+      "id": "backend-format",
+      "description": "Backend rustfmt check",
+      "subsystems": ["backend", "agent"],
+      "required": true,
+      "cwd": "backend",
+      "argv": ["cargo", "fmt", "--all", "--", "--check"],
+      "timeout_seconds": 120
+    },
+    {
       "id": "supply-chain",
       "description": "Cargo dependency policy and advisory checks",
       "subsystems": ["governance", "backend", "agent", "schema"],

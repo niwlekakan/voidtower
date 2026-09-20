@@ -322,7 +322,10 @@ async fn automation_run_uses_canonical_job_and_replays_by_idempotency_key() {
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(run_count, 0, "the HTTP seam must enqueue, not execute inline");
+    assert_eq!(
+        run_count, 0,
+        "the HTTP seam must enqueue, not execute inline"
+    );
 }
 
 #[tokio::test]
@@ -353,5 +356,8 @@ async fn automation_scheduler_submits_canonical_job_and_replays_current_slot() {
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(run_count, 0, "the scheduler must enqueue, not execute inline");
+    assert_eq!(
+        run_count, 0,
+        "the scheduler must enqueue, not execute inline"
+    );
 }

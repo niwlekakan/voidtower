@@ -14,7 +14,12 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(id: String, name: String, api_key: String, model: String) -> Self {
-        Self { id, name, api_key, model }
+        Self {
+            id,
+            name,
+            api_key,
+            model,
+        }
     }
 
     fn messages_url(&self) -> String {
@@ -24,8 +29,12 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl AiProvider for AnthropicProvider {
-    fn id(&self) -> &str { &self.id }
-    fn display_name(&self) -> &str { &self.name }
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn display_name(&self) -> &str {
+        &self.name
+    }
 
     fn capabilities(&self) -> AiCapabilities {
         AiCapabilities {
@@ -49,7 +58,8 @@ impl AiProvider for AnthropicProvider {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("Anthropic unreachable: {e}"))?;
 
         if !resp.status().is_success() {
@@ -77,10 +87,14 @@ impl AiProvider for AnthropicProvider {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("Anthropic unreachable: {e}"))?;
         if !resp.status().is_success() {
-            return Err(format!("Anthropic request failed with HTTP {}", resp.status()));
+            return Err(format!(
+                "Anthropic request failed with HTTP {}",
+                resp.status()
+            ));
         }
         Ok(resp)
     }
@@ -99,7 +113,8 @@ impl AiProvider for AnthropicProvider {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| e.to_string())?;
 
         let status = resp.status();
@@ -113,9 +128,11 @@ impl AiProvider for AnthropicProvider {
 
 fn split_messages(req: &AiRequest) -> (Option<String>, Vec<serde_json::Value>) {
     let system = req.system_prompt.clone();
-    let messages = req.messages.iter().map(|m| {
-        serde_json::json!({ "role": m.role, "content": m.content })
-    }).collect();
+    let messages = req
+        .messages
+        .iter()
+        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+        .collect();
     (system, messages)
 }
 

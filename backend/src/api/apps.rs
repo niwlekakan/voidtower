@@ -1,7 +1,5 @@
 use crate::{
-    audit,
-    auth,
-    containers,
+    audit, auth, containers,
     error::{AppError, Result},
     AppState,
 };
@@ -20,7 +18,7 @@ use std::{collections::HashMap, io::Read, net::SocketAddr, path::Path as StdPath
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiIntegration {
-    pub level: String,       // "native" | "aware"
+    pub level: String, // "native" | "aware"
     #[serde(default)]
     pub description: String,
 }
@@ -109,7 +107,9 @@ pub struct PostDeployHook {
     pub max_wait_secs: u64,
 }
 
-fn default_post_deploy_wait() -> u64 { 120 }
+fn default_post_deploy_wait() -> u64 {
+    120
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeployedApp {
@@ -126,7 +126,9 @@ pub struct DeployedApp {
     pub target_node_id: Option<String>,
 }
 
-fn default_origin() -> String { "voidtower".into() }
+fn default_origin() -> String {
+    "voidtower".into()
+}
 
 /// Extract the first published host port from a docker-compose services block.
 fn first_port_from_compose(compose: &Value) -> Option<u16> {
@@ -138,16 +140,22 @@ fn first_port_from_compose(compose: &Value) -> Option<u16> {
             if let Some(s) = entry.as_str() {
                 let host_part = s.split(':').next().unwrap_or("").trim();
                 if let Ok(p) = host_part.parse::<u16>() {
-                    if p > 0 { return Some(p); }
+                    if p > 0 {
+                        return Some(p);
+                    }
                 }
             }
             // Short syntax integer: 3000
             if let Some(n) = entry.as_u64() {
-                if n > 0 && n <= 65535 { return Some(n as u16); }
+                if n > 0 && n <= 65535 {
+                    return Some(n as u16);
+                }
             }
             // Long syntax: { published: 3000, target: 80 }
             if let Some(p) = entry.get("published").and_then(|v| v.as_u64()) {
-                if p > 0 && p <= u64::from(u16::MAX) { return Some(p as u16); }
+                if p > 0 && p <= u64::from(u16::MAX) {
+                    return Some(p as u16);
+                }
             }
         }
     }
@@ -159,7 +167,8 @@ fn first_port_from_compose(compose: &Value) -> Option<u16> {
 /// If the YAML declares `web_port`, that value wins. Otherwise the first
 /// published host port from the compose file is used.
 fn extract_primary_port(app: &AppDef) -> Option<u16> {
-    app.web_port.or_else(|| first_port_from_compose(&app.compose))
+    app.web_port
+        .or_else(|| first_port_from_compose(&app.compose))
 }
 
 #[allow(dead_code)]
@@ -213,16 +222,28 @@ fn load_catalog(catalog_dir: &std::path::Path) -> Vec<AppDef> {
     ];
 
     for dir in &search_dirs {
-        if !dir.exists() { continue; }
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        if !dir.exists() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("yml") { continue; }
-            let Ok(content) = std::fs::read_to_string(&path) else { continue };
-            let Ok(app) = serde_yaml::from_str::<AppDef>(&content) else { continue };
+            if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(app) = serde_yaml::from_str::<AppDef>(&content) else {
+                continue;
+            };
             apps.push(app);
         }
-        if !apps.is_empty() { break; }
+        if !apps.is_empty() {
+            break;
+        }
     }
 
     apps.sort_by(|a, b| a.name.cmp(&b.name));
@@ -234,18 +255,48 @@ fn load_catalog(catalog_dir: &std::path::Path) -> Vec<AppDef> {
 /// Known local LLM services in priority order.
 /// Each entry: (port, path to probe, human label, OpenAI-compat /v1 base URL)
 const LLM_PROBES: &[(u16, &str, &str, &str)] = &[
-    (8090,  "/health",      "llama.cpp",               "http://host.docker.internal:8090/v1"),
-    (8080,  "/health",      "llama.cpp",               "http://host.docker.internal:8080/v1"),
-    (11434, "/api/version", "Ollama",                  "http://host.docker.internal:11434/v1"),
-    (1234,  "/v1/models",   "LM Studio",               "http://host.docker.internal:1234/v1"),
-    (5001,  "/v1/models",   "Text Generation Web UI",  "http://host.docker.internal:5001/v1"),
-    (8000,  "/v1/models",   "vLLM",                    "http://host.docker.internal:8000/v1"),
+    (
+        8090,
+        "/health",
+        "llama.cpp",
+        "http://host.docker.internal:8090/v1",
+    ),
+    (
+        8080,
+        "/health",
+        "llama.cpp",
+        "http://host.docker.internal:8080/v1",
+    ),
+    (
+        11434,
+        "/api/version",
+        "Ollama",
+        "http://host.docker.internal:11434/v1",
+    ),
+    (
+        1234,
+        "/v1/models",
+        "LM Studio",
+        "http://host.docker.internal:1234/v1",
+    ),
+    (
+        5001,
+        "/v1/models",
+        "Text Generation Web UI",
+        "http://host.docker.internal:5001/v1",
+    ),
+    (
+        8000,
+        "/v1/models",
+        "vLLM",
+        "http://host.docker.internal:8000/v1",
+    ),
 ];
 
 pub struct DetectedLlm {
     pub label: String,
-    pub port:  u16,
-    pub url:   String,
+    pub port: u16,
+    pub url: String,
 }
 
 /// Try each known LLM service port with a short timeout.
@@ -259,22 +310,41 @@ pub async fn detect_llm_endpoint() -> Option<DetectedLlm> {
 
     for &(port, path, label, v1_url) in LLM_PROBES {
         let url = format!("http://127.0.0.1:{port}{path}");
-        let Ok(mut response) = client.get(&url).send().await else { continue };
-        if !response.status().is_success() { continue; }
+        let Ok(mut response) = client.get(&url).send().await else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
         let mut body = Vec::new();
         loop {
-            let Ok(chunk) = response.chunk().await else { body.clear(); break; };
-            let Some(chunk) = chunk else { break; };
+            let Ok(chunk) = response.chunk().await else {
+                body.clear();
+                break;
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
             if body.len().saturating_add(chunk.len()) > 64 * 1024 {
                 body.clear();
                 break;
             }
             body.extend_from_slice(&chunk);
         }
-        if body.is_empty() { continue; }
-        let Ok(body) = std::str::from_utf8(&body) else { continue };
-        if serde_json::from_str::<Value>(body).is_err() { continue; }
-        return Some(DetectedLlm { label: label.into(), port, url: v1_url.into() });
+        if body.is_empty() {
+            continue;
+        }
+        let Ok(body) = std::str::from_utf8(&body) else {
+            continue;
+        };
+        if serde_json::from_str::<Value>(body).is_err() {
+            continue;
+        }
+        return Some(DetectedLlm {
+            label: label.into(),
+            port,
+            url: v1_url.into(),
+        });
     }
     None
 }
@@ -295,21 +365,27 @@ pub async fn detect_llm_endpoint() -> Option<DetectedLlm> {
 ///      the `nvidia` runtime on its Docker daemon when a GPU is assigned to
 ///      apps in System Settings → Advanced.
 pub async fn detect_gpu() -> bool {
+    use std::process::Stdio;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
-    use std::process::Stdio;
 
-    async fn bounded_probe_output(mut reader: impl tokio::io::AsyncRead + Unpin) -> Option<Vec<u8>> {
+    async fn bounded_probe_output(
+        mut reader: impl tokio::io::AsyncRead + Unpin,
+    ) -> Option<Vec<u8>> {
         const MAX_BYTES: usize = 64 * 1024;
         let mut output = Vec::new();
         let mut buffer = [0u8; 4096];
         loop {
             let read = reader.read(&mut buffer).await.ok()?;
-            if read == 0 { break; }
+            if read == 0 {
+                break;
+            }
             if output.len() < MAX_BYTES {
                 let retained = (MAX_BYTES - output.len()).min(read);
                 output.extend_from_slice(&buffer[..retained]);
-                if retained < read { return None; }
+                if retained < read {
+                    return None;
+                }
             } else {
                 return None;
             }
@@ -320,11 +396,19 @@ pub async fn detect_gpu() -> bool {
     async fn run_probe(program: &str, args: &[&str], capture_stdout: bool) -> Option<Vec<u8>> {
         let mut command = tokio::process::Command::new(program);
         command.args(args).kill_on_drop(true).stderr(Stdio::null());
-        if capture_stdout { command.stdout(Stdio::piped()); } else { command.stdout(Stdio::null()); }
+        if capture_stdout {
+            command.stdout(Stdio::piped());
+        } else {
+            command.stdout(Stdio::null());
+        }
         let mut child = command.spawn().ok()?;
         if !capture_stdout {
             return tokio::time::timeout(Duration::from_secs(2), child.wait())
-                .await.ok()?.ok().filter(|status| status.success()).map(|_| Vec::new());
+                .await
+                .ok()?
+                .ok()
+                .filter(|status| status.success())
+                .map(|_| Vec::new());
         }
         let stdout = child.stdout.take()?;
         let mut output_task = tokio::spawn(bounded_probe_output(stdout));
@@ -351,7 +435,10 @@ pub async fn detect_gpu() -> bool {
                     status.success().then_some(output)
                 }
             }
-        }).await.ok().flatten()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     if run_probe("nvidia-smi", &["-L"], false).await.is_some() {
@@ -414,14 +501,20 @@ fn inject_external_networks(compose: &mut Value) {
 /// self-heal without a manual `docker network rm vt-proxy`.
 async fn ensure_vt_proxy_network() {
     let inspect = tokio::process::Command::new("docker")
-        .args(["network", "inspect", "vt-proxy", "--format", "{{.EnableIPv6}}"])
+        .args([
+            "network",
+            "inspect",
+            "vt-proxy",
+            "--format",
+            "{{.EnableIPv6}}",
+        ])
         .output()
         .await;
 
     match inspect {
         // Network exists and is already IPv4-only — nothing to do.
-        Ok(out) if out.status.success()
-            && String::from_utf8_lossy(&out.stdout).trim() != "true" => {}
+        Ok(out)
+            if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() != "true" => {}
         // Network exists but has IPv6 enabled — recreate it IPv4-only.
         Ok(out) if out.status.success() => recreate_vt_proxy_network_ipv4().await,
         // Network doesn't exist (or docker errored) — create it fresh.
@@ -438,7 +531,13 @@ async fn ensure_vt_proxy_network() {
 /// that were attached to the old (IPv6-enabled) network.
 async fn recreate_vt_proxy_network_ipv4() {
     let containers = tokio::process::Command::new("docker")
-        .args(["network", "inspect", "vt-proxy", "--format", "{{range .Containers}}{{.Name}} {{end}}"])
+        .args([
+            "network",
+            "inspect",
+            "vt-proxy",
+            "--format",
+            "{{range .Containers}}{{.Name}} {{end}}",
+        ])
         .output()
         .await
         .map(|o| {
@@ -481,11 +580,15 @@ async fn recreate_vt_proxy_network_ipv4() {
 /// non-external networks. External networks are skipped — their config is fixed
 /// at creation time.
 fn force_ipv4_networks(compose: &mut Value) {
-    let Some(root) = compose.as_object_mut() else { return };
+    let Some(root) = compose.as_object_mut() else {
+        return;
+    };
     let nets = root
         .entry("networks")
         .or_insert_with(|| serde_json::json!({}));
-    let Some(nets_obj) = nets.as_object_mut() else { return };
+    let Some(nets_obj) = nets.as_object_mut() else {
+        return;
+    };
 
     // Pin the implicit project `default` network to IPv4 even when no app-level
     // network is declared.
@@ -498,7 +601,9 @@ fn force_ipv4_networks(compose: &mut Value) {
         if cfg.is_null() {
             *cfg = serde_json::json!({});
         }
-        let Some(obj) = cfg.as_object_mut() else { continue };
+        let Some(obj) = cfg.as_object_mut() else {
+            continue;
+        };
         // Cannot set options on external networks.
         if obj.get("external").and_then(|v| v.as_bool()) == Some(true) {
             continue;
@@ -522,7 +627,11 @@ fn force_ipv4_networks(compose: &mut Value) {
 /// leaves it as-is on bare-metal.
 fn rewrite_voidtower_home_paths(compose: &mut Value, config: &crate::config::Config) {
     const PREFIX: &str = "${HOME}/.local/share/voidtower/";
-    let data_dir = config.data_dir.to_string_lossy().trim_end_matches('/').to_string();
+    let data_dir = config
+        .data_dir
+        .to_string_lossy()
+        .trim_end_matches('/')
+        .to_string();
 
     let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) else {
         return;
@@ -560,8 +669,16 @@ fn rewrite_host_bind_mounts(compose: &mut Value, config: &crate::config::Config)
     if config.data_dir == config.host_data_dir {
         return;
     }
-    let data_dir = config.data_dir.to_string_lossy().trim_end_matches('/').to_string();
-    let host_data_dir = config.host_data_dir.to_string_lossy().trim_end_matches('/').to_string();
+    let data_dir = config
+        .data_dir
+        .to_string_lossy()
+        .trim_end_matches('/')
+        .to_string();
+    let host_data_dir = config
+        .host_data_dir
+        .to_string_lossy()
+        .trim_end_matches('/')
+        .to_string();
 
     let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) else {
         return;
@@ -591,13 +708,21 @@ fn rewrite_host_bind_mounts(compose: &mut Value, config: &crate::config::Config)
 /// isolated storage" a real, member-visible host directory instead of an
 /// opaque Docker volume. Externally-declared volumes (`external: true`) are
 /// left untouched since they reference something outside VoidTower's control.
-fn rewrite_named_volumes_to_storage_root(compose: &mut Value, storage_root: &str, project_name: &str) {
+fn rewrite_named_volumes_to_storage_root(
+    compose: &mut Value,
+    storage_root: &str,
+    project_name: &str,
+) {
     let rewritable_names: Vec<String> = compose
         .get("volumes")
         .and_then(|v| v.as_object())
         .map(|m| {
             m.iter()
-                .filter(|(_, def)| !def.get("external").and_then(|e| e.as_bool()).unwrap_or(false))
+                .filter(|(_, def)| {
+                    !def.get("external")
+                        .and_then(|e| e.as_bool())
+                        .unwrap_or(false)
+                })
                 .map(|(k, _)| k.clone())
                 .collect()
         })
@@ -610,10 +735,14 @@ fn rewrite_named_volumes_to_storage_root(compose: &mut Value, storage_root: &str
 
     if let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) {
         for svc in services.values_mut() {
-            let Some(vols) = svc.get_mut("volumes").and_then(|v| v.as_array_mut()) else { continue };
+            let Some(vols) = svc.get_mut("volumes").and_then(|v| v.as_array_mut()) else {
+                continue;
+            };
             for vol in vols.iter_mut() {
                 let Some(s) = vol.as_str() else { continue };
-                let Some((name, rest)) = s.split_once(':') else { continue };
+                let Some((name, rest)) = s.split_once(':') else {
+                    continue;
+                };
                 if !rewritable_names.iter().any(|n| n == name) {
                     continue;
                 }
@@ -640,8 +769,13 @@ fn rewrite_named_volumes_to_storage_root(compose: &mut Value, storage_root: &str
 /// escape the member's own storage or the project-scoped bridge network,
 /// since those can't be "fixed" without changing what was actually asked for.
 #[allow(dead_code)]
-fn validate_and_sanitize_custom_deploy(svc: &mut Value, storage_root: &str) -> std::result::Result<(), String> {
-    let Some(obj) = svc.as_object_mut() else { return Ok(()) };
+fn validate_and_sanitize_custom_deploy(
+    svc: &mut Value,
+    storage_root: &str,
+) -> std::result::Result<(), String> {
+    let Some(obj) = svc.as_object_mut() else {
+        return Ok(());
+    };
 
     // Strip privilege/capability escalation — safe to silently downgrade.
     obj.remove("privileged");
@@ -656,7 +790,8 @@ fn validate_and_sanitize_custom_deploy(svc: &mut Value, storage_root: &str) -> s
     // Every bind-mount host path must resolve under the member's own
     // storage_root; the Docker socket is never allowed regardless of path.
     if let Some(vols) = obj.get("volumes").and_then(|v| v.as_array()) {
-        let canon_root = std::fs::canonicalize(storage_root).unwrap_or_else(|_| std::path::PathBuf::from(storage_root));
+        let canon_root = std::fs::canonicalize(storage_root)
+            .unwrap_or_else(|_| std::path::PathBuf::from(storage_root));
         for vol in vols {
             let Some(s) = vol.as_str() else { continue };
             let host_part = s.split(':').next().unwrap_or("");
@@ -667,9 +802,12 @@ fn validate_and_sanitize_custom_deploy(svc: &mut Value, storage_root: &str) -> s
                 return Err("Mounting the Docker socket is not allowed".to_string());
             }
             let host_path = std::path::Path::new(host_part);
-            let canon_host = std::fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
+            let canon_host =
+                std::fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
             if !canon_host.starts_with(&canon_root) {
-                return Err(format!("Bind mount '{host_part}' is outside your own storage"));
+                return Err(format!(
+                    "Bind mount '{host_part}' is outside your own storage"
+                ));
             }
         }
     }
@@ -683,7 +821,8 @@ async fn detect_cuda_major_version() -> Option<u32> {
     let out = tokio::process::Command::new("nvidia-smi")
         .arg("-q")
         .output()
-        .await.ok()?;
+        .await
+        .ok()?;
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .find(|l| l.trim_start().starts_with("CUDA Version"))
@@ -706,11 +845,15 @@ fn apply_nvidia_compat(compose: &mut Value, host_cuda_major: Option<u32>) {
             continue;
         }
         let obj = svc.as_object_mut().expect("service is object");
-        obj.entry("ipc".to_string()).or_insert(Value::String("host".into()));
-        obj.entry("privileged".to_string()).or_insert(Value::Bool(true));
+        obj.entry("ipc".to_string())
+            .or_insert(Value::String("host".into()));
+        obj.entry("privileged".to_string())
+            .or_insert(Value::Bool(true));
         if matches!(host_cuda_major, Some(v) if v > 12) {
             if let Some(env) = obj.get_mut("environment").and_then(|e| e.as_array_mut()) {
-                if !env.iter().any(|e| matches!(e.as_str(), Some(s) if s.starts_with("NVIDIA_DISABLE_REQUIRE="))) {
+                if !env.iter().any(
+                    |e| matches!(e.as_str(), Some(s) if s.starts_with("NVIDIA_DISABLE_REQUIRE=")),
+                ) {
                     env.push(Value::String("NVIDIA_DISABLE_REQUIRE=1".into()));
                 }
             }
@@ -725,8 +868,11 @@ fn adjust_cuda_image_for_no_gpu(compose: &mut Value) {
         return;
     };
     for svc in services.values_mut() {
-        let Some(img_val) = svc.get_mut("image") else { continue };
-        if let Some(new_img) = img_val.as_str()
+        let Some(img_val) = svc.get_mut("image") else {
+            continue;
+        };
+        if let Some(new_img) = img_val
+            .as_str()
             .filter(|s| s.contains("llama.cpp:server-cuda"))
             .map(|s| s.replace("server-cuda", "server"))
         {
@@ -750,14 +896,24 @@ fn strip_gpu_requirements(compose: &mut Value) {
                 obj.remove("runtime");
             }
         }
-        let Some(deploy) = svc.get_mut("deploy") else { continue };
-        let Some(resources) = deploy.get_mut("resources") else { continue };
-        let Some(reservations) = resources.get_mut("reservations") else { continue };
+        let Some(deploy) = svc.get_mut("deploy") else {
+            continue;
+        };
+        let Some(resources) = deploy.get_mut("resources") else {
+            continue;
+        };
+        let Some(reservations) = resources.get_mut("reservations") else {
+            continue;
+        };
         if let Some(obj) = reservations.as_object_mut() {
             obj.remove("devices");
         }
         // Prune empty intermediate keys
-        if reservations.as_object().map(|o| o.is_empty()).unwrap_or(false) {
+        if reservations
+            .as_object()
+            .map(|o| o.is_empty())
+            .unwrap_or(false)
+        {
             resources.as_object_mut().map(|o| o.remove("reservations"));
         }
         if resources.as_object().map(|o| o.is_empty()).unwrap_or(false) {
@@ -781,7 +937,9 @@ fn strip_unavailable_devices(compose: &mut Value) {
         return;
     };
     for svc in services.values_mut() {
-        let Some(obj) = svc.as_object_mut() else { continue };
+        let Some(obj) = svc.as_object_mut() else {
+            continue;
+        };
         let became_empty = match obj.get_mut("devices").and_then(|d| d.as_array_mut()) {
             Some(devices) => {
                 devices.retain(|d| {
@@ -809,13 +967,17 @@ fn ensure_volume_dirs(compose: &Value) {
     // In Docker the compose runs against the host daemon via socket — the daemon
     // creates bind-mount dirs on the host automatically. Creating them here would
     // land inside the container filesystem, not on the host.
-    if in_docker() { return; }
+    if in_docker() {
+        return;
+    }
     let Some(services) = compose.get("services").and_then(|s| s.as_object()) else {
         return;
     };
     let home = std::env::var("HOME").unwrap_or_default();
     for svc in services.values() {
-        let Some(volumes) = svc.get("volumes").and_then(|v| v.as_array()) else { continue };
+        let Some(volumes) = svc.get("volumes").and_then(|v| v.as_array()) else {
+            continue;
+        };
         for vol in volumes {
             let Some(s) = vol.as_str() else { continue };
             // Only handle bind-mounts (host:container[:opts])
@@ -842,37 +1004,53 @@ async fn auto_inject_llm(
     overrides: &HashMap<String, String>,
 ) -> Option<String> {
     // Only inject if caller hasn't already set it
-    if overrides.contains_key("LLM_API_BASE") { return None; }
+    if overrides.contains_key("LLM_API_BASE") {
+        return None;
+    }
 
     // Check that at least one service in this compose references LLM_API_BASE
     let has_llm_var = compose
         .get("services")
         .and_then(|s| s.as_object())
-        .map(|svcs| svcs.values().any(|svc| {
-            svc.get("environment")
-                .and_then(|e| e.as_array())
-                .map(|arr| arr.iter().any(|v| {
-                    v.as_str().map(|s| s.starts_with("LLM_API_BASE")).unwrap_or(false)
-                }))
-                .unwrap_or(false)
-        }))
+        .map(|svcs| {
+            svcs.values().any(|svc| {
+                svc.get("environment")
+                    .and_then(|e| e.as_array())
+                    .map(|arr| {
+                        arr.iter().any(|v| {
+                            v.as_str()
+                                .map(|s| s.starts_with("LLM_API_BASE"))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        })
         .unwrap_or(false);
 
-    if !has_llm_var { return None; }
+    if !has_llm_var {
+        return None;
+    }
 
     let detected = detect_llm_endpoint().await?;
     let label = detected.label.clone();
-    let url   = detected.url.clone();
+    let url = detected.url.clone();
 
     // Inject into all services that have LLM_API_BASE
     if let Some(svcs) = compose.get_mut("services").and_then(|s| s.as_object_mut()) {
         for svc in svcs.values_mut() {
             if let Some(arr) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
                 let has_var = arr.iter().any(|v| {
-                    v.as_str().map(|s| s.starts_with("LLM_API_BASE")).unwrap_or(false)
+                    v.as_str()
+                        .map(|s| s.starts_with("LLM_API_BASE"))
+                        .unwrap_or(false)
                 });
                 if has_var {
-                    arr.retain(|v| !v.as_str().map(|s| s.starts_with("LLM_API_BASE=")).unwrap_or(false));
+                    arr.retain(|v| {
+                        !v.as_str()
+                            .map(|s| s.starts_with("LLM_API_BASE="))
+                            .unwrap_or(false)
+                    });
                     arr.push(serde_json::Value::String(format!("LLM_API_BASE={url}")));
                 }
             }
@@ -907,15 +1085,14 @@ pub async fn catalog(
     // Members only ever see catalog apps an admin explicitly granted them —
     // every other role sees the full catalog, unchanged.
     if user.role == "member" {
-        let allowed: std::collections::HashSet<String> = sqlx::query_scalar(
-            "SELECT app_id FROM member_app_access WHERE user_id = ?",
-        )
-        .bind(&user.id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(AppError::Database)?
-        .into_iter()
-        .collect();
+        let allowed: std::collections::HashSet<String> =
+            sqlx::query_scalar("SELECT app_id FROM member_app_access WHERE user_id = ?")
+                .bind(&user.id)
+                .fetch_all(&state.db)
+                .await
+                .map_err(AppError::Database)?
+                .into_iter()
+                .collect();
         apps.retain(|a| allowed.contains(&a.id));
     }
 
@@ -932,32 +1109,38 @@ pub async fn deployed(
     // Members only ever see their own deployed apps (owner_user_id = self);
     // every other role keeps seeing everything, exactly as before.
     let rows = if user.role == "member" {
-        sqlx::query_as::<_, DeployedAppRow>(
-            &format!("{SELECT_DEPLOYED} WHERE owner_user_id = ? ORDER BY deployed_at DESC"),
-        )
+        sqlx::query_as::<_, DeployedAppRow>(&format!(
+            "{SELECT_DEPLOYED} WHERE owner_user_id = ? ORDER BY deployed_at DESC"
+        ))
         .bind(&user.id)
         .fetch_all(&state.db)
         .await
         .map_err(AppError::Database)?
     } else {
-        sqlx::query_as::<_, DeployedAppRow>(
-            &format!("{SELECT_DEPLOYED} ORDER BY deployed_at DESC"),
-        )
-        .fetch_all(&state.db)
-        .await
-        .map_err(AppError::Database)?
+        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} ORDER BY deployed_at DESC"))
+            .fetch_all(&state.db)
+            .await
+            .map_err(AppError::Database)?
     };
     let docker_available = containers::is_docker_available();
     let apps = rows.into_iter().map(row_to_app).collect();
 
-    Ok(Json(DeployedResponse { apps, docker_available }))
+    Ok(Json(DeployedResponse {
+        apps,
+        docker_available,
+    }))
 }
 
 fn row_to_app(r: DeployedAppRow) -> DeployedApp {
     DeployedApp {
-        id: r.id, app_id: r.app_id, app_name: r.app_name,
-        project_name: r.project_name, status: r.status,
-        deployed_at: r.deployed_at, primary_port: r.primary_port, origin: r.origin,
+        id: r.id,
+        app_id: r.app_id,
+        app_name: r.app_name,
+        project_name: r.project_name,
+        status: r.status,
+        deployed_at: r.deployed_at,
+        primary_port: r.primary_port,
+        origin: r.origin,
         target_node_id: r.target_node_id,
     }
 }
@@ -979,7 +1162,10 @@ fn require_app_read_role(user: &auth::User) -> Result<()> {
 }
 
 fn require_app_deploy_role(user: &auth::User) -> Result<()> {
-    if !matches!(user.role.as_str(), "owner" | "admin" | "operator" | "member") {
+    if !matches!(
+        user.role.as_str(),
+        "owner" | "admin" | "operator" | "member"
+    ) {
         return Err(AppError::Forbidden);
     }
     Ok(())
@@ -1009,18 +1195,27 @@ fn parse_json_body<T: DeserializeOwned>(body: Bytes) -> Result<T> {
 /// succeeds or `max_wait_secs` elapses. Spawned in the background so it doesn't
 /// hold up the deploy response — the container needs time to finish its own
 /// startup/migrations before the command can succeed.
-fn spawn_post_deploy_hook(project_name: String, hook: PostDeployHook, dotenv_map: HashMap<String, String>) {
+fn spawn_post_deploy_hook(
+    project_name: String,
+    hook: PostDeployHook,
+    dotenv_map: HashMap<String, String>,
+) {
     let container = format!("{}-{}-1", project_name, hook.container_suffix);
-    let command: Vec<String> = hook.command.iter().map(|part| {
-        let mut s = part.clone();
-        for (k, v) in &dotenv_map {
-            s = s.replace(&format!("${{{k}}}"), v);
-        }
-        s
-    }).collect();
+    let command: Vec<String> = hook
+        .command
+        .iter()
+        .map(|part| {
+            let mut s = part.clone();
+            for (k, v) in &dotenv_map {
+                s = s.replace(&format!("${{{k}}}"), v);
+            }
+            s
+        })
+        .collect();
 
     tokio::spawn(async move {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(hook.max_wait_secs);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(hook.max_wait_secs);
         loop {
             let result = tokio::process::Command::new("docker")
                 .arg("exec")
@@ -1035,7 +1230,10 @@ fn spawn_post_deploy_hook(project_name: String, hook: PostDeployHook, dotenv_map
                     return;
                 }
                 _ if tokio::time::Instant::now() >= deadline => {
-                    tracing::warn!("post_deploy hook for {container} did not succeed within {}s", hook.max_wait_secs);
+                    tracing::warn!(
+                        "post_deploy hook for {container} did not succeed within {}s",
+                        hook.max_wait_secs
+                    );
                     return;
                 }
                 _ => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
@@ -1079,7 +1277,9 @@ pub async fn deploy(
         .await
         .map_err(AppError::Database)?
         .is_some();
-        if !allowed { return Err(AppError::Forbidden); }
+        if !allowed {
+            return Err(AppError::Forbidden);
+        }
     }
     Err(AppError::FeatureUnavailable(
         "App deployment requires a canonical operation adapter".into(),
@@ -1101,10 +1301,22 @@ pub async fn cancel_deploy(
 
     let cancelled = containers::cancel_deploy(&state.deploy_registry, &project_name).await;
 
-    audit::log(&state.db, Some(&user.id), &user.username, "app.deploy.cancel",
-        Some("app"), Some(&project_name), if cancelled { "success" } else { "not_found" }, Some(&ip), None).await;
+    audit::log(
+        &state.db,
+        Some(&user.id),
+        &user.username,
+        "app.deploy.cancel",
+        Some("app"),
+        Some(&project_name),
+        if cancelled { "success" } else { "not_found" },
+        Some(&ip),
+        None,
+    )
+    .await;
 
-    Ok(Json(serde_json::json!({ "ok": true, "cancelled": cancelled })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "cancelled": cancelled }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1142,9 +1354,17 @@ pub async fn deploy_custom(
         .await
         .map_err(AppError::Database)?
         .unwrap_or(false);
-        if !allowed { return Err(AppError::Forbidden); }
-        super::members::resolve_member_storage_root(&state, &user.id, req.storage_drive_id.as_deref()).await?;
-        super::members::resolve_member_target_node(&state, &user.id, req.target_node_id.as_deref()).await?;
+        if !allowed {
+            return Err(AppError::Forbidden);
+        }
+        super::members::resolve_member_storage_root(
+            &state,
+            &user.id,
+            req.storage_drive_id.as_deref(),
+        )
+        .await?;
+        super::members::resolve_member_target_node(&state, &user.id, req.target_node_id.as_deref())
+            .await?;
     }
     let _ = (
         &req.name,
@@ -1221,14 +1441,13 @@ pub async fn app_logs(
     let user = require_user(&state, &jar).await?;
     require_app_read_role(&user)?;
 
-    let row = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
-    )
-    .bind(&project_name)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or(AppError::NotFound)?;
+    let row =
+        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+            .bind(&project_name)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
@@ -1267,14 +1486,13 @@ pub async fn app_status(
     let user = require_user(&state, &jar).await?;
     require_app_read_role(&user)?;
 
-    let row = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
-    )
-    .bind(&project_name)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or(AppError::NotFound)?;
+    let row =
+        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+            .bind(&project_name)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
@@ -1305,14 +1523,13 @@ pub async fn get_compose(
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_app_read_role(&user)?;
-    let row = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?")
-    )
-    .bind(&project_name)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or(AppError::NotFound)?;
+    let row =
+        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+            .bind(&project_name)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
 
     let content = read_bounded_compose(StdPath::new(&row.compose_path))?;
@@ -1352,7 +1569,11 @@ const SENSITIVE_COMPOSE_KEYS: &[&str] = &[
 ];
 
 fn is_sensitive_compose_key(key: &str) -> bool {
-    let key = key.trim().trim_start_matches('-').trim().to_ascii_lowercase();
+    let key = key
+        .trim()
+        .trim_start_matches('-')
+        .trim()
+        .to_ascii_lowercase();
     SENSITIVE_COMPOSE_KEYS
         .iter()
         .any(|candidate| key.contains(candidate))
@@ -1366,7 +1587,9 @@ fn redact_inline_sensitive_assignments(value: &str) -> String {
         let key_start = output[..delimiter]
             .char_indices()
             .rev()
-            .find(|(_, character)| character.is_whitespace() || matches!(character, '"' | '\'' | '[' | ','))
+            .find(|(_, character)| {
+                character.is_whitespace() || matches!(character, '"' | '\'' | '[' | ',')
+            })
             .map(|(offset, character)| offset + character.len_utf8())
             .unwrap_or(0);
         let key = &output[key_start..delimiter];
@@ -1375,7 +1598,10 @@ fn redact_inline_sensitive_assignments(value: &str) -> String {
             continue;
         }
         let mut value_start = delimiter + 1;
-        let quoted = output.as_bytes().get(value_start).is_some_and(|byte| *byte == b'"' || *byte == b'\'');
+        let quoted = output
+            .as_bytes()
+            .get(value_start)
+            .is_some_and(|byte| *byte == b'"' || *byte == b'\'');
         if quoted {
             let quote = output.as_bytes()[value_start];
             value_start += 1;
@@ -1398,30 +1624,58 @@ fn redact_inline_sensitive_assignments(value: &str) -> String {
 }
 
 fn redact_command_scalar(value: &str) -> String {
-    const FLAGS: &[&str] = &["--header", "--password", "--token", "--api-key", "--secret", "--private-key", "--env", "--environment", "-e", "-H"];
+    const FLAGS: &[&str] = &[
+        "--header",
+        "--password",
+        "--token",
+        "--api-key",
+        "--secret",
+        "--private-key",
+        "--env",
+        "--environment",
+        "-e",
+        "-H",
+    ];
     let mut output = value.to_string();
     for flag in FLAGS {
         let mut search_from = 0;
         loop {
             let lower = output.to_ascii_lowercase();
             let flag_lower = flag.to_ascii_lowercase();
-            let Some(relative) = lower[search_from..].find(&flag_lower) else { break; };
+            let Some(relative) = lower[search_from..].find(&flag_lower) else {
+                break;
+            };
             let flag_start = search_from + relative;
             let mut value_start = flag_start + flag.len();
-            while output.as_bytes().get(value_start).is_some_and(|byte| *byte == b' ' || *byte == b'\t' || *byte == b'=') {
+            while output
+                .as_bytes()
+                .get(value_start)
+                .is_some_and(|byte| *byte == b' ' || *byte == b'\t' || *byte == b'=')
+            {
                 value_start += 1;
             }
-            if value_start >= output.len() { break; }
-            let is_header_flag = flag.eq_ignore_ascii_case("--header") || flag.eq_ignore_ascii_case("-H");
-            let (value_end, replacement) = if output.as_bytes()[value_start] == b'"' || output.as_bytes()[value_start] == b'\'' {
+            if value_start >= output.len() {
+                break;
+            }
+            let is_header_flag =
+                flag.eq_ignore_ascii_case("--header") || flag.eq_ignore_ascii_case("-H");
+            let (value_end, replacement) = if output.as_bytes()[value_start] == b'"'
+                || output.as_bytes()[value_start] == b'\''
+            {
                 let quote = output.as_bytes()[value_start];
-                let end = output[value_start + 1..].find(quote as char).map(|offset| value_start + 2 + offset).unwrap_or(output.len());
+                let end = output[value_start + 1..]
+                    .find(quote as char)
+                    .map(|offset| value_start + 2 + offset)
+                    .unwrap_or(output.len());
                 (end, format!("{}[redacted]{}", quote as char, quote as char))
             } else {
                 let end = if is_header_flag {
                     output.len()
                 } else {
-                    output[value_start..].find(char::is_whitespace).map(|offset| value_start + offset).unwrap_or(output.len())
+                    output[value_start..]
+                        .find(char::is_whitespace)
+                        .map(|offset| value_start + offset)
+                        .unwrap_or(output.len())
                 };
                 (end, "[redacted]".to_string())
             };
@@ -1440,16 +1694,33 @@ fn redact_command_scalar(value: &str) -> String {
     }
     output = redact_inline_sensitive_assignments(&output);
     let trailing_newline = output.ends_with('\n');
-    let mut redacted = output.lines().map(redact_compose_line).collect::<Vec<_>>().join("\n");
-    if trailing_newline { redacted.push('\n'); }
+    let mut redacted = output
+        .lines()
+        .map(redact_compose_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if trailing_newline {
+        redacted.push('\n');
+    }
     redacted
 }
 
 fn is_sensitive_command_flag(value: &str) -> bool {
     let value = value.trim().to_ascii_lowercase();
-    ["--password", "--token", "--api-key", "--secret", "--private-key", "--env", "--environment", "-e", "-h", "--header"]
-        .iter()
-        .any(|flag| value == *flag || value.starts_with(&format!("{flag}=")))
+    [
+        "--password",
+        "--token",
+        "--api-key",
+        "--secret",
+        "--private-key",
+        "--env",
+        "--environment",
+        "-e",
+        "-h",
+        "--header",
+    ]
+    .iter()
+    .any(|flag| value == *flag || value.starts_with(&format!("{flag}=")))
 }
 
 fn redact_command_value(value: &mut serde_yaml::Value) {
@@ -1494,7 +1765,11 @@ fn redact_compose_line(line: &str) -> String {
         "{}{}{}",
         &line[..delimiter_offset],
         delimiter,
-        if delimiter == ':' { " [redacted]" } else { "[redacted]" },
+        if delimiter == ':' {
+            " [redacted]"
+        } else {
+            "[redacted]"
+        },
     )
 }
 
@@ -1513,7 +1788,9 @@ fn redact_flow_compose_content(content: &str) -> Option<String> {
                 for (key, child) in mapping.iter_mut() {
                     if key.as_str().is_some_and(is_sensitive_compose_key) {
                         *child = serde_yaml::Value::String("[redacted]".into());
-                    } else if key.as_str().is_some_and(|key| matches!(key.to_ascii_lowercase().as_str(), "command" | "entrypoint")) {
+                    } else if key.as_str().is_some_and(|key| {
+                        matches!(key.to_ascii_lowercase().as_str(), "command" | "entrypoint")
+                    }) {
                         redact_command_value(child);
                     } else {
                         redact(child);
@@ -1595,7 +1872,9 @@ fn read_bounded_compose(path: &StdPath) -> Result<String> {
         .map_err(|error| AppError::Internal(error.into()))?
         .is_file()
     {
-        return Err(AppError::BadRequest("compose path is not a regular file".into()));
+        return Err(AppError::BadRequest(
+            "compose path is not a regular file".into(),
+        ));
     }
     if file
         .metadata()
@@ -1616,7 +1895,10 @@ fn read_bounded_compose(path: &StdPath) -> Result<String> {
 
     let content = String::from_utf8(bytes)
         .map_err(|_| AppError::BadRequest("compose file is not valid UTF-8".into()))?;
-    Ok(bound_utf8_bytes(&redact_compose_content(&content), MAX_COMPOSE_BYTES))
+    Ok(bound_utf8_bytes(
+        &redact_compose_content(&content),
+        MAX_COMPOSE_BYTES,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1635,9 +1917,9 @@ pub struct OpenUiRequest {
 fn validate_ui_host(raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty()
-        || raw
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '/' | '?' | '#' | '@' | '\\'))
+        || raw.chars().any(|c| {
+            c.is_control() || c.is_whitespace() || matches!(c, '/' | '?' | '#' | '@' | '\\')
+        })
     {
         return None;
     }
@@ -1649,7 +1931,12 @@ fn validate_ui_host(raw: &str) -> Option<String> {
         }
         let suffix = &raw[end + 1..];
         if !suffix.is_empty()
-            && (!suffix.starts_with(':') || suffix[1..].parse::<u16>().ok().filter(|port| *port > 0).is_none())
+            && (!suffix.starts_with(':')
+                || suffix[1..]
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|port| *port > 0)
+                    .is_none())
         {
             return None;
         }
@@ -1660,9 +1947,7 @@ fn validate_ui_host(raw: &str) -> Option<String> {
     }
 
     let host = if let Some((host, port)) = raw.rsplit_once(':') {
-        if port.parse::<u16>().ok().filter(|value| *value > 0).is_none() {
-            return None;
-        }
+        port.parse::<u16>().ok().filter(|value| *value > 0)?;
         host
     } else {
         raw
@@ -1683,19 +1968,22 @@ pub async fn open_ui(
         || req.project_name.is_empty()
         || req.project_name.trim() != req.project_name
     {
-        return Err(AppError::BadRequest("invalid app identifier or port".into()));
+        return Err(AppError::BadRequest(
+            "invalid app identifier or port".into(),
+        ));
     }
-    let row = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"),
-    )
-    .bind(&req.project_name)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or(AppError::NotFound)?;
+    let row =
+        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+            .bind(&req.project_name)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
     if row.primary_port != Some(i64::from(req.primary_port)) {
-        return Err(AppError::BadRequest("port does not match deployed app".into()));
+        return Err(AppError::BadRequest(
+            "port does not match deployed app".into(),
+        ));
     }
 
     // Use the Host header so the returned URL works from any machine on the LAN,
@@ -1766,7 +2054,13 @@ pub async fn update_compose(
 fn build_embed_target_url(port: u16, path: &str, query: Option<&str>) -> String {
     let query_suffix = query
         .filter(|value| !value.is_empty())
-        .map(|value| if value.starts_with('?') { value.to_string() } else { format!("?{value}") })
+        .map(|value| {
+            if value.starts_with('?') {
+                value.to_string()
+            } else {
+                format!("?{value}")
+            }
+        })
         .unwrap_or_default();
     format!("http://localhost:{port}/{path}{query_suffix}")
 }
@@ -1794,7 +2088,10 @@ pub async fn embed_proxy(
     Path((project_name, path)): Path<(String, String)>,
     uri: Uri,
 ) -> Response {
-    let session_id = match jar.get("vt_session").map(|cookie| cookie.value().to_string()) {
+    let session_id = match jar
+        .get("vt_session")
+        .map(|cookie| cookie.value().to_string())
+    {
         Some(session_id) => session_id,
         None => return embed_error(StatusCode::UNAUTHORIZED, "unauthorized", "Unauthorized"),
     };
@@ -1806,9 +2103,9 @@ pub async fn embed_proxy(
         return embed_error(StatusCode::FORBIDDEN, "forbidden", "Forbidden");
     }
 
-    let row = match sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"),
-    )
+    let row = match sqlx::query_as::<_, DeployedAppRow>(&format!(
+        "{SELECT_DEPLOYED} WHERE project_name = ?"
+    ))
     .bind(&project_name)
     .fetch_optional(&state.db)
     .await
@@ -1853,12 +2150,22 @@ pub async fn embed_proxy(
         }
     };
     if path.contains('?') || path.contains('#') || path.contains('\0') {
-        return embed_error(StatusCode::BAD_REQUEST, "invalid_path", "Invalid embedded path");
+        return embed_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_path",
+            "Invalid embedded path",
+        );
     }
     if path.len() > MAX_EMBED_PATH_BYTES
-        || uri.query().is_some_and(|query| query.len() > MAX_EMBED_QUERY_BYTES)
+        || uri
+            .query()
+            .is_some_and(|query| query.len() > MAX_EMBED_QUERY_BYTES)
     {
-        return embed_error(StatusCode::BAD_REQUEST, "invalid_path", "Embedded path or query is too large");
+        return embed_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_path",
+            "Embedded path or query is too large",
+        );
     }
     let upstream_url = build_embed_target_url(port, &path, uri.query());
     let client = match reqwest::Client::builder()
@@ -1909,8 +2216,8 @@ pub async fn embed_proxy(
         );
     }
 
-    let upstream_status = StatusCode::from_u16(upstream_resp.status().as_u16())
-        .unwrap_or(StatusCode::OK);
+    let upstream_status =
+        StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::OK);
     let upstream_headers = upstream_resp.headers().clone();
     use futures_util::StreamExt;
     let mut stream = upstream_resp.bytes_stream();
@@ -1953,8 +2260,8 @@ pub async fn embed_proxy(
         axum::http::header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static("frame-ancestors 'self'"),
     );
-    let mut response_header_bytes = axum::http::header::CONTENT_SECURITY_POLICY.as_str().len()
-        + "frame-ancestors 'self'".len();
+    let mut response_header_bytes =
+        axum::http::header::CONTENT_SECURITY_POLICY.as_str().len() + "frame-ancestors 'self'".len();
     for (name, value) in &upstream_headers {
         let name_lower = name.as_str().to_ascii_lowercase();
         if matches!(
@@ -1978,7 +2285,10 @@ pub async fn embed_proxy(
             continue;
         }
         if response_headers.len() >= MAX_EMBED_HEADER_COUNT
-            || response_header_bytes.saturating_add(name.as_str().len()).saturating_add(value.len()) > MAX_EMBED_HEADER_BYTES
+            || response_header_bytes
+                .saturating_add(name.as_str().len())
+                .saturating_add(value.len())
+                > MAX_EMBED_HEADER_BYTES
         {
             return embed_error(
                 StatusCode::BAD_GATEWAY,
@@ -2027,7 +2337,7 @@ fn parse_docker_labels(s: &str) -> HashMap<String, String> {
 /// Extract host ports from a Docker ports string like "0.0.0.0:8080->80/tcp".
 fn parse_docker_ports(s: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
-    let mut out  = Vec::new();
+    let mut out = Vec::new();
     for part in s.split(',') {
         let part = part.trim();
         if let Some(arrow) = part.find("->") {
@@ -2035,7 +2345,9 @@ fn parse_docker_ports(s: &str) -> Vec<String> {
             let cont = &part[arrow + 2..];
             if !host.is_empty() {
                 let entry = format!("{host}:{cont}");
-                if seen.insert(entry.clone()) { out.push(entry); }
+                if seen.insert(entry.clone()) {
+                    out.push(entry);
+                }
             }
         }
     }
@@ -2075,26 +2387,25 @@ pub async fn detect_external(
     // Fetch all containers including stopped ones through the bounded Docker seam.
     let output = containers::list_external_containers()
         .await
-        .map_err(|error| AppError::Internal(error.into()))?;
+        .map_err(AppError::Internal)?;
 
     // Already-managed project names
-    let managed: std::collections::HashSet<String> = sqlx::query_scalar(
-        "SELECT project_name FROM deployed_apps"
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .into_iter()
-    .collect();
+    let managed: std::collections::HashSet<String> =
+        sqlx::query_scalar("SELECT project_name FROM deployed_apps")
+            .fetch_all(&state.db)
+            .await
+            .map_err(AppError::Database)?
+            .into_iter()
+            .collect();
 
     // Group containers by compose project
-    let mut groups: std::collections::HashMap<String, (bool, Vec<ExternalContainer>)> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<String, (bool, Vec<ExternalContainer>)> =
+        std::collections::HashMap::new();
 
-    let records = parse_external_container_output(&output)
-        .map_err(|error| AppError::Internal(error.into()))?;
+    let records = parse_external_container_output(&output).map_err(AppError::Internal)?;
     for obj in records {
-        let id    = obj["ID"].as_str().unwrap_or("").to_string();
-        let name  = obj["Names"].as_str().unwrap_or("").to_string();
+        let id = obj["ID"].as_str().unwrap_or("").to_string();
+        let name = obj["Names"].as_str().unwrap_or("").to_string();
         let image = obj["Image"].as_str().unwrap_or("").to_string();
         let state_str = obj["State"].as_str().unwrap_or("").to_string();
         let ports_str = obj["Ports"].as_str().unwrap_or("");
@@ -2107,7 +2418,9 @@ pub async fn detect_external(
             .unwrap_or_else(|| format!("standalone-{}", name.trim_start_matches('/')));
 
         // Skip anything already managed by VoidTower
-        if project.starts_with("vt-") || managed.contains(&project) { continue; }
+        if project.starts_with("vt-") || managed.contains(&project) {
+            continue;
+        }
 
         let compose_available = labels
             .get("com.docker.compose.project.config_files")
@@ -2116,7 +2429,10 @@ pub async fn detect_external(
         let entry = groups.entry(project).or_insert((false, Vec::new()));
         entry.0 |= compose_available;
         entry.1.push(ExternalContainer {
-            id, name, image, state: state_str,
+            id,
+            name,
+            image,
+            state: state_str,
             ports: parse_docker_ports(ports_str),
         });
     }
@@ -2124,11 +2440,17 @@ pub async fn detect_external(
     let mut stacks: Vec<ExternalStack> = groups
         .into_iter()
         .map(|(project_name, (compose_available, containers))| {
-            let primary_port = containers.iter()
+            let primary_port = containers
+                .iter()
                 .flat_map(|c| c.ports.iter())
                 .filter_map(|p| p.split(':').next()?.parse::<u16>().ok())
                 .min();
-            ExternalStack { project_name, compose_available, containers, primary_port }
+            ExternalStack {
+                project_name,
+                compose_available,
+                containers,
+                primary_port,
+            }
         })
         .collect();
     stacks.sort_by(|a, b| a.project_name.cmp(&b.project_name));
@@ -2184,7 +2506,9 @@ pub struct ExposeAppRequest {
     #[serde(default = "default_true")]
     pub allow_embed: bool,
 }
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 pub async fn pull_app(
     State(state): State<AppState>,
@@ -2223,13 +2547,17 @@ pub async fn expose_app(
 ) -> super::operation_adoption::CompatibilityResult<Response> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_admin(&user)?;
-    let req: ExposeAppRequest = parse_json_body(body)
-        .map_err(super::operation_adoption::CompatibilityError::from)?;
-    let row = sqlx::query_as::<_, DeployedAppRow>(
-        &format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
-        .bind(&project_name).fetch_optional(&state.db).await
-        .map_err(AppError::Database)?.ok_or(AppError::NotFound)?;
-    let port = row.primary_port
+    let req: ExposeAppRequest =
+        parse_json_body(body).map_err(super::operation_adoption::CompatibilityError::from)?;
+    let row =
+        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
+            .bind(&project_name)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or(AppError::NotFound)?;
+    let port = row
+        .primary_port
         .and_then(|port| u16::try_from(port).ok())
         .filter(|port| *port > 0)
         .ok_or_else(|| AppError::BadRequest("No valid port configured for this app".into()))?;
@@ -2368,7 +2696,10 @@ mod tests {
             "containers::",
             "audit::log(",
         ] {
-            assert!(!handler.contains(marker), "update-compose handler marker: {marker}");
+            assert!(
+                !handler.contains(marker),
+                "update-compose handler marker: {marker}"
+            );
         }
     }
 
@@ -2432,12 +2763,7 @@ mod tests {
             .and_then(|rest| rest.split("pub async fn cancel_deploy(").next())
             .expect("deploy handler");
 
-        for marker in [
-            "sqlx::query(",
-            "std::fs::",
-            "containers::",
-            "audit::log(",
-        ] {
+        for marker in ["sqlx::query(", "std::fs::", "containers::", "audit::log("] {
             assert!(!handler.contains(marker), "deploy handler marker: {marker}");
         }
     }
@@ -2455,7 +2781,8 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
                     .body(Body::from(
-                        json!({ "name": "custom-app", "image": "example/image:latest" }).to_string(),
+                        json!({ "name": "custom-app", "image": "example/image:latest" })
+                            .to_string(),
                     ))
                     .unwrap(),
             )
@@ -2475,13 +2802,11 @@ mod tests {
             .and_then(|rest| rest.split("pub async fn start_app(").next())
             .expect("deploy-custom handler");
 
-        for marker in [
-            "sqlx::query(",
-            "std::fs::",
-            "containers::",
-            "audit::log(",
-        ] {
-            assert!(!handler.contains(marker), "deploy-custom handler marker: {marker}");
+        for marker in ["sqlx::query(", "std::fs::", "containers::", "audit::log("] {
+            assert!(
+                !handler.contains(marker),
+                "deploy-custom handler marker: {marker}"
+            );
         }
     }
 
@@ -2500,7 +2825,8 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
                     .body(Body::from(
-                        json!({ "name": "custom-app", "image": "example/image:latest" }).to_string(),
+                        json!({ "name": "custom-app", "image": "example/image:latest" })
+                            .to_string(),
                     ))
                     .unwrap(),
             )
@@ -2648,12 +2974,7 @@ mod tests {
             .and_then(|rest| rest.split("pub async fn patch_app_env(").next())
             .expect("pull handler");
 
-        for marker in [
-            "sqlx::query(",
-            "std::fs::",
-            "containers::",
-            "audit::log(",
-        ] {
+        for marker in ["sqlx::query(", "std::fs::", "containers::", "audit::log("] {
             assert!(!handler.contains(marker), "pull handler marker: {marker}");
         }
     }
@@ -2672,7 +2993,9 @@ mod tests {
                     .header(header::COOKIE, format!("vt_session={session}"))
                     .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(json!({"env": {"EXAMPLE": "bounded"}}).to_string()))
+                    .body(Body::from(
+                        json!({"env": {"EXAMPLE": "bounded"}}).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -2699,7 +3022,9 @@ mod tests {
                     .uri("/api/apps/external-stack/env")
                     .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(json!({"env": {"EXAMPLE": "bounded"}}).to_string()))
+                    .body(Body::from(
+                        json!({"env": {"EXAMPLE": "bounded"}}).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -2718,13 +3043,11 @@ mod tests {
             .and_then(|rest| rest.split("pub async fn expose_app(").next())
             .expect("patch env handler");
 
-        for marker in [
-            "sqlx::query(",
-            "std::fs::",
-            "containers::",
-            "audit::log(",
-        ] {
-            assert!(!handler.contains(marker), "patch env handler marker: {marker}");
+        for marker in ["sqlx::query(", "std::fs::", "containers::", "audit::log("] {
+            assert!(
+                !handler.contains(marker),
+                "patch env handler marker: {marker}"
+            );
         }
     }
 
@@ -2786,13 +3109,11 @@ mod tests {
             .and_then(|rest| rest.split("pub async fn purge_app(").next())
             .expect("delete-volumes handler");
 
-        for marker in [
-            "sqlx::query(",
-            "std::fs::",
-            "containers::",
-            "audit::log(",
-        ] {
-            assert!(!handler.contains(marker), "delete-volumes handler marker: {marker}");
+        for marker in ["sqlx::query(", "std::fs::", "containers::", "audit::log("] {
+            assert!(
+                !handler.contains(marker),
+                "delete-volumes handler marker: {marker}"
+            );
         }
     }
 
@@ -2827,7 +3148,8 @@ mod tests {
     #[tokio::test]
     async fn purge_app_rejects_operator_before_feature_boundary() {
         let pool = crate::api::mcp::test_support::setup_db().await;
-        let session = crate::api::mcp::test_support::user_with_role_session(&pool, "operator").await;
+        let session =
+            crate::api::mcp::test_support::user_with_role_session(&pool, "operator").await;
         let app = crate::api::router(crate::api::mcp::test_support::build(pool));
 
         let response = app
@@ -3026,7 +3348,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn redeploy_app_fails_closed_after_authentication() {
         let pool = crate::api::mcp::test_support::setup_db().await;
@@ -3092,7 +3413,10 @@ mod tests {
             "containers::",
             "audit::log(",
         ] {
-            assert!(!handler.contains(marker), "redeploy handler marker: {marker}");
+            assert!(
+                !handler.contains(marker),
+                "redeploy handler marker: {marker}"
+            );
         }
     }
 
@@ -3232,7 +3556,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(json_body(response).await["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            json_body(response).await["error"]["code"],
+            "feature_unavailable"
+        );
     }
 
     #[tokio::test]
@@ -3272,7 +3599,10 @@ mod tests {
             "containers::",
             "audit::log(",
         ] {
-            assert!(!handler.contains(marker), "restart handler marker: {marker}");
+            assert!(
+                !handler.contains(marker),
+                "restart handler marker: {marker}"
+            );
         }
     }
 
@@ -3285,13 +3615,11 @@ mod tests {
             .and_then(|rest| rest.split("// ── Toolpack-backed handlers").next())
             .expect("convert handler");
 
-        for marker in [
-            "sqlx::query(",
-            "std::fs::",
-            "containers::",
-            "audit::log(",
-        ] {
-            assert!(!handler.contains(marker), "convert handler marker: {marker}");
+        for marker in ["sqlx::query(", "std::fs::", "containers::", "audit::log("] {
+            assert!(
+                !handler.contains(marker),
+                "convert handler marker: {marker}"
+            );
         }
     }
 
@@ -3333,11 +3661,51 @@ mod security_tests {
 
     #[test]
     fn member_embed_access_requires_ownership() {
-        let member = auth::User { id: "member-1".into(), username: "member".into(), role: "member".into(), password_hash: String::new(), force_password_change: false, totp_enabled: false, totp_secret: None, created_at: 0, updated_at: 0, expires_at: None };
-        let owned = DeployedAppRow { id: "a".into(), app_id: "a".into(), app_name: "a".into(), project_name: "p".into(), status: "running".into(), deployed_at: 0, compose_path: "/tmp/a".into(), primary_port: Some(1), origin: "voidtower".into(), owner_user_id: Some("member-1".into()), storage_root: Some("/srv/private".into()), target_node_id: None };
-        let other = DeployedAppRow { id: "a".into(), app_id: "a".into(), app_name: "a".into(), project_name: "p".into(), status: "running".into(), deployed_at: 0, compose_path: "/tmp/a".into(), primary_port: Some(1), origin: "voidtower".into(), owner_user_id: Some("member-2".into()), storage_root: None, target_node_id: None };
+        let member = auth::User {
+            id: "member-1".into(),
+            username: "member".into(),
+            role: "member".into(),
+            password_hash: String::new(),
+            force_password_change: false,
+            totp_enabled: false,
+            totp_secret: None,
+            created_at: 0,
+            updated_at: 0,
+            expires_at: None,
+        };
+        let owned = DeployedAppRow {
+            id: "a".into(),
+            app_id: "a".into(),
+            app_name: "a".into(),
+            project_name: "p".into(),
+            status: "running".into(),
+            deployed_at: 0,
+            compose_path: "/tmp/a".into(),
+            primary_port: Some(1),
+            origin: "voidtower".into(),
+            owner_user_id: Some("member-1".into()),
+            storage_root: Some("/srv/private".into()),
+            target_node_id: None,
+        };
+        let other = DeployedAppRow {
+            id: "a".into(),
+            app_id: "a".into(),
+            app_name: "a".into(),
+            project_name: "p".into(),
+            status: "running".into(),
+            deployed_at: 0,
+            compose_path: "/tmp/a".into(),
+            primary_port: Some(1),
+            origin: "voidtower".into(),
+            owner_user_id: Some("member-2".into()),
+            storage_root: None,
+            target_node_id: None,
+        };
         assert!(require_app_owner_or_admin(&member, &owned).is_ok());
-        assert!(matches!(require_app_owner_or_admin(&member, &other), Err(AppError::NotFound)));
+        assert!(matches!(
+            require_app_owner_or_admin(&member, &other),
+            Err(AppError::NotFound)
+        ));
         let public = serde_json::to_value(row_to_app(owned)).unwrap();
         assert!(public.get("compose_path").is_none());
         assert!(public.get("storage_root").is_none());
@@ -3345,8 +3713,22 @@ mod security_tests {
 
     #[test]
     fn unknown_app_roles_fail_closed() {
-        let unknown = auth::User { id: "unknown-1".into(), username: "unknown".into(), role: "future-role".into(), password_hash: String::new(), force_password_change: false, totp_enabled: false, totp_secret: None, created_at: 0, updated_at: 0, expires_at: None };
-        assert!(matches!(require_app_read_role(&unknown), Err(AppError::Forbidden)));
+        let unknown = auth::User {
+            id: "unknown-1".into(),
+            username: "unknown".into(),
+            role: "future-role".into(),
+            password_hash: String::new(),
+            force_password_change: false,
+            totp_enabled: false,
+            totp_secret: None,
+            created_at: 0,
+            updated_at: 0,
+            expires_at: None,
+        };
+        assert!(matches!(
+            require_app_read_role(&unknown),
+            Err(AppError::Forbidden)
+        ));
     }
 
     #[test]
@@ -3432,7 +3814,8 @@ mod security_tests {
 
     #[test]
     fn oversized_compose_files_fail_before_their_contents_are_returned() {
-        let path = std::env::temp_dir().join(format!("voidtower-compose-{}.yml", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("voidtower-compose-{}.yml", uuid::Uuid::new_v4()));
         std::fs::write(&path, "x".repeat(MAX_COMPOSE_BYTES + 1)).unwrap();
 
         let result = read_bounded_compose(&path);
@@ -3444,7 +3827,8 @@ mod security_tests {
     #[cfg(unix)]
     #[test]
     fn compose_fifo_paths_fail_without_blocking() {
-        let path = std::env::temp_dir().join(format!("voidtower-compose-fifo-{}", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("voidtower-compose-fifo-{}", uuid::Uuid::new_v4()));
         let path_string = path.to_string_lossy().into_owned();
         let path_c = std::ffi::CString::new(path_string).unwrap();
         assert_eq!(unsafe { nix::libc::mkfifo(path_c.as_ptr(), 0o600) }, 0);
@@ -3490,10 +3874,19 @@ mod security_tests {
         let upstream = Router::new().fallback(any(|uri: Uri| async move {
             let mut headers = HeaderMap::new();
             headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
-            headers.insert("set-cookie", HeaderValue::from_static("secret=do-not-forward"));
+            headers.insert(
+                "set-cookie",
+                HeaderValue::from_static("secret=do-not-forward"),
+            );
             headers.insert("connection", HeaderValue::from_static("x-upstream-secret"));
-            headers.insert("x-upstream-secret", HeaderValue::from_static("do-not-forward"));
-            (headers, format!("{}?{}", uri.path(), uri.query().unwrap_or_default()))
+            headers.insert(
+                "x-upstream-secret",
+                HeaderValue::from_static("do-not-forward"),
+            );
+            (
+                headers,
+                format!("{}?{}", uri.path(), uri.query().unwrap_or_default()),
+            )
         }));
         let server = tokio::spawn(async move {
             axum::serve(listener, upstream).await.unwrap();
@@ -3530,11 +3923,16 @@ mod security_tests {
             .await
             .unwrap();
         let headers = response.headers().clone();
-        let body = to_bytes(response.into_body(), MAX_EMBED_RESPONSE_BYTES).await.unwrap();
+        let body = to_bytes(response.into_body(), MAX_EMBED_RESPONSE_BYTES)
+            .await
+            .unwrap();
 
         server.abort();
         assert_eq!(body, "/login?next=%2Fadmin");
-        assert_eq!(headers.get("content-security-policy").unwrap(), "frame-ancestors 'self'");
+        assert_eq!(
+            headers.get("content-security-policy").unwrap(),
+            "frame-ancestors 'self'"
+        );
         assert!(headers.get("x-frame-options").is_none());
         assert!(headers.get("set-cookie").is_none());
         assert!(headers.get("connection").is_none());

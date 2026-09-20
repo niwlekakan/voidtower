@@ -11,12 +11,15 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
-pub async fn ws_handler(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Response> {
-    let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
-    let user = auth::validate_session(&state.db, &session_id).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+pub async fn ws_handler(State(state): State<AppState>, jar: CookieJar) -> Result<Response> {
+    let session_id = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    let user = auth::validate_session(&state.db, &session_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
     super::role_guard::require_operator(&user)?;
 
     Err(AppError::FeatureUnavailable(
@@ -28,20 +31,23 @@ pub async fn ws_handler(
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct LocalSession {
-    pub id:         String,
-    pub label:      String,
-    pub category:   Option<String>,
+    pub id: String,
+    pub label: String,
+    pub category: Option<String>,
     pub created_at: i64,
-    pub last_used:  Option<i64>,
+    pub last_used: Option<i64>,
 }
 
 #[derive(Deserialize)]
 pub struct CreateLocalSession {
-    pub label:    String,
+    pub label: String,
     pub category: Option<String>,
 }
 
-pub async fn list_local_sessions(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Vec<LocalSession>>> {
+pub async fn list_local_sessions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<LocalSession>>> {
     require_operator(&state, &jar).await?;
     let sessions = sqlx::query_as::<_, LocalSession>(
         "SELECT id, label, category, created_at, last_used FROM local_sessions ORDER BY last_used DESC NULLS LAST, created_at DESC"
@@ -56,13 +62,23 @@ pub async fn create_local_session(
 ) -> Result<Json<LocalSession>> {
     require_operator(&state, &jar).await?;
     let id = uuid::Uuid::new_v4().to_string();
-    let category = req.category.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
+    let category = req
+        .category
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     sqlx::query("INSERT INTO local_sessions (id, label, category) VALUES (?,?,?)")
-        .bind(&id).bind(&req.label).bind(&category)
-        .execute(&state.db).await?;
+        .bind(&id)
+        .bind(&req.label)
+        .bind(&category)
+        .execute(&state.db)
+        .await?;
     let s = sqlx::query_as::<_, LocalSession>(
-        "SELECT id, label, category, created_at, last_used FROM local_sessions WHERE id = ?"
-    ).bind(&id).fetch_one(&state.db).await?;
+        "SELECT id, label, category, created_at, last_used FROM local_sessions WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
     Ok(Json(s))
 }
 
@@ -73,13 +89,23 @@ pub async fn update_local_session(
     Json(req): Json<CreateLocalSession>,
 ) -> Result<Json<LocalSession>> {
     require_operator(&state, &jar).await?;
-    let category = req.category.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
+    let category = req
+        .category
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     sqlx::query("UPDATE local_sessions SET label=?, category=? WHERE id=?")
-        .bind(&req.label).bind(&category).bind(&id)
-        .execute(&state.db).await?;
+        .bind(&req.label)
+        .bind(&category)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
     let s = sqlx::query_as::<_, LocalSession>(
-        "SELECT id, label, category, created_at, last_used FROM local_sessions WHERE id = ?"
-    ).bind(&id).fetch_one(&state.db).await?;
+        "SELECT id, label, category, created_at, last_used FROM local_sessions WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
     Ok(Json(s))
 }
 
@@ -89,7 +115,10 @@ pub async fn delete_local_session(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     require_operator(&state, &jar).await?;
-    sqlx::query("DELETE FROM local_sessions WHERE id = ?").bind(&id).execute(&state.db).await?;
+    sqlx::query("DELETE FROM local_sessions WHERE id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -97,29 +126,29 @@ pub async fn delete_local_session(
 
 #[derive(sqlx::FromRow)]
 pub struct SshSession {
-    pub id:                String,
-    pub label:             String,
-    pub host:              String,
-    pub port:              i64,
-    pub username:          String,
-    pub key_path:          Option<String>,
+    pub id: String,
+    pub label: String,
+    pub host: String,
+    pub port: i64,
+    pub username: String,
+    pub key_path: Option<String>,
     pub password_secret_id: Option<String>,
-    pub created_at:        i64,
-    pub last_used:         Option<i64>,
+    pub created_at: i64,
+    pub last_used: Option<i64>,
 }
 
 // Outbound type — never expose secret values or secret storage details to client
 #[derive(Serialize)]
 pub struct SshSessionOut {
-    pub id:           String,
-    pub label:        String,
-    pub host:         String,
-    pub port:         i64,
-    pub username:     String,
-    pub key_path:     Option<String>,
+    pub id: String,
+    pub label: String,
+    pub host: String,
+    pub port: i64,
+    pub username: String,
+    pub key_path: Option<String>,
     pub password_set: bool,
-    pub created_at:   i64,
-    pub last_used:    Option<i64>,
+    pub created_at: i64,
+    pub last_used: Option<i64>,
 }
 
 impl From<SshSession> for SshSessionOut {
@@ -140,28 +169,37 @@ impl From<SshSession> for SshSessionOut {
 
 #[derive(Deserialize)]
 pub struct CreateSshSession {
-    pub label:    String,
-    pub host:     String,
-    pub port:     Option<i64>,
+    pub label: String,
+    pub host: String,
+    pub port: Option<i64>,
     pub username: String,
     pub key_path: Option<String>,
     pub password: Option<String>,
 }
 
 async fn require_operator(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
-    let user = auth::validate_session(&state.db, &sid).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+    let sid = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    let user = auth::validate_session(&state.db, &sid)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
     super::role_guard::require_operator(&user)?;
     Ok(user)
 }
 
 fn validate_ssh_password(password: &str) -> Result<()> {
     if password.len() > secrets::MAX_SECRET_VALUE_BYTES {
-        return Err(AppError::BadRequest("SSH password exceeds size limit".into()));
+        return Err(AppError::BadRequest(
+            "SSH password exceeds size limit".into(),
+        ));
     }
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) async fn resolve_ssh_password(
     db: &sqlx::SqlitePool,
     key: &[u8; 32],
@@ -175,7 +213,10 @@ pub(crate) async fn resolve_ssh_password(
     }
 }
 
-pub async fn list_ssh_sessions(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Vec<SshSessionOut>>> {
+pub async fn list_ssh_sessions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<SshSessionOut>>> {
     require_operator(&state, &jar).await?;
     let sessions = sqlx::query_as::<_, SshSession>(
         "SELECT id, label, host, port, username, key_path, password_secret_id, created_at, last_used FROM ssh_sessions ORDER BY last_used DESC NULLS LAST, created_at DESC"
@@ -192,26 +233,28 @@ pub async fn create_ssh_session(
     let id = uuid::Uuid::new_v4().to_string();
     let port = req.port.unwrap_or(22);
     let mut tx = state.db.begin().await?;
-    let password_secret_id = if let Some(password) = req.password.as_deref().filter(|p| !p.is_empty()) {
-        validate_ssh_password(password)?;
-        let secret_id = uuid::Uuid::new_v4().to_string();
-        let encrypted = secrets::encrypt(&state.secrets_key, password).map_err(AppError::Internal)?;
-        let now = secrets::now_ts();
-        sqlx::query(
-            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+    let password_secret_id =
+        if let Some(password) = req.password.as_deref().filter(|p| !p.is_empty()) {
+            validate_ssh_password(password)?;
+            let secret_id = uuid::Uuid::new_v4().to_string();
+            let encrypted =
+                secrets::encrypt(&state.secrets_key, password).map_err(AppError::Internal)?;
+            let now = secrets::now_ts();
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
              VALUES (?, ?, 'Terminal SSH password', ?, ?, ?)",
-        )
-        .bind(&secret_id)
-        .bind(format!("terminal-ssh-password-{id}-{secret_id}"))
-        .bind(encrypted)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
-        Some(secret_id)
-    } else {
-        None
-    };
+            )
+            .bind(&secret_id)
+            .bind(format!("terminal-ssh-password-{id}-{secret_id}"))
+            .bind(encrypted)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            Some(secret_id)
+        } else {
+            None
+        };
 
     sqlx::query(
         "INSERT INTO ssh_sessions (id, label, host, port, username, key_path, password_secret_id) VALUES (?,?,?,?,?,?,?)"
@@ -242,7 +285,8 @@ pub async fn update_ssh_session(
         Some(password) if !password.is_empty() => {
             validate_ssh_password(password)?;
             if let Some(secret_id) = existing.password_secret_id.as_deref() {
-                let encrypted = secrets::encrypt(&state.secrets_key, password).map_err(AppError::Internal)?;
+                let encrypted =
+                    secrets::encrypt(&state.secrets_key, password).map_err(AppError::Internal)?;
                 let updated = sqlx::query(
                     "UPDATE secrets SET value_enc=?, updated_at=?, version=version+1 WHERE id=? AND disabled=0",
                 )
@@ -253,8 +297,8 @@ pub async fn update_ssh_session(
                 .await?;
                 if updated.rows_affected() == 0 {
                     let replacement_id = uuid::Uuid::new_v4().to_string();
-                    let replacement_encrypted =
-                        secrets::encrypt(&state.secrets_key, password).map_err(AppError::Internal)?;
+                    let replacement_encrypted = secrets::encrypt(&state.secrets_key, password)
+                        .map_err(AppError::Internal)?;
                     let now = secrets::now_ts();
                     sqlx::query(
                         "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
@@ -273,7 +317,8 @@ pub async fn update_ssh_session(
                 }
             } else {
                 let secret_id = uuid::Uuid::new_v4().to_string();
-                let encrypted = secrets::encrypt(&state.secrets_key, password).map_err(AppError::Internal)?;
+                let encrypted =
+                    secrets::encrypt(&state.secrets_key, password).map_err(AppError::Internal)?;
                 let now = secrets::now_ts();
                 sqlx::query(
                     "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
@@ -338,20 +383,19 @@ pub async fn delete_ssh_session(
         return Ok(Json(serde_json::json!({ "ok": true })));
     }
     if let Some(secret_id) = password_secret_id {
-        sqlx::query("UPDATE secrets SET disabled = 1, updated_at = ?, version = version + 1 WHERE id = ?")
-            .bind(secrets::now_ts())
-            .bind(secret_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE secrets SET disabled = 1, updated_at = ?, version = version + 1 WHERE id = ?",
+        )
+        .bind(secrets::now_ts())
+        .bind(secret_id)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn ssh_ws_handler(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Response> {
+pub async fn ssh_ws_handler(State(state): State<AppState>, jar: CookieJar) -> Result<Response> {
     let _user = require_operator(&state, &jar).await?;
 
     Err(AppError::FeatureUnavailable(
@@ -425,7 +469,8 @@ mod tests {
             secrets::ResolveError::Corrupt
         );
 
-        let oversized = secrets::encrypt(&key, &"x".repeat(secrets::MAX_SECRET_VALUE_BYTES + 1)).unwrap();
+        let oversized =
+            secrets::encrypt(&key, &"x".repeat(secrets::MAX_SECRET_VALUE_BYTES + 1)).unwrap();
         sqlx::query("INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES ('ssh-oversized', 'ssh-oversized', ?, 1, 1)")
             .bind(oversized)
             .execute(&db)
@@ -441,9 +486,9 @@ mod tests {
 
     #[tokio::test]
     async fn ssh_session_handlers_store_and_rotate_only_secret_references() {
+        use super::{create_ssh_session, delete_ssh_session, update_ssh_session, CreateSshSession};
         use axum::{extract::Path, extract::State, Json};
         use axum_extra::extract::cookie::{Cookie, CookieJar};
-        use super::{create_ssh_session, delete_ssh_session, update_ssh_session, CreateSshSession};
 
         let db = setup_db().await;
         let now = secrets::now_ts();
@@ -499,7 +544,10 @@ mod tests {
             .fetch_one(&db)
             .await
             .unwrap();
-        assert_eq!(secrets::decrypt(&[0u8; 32], &encrypted).unwrap(), "initial-password");
+        assert_eq!(
+            secrets::decrypt(&[0u8; 32], &encrypted).unwrap(),
+            "initial-password"
+        );
 
         let updated = update_ssh_session(
             State(state.clone()),
@@ -523,7 +571,10 @@ mod tests {
             .fetch_one(&db)
             .await
             .unwrap();
-        assert_eq!(secrets::decrypt(&[0u8; 32], &rotated).unwrap(), "rotated-password");
+        assert_eq!(
+            secrets::decrypt(&[0u8; 32], &rotated).unwrap(),
+            "rotated-password"
+        );
         assert!(sqlx::query_scalar::<_, Option<String>>(
             "SELECT password_enc FROM ssh_sessions WHERE id = ?",
         )
@@ -555,13 +606,12 @@ mod tests {
         .unwrap()
         .0;
         assert!(rotated_after_disable.password_set);
-        let replacement_secret_id: String = sqlx::query_scalar(
-            "SELECT password_secret_id FROM ssh_sessions WHERE id = ?",
-        )
-        .bind(&created.id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let replacement_secret_id: String =
+            sqlx::query_scalar("SELECT password_secret_id FROM ssh_sessions WHERE id = ?")
+                .bind(&created.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_ne!(replacement_secret_id, secret_id);
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT disabled FROM secrets WHERE id = ?")
@@ -619,13 +669,12 @@ mod tests {
         .await
         .unwrap()
         .0;
-        let recreated_secret_id: String = sqlx::query_scalar(
-            "SELECT password_secret_id FROM ssh_sessions WHERE id = ?",
-        )
-        .bind(&recreated.id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let recreated_secret_id: String =
+            sqlx::query_scalar("SELECT password_secret_id FROM ssh_sessions WHERE id = ?")
+                .bind(&recreated.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         let _ = delete_ssh_session(State(state), jar, Path(recreated.id))
             .await
             .unwrap();

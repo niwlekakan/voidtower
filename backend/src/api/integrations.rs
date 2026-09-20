@@ -8,7 +8,10 @@ use crate::{
 use axum::{
     extract::{Extension, Path, Query, State},
     http::HeaderMap,
-    response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -875,21 +878,23 @@ pub async fn webhook(
     Json(req): Json<WebhookReq>,
 ) -> super::operation_adoption::CompatibilityResult<Response> {
     if get_setting(&state, "odysseus.enabled").await != "true" {
-        return Err(AppError::FeatureUnavailable(
-            "Odysseus integration is not enabled".into(),
-        ).into());
+        return Err(
+            AppError::FeatureUnavailable("Odysseus integration is not enabled".into()).into(),
+        );
     }
     if get_setting(&state, "odysseus.emergency_disabled").await == "true" {
         return Err(AppError::FeatureUnavailable(
             "Odysseus integration is emergency-disabled".into(),
-        ).into());
+        )
+        .into());
     }
 
     let expected_secret = get_setting(&state, "odysseus.webhook_secret").await;
     if expected_secret.is_empty() {
         return Err(AppError::FeatureUnavailable(
             "Webhook secret not configured — generate one in Settings → Integrations".into(),
-        ).into());
+        )
+        .into());
     }
 
     let provided = headers
@@ -909,12 +914,8 @@ pub async fn webhook(
         let credential = CredentialContext::Webhook {
             source_id: "odysseus".into(),
         };
-        let resource = super::automation::resolve_run_resource(
-            &state,
-            &credential,
-            automation_id,
-        )
-        .await?;
+        let resource =
+            super::automation::resolve_run_resource(&state, &credential, automation_id).await?;
         let input = serde_json::json!({});
         let idempotency_key = headers
             .get("Idempotency-Key")
@@ -1075,7 +1076,8 @@ pub async fn webhook(
             "dry_run": dry_run,
             "action": action_str,
             "resource_id": resource_id,
-        })).into_response());
+        }))
+        .into_response());
     }
 
     Ok(Json(serde_json::json!({ "ok": true })).into_response())
@@ -1163,8 +1165,8 @@ pub async fn recent_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
     use crate::api::operation_adoption::CompatibilityError;
+    use axum::http::HeaderValue;
     use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
     async fn setup_db() -> SqlitePool {
@@ -1330,5 +1332,4 @@ mod tests {
              against"
         );
     }
-
 }

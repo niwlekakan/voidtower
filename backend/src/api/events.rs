@@ -111,13 +111,7 @@ pub async fn stream_handler(
     headers: HeaderMap,
     token_context: Option<Extension<super::bearer_auth::AuthenticatedApiToken>>,
 ) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>>> {
-    authorize_stream(
-        &state,
-        &jar,
-        &headers,
-        token_context.is_some(),
-    )
-    .await?;
+    authorize_stream(&state, &jar, &headers, token_context.is_some()).await?;
     if query.token.is_some() {
         return Err(AppError::BadRequest(
             "query-string API tokens are not supported; use Authorization: Bearer".into(),

@@ -43,7 +43,9 @@ fn golden_path_job_runs_on_pull_request_and_push_to_main() {
             .and_then(serde_yaml::Value::as_sequence)
             .unwrap_or_else(|| panic!("{trigger} trigger missing branches"));
         assert!(
-            branches.iter().any(|branch| branch.as_str() == Some("main")),
+            branches
+                .iter()
+                .any(|branch| branch.as_str() == Some("main")),
             "{trigger} trigger must include main"
         );
     }

@@ -35,6 +35,16 @@ class ReleaseGateCliTests(unittest.TestCase):
         manifest.write_text(json.dumps({"schema_version": 1, "gates": gates}), encoding="utf-8")
         return manifest
 
+    def test_backend_format_gate_is_required_and_targets_backend_rustfmt(self) -> None:
+        manifest_path = Path(__file__).with_name("release-gates.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        gate = next(item for item in manifest["gates"] if item["id"] == "backend-format")
+
+        self.assertTrue(gate["required"])
+        self.assertEqual(gate["cwd"], "backend")
+        self.assertEqual(gate["subsystems"], ["backend", "agent"])
+        self.assertEqual(gate["argv"], ["cargo", "fmt", "--all", "--", "--check"])
+
     def test_redacts_escaped_and_truncated_structured_credentials(self) -> None:
         escaped = '{"x-amz-security-token": "ESCAPED_\\"_SENTINEL"}'
         truncated = '{"access_token": "TRUNCATED_SENTINEL'

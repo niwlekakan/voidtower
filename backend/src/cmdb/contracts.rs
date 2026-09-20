@@ -295,10 +295,7 @@ fn validate_text(value: &str, field: &str, maximum: usize) -> Result<String, Str
     Ok(value.to_owned())
 }
 
-fn validate_identities(
-    identities: &[IdentityEvidenceV1],
-    field: &str,
-) -> Result<(), String> {
+fn validate_identities(identities: &[IdentityEvidenceV1], field: &str) -> Result<(), String> {
     if identities.len() > 128 {
         return Err(format!("{field} exceeds 128 values"));
     }
@@ -333,9 +330,9 @@ fn validate_json_value(
         return Err(format!("{field} exceeds {MAX_JSON_VALUES} values"));
     }
     match value {
-        Value::String(value) if value.len() > MAX_JSON_STRING_LEN => {
-            Err(format!("{field} string exceeds {MAX_JSON_STRING_LEN} bytes"))
-        }
+        Value::String(value) if value.len() > MAX_JSON_STRING_LEN => Err(format!(
+            "{field} string exceeds {MAX_JSON_STRING_LEN} bytes"
+        )),
         Value::Array(values) => {
             if values.len() > MAX_JSON_COLLECTION_LEN {
                 return Err(format!(

@@ -64,7 +64,10 @@ pub async fn get_by_idempotency(
     jar: CookieJar,
     token: Option<Extension<AuthenticatedApiToken>>,
     Path(key): Path<String>,
-) -> std::result::Result<Json<JobReadEnvelopeV1<crate::operations::contracts::JobSummaryV1>>, CanonicalApiError> {
+) -> std::result::Result<
+    Json<JobReadEnvelopeV1<crate::operations::contracts::JobSummaryV1>>,
+    CanonicalApiError,
+> {
     let credential =
         super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
     invocation::validate_idempotency_key(&key)?;

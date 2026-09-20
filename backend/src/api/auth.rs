@@ -91,15 +91,25 @@ pub async fn login(
     let user = auth::find_user_by_username(&state.db, &req.username)
         .await
         .map_err(AppError::Internal)?
-        .ok_or_else(|| { record_failed_attempt(&state, ip); AppError::Unauthorized })?;
+        .ok_or_else(|| {
+            record_failed_attempt(&state, ip);
+            AppError::Unauthorized
+        })?;
 
     if !auth::verify_password(&req.password, &user.password_hash) {
         record_failed_attempt(&state, ip);
         audit::log(
-            &state.db, None, "human", "auth.login.failed",
-            Some("user"), Some(&user.id), "failure",
-            Some(&addr.ip().to_string()), Some(&format!("username={}", req.username)),
-        ).await;
+            &state.db,
+            None,
+            "human",
+            "auth.login.failed",
+            Some("user"),
+            Some(&user.id),
+            "failure",
+            Some(&addr.ip().to_string()),
+            Some(&format!("username={}", req.username)),
+        )
+        .await;
         return Err(AppError::Unauthorized);
     }
 
@@ -110,11 +120,20 @@ pub async fn login(
             .as_secs() as i64;
         if exp <= now {
             audit::log(
-                &state.db, None, "human", "auth.login.expired",
-                Some("user"), Some(&user.id), "failure",
-                Some(&addr.ip().to_string()), None,
-            ).await;
-            return Err(AppError::BadRequest("This guest account has expired".to_string()));
+                &state.db,
+                None,
+                "human",
+                "auth.login.expired",
+                Some("user"),
+                Some(&user.id),
+                "failure",
+                Some(&addr.ip().to_string()),
+                None,
+            )
+            .await;
+            return Err(AppError::BadRequest(
+                "This guest account has expired".to_string(),
+            ));
         }
     }
 
@@ -127,10 +146,17 @@ pub async fn login(
                 if !crate::api::totp::verify_totp(secret, code) {
                     record_failed_attempt(&state, ip);
                     audit::log(
-                        &state.db, None, "human", "auth.login.totp_failed",
-                        Some("user"), Some(&user.id), "failure",
-                        Some(&addr.ip().to_string()), None,
-                    ).await;
+                        &state.db,
+                        None,
+                        "human",
+                        "auth.login.totp_failed",
+                        Some("user"),
+                        Some(&user.id),
+                        "failure",
+                        Some(&addr.ip().to_string()),
+                        None,
+                    )
+                    .await;
                     return Err(AppError::Unauthorized);
                 }
             }
@@ -139,20 +165,22 @@ pub async fn login(
 
     clear_rate_limit(&state, ip);
 
-    let session = auth::create_session(
+    let session = auth::create_session(&state.db, &user.id, Some(&addr.ip().to_string()), None)
+        .await
+        .map_err(AppError::Internal)?;
+
+    audit::log(
         &state.db,
-        &user.id,
+        Some(&user.id),
+        "human",
+        "auth.login",
+        Some("user"),
+        Some(&user.id),
+        "success",
         Some(&addr.ip().to_string()),
         None,
     )
-    .await
-    .map_err(AppError::Internal)?;
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "auth.login",
-        Some("user"), Some(&user.id), "success",
-        Some(&addr.ip().to_string()), None,
-    ).await;
+    .await;
 
     let cookie = Cookie::build(("vt_session", session.id))
         .http_only(true)
@@ -162,7 +190,8 @@ pub async fn login(
         .build();
 
     let mut public_user: PublicUser = user.into();
-    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    public_user.mfa_required =
+        crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
     Ok((jar.add(cookie), Json(AuthResponse { user: public_user })))
 }
 
@@ -180,10 +209,7 @@ pub async fn logout(
     Ok((jar.remove(removed), Json(serde_json::json!({ "ok": true }))))
 }
 
-pub async fn me(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<AuthResponse>> {
+pub async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<Json<AuthResponse>> {
     let session_id = jar
         .get("vt_session")
         .map(|c| c.value().to_string())
@@ -195,7 +221,8 @@ pub async fn me(
         .ok_or(AppError::Unauthorized)?;
 
     let mut public_user: PublicUser = user.into();
-    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    public_user.mfa_required =
+        crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
     Ok(Json(AuthResponse { user: public_user }))
 }
 
@@ -232,20 +259,22 @@ pub async fn bootstrap(
         .await
         .map_err(AppError::Internal)?;
 
-    let session = auth::create_session(
+    let session = auth::create_session(&state.db, &user.id, Some(&addr.ip().to_string()), None)
+        .await
+        .map_err(AppError::Internal)?;
+
+    audit::log(
         &state.db,
-        &user.id,
+        Some(&user.id),
+        "human",
+        "auth.bootstrap",
+        Some("user"),
+        Some(&user.id),
+        "success",
         Some(&addr.ip().to_string()),
         None,
     )
-    .await
-    .map_err(AppError::Internal)?;
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "auth.bootstrap",
-        Some("user"), Some(&user.id), "success",
-        Some(&addr.ip().to_string()), None,
-    ).await;
+    .await;
 
     // Auto-provision Voidwatch token so Odysseus wires itself up without a second installer run
     let pending_path = state.config.config_dir.join("voidwatch-pending-token");
@@ -261,11 +290,16 @@ pub async fn bootstrap(
         .build();
 
     let mut public_user: PublicUser = user.into();
-    public_user.mfa_required = crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
+    public_user.mfa_required =
+        crate::api::settings::mfa_required_for_role(&state, &public_user.role).await;
     Ok((jar.add(cookie), Json(AuthResponse { user: public_user })))
 }
 
-async fn provision_voidwatch(db: sqlx::SqlitePool, user_id: String, token_path: std::path::PathBuf) {
+async fn provision_voidwatch(
+    db: sqlx::SqlitePool,
+    user_id: String,
+    token_path: std::path::PathBuf,
+) {
     use crate::api::integrations::{generate_api_token, sha256_hex, unix_now};
 
     if !std::path::Path::new("/opt/odysseus/app.py").exists() {
@@ -277,21 +311,45 @@ async fn provision_voidwatch(db: sqlx::SqlitePool, user_id: String, token_path: 
     let id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
     let scopes = serde_json::json!([
-        "metrics:read","services:read","services:restart","containers:read",
-        "containers:restart","containers:logs","apps:read","apps:restart",
-        "backups:read","backups:run","alerts:read","alerts:ack",
-        "automation:read","automation:run","timeline:read","network:read",
-        "storage:read","diagnostics:read","proxy:read","tags:read",
-        "secrets:list","vms:read"
-    ]).to_string();
+        "metrics:read",
+        "services:read",
+        "services:restart",
+        "containers:read",
+        "containers:restart",
+        "containers:logs",
+        "apps:read",
+        "apps:restart",
+        "backups:read",
+        "backups:run",
+        "alerts:read",
+        "alerts:ack",
+        "automation:read",
+        "automation:run",
+        "timeline:read",
+        "network:read",
+        "storage:read",
+        "diagnostics:read",
+        "proxy:read",
+        "tags:read",
+        "secrets:list",
+        "vms:read"
+    ])
+    .to_string();
 
     let ok = sqlx::query(
         "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(&id).bind(&user_id).bind("voidwatch-integration")
-    .bind(&hash).bind(&scopes).bind::<Option<i64>>(None).bind(now)
-    .execute(&db).await.is_ok();
+    .bind(&id)
+    .bind(&user_id)
+    .bind("voidwatch-integration")
+    .bind(&hash)
+    .bind(&scopes)
+    .bind::<Option<i64>>(None)
+    .bind(now)
+    .execute(&db)
+    .await
+    .is_ok();
 
     if ok {
         let _ = tokio::fs::write(&token_path, &raw).await;
@@ -343,7 +401,10 @@ pub async fn oidc_status(State(state): State<AppState>) -> Result<Json<OidcStatu
     }))
 }
 
-pub async fn oidc_login(State(state): State<AppState>, jar: CookieJar) -> Result<(CookieJar, Redirect)> {
+pub async fn oidc_login(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<(CookieJar, Redirect)> {
     let settings = oidc::load_settings(&state.db, &state.secrets_key)
         .await?
         .ok_or_else(|| AppError::BadRequest("OIDC is not configured".into()))?;
@@ -368,7 +429,10 @@ pub struct OidcCallbackQuery {
     pub error_description: Option<String>,
 }
 
-async fn pick_oidc_username(db: &sqlx::SqlitePool, identity: &oidc::OidcIdentity) -> Result<String> {
+async fn pick_oidc_username(
+    db: &sqlx::SqlitePool,
+    identity: &oidc::OidcIdentity,
+) -> Result<String> {
     let candidates = [
         identity.preferred_username.clone(),
         identity
@@ -400,7 +464,9 @@ pub async fn oidc_callback(
             q.error_description.unwrap_or_default()
         )));
     }
-    let code = q.code.ok_or_else(|| AppError::BadRequest("missing code".into()))?;
+    let code = q
+        .code
+        .ok_or_else(|| AppError::BadRequest("missing code".into()))?;
     let returned_state = q
         .state
         .ok_or_else(|| AppError::BadRequest("missing state".into()))?;
@@ -419,12 +485,17 @@ pub async fn oidc_callback(
         .ok_or_else(|| AppError::BadRequest("OIDC is not configured".into()))?;
     let client = oidc::build_client(&settings).await?;
 
-    let identity = oidc::exchange_and_verify(&client, code, flow.pkce_verifier, &flow.nonce).await?;
+    let identity =
+        oidc::exchange_and_verify(&client, code, flow.pkce_verifier, &flow.nonce).await?;
 
     let groups = match oidc::discover_userinfo_endpoint(&settings.issuer_url).await? {
         Some(userinfo_url) => {
-            oidc::fetch_role_claim_values(&userinfo_url, &identity.access_token, &settings.role_claim)
-                .await
+            oidc::fetch_role_claim_values(
+                &userinfo_url,
+                &identity.access_token,
+                &settings.role_claim,
+            )
+            .await
         }
         None => Vec::new(),
     };
@@ -447,13 +518,21 @@ pub async fn oidc_callback(
         }
     };
 
-    let session = auth::create_session(&state.db, &user.id, Some(&addr.ip().to_string()), None).await?;
+    let session =
+        auth::create_session(&state.db, &user.id, Some(&addr.ip().to_string()), None).await?;
 
     audit::log(
-        &state.db, Some(&user.id), "human", "auth.login.oidc",
-        Some("user"), Some(&user.id), "success",
-        Some(&addr.ip().to_string()), None,
-    ).await;
+        &state.db,
+        Some(&user.id),
+        "human",
+        "auth.login.oidc",
+        Some("user"),
+        Some(&user.id),
+        "success",
+        Some(&addr.ip().to_string()),
+        None,
+    )
+    .await;
 
     let session_cookie = Cookie::build(("vt_session", session.id))
         .http_only(true)
@@ -597,15 +676,15 @@ pub async fn save_oidc_config(
         })));
     }
 
-    let existing_secret_id: Option<String> = sqlx::query_scalar(
-        "SELECT client_secret_id FROM oidc_config WHERE id = 'default'",
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .flatten();
+    let existing_secret_id: Option<String> =
+        sqlx::query_scalar("SELECT client_secret_id FROM oidc_config WHERE id = 'default'")
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
 
     let secret_id = if let Some(new_secret) = &req.client_secret {
-        let enc = crate::api::secrets::encrypt(&state.secrets_key, new_secret).map_err(AppError::Internal)?;
+        let enc = crate::api::secrets::encrypt(&state.secrets_key, new_secret)
+            .map_err(AppError::Internal)?;
         match &existing_secret_id {
             Some(id) => {
                 sqlx::query("UPDATE secrets SET value_enc = ?, updated_at = ? WHERE id = ?")
@@ -665,10 +744,17 @@ pub async fn save_oidc_config(
     .await?;
 
     audit::log(
-        &state.db, Some(&user.id), "human", "oidc.config.save",
-        Some("oidc_config"), None, "success", None,
+        &state.db,
+        Some(&user.id),
+        "human",
+        "oidc.config.save",
+        Some("oidc_config"),
+        None,
+        "success",
+        None,
         Some(&format!("enabled={}", req.enabled)),
-    ).await;
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

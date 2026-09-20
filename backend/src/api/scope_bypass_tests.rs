@@ -79,9 +79,7 @@ async fn insert_session(db: &SqlitePool, user_id: &str) -> String {
 /// Inserts a scoped API token directly (bypassing the HTTP create-token
 /// endpoint, which is what's under test elsewhere) and returns the raw token.
 async fn insert_token(db: &SqlitePool, user_id: &str, scopes: &[&str]) -> String {
-    insert_token_with_expiry(db, user_id, scopes, None)
-        .await
-        .1
+    insert_token_with_expiry(db, user_id, scopes, None).await.1
 }
 
 async fn insert_token_with_expiry(

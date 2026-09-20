@@ -134,11 +134,7 @@ pub async fn log_sourced(
     }
 }
 
-pub async fn list(
-    pool: &SqlitePool,
-    limit: i64,
-    offset: i64,
-) -> anyhow::Result<Vec<AuditEntry>> {
+pub async fn list(pool: &SqlitePool, limit: i64, offset: i64) -> anyhow::Result<Vec<AuditEntry>> {
     let entries = sqlx::query_as::<_, AuditEntry>(
         "SELECT id, timestamp, user_id, actor_type, action, resource_type, resource_id,
                 outcome, ip_address, request_id, details, source

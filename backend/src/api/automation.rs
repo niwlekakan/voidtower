@@ -9,20 +9,28 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    audit,
-    auth,
+    audit, auth,
     error::{AppError, Result},
     operations::invocation::CredentialContext,
     AppState,
 };
 
 fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
-    auth::validate_session(&state.db, &sid).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)
+    let sid = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    auth::validate_session(&state.db, &sid)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -52,13 +60,19 @@ pub struct AutomationRun {
     pub output: String,
 }
 
-pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
+pub async fn list(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<serde_json::Value>> {
     require_user(&state, &jar).await?;
     let jobs = sqlx::query_as::<_, AutomationJob>(
         "SELECT id, name, description, command, schedule, enabled, timeout_secs,
                 last_run_at, last_status, last_exit_code, created_at, updated_at
-         FROM automation_jobs ORDER BY created_at DESC"
-    ).fetch_all(&state.db).await.map_err(AppError::Database)?;
+         FROM automation_jobs ORDER BY created_at DESC",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(AppError::Database)?;
     Ok(Json(serde_json::json!({ "jobs": jobs })))
 }
 
@@ -72,11 +86,19 @@ pub struct CreateJob {
     pub enabled: Option<bool>,
 }
 
-pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(body): Json<CreateJob>) -> Result<Json<serde_json::Value>> {
+pub async fn create(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(body): Json<CreateJob>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
-    if body.name.trim().is_empty() { return Err(AppError::BadRequest("name required".into())); }
-    if body.command.trim().is_empty() { return Err(AppError::BadRequest("command required".into())); }
+    if body.name.trim().is_empty() {
+        return Err(AppError::BadRequest("name required".into()));
+    }
+    if body.command.trim().is_empty() {
+        return Err(AppError::BadRequest("command required".into()));
+    }
 
     let id = Uuid::new_v4().to_string();
     let ts = now();
@@ -88,7 +110,18 @@ pub async fn create(State(state): State<AppState>, jar: CookieJar, Json(body): J
      .bind(body.timeout_secs.unwrap_or(300)).bind(ts).bind(ts)
      .execute(&state.db).await.map_err(AppError::Database)?;
 
-    audit::log(&state.db, Some(&user.id), "human", "create_automation_job", Some("automation_job"), Some(&id), "success", None, None).await;
+    audit::log(
+        &state.db,
+        Some(&user.id),
+        "human",
+        "create_automation_job",
+        Some("automation_job"),
+        Some(&id),
+        "success",
+        None,
+        None,
+    )
+    .await;
     Ok(Json(serde_json::json!({ "id": id })))
 }
 
@@ -102,24 +135,96 @@ pub struct UpdateJob {
     pub enabled: Option<bool>,
 }
 
-pub async fn update(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Json(body): Json<UpdateJob>) -> Result<Json<serde_json::Value>> {
+pub async fn update(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateJob>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
     let ts = now();
-    if let Some(v) = &body.name    { sqlx::query("UPDATE automation_jobs SET name=?, updated_at=? WHERE id=?").bind(v).bind(ts).bind(&id).execute(&state.db).await.map_err(AppError::Database)?; }
-    if let Some(v) = &body.description { sqlx::query("UPDATE automation_jobs SET description=?, updated_at=? WHERE id=?").bind(v).bind(ts).bind(&id).execute(&state.db).await.map_err(AppError::Database)?; }
-    if let Some(v) = &body.command { sqlx::query("UPDATE automation_jobs SET command=?, updated_at=? WHERE id=?").bind(v).bind(ts).bind(&id).execute(&state.db).await.map_err(AppError::Database)?; }
-    if body.schedule.is_some()     { sqlx::query("UPDATE automation_jobs SET schedule=?, updated_at=? WHERE id=?").bind(&body.schedule).bind(ts).bind(&id).execute(&state.db).await.map_err(AppError::Database)?; }
-    if let Some(v) = body.timeout_secs { sqlx::query("UPDATE automation_jobs SET timeout_secs=?, updated_at=? WHERE id=?").bind(v).bind(ts).bind(&id).execute(&state.db).await.map_err(AppError::Database)?; }
-    if let Some(v) = body.enabled  { sqlx::query("UPDATE automation_jobs SET enabled=?, updated_at=? WHERE id=?").bind(v).bind(ts).bind(&id).execute(&state.db).await.map_err(AppError::Database)?; }
+    if let Some(v) = &body.name {
+        sqlx::query("UPDATE automation_jobs SET name=?, updated_at=? WHERE id=?")
+            .bind(v)
+            .bind(ts)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    if let Some(v) = &body.description {
+        sqlx::query("UPDATE automation_jobs SET description=?, updated_at=? WHERE id=?")
+            .bind(v)
+            .bind(ts)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    if let Some(v) = &body.command {
+        sqlx::query("UPDATE automation_jobs SET command=?, updated_at=? WHERE id=?")
+            .bind(v)
+            .bind(ts)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    if body.schedule.is_some() {
+        sqlx::query("UPDATE automation_jobs SET schedule=?, updated_at=? WHERE id=?")
+            .bind(&body.schedule)
+            .bind(ts)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    if let Some(v) = body.timeout_secs {
+        sqlx::query("UPDATE automation_jobs SET timeout_secs=?, updated_at=? WHERE id=?")
+            .bind(v)
+            .bind(ts)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    if let Some(v) = body.enabled {
+        sqlx::query("UPDATE automation_jobs SET enabled=?, updated_at=? WHERE id=?")
+            .bind(v)
+            .bind(ts)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn delete(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>) -> Result<Json<serde_json::Value>> {
+pub async fn delete(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
-    sqlx::query("DELETE FROM automation_jobs WHERE id=?").bind(&id).execute(&state.db).await.map_err(AppError::Database)?;
-    audit::log(&state.db, Some(&user.id), "human", "delete_automation_job", Some("automation_job"), Some(&id), "success", None, None).await;
+    sqlx::query("DELETE FROM automation_jobs WHERE id=?")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .map_err(AppError::Database)?;
+    audit::log(
+        &state.db,
+        Some(&user.id),
+        "human",
+        "delete_automation_job",
+        Some("automation_job"),
+        Some(&id),
+        "success",
+        None,
+        None,
+    )
+    .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -130,14 +235,13 @@ pub(crate) async fn resolve_run_resource(
 ) -> super::operation_adoption::CompatibilityResult<crate::operations::contracts::ResourceRef> {
     const ACTION: &str = "automation.run";
     super::operation_adoption::authorize(credential, ACTION)?;
-    let name: String = sqlx::query_scalar(
-        "SELECT name FROM automation_jobs WHERE id = ? AND enabled = 1",
-    )
-    .bind(automation_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or(AppError::NotFound)?;
+    let name: String =
+        sqlx::query_scalar("SELECT name FROM automation_jobs WHERE id = ? AND enabled = 1")
+            .bind(automation_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or(AppError::NotFound)?;
     let existing = crate::operations::resources::resolve_alias(
         &state.db,
         "automation.job",
@@ -182,12 +286,8 @@ pub async fn run_now(
     headers: HeaderMap,
     token: Option<Extension<super::bearer_auth::AuthenticatedApiToken>>,
 ) -> super::operation_adoption::CompatibilityResult<Response> {
-    let credential = super::actions::credential(
-        &state,
-        &jar,
-        token.map(|Extension(token)| token),
-    )
-    .await?;
+    let credential =
+        super::actions::credential(&state, &jar, token.map(|Extension(token)| token)).await?;
     let resource = resolve_run_resource(&state, &credential, &id).await?;
     super::operation_adoption::submit(
         &state,
@@ -205,14 +305,26 @@ pub struct RunsQuery {
     #[serde(default = "default_limit")]
     pub limit: i64,
 }
-fn default_limit() -> i64 { 20 }
+fn default_limit() -> i64 {
+    20
+}
 
-pub async fn runs(State(state): State<AppState>, jar: CookieJar, Path(id): Path<String>, Query(q): Query<RunsQuery>) -> Result<Json<serde_json::Value>> {
+pub async fn runs(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    Query(q): Query<RunsQuery>,
+) -> Result<Json<serde_json::Value>> {
     require_user(&state, &jar).await?;
     let runs = sqlx::query_as::<_, AutomationRun>(
         "SELECT id, job_id, started_at, finished_at, status, exit_code, output
-         FROM automation_runs WHERE job_id=? ORDER BY started_at DESC LIMIT ?"
-    ).bind(&id).bind(q.limit).fetch_all(&state.db).await.map_err(AppError::Database)?;
+         FROM automation_runs WHERE job_id=? ORDER BY started_at DESC LIMIT ?",
+    )
+    .bind(&id)
+    .bind(q.limit)
+    .fetch_all(&state.db)
+    .await
+    .map_err(AppError::Database)?;
     Ok(Json(serde_json::json!({ "runs": runs })))
 }
 
@@ -287,14 +399,16 @@ fn schedule_slot(schedule: &str, now_ts: i64) -> i64 {
 /// Simple cron-style check: supports "@hourly", "@daily", "@weekly", and "*/N min" patterns.
 fn is_due(schedule: &str, last_run: Option<i64>, now_ts: i64) -> bool {
     let interval_secs: i64 = match schedule.trim() {
-        "@minutely"              => 60,
-        "@hourly"                => 3600,
-        "@daily" | "@midnight"   => 86400,
-        "@weekly"                => 86400 * 7,
-        "@monthly"               => 86400 * 30,
+        "@minutely" => 60,
+        "@hourly" => 3600,
+        "@daily" | "@midnight" => 86400,
+        "@weekly" => 86400 * 7,
+        "@monthly" => 86400 * 30,
         s if s.starts_with("*/") => {
             // "*/5 minutes" or "*/30" — parse number, treat as minutes
-            s[2..].split_whitespace().next()
+            s[2..]
+                .split_whitespace()
+                .next()
                 .and_then(|n| n.parse::<i64>().ok())
                 .map(|n| n * 60)
                 .unwrap_or(3600)

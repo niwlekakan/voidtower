@@ -132,7 +132,10 @@ fn default_mfa_required_roles() -> Vec<String> {
 }
 
 fn valid_role(role: &str) -> bool {
-    matches!(role, "owner" | "admin" | "operator" | "viewer" | "guest" | "demo" | "member")
+    matches!(
+        role,
+        "owner" | "admin" | "operator" | "viewer" | "guest" | "demo" | "member"
+    )
 }
 
 /// Whether the given role currently requires mandatory MFA enrollment.
@@ -176,16 +179,25 @@ pub async fn set_mfa_policy(
         }
     }
 
-    let value = serde_json::to_string(&req.required_roles)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let value =
+        serde_json::to_string(&req.required_roles).map_err(|e| AppError::Internal(e.into()))?;
     db_set(&state, MFA_REQUIRED_ROLES_KEY, &value).await?;
 
     audit::log(
-        &state.db, Some(&user.id), "human", "settings.mfa_policy.set",
-        Some("settings"), None, "success", None,
+        &state.db,
+        Some(&user.id),
+        "human",
+        "settings.mfa_policy.set",
+        Some("settings"),
+        None,
+        "success",
+        None,
         Some(&format!("required_roles={}", req.required_roles.join(","))),
-    ).await;
-    Ok(Json(serde_json::json!({ "ok": true, "required_roles": req.required_roles })))
+    )
+    .await;
+    Ok(Json(
+        serde_json::json!({ "ok": true, "required_roles": req.required_roles }),
+    ))
 }
 
 // ─── General settings ────────────────────────────────────────────────────────
@@ -195,11 +207,13 @@ pub async fn get_general(
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let name       = db_get(&state, INSTANCE_NAME_KEY).await.unwrap_or_else(|| "VoidTower".into());
-    let tagline    = db_get(&state, LOGIN_TAGLINE_KEY).await.unwrap_or_default();
+    let name = db_get(&state, INSTANCE_NAME_KEY)
+        .await
+        .unwrap_or_else(|| "VoidTower".into());
+    let tagline = db_get(&state, LOGIN_TAGLINE_KEY).await.unwrap_or_default();
     let custom_css = db_get(&state, CUSTOM_CSS_KEY).await.unwrap_or_default();
-    let bg_url     = db_get(&state, LOGIN_BG_URL_KEY).await.unwrap_or_default();
-    let logo       = db_get(&state, INSTANCE_LOGO_KEY).await.unwrap_or_default();
+    let bg_url = db_get(&state, LOGIN_BG_URL_KEY).await.unwrap_or_default();
+    let logo = db_get(&state, INSTANCE_LOGO_KEY).await.unwrap_or_default();
     Ok(Json(serde_json::json!({
         "instance_name": name,
         "login_tagline": tagline,
@@ -213,8 +227,8 @@ pub async fn get_general(
 pub struct SetGeneralReq {
     pub instance_name: Option<String>,
     pub login_tagline: Option<String>,
-    pub custom_css:    Option<String>,
-    pub login_bg_url:  Option<String>,
+    pub custom_css: Option<String>,
+    pub login_bg_url: Option<String>,
     pub instance_logo: Option<String>,
 }
 
@@ -225,49 +239,87 @@ pub async fn set_general(
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
 
-    let name = req.instance_name.as_deref().unwrap_or("VoidTower").trim().to_string();
-    let name = if name.is_empty() { "VoidTower".into() } else { name };
+    let name = req
+        .instance_name
+        .as_deref()
+        .unwrap_or("VoidTower")
+        .trim()
+        .to_string();
+    let name = if name.is_empty() {
+        "VoidTower".into()
+    } else {
+        name
+    };
     db_set(&state, INSTANCE_NAME_KEY, &name).await?;
 
-    let tagline = req.login_tagline.as_deref().unwrap_or("").trim().to_string();
-    if tagline.is_empty() { db_delete(&state, LOGIN_TAGLINE_KEY).await?; }
-    else { db_set(&state, LOGIN_TAGLINE_KEY, &tagline).await?; }
+    let tagline = req
+        .login_tagline
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if tagline.is_empty() {
+        db_delete(&state, LOGIN_TAGLINE_KEY).await?;
+    } else {
+        db_set(&state, LOGIN_TAGLINE_KEY, &tagline).await?;
+    }
 
     let css = req.custom_css.as_deref().unwrap_or("").to_string();
     if css.len() > MAX_CUSTOM_CSS_LEN {
-        return Err(AppError::BadRequest(format!("custom_css exceeds {} bytes", MAX_CUSTOM_CSS_LEN)));
+        return Err(AppError::BadRequest(format!(
+            "custom_css exceeds {} bytes",
+            MAX_CUSTOM_CSS_LEN
+        )));
     }
-    if css.is_empty() { db_delete(&state, CUSTOM_CSS_KEY).await?; }
-    else { db_set(&state, CUSTOM_CSS_KEY, &css).await?; }
+    if css.is_empty() {
+        db_delete(&state, CUSTOM_CSS_KEY).await?;
+    } else {
+        db_set(&state, CUSTOM_CSS_KEY, &css).await?;
+    }
 
     let bg_url = req.login_bg_url.as_deref().unwrap_or("").trim().to_string();
-    if bg_url.is_empty() { db_delete(&state, LOGIN_BG_URL_KEY).await?; }
-    else { db_set(&state, LOGIN_BG_URL_KEY, &bg_url).await?; }
+    if bg_url.is_empty() {
+        db_delete(&state, LOGIN_BG_URL_KEY).await?;
+    } else {
+        db_set(&state, LOGIN_BG_URL_KEY, &bg_url).await?;
+    }
 
     let logo = req.instance_logo.as_deref().unwrap_or("").to_string();
     if logo.len() > MAX_LOGO_LEN {
         return Err(AppError::BadRequest("instance_logo exceeds 256KB".into()));
     }
-    if logo.is_empty() { db_delete(&state, INSTANCE_LOGO_KEY).await?; }
-    else { db_set(&state, INSTANCE_LOGO_KEY, &logo).await?; }
+    if logo.is_empty() {
+        db_delete(&state, INSTANCE_LOGO_KEY).await?;
+    } else {
+        db_set(&state, INSTANCE_LOGO_KEY, &logo).await?;
+    }
 
     audit::log(
-        &state.db, Some(&user.id), "human", "settings.general.set",
-        Some("settings"), None, "success", None,
+        &state.db,
+        Some(&user.id),
+        "human",
+        "settings.general.set",
+        Some("settings"),
+        None,
+        "success",
+        None,
         Some(&format!("instance_name={name}")),
-    ).await;
-    Ok(Json(serde_json::json!({ "ok": true, "instance_name": name })))
+    )
+    .await;
+    Ok(Json(
+        serde_json::json!({ "ok": true, "instance_name": name }),
+    ))
 }
 
 /// Public endpoint — no authentication required.
 /// Returns only the fields needed by the login page.
-pub async fn get_public(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
-    let name    = db_get(&state, INSTANCE_NAME_KEY).await.unwrap_or_else(|| "VoidTower".into());
+pub async fn get_public(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let name = db_get(&state, INSTANCE_NAME_KEY)
+        .await
+        .unwrap_or_else(|| "VoidTower".into());
     let tagline = db_get(&state, LOGIN_TAGLINE_KEY).await.unwrap_or_default();
-    let bg_url  = db_get(&state, LOGIN_BG_URL_KEY).await.unwrap_or_default();
-    let logo    = db_get(&state, INSTANCE_LOGO_KEY).await.unwrap_or_default();
+    let bg_url = db_get(&state, LOGIN_BG_URL_KEY).await.unwrap_or_default();
+    let logo = db_get(&state, INSTANCE_LOGO_KEY).await.unwrap_or_default();
     Json(serde_json::json!({
         "instance_name": name,
         "login_tagline": tagline,
@@ -293,9 +345,9 @@ pub async fn get_notifications(
 #[allow(dead_code)] // retained as the request contract for the future canonical adapter
 #[derive(Deserialize)]
 pub struct SetNotificationsReq {
-    pub ntfy_url:        Option<String>,
+    pub ntfy_url: Option<String>,
     pub discord_webhook: Option<String>,
-    pub slack_webhook:   Option<String>,
+    pub slack_webhook: Option<String>,
 }
 
 pub async fn set_notifications(
@@ -410,15 +462,13 @@ mod tests {
     async fn notifications_settings_mutation_fails_closed_without_persisting() {
         let pool = crate::api::mcp::test_support::setup_db().await;
         let session = crate::api::mcp::test_support::user_with_session(&pool).await;
-        sqlx::query(
-            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
-        )
-        .bind("notif_discord_webhook")
-        .bind("http://127.0.0.1:1/original")
-        .bind(0_i64)
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+            .bind("notif_discord_webhook")
+            .bind("http://127.0.0.1:1/original")
+            .bind(0_i64)
+            .execute(&pool)
+            .await
+            .unwrap();
         let app = crate::api::router(crate::api::mcp::test_support::build(pool.clone()));
 
         let response = app
@@ -463,15 +513,13 @@ mod tests {
     async fn notification_test_fails_closed_before_outbound_delivery() {
         let pool = crate::api::mcp::test_support::setup_db().await;
         let session = crate::api::mcp::test_support::user_with_session(&pool).await;
-        sqlx::query(
-            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
-        )
-        .bind("notif_discord_webhook")
-        .bind("http://127.0.0.1:1/provider")
-        .bind(0_i64)
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+            .bind("notif_discord_webhook")
+            .bind("http://127.0.0.1:1/provider")
+            .bind(0_i64)
+            .execute(&pool)
+            .await
+            .unwrap();
         let app = crate::api::router(crate::api::mcp::test_support::build(pool));
 
         let response = app
@@ -547,10 +595,16 @@ mod tests {
             .expect("notification test handler");
 
         for marker in ["db_set(", "db_delete(", "audit::log("] {
-            assert!(!set_handler.contains(marker), "settings mutation marker: {marker}");
+            assert!(
+                !set_handler.contains(marker),
+                "settings mutation marker: {marker}"
+            );
         }
         for marker in ["reqwest::Client", ".post(", "db_get("] {
-            assert!(!test_handler.contains(marker), "test delivery marker: {marker}");
+            assert!(
+                !test_handler.contains(marker),
+                "test delivery marker: {marker}"
+            );
         }
     }
 
@@ -572,7 +626,10 @@ mod tests {
             "open_firewall_port(",
             "close_firewall_port(",
         ] {
-            assert!(!handler.contains(marker), "direct mutation marker: {marker}");
+            assert!(
+                !handler.contains(marker),
+                "direct mutation marker: {marker}"
+            );
         }
     }
 }

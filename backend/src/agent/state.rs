@@ -1,5 +1,5 @@
-use anyhow::{bail, Context, Result};
 use crate::cmdb::contracts::InventorySnapshotV1;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -227,11 +227,8 @@ impl PendingSnapshotStore {
 
     pub fn load(&self) -> Result<Option<InventorySnapshotV1>> {
         #[cfg(unix)]
-        let Some((file, metadata)) = open_protected_file(
-            &self.path,
-            "pending inventory snapshot",
-            true,
-        )?
+        let Some((file, metadata)) =
+            open_protected_file(&self.path, "pending inventory snapshot", true)?
         else {
             return Ok(None);
         };
@@ -243,7 +240,9 @@ impl PendingSnapshotStore {
             let file = match OpenOptions::new().read(true).open(&self.path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(error).context("failed to open pending inventory snapshot"),
+                Err(error) => {
+                    return Err(error).context("failed to open pending inventory snapshot")
+                }
             };
             let metadata = file
                 .metadata()
@@ -267,8 +266,8 @@ impl PendingSnapshotStore {
         if bytes.len() as u64 > MAX_PENDING_SNAPSHOT_BYTES {
             bail!("pending inventory snapshot is oversized");
         }
-        let envelope: PendingSnapshotEnvelopeV1 = serde_json::from_slice(&bytes)
-            .context("failed to parse pending inventory snapshot")?;
+        let envelope: PendingSnapshotEnvelopeV1 =
+            serde_json::from_slice(&bytes).context("failed to parse pending inventory snapshot")?;
         if envelope.schema_version != 1 || envelope.node_id != self.node_id {
             bail!("pending inventory snapshot node binding is invalid");
         }
@@ -288,7 +287,7 @@ impl PendingSnapshotStore {
             node_id: self.node_id,
             snapshot: snapshot.clone(),
         })
-            .context("failed to serialize pending inventory snapshot")?;
+        .context("failed to serialize pending inventory snapshot")?;
         if bytes.len() as u64 > MAX_PENDING_SNAPSHOT_BYTES {
             bail!("pending inventory snapshot is oversized");
         }
@@ -561,7 +560,7 @@ fn open_protected_file(
     use std::{
         ffi::CString,
         io,
-        os::fd::{FromRawFd, AsRawFd},
+        os::fd::{AsRawFd, FromRawFd},
         os::unix::ffi::OsStrExt,
         os::unix::fs::{MetadataExt, PermissionsExt},
         path::Component,
@@ -865,7 +864,10 @@ mod tests {
         let store = PendingSnapshotStore::for_state_path(&path, state().node_id).unwrap();
         store.save(&snapshot()).unwrap();
         let pending = path.parent().unwrap().join(".state.json.pending.json");
-        assert_eq!(fs::metadata(pending).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(pending).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -1030,10 +1032,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn load_rejects_a_special_state_file_without_blocking() {
-        use std::{
-            ffi::CString,
-            os::unix::ffi::OsStrExt,
-        };
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
         let path = temp_state_path("load-special-file");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1049,10 +1048,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pending_load_rejects_a_special_sidecar_without_blocking() {
-        use std::{
-            ffi::CString,
-            os::unix::ffi::OsStrExt,
-        };
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
         let path = temp_state_path("pending-special-file");
         let parent = path.parent().unwrap();

@@ -51,7 +51,9 @@ pub async fn cancel_deploy(registry: &DeployRegistry, project_name: &str) -> boo
     }
     #[cfg(not(unix))]
     {
-        let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
     }
     true
 }
@@ -140,7 +142,8 @@ pub async fn list_containers() -> Result<Vec<ContainerInfo>> {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|p| {
-                    let protocol = p.typ
+                    let protocol = p
+                        .typ
                         .map(|t| format!("{:?}", t).to_lowercase())
                         .unwrap_or_else(|| "tcp".into());
                     PortMapping {
@@ -151,7 +154,16 @@ pub async fn list_containers() -> Result<Vec<ContainerInfo>> {
                 })
                 .collect();
 
-            ContainerInfo { id, short_id, name, image, status, state, created, ports }
+            ContainerInfo {
+                id,
+                short_id,
+                name,
+                image,
+                status,
+                state,
+                created,
+                ports,
+            }
         })
         .collect();
 
@@ -180,7 +192,10 @@ pub async fn container_action(id: &str, action: ContainerAction) -> Result<()> {
             docker
                 .remove_container(
                     id,
-                    Some(RemoveContainerOptions { force: true, ..Default::default() }),
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
                 )
                 .await?;
         }
@@ -216,12 +231,21 @@ pub async fn get_container_logs(id: &str, tail: usize) -> Result<Vec<String>> {
 pub async fn list_images() -> Result<Vec<ImageInfo>> {
     let docker = connect()?;
     let images = docker
-        .list_images(Some(ListImagesOptions::<String> { all: false, ..Default::default() }))
+        .list_images(Some(ListImagesOptions::<String> {
+            all: false,
+            ..Default::default()
+        }))
         .await?;
     Ok(images
         .into_iter()
         .map(|img| {
-            let id: String = img.id.strip_prefix("sha256:").unwrap_or(&img.id).chars().take(12).collect();
+            let id: String = img
+                .id
+                .strip_prefix("sha256:")
+                .unwrap_or(&img.id)
+                .chars()
+                .take(12)
+                .collect();
             ImageInfo {
                 id,
                 tags: img.repo_tags,
@@ -254,7 +278,12 @@ pub async fn deploy_compose_cancellable(
     if let Some(pid) = child.id() {
         registry.lock().await.insert(project_name.to_string(), pid);
     }
-    let output = run_bounded_command(child, MAX_COMPOSE_LOG_STREAM_BYTES, MAX_COMPOSE_LOG_STREAM_BYTES).await;
+    let output = run_bounded_command(
+        child,
+        MAX_COMPOSE_LOG_STREAM_BYTES,
+        MAX_COMPOSE_LOG_STREAM_BYTES,
+    )
+    .await;
     registry.lock().await.remove(project_name);
     let (stdout, stderr, status) = output?;
 
@@ -269,7 +298,10 @@ pub async fn deploy_compose_cancellable(
 const MAX_COMPOSE_LOG_STREAM_BYTES: usize = 64 * 1024;
 const COMPOSE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-async fn read_bounded_output<R: AsyncRead + Unpin>(mut reader: R, max_bytes: usize) -> Result<Vec<u8>> {
+async fn read_bounded_output<R: AsyncRead + Unpin>(
+    mut reader: R,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
     let mut output = Vec::with_capacity(max_bytes);
     let mut buffer = [0u8; 8192];
     let mut total = 0usize;
@@ -377,14 +409,23 @@ pub async fn list_external_containers() -> Result<Vec<u8>> {
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let (stdout, _stderr, status) = run_bounded_command(child, MAX_EXTERNAL_DETECT_BYTES, MAX_COMPOSE_LOG_STREAM_BYTES).await?;
+    let (stdout, _stderr, status) = run_bounded_command(
+        child,
+        MAX_EXTERNAL_DETECT_BYTES,
+        MAX_COMPOSE_LOG_STREAM_BYTES,
+    )
+    .await?;
     if !status.success() {
         anyhow::bail!("docker container discovery failed");
     }
     Ok(stdout)
 }
 
-pub async fn logs_compose(project_name: &str, compose_path: &std::path::Path, tail: usize) -> Result<String> {
+pub async fn logs_compose(
+    project_name: &str,
+    compose_path: &std::path::Path,
+    tail: usize,
+) -> Result<String> {
     let child = tokio::process::Command::new("docker")
         .args(["compose", "-p", project_name, "-f"])
         .arg(compose_path)
@@ -395,7 +436,12 @@ pub async fn logs_compose(project_name: &str, compose_path: &std::path::Path, ta
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let (stdout, stderr, status) = run_bounded_command(child, MAX_COMPOSE_LOG_STREAM_BYTES, MAX_COMPOSE_LOG_STREAM_BYTES).await?;
+    let (stdout, stderr, status) = run_bounded_command(
+        child,
+        MAX_COMPOSE_LOG_STREAM_BYTES,
+        MAX_COMPOSE_LOG_STREAM_BYTES,
+    )
+    .await?;
     if !status.success() {
         anyhow::bail!("docker compose logs failed");
     }
@@ -413,7 +459,10 @@ pub struct ComposeContainer {
     pub ports: Vec<String>,
 }
 
-pub async fn status_compose(project_name: &str, compose_path: &std::path::Path) -> Result<Vec<ComposeContainer>> {
+pub async fn status_compose(
+    project_name: &str,
+    compose_path: &std::path::Path,
+) -> Result<Vec<ComposeContainer>> {
     let child = tokio::process::Command::new("docker")
         .args(["compose", "-p", project_name, "-f"])
         .arg(compose_path)
@@ -423,14 +472,20 @@ pub async fn status_compose(project_name: &str, compose_path: &std::path::Path) 
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let (stdout, _stderr, status) = run_bounded_command(child, MAX_COMPOSE_LOG_STREAM_BYTES, MAX_COMPOSE_LOG_STREAM_BYTES).await?;
+    let (stdout, _stderr, status) = run_bounded_command(
+        child,
+        MAX_COMPOSE_LOG_STREAM_BYTES,
+        MAX_COMPOSE_LOG_STREAM_BYTES,
+    )
+    .await?;
     if !status.success() {
         anyhow::bail!("docker compose status failed");
     }
 
     let stdout_bytes = stdout;
-    let stdout = String::from_utf8(stdout_bytes)
-        .map_err(|error| anyhow::anyhow!("docker compose status returned invalid UTF-8: {error}"))?;
+    let stdout = String::from_utf8(stdout_bytes).map_err(|error| {
+        anyhow::anyhow!("docker compose status returned invalid UTF-8: {error}")
+    })?;
     parse_compose_status_output(&stdout)
 }
 
@@ -473,33 +528,63 @@ fn parse_compose_status_output(stdout: &str) -> Result<Vec<ComposeContainer>> {
                     .ok_or_else(|| anyhow::anyhow!("docker compose Publishers is not an array"))?
                     .iter()
                     .map(|publisher| {
-                        let publisher = publisher
-                            .as_object()
-                            .ok_or_else(|| anyhow::anyhow!("docker compose publisher is not an object"))?;
+                        let publisher = publisher.as_object().ok_or_else(|| {
+                            anyhow::anyhow!("docker compose publisher is not an object")
+                        })?;
                         let published = publisher
                             .get("PublishedPort")
                             .and_then(serde_json::Value::as_u64)
                             .filter(|port| *port > 0 && *port <= u16::MAX as u64)
-                            .ok_or_else(|| anyhow::anyhow!("docker compose publisher has an invalid published port"))?;
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "docker compose publisher has an invalid published port"
+                                )
+                            })?;
                         let target = publisher
                             .get("TargetPort")
                             .and_then(serde_json::Value::as_u64)
                             .filter(|port| *port > 0 && *port <= u16::MAX as u64)
-                            .ok_or_else(|| anyhow::anyhow!("docker compose publisher has an invalid target port"))?;
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "docker compose publisher has an invalid target port"
+                                )
+                            })?;
                         let protocol = publisher
                             .get("Protocol")
                             .and_then(serde_json::Value::as_str)
-                            .ok_or_else(|| anyhow::anyhow!("docker compose publisher has an invalid protocol"))?;
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("docker compose publisher has an invalid protocol")
+                            })?;
                         Ok(format!("{published}->{target}/{protocol}"))
                     })
                     .collect::<Result<Vec<_>>>()?,
             };
             Ok(ComposeContainer {
-                name: object.get("Name").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
-                service: object.get("Service").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
-                image: object.get("Image").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
-                state: object.get("State").and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string(),
-                status: object.get("Status").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                name: object
+                    .get("Name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                service: object
+                    .get("Service")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                image: object
+                    .get("Image")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                state: object
+                    .get("State")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                status: object
+                    .get("Status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
                 ports,
             })
         })
@@ -522,9 +607,10 @@ mod log_output_tests {
 
     #[tokio::test]
     async fn bounded_reader_drains_but_rejects_oversized_output() {
-        let result = super::read_bounded_output(std::io::Cursor::new(
-            vec![b'x'; super::MAX_COMPOSE_LOG_STREAM_BYTES + 1],
-        ), super::MAX_COMPOSE_LOG_STREAM_BYTES)
+        let result = super::read_bounded_output(
+            std::io::Cursor::new(vec![b'x'; super::MAX_COMPOSE_LOG_STREAM_BYTES + 1]),
+            super::MAX_COMPOSE_LOG_STREAM_BYTES,
+        )
         .await;
 
         assert!(result.is_err());

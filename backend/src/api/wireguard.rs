@@ -193,6 +193,7 @@ pub struct WgInterface {
     listen_port: u16,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct AddPeerRequest {
     pub name: String,
@@ -200,6 +201,7 @@ pub struct AddPeerRequest {
     pub interface: String,
     pub server_endpoint: Option<String>,
 }
+#[allow(dead_code)]
 fn default_iface() -> String {
     "wg0".to_string()
 }

@@ -27,8 +27,7 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
 }
 
 pub fn is_pct_available() -> bool {
-    std::path::Path::new("/usr/sbin/pct").exists()
-        || std::path::Path::new("/usr/bin/pct").exists()
+    std::path::Path::new("/usr/sbin/pct").exists() || std::path::Path::new("/usr/bin/pct").exists()
 }
 
 // ── types ─────────────────────────────────────────────────────────────────────
@@ -63,11 +62,20 @@ fn parse_pct_list(output: &str) -> Vec<LxcContainer> {
     let mut past_header = false;
     for line in output.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-        if trimmed.starts_with("VMID") { past_header = true; continue; }
-        if !past_header { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("VMID") {
+            past_header = true;
+            continue;
+        }
+        if !past_header {
+            continue;
+        }
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        let Some(vmid) = parts.first().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(vmid) = parts.first().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
         let status = parts.get(1).unwrap_or(&"unknown").to_string();
         // Name is always the last field; lock (if present) sits between status and name.
         // Skip cases where only VMID+status were parsed (no name field present).
@@ -90,23 +98,29 @@ fn parse_pct_config(output: &str) -> LxcConfig {
     }
     LxcConfig {
         hostname: raw.get("hostname").cloned().unwrap_or_default(),
-        memory:   raw.get("memory").and_then(|v| v.parse().ok()).unwrap_or(512),
-        cores:    raw.get("cores").and_then(|v| v.parse().ok()).unwrap_or(1),
-        arch:     raw.get("arch").cloned().unwrap_or_else(|| "amd64".to_string()),
-        rootfs:   raw.get("rootfs").cloned().unwrap_or_default(),
+        memory: raw
+            .get("memory")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512),
+        cores: raw.get("cores").and_then(|v| v.parse().ok()).unwrap_or(1),
+        arch: raw
+            .get("arch")
+            .cloned()
+            .unwrap_or_else(|| "amd64".to_string()),
+        rootfs: raw.get("rootfs").cloned().unwrap_or_default(),
         raw,
     }
 }
 
 // ── handlers ──────────────────────────────────────────────────────────────────
 
-pub async fn list(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<ListResponse>> {
+pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<ListResponse>> {
     require_admin(&state, &jar).await?;
     if !is_pct_available() {
-        return Ok(Json(ListResponse { available: false, containers: vec![] }));
+        return Ok(Json(ListResponse {
+            available: false,
+            containers: vec![],
+        }));
     }
     let out = std::process::Command::new("pct")
         .arg("list")
@@ -136,9 +150,12 @@ pub async fn get_config(
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(AppError::BadRequest(msg));
     }
-    Ok(Json(parse_pct_config(&String::from_utf8_lossy(&out.stdout))))
+    Ok(Json(parse_pct_config(&String::from_utf8_lossy(
+        &out.stdout,
+    ))))
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct ActionRequest {
     pub action: String,
@@ -168,12 +185,7 @@ mod tests {
         let state = crate::api::mcp::test_support::build(pool);
         let jar = CookieJar::new().add(Cookie::new("vt_session", session));
 
-        let result = action(
-            State(state),
-            jar,
-            Path(101),
-        )
-        .await;
+        let result = action(State(state), jar, Path(101)).await;
 
         assert!(
             matches!(result, Err(AppError::FeatureUnavailable(ref message)) if message.contains("canonical operation")),

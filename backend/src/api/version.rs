@@ -111,10 +111,9 @@ pub async fn negotiate(req: Request, next: Next) -> Response {
     }
 
     let mut response = next.run(req).await;
-    response.headers_mut().insert(
-        VERSION_HEADER,
-        HeaderValue::from_static(API_VERSION),
-    );
+    response
+        .headers_mut()
+        .insert(VERSION_HEADER, HeaderValue::from_static(API_VERSION));
     response
 }
 
@@ -134,12 +133,7 @@ fn version_error() -> (StatusCode, axum::Json<VersionErrorEnvelopeV1>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{
-        body::Body,
-        http::Request,
-        routing::get,
-        Router,
-    };
+    use axum::{body::Body, http::Request, routing::get, Router};
     use tower::ServiceExt;
 
     #[test]
@@ -412,10 +406,9 @@ mod tests {
             .uri("/probe")
             .body(Body::empty())
             .unwrap();
-        request.headers_mut().append(
-            VERSION_HEADER,
-            HeaderValue::from_static(API_VERSION),
-        );
+        request
+            .headers_mut()
+            .append(VERSION_HEADER, HeaderValue::from_static(API_VERSION));
         request
             .headers_mut()
             .append(VERSION_HEADER, HeaderValue::from_static(API_VERSION));
@@ -444,10 +437,9 @@ mod tests {
             .uri("/probe")
             .body(Body::empty())
             .unwrap();
-        request.headers_mut().insert(
-            VERSION_HEADER,
-            HeaderValue::from_bytes(b"\xff").unwrap(),
-        );
+        request
+            .headers_mut()
+            .insert(VERSION_HEADER, HeaderValue::from_bytes(b"\xff").unwrap());
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
@@ -471,7 +463,12 @@ mod tests {
             .layer(axum::middleware::from_fn(negotiate));
 
         let response = app
-            .oneshot(Request::builder().uri("/probe").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

@@ -715,3 +715,12 @@ CREATE TABLE resources (
     updated_at      INTEGER NOT NULL
 )
 ;
+CREATE TABLE webhook_replay_receipts (
+    source_id   TEXT NOT NULL,
+    nonce       TEXT NOT NULL,
+    timestamp   INTEGER NOT NULL,
+    signature   TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (source_id, nonce)
+)
+;

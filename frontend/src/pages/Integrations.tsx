@@ -631,7 +631,10 @@ function OdysseusSection() {
           {cfg.webhook_secret_hint ? cfg.webhook_secret_hint : <span className="italic text-zinc-600">Not set — click Regenerate</span>}
         </div>
         <p className="text-xs text-zinc-500 mt-1">
-          Send as <code className="bg-zinc-800 px-1 rounded">Authorization: Bearer &lt;secret&gt;</code> when calling <code className="bg-zinc-800 px-1 rounded">POST /api/integrations/webhooks</code>
+          Send timestamp, nonce, and an HMAC-SHA256 signature over `timestamp.nonce.raw_body` as
+          `X-VoidTower-Timestamp`, `X-VoidTower-Nonce`, and `X-VoidTower-Signature` when calling
+          <code className="bg-zinc-800 px-1 rounded">POST /api/integrations/webhooks</code>. Bearer-only
+          requests are rejected; replaying a nonce returns <code className="bg-zinc-800 px-1 rounded">409 webhook_replay</code>.
         </p>
       </div>
 
@@ -662,7 +665,7 @@ function OdysseusSection() {
       <RevealModal
         token={revealSecret}
         label="Copy your webhook secret"
-        note="This secret will not be shown again. Use it as the Bearer token in the Authorization header when calling POST /api/integrations/webhooks."
+        note="This secret will not be shown again. Use it to compute the timestamped X-VoidTower-Signature HMAC over each raw webhook body."
         onClose={() => setRevealSecret(null)}
       />,
       document.body,
@@ -762,7 +765,11 @@ function SetupSection() {
     {
       key: 'webhook',
       label: 'Trigger automation via webhook',
-      code: `curl -X POST \\\n  -H "Authorization: Bearer <webhook-secret>" \\\n  -H "Content-Type: application/json" \\\n  -d '{"automation_id":"<id>"}' \\\n  http://localhost:8743/api/integrations/webhooks`,
+      code: `BODY='{"automation_id":"<id>"}'
+TIMESTAMP=$(date +%s)
+NONCE=$(uuidgen)
+SIGNATURE=$(printf '%s' "$TIMESTAMP.$NONCE.$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')
+curl -X POST \\\n  -H "X-VoidTower-Timestamp: $TIMESTAMP" \\\n  -H "X-VoidTower-Nonce: $NONCE" \\\n  -H "X-VoidTower-Signature: sha256=$SIGNATURE" \\\n  -H "Content-Type: application/json" \\\n  --data "$BODY" \\\n  http://localhost:8743/api/integrations/webhooks`,
     },
     {
       key: 'manifest',
@@ -781,7 +788,7 @@ function SetupSection() {
         <li>Enable the integration above.</li>
         <li>Create an API token with the scopes Odysseus needs.</li>
         <li>In Odysseus settings, add VoidTower as a tool server with the token.</li>
-        <li>Optionally configure the webhook secret so Odysseus can trigger automations.</li>
+        <li>Configure the webhook secret and sign each raw request with a fresh timestamp and nonce.</li>
         <li>Subscribe to the durable event stream for resumable operation updates.</li>
       </ol>
       <div className="space-y-3">

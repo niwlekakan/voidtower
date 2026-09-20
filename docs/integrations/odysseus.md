@@ -161,15 +161,26 @@ Event types: `node_down`, `high_cpu`, `high_memory`, `disk_nearly_full`, `servic
 
 ### Triggering VoidTower from Odysseus
 
-Odysseus may call VoidTower's inbound webhook with the shared webhook secret:
+Inbound webhook requests use HMAC-SHA256 over the exact raw request body. The canonical message is
+`timestamp.nonce.raw_body`, where `timestamp` is Unix seconds and `nonce` is a fresh 1–128 byte
+ASCII delivery identifier (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, or `~`). The signature header is
+`sha256=` followed by 64 hexadecimal characters (the verifier accepts either hexadecimal case):
 
 ```http
 POST /api/integrations/webhooks
-Authorization: Bearer <webhook-secret>
+X-VoidTower-Timestamp: 1726838400
+X-VoidTower-Nonce: 01JABCDEF-webhook-delivery
+X-VoidTower-Signature: sha256=<hmac_sha256_hex>
 Content-Type: application/json
 
 { "action": "container.restart", "resource_id": "my-container" }
 ```
+
+The timestamp must be within ±300 seconds of VoidTower time. A source/nonce pair is accepted only
+once; a duplicate returns `409 webhook_replay` without creating another job. Receipts are retained
+for 15 minutes. Missing, malformed, stale, tampered, and legacy Bearer-only credentials return the
+bounded `401 webhook_authentication_failed` response. The exact raw body is capped at 64 KiB and
+must be signed before it is parsed as JSON.
 
 `container.start`, `container.stop`, and `container.restart` use VoidTower's canonical durable
 operation path. A normal request returns `202 { "job": ... }`; the returned job is acceptance, not
@@ -177,11 +188,14 @@ provider success, and can be followed at `GET /api/jobs/:id`. Add `"dry_run": tr
 canonical plan without creating a job. Unknown actions and durable actions that are not explicitly
 webhook-enabled fail closed.
 
-The endpoint also accepts an `automation_id` intent:
+The endpoint also accepts an `automation_id` intent. Include an `Idempotency-Key` when the caller
+needs canonical job replay semantics across distinct signed deliveries:
 
 ```http
 POST /api/integrations/webhooks
-Authorization: Bearer ***
+X-VoidTower-Timestamp: 1726838400
+X-VoidTower-Nonce: 01JABCDEF-automation-delivery
+X-VoidTower-Signature: sha256=<hmac_sha256_hex>
 Content-Type: application/json
 Idempotency-Key: odysseus-run-2026-09-20-1
 
@@ -190,10 +204,10 @@ Idempotency-Key: odysseus-run-2026-09-20-1
 
 Exactly one of `automation_id` or `action` is required. Unknown JSON fields, ambiguous intents,
 missing action resources, empty/oversized identifiers, invalid idempotency keys, and unsupported
-actions fail closed with the bounded error envelope. The webhook body is capped at 64 KiB and requires
-`Content-Type: application/json`; secret verification occurs before body parsing. Automation webhook requests use the same
-canonical `automation.run` resource/action/plan/policy/durable-job boundary as HTTP and scheduler
-submissions. A normal request returns `202 { "job": ... }`, with `actor_type = "automation"` and
+actions fail closed with the bounded error envelope. The webhook body is capped at 64 KiB and
+requires `Content-Type: application/json`. Automation webhook requests use the same canonical
+`automation.run` resource/action/plan/policy/durable-job boundary as HTTP and scheduler submissions.
+A normal request returns `202 { "job": ... }`, with `actor_type = "automation"` and
 `ingress = "webhook"`; the returned job is acceptance, not provider success, and can be followed at
 `GET /api/jobs/:id`. Reusing an idempotency key with the same automation intent replays the same job;
 using it for a different intent returns `409 conflict`. Add `"dry_run": true` to receive the
@@ -247,4 +261,5 @@ Both routes require `alerts:read`. Emergency disable rejects token-backed connec
 - Emergency disable can be triggered from VoidTower or Odysseus and takes effect immediately.
 - The Odysseus integration is disabled by default. Enable explicitly in VoidTower settings.
 - VoidTower's outbound event webhooks carry an HMAC-SHA256 signature. Inbound Odysseus action
-  requests must carry the configured shared secret as a Bearer credential or are rejected.
+  requests carry the timestamped raw-body HMAC headers and a fresh nonce; Bearer-only requests,
+  stale/tampered signatures, and duplicate nonces are rejected.

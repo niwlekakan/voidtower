@@ -1930,7 +1930,7 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, 6);
 
         let now = unix_now();
         sqlx::query(

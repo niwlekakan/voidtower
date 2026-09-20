@@ -115,7 +115,14 @@ mod tests {
                 .unwrap();
         assert_eq!(
             versions,
-            vec![(1, true), (2, true), (3, true), (4, true), (5, true)]
+            vec![
+                (1, true),
+                (2, true),
+                (3, true),
+                (4, true),
+                (5, true),
+                (6, true)
+            ]
         );
     }
 
@@ -507,7 +514,7 @@ mod tests {
                 .fetch_one(&first)
                 .await
                 .unwrap();
-        assert_eq!(versions, 5);
+        assert_eq!(versions, 6);
         first.close().await;
         second.close().await;
     }

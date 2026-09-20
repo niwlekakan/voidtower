@@ -4103,6 +4103,7 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "hmac",
  "nix 0.27.1",
  "openidconnect",
  "portable-pty",

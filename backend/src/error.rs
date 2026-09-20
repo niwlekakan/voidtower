@@ -12,6 +12,10 @@ pub enum AppError {
     NotFound,
     #[error("Unauthorized")]
     Unauthorized,
+    #[error("Webhook authentication failed")]
+    WebhookAuthentication,
+    #[error("Webhook delivery replayed")]
+    WebhookReplay,
     #[error("Forbidden")]
     Forbidden,
     #[error("Policy denied: {0}")]
@@ -51,6 +55,16 @@ impl IntoResponse for AppError {
         let (status, code, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not_found", self.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized", self.to_string()),
+            AppError::WebhookAuthentication => (
+                StatusCode::UNAUTHORIZED,
+                "webhook_authentication_failed",
+                "Webhook authentication failed".to_string(),
+            ),
+            AppError::WebhookReplay => (
+                StatusCode::CONFLICT,
+                "webhook_replay",
+                "Webhook delivery has already been accepted".to_string(),
+            ),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden", self.to_string()),
             AppError::PolicyDenied(m) => (StatusCode::FORBIDDEN, "policy_denied", m.clone()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone()),

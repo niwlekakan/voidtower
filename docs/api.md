@@ -618,6 +618,28 @@ their dry runs return a canonical plan. `automation_id` webhook requests also re
 remain explicitly deferred: policy-denied requests return `403 policy_denied`, while an allowlisted
 request returns `503 feature_unavailable` until a matching durable action is introduced.
 
+Inbound webhook authentication is a signed-request contract, not a Bearer token. Send all three
+headers below and compute the lowercase hexadecimal HMAC-SHA256 over the exact UTF-8 request body
+using the canonical message `timestamp.nonce.raw_body`:
+
+```
+X-VoidTower-Timestamp: 1726838400
+X-VoidTower-Nonce: 01JABCDEF-webhook-delivery
+X-VoidTower-Signature: sha256=<hmac_sha256_hex>
+Content-Type: application/json
+```
+
+The timestamp is Unix seconds and must be within ±300 seconds of VoidTower time. Nonces are 1–128
+ASCII bytes restricted to letters, digits, `-`, `_`, `.`, or `~`. A source/nonce pair is accepted
+only once; a duplicate delivery returns `409 webhook_replay` and creates no second job. Replay
+receipts are retained for 15 minutes. Missing, malformed, stale, tampered, or Bearer-only
+credentials return the bounded `401 webhook_authentication_failed` envelope. The raw body remains
+capped at 64 KiB; oversized bodies return `413 payload_too_large`, and JSON parsing happens only
+after the signature and replay checks.
+
+`Idempotency-Key` remains an independent canonical job key: a new signed delivery with the same
+key and unchanged intent replays the existing job, while a changed intent returns `409 conflict`.
+
 ## Voidwatch (Odysseus-side)
 
 ```

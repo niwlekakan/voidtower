@@ -4,7 +4,9 @@ use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
 };
+use hmac::{Hmac, Mac};
 use serde_json::Value;
+use sha2::Sha256;
 use sqlx::SqlitePool;
 use tower::ServiceExt;
 
@@ -51,11 +53,32 @@ fn automation_run_request(
 }
 
 fn webhook_request(secret: &str, body: &str, idempotency_key: Option<&str>) -> Request<Body> {
+    webhook_request_with_timestamp_nonce(
+        secret,
+        body,
+        idempotency_key,
+        unix_now(),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+}
+
+fn webhook_request_with_timestamp_nonce(
+    secret: &str,
+    body: &str,
+    idempotency_key: Option<&str>,
+    timestamp: i64,
+    nonce: &str,
+) -> Request<Body> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(format!("{timestamp}.{nonce}.{body}").as_bytes());
+    let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
     let mut builder = Request::builder()
         .method(Method::POST)
         .uri("/api/integrations/webhooks")
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, format!("Bearer {secret}"));
+        .header("X-VoidTower-Timestamp", timestamp.to_string())
+        .header("X-VoidTower-Nonce", nonce)
+        .header("X-VoidTower-Signature", signature);
     if let Some(key) = idempotency_key {
         builder = builder.header("Idempotency-Key", key);
     }
@@ -509,8 +532,8 @@ async fn automation_webhook_rejects_ambiguous_and_unknown_intents() {
         .unwrap();
     assert_eq!(
         oversized_unauthenticated.status(),
-        StatusCode::UNAUTHORIZED,
-        "secret verification must precede bounded body reads"
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "signed authentication requires a bounded raw-body read before verification"
     );
     let oversized_authenticated = app
         .clone()
@@ -537,17 +560,17 @@ async fn automation_webhook_rejects_ambiguous_and_unknown_intents() {
         "secret verification must precede JSON parsing"
     );
 
+    let unsupported_media_request = {
+        let mut request = webhook_request("fixture-secret", r#"{"automation_id":"one"}"#, None);
+        request.headers_mut().insert(
+            header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/plain"),
+        );
+        request
+    };
     let unsupported_media = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/integrations/webhooks")
-                .header(header::CONTENT_TYPE, "text/plain")
-                .header(header::AUTHORIZATION, "Bearer fixture-secret")
-                .body(Body::from(r#"{"automation_id":"one"}"#))
-                .unwrap(),
-        )
+        .oneshot(unsupported_media_request)
         .await
         .unwrap();
     assert_eq!(
@@ -584,6 +607,131 @@ async fn automation_webhook_rejects_ambiguous_and_unknown_intents() {
             response.status()
         );
     }
+}
+
+#[tokio::test]
+async fn signed_webhook_auth_rejects_bearer_tampering_and_clock_skew() {
+    let db = test_support::setup_db().await;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.enabled', 'true', 0), ('odysseus.webhook_secret', 'fixture-secret', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let app = crate::api::router(test_support::build(db));
+    let body = r#"{"automation_id":"one"}"#;
+
+    let bearer = Request::builder()
+        .method(Method::POST)
+        .uri("/api/integrations/webhooks")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, "Bearer fixture-secret")
+        .body(Body::from(body))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(bearer).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let stale = webhook_request_with_timestamp_nonce(
+        "fixture-secret",
+        body,
+        None,
+        unix_now() - 301,
+        "stale-nonce",
+    );
+    assert_eq!(
+        app.clone().oneshot(stale).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let future = webhook_request_with_timestamp_nonce(
+        "fixture-secret",
+        body,
+        None,
+        unix_now() + 301,
+        "future-nonce",
+    );
+    assert_eq!(
+        app.clone().oneshot(future).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let valid = webhook_request_with_timestamp_nonce(
+        "fixture-secret",
+        body,
+        None,
+        unix_now(),
+        "tamper-nonce",
+    );
+    let (parts, _) = valid.into_parts();
+    let tampered = Request::from_parts(parts, Body::from(r#"{\"automation_id\":\"two\"}"#));
+    let tampered_response = app.clone().oneshot(tampered).await.unwrap();
+    assert_eq!(tampered_response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json(tampered_response).await["error"]["code"],
+        "webhook_authentication_failed"
+    );
+}
+
+#[tokio::test]
+async fn signed_webhook_nonce_is_persisted_and_replay_is_rejected() {
+    let db = test_support::setup_db().await;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.enabled', 'true', 0), ('odysseus.webhook_secret', 'fixture-secret', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at) VALUES ('webhook-replay-allow', 'automation', 'automation.run', 'automation_job', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO automation_jobs (id, name, command, enabled, timeout_secs, created_at, updated_at) VALUES ('replay-automation', 'Replay automation', 'printf replay', 1, 30, 0, 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let app = crate::api::router(test_support::build(db.clone()));
+    let body = r#"{"automation_id":"replay-automation"}"#;
+    let first = app
+        .clone()
+        .oneshot(webhook_request_with_timestamp_nonce(
+            "fixture-secret",
+            body,
+            Some("replay-idempotency"),
+            unix_now(),
+            "duplicate-delivery",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+    let repeat = app
+        .oneshot(webhook_request_with_timestamp_nonce(
+            "fixture-secret",
+            body,
+            Some("replay-idempotency"),
+            unix_now(),
+            "duplicate-delivery",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(repeat.status(), StatusCode::CONFLICT);
+    assert_eq!(json(repeat).await["error"]["code"], "webhook_replay");
+    let receipt_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_replay_receipts")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let job_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(receipt_count, 1);
+    assert_eq!(job_count, 1, "a replay must not create another durable job");
 }
 
 #[tokio::test]

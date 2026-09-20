@@ -17,6 +17,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use futures_util::StreamExt;
+use hmac::{Hmac, Mac};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -146,17 +147,107 @@ pub fn sha256_hex(s: &str) -> String {
     hex::encode(h.finalize())
 }
 
-/// Byte-for-byte comparison that doesn't short-circuit on the first mismatch,
-/// so timing doesn't leak how many leading bytes matched.
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
+const WEBHOOK_SOURCE: &str = "odysseus";
+const WEBHOOK_TIMESTAMP_HEADER: &str = "X-VoidTower-Timestamp";
+const WEBHOOK_NONCE_HEADER: &str = "X-VoidTower-Nonce";
+const WEBHOOK_SIGNATURE_HEADER: &str = "X-VoidTower-Signature";
+const WEBHOOK_TIMESTAMP_SKEW_SECONDS: u64 = 300;
+const WEBHOOK_REPLAY_RETENTION_SECONDS: i64 = 900;
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn webhook_authentication_error() -> AppError {
+    AppError::WebhookAuthentication
+}
+
+fn parse_signed_webhook_headers(headers: &HeaderMap) -> Result<(i64, String, String)> {
+    let timestamp = headers
+        .get(WEBHOOK_TIMESTAMP_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or_else(webhook_authentication_error)?;
+    if timestamp.abs_diff(unix_now()) > WEBHOOK_TIMESTAMP_SKEW_SECONDS {
+        return Err(webhook_authentication_error());
     }
-    a.iter()
-        .zip(b.iter())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
+
+    let nonce = headers
+        .get(WEBHOOK_NONCE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte))
+        })
+        .map(str::to_owned)
+        .ok_or_else(webhook_authentication_error)?;
+
+    let signature = headers
+        .get(WEBHOOK_SIGNATURE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with("sha256=") && value.len() == 71)
+        .map(str::to_owned)
+        .ok_or_else(webhook_authentication_error)?;
+    let decoded =
+        hex::decode(&signature["sha256=".len()..]).map_err(|_| webhook_authentication_error())?;
+    if decoded.len() != 32 {
+        return Err(webhook_authentication_error());
+    }
+
+    Ok((timestamp, nonce, signature))
+}
+
+fn verify_signed_webhook(
+    secret: &str,
+    timestamp: i64,
+    nonce: &str,
+    signature: &str,
+    body: &[u8],
+) -> Result<()> {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|_| webhook_authentication_error())?;
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(nonce.as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    let provided =
+        hex::decode(&signature["sha256=".len()..]).map_err(|_| webhook_authentication_error())?;
+    mac.verify_slice(&provided)
+        .map_err(|_| webhook_authentication_error())
+}
+
+async fn claim_webhook_replay(
+    db: &sqlx::SqlitePool,
+    timestamp: i64,
+    nonce: &str,
+    signature: &str,
+) -> Result<()> {
+    let now = unix_now();
+    let mut transaction = db.begin().await?;
+    sqlx::query("DELETE FROM webhook_replay_receipts WHERE source_id = ? AND created_at < ?")
+        .bind(WEBHOOK_SOURCE)
+        .bind(now - WEBHOOK_REPLAY_RETENTION_SECONDS)
+        .execute(&mut *transaction)
+        .await?;
+    let inserted = sqlx::query(
+        "INSERT INTO webhook_replay_receipts (source_id, nonce, timestamp, signature, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(source_id, nonce) DO NOTHING",
+    )
+    .bind(WEBHOOK_SOURCE)
+    .bind(nonce)
+    .bind(timestamp)
+    .bind(signature)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await?;
+    if inserted.rows_affected() != 1 {
+        return Err(AppError::WebhookReplay);
+    }
+    transaction.commit().await?;
+    Ok(())
 }
 
 pub fn generate_api_token() -> String {
@@ -635,7 +726,7 @@ pub async fn manifest(State(state): State<AppState>) -> Json<serde_json::Value> 
         },
         "webhook": {
             "url": "/api/integrations/webhooks",
-            "auth": "Authorization: Bearer <webhook_secret>",
+            "auth": "X-VoidTower-Timestamp, X-VoidTower-Nonce, X-VoidTower-Signature: sha256=<hmac>",
             "description": "POST to trigger VoidTower automations from Odysseus"
         },
         "tools": [
@@ -923,23 +1014,13 @@ pub async fn webhook(
         .into());
     }
 
+    let (timestamp, nonce, signature) = parse_signed_webhook_headers(&headers)?;
     let expected_secret = get_setting(&state, "odysseus.webhook_secret").await;
     if expected_secret.is_empty() {
         return Err(AppError::FeatureUnavailable(
             "Webhook secret not configured — generate one in Settings → Integrations".into(),
         )
         .into());
-    }
-
-    let provided = headers
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .trim_start_matches("Bearer ")
-        .trim();
-
-    if !constant_time_eq(&sha256_hex(provided), &sha256_hex(&expected_secret)) {
-        return Err(AppError::Unauthorized.into());
     }
 
     let content_type = headers
@@ -961,6 +1042,8 @@ pub async fn webhook(
                 status: axum::http::StatusCode::PAYLOAD_TOO_LARGE,
             })
         })?;
+    verify_signed_webhook(&expected_secret, timestamp, &nonce, &signature, &body)?;
+    claim_webhook_replay(&state.db, timestamp, &nonce, &signature).await?;
     let req: WebhookReq = serde_json::from_slice(&body).map_err(|_| {
         super::operation_adoption::CompatibilityError::from(AppError::RequestBody {
             status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
@@ -1338,26 +1421,30 @@ mod tests {
         .await
         .unwrap();
 
+        let body = serde_json::to_vec(&WebhookReq {
+            automation_id: None,
+            action: Some("service.start".into()),
+            resource_id: Some("fixture.service".into()),
+            dry_run: Some(false),
+        })
+        .unwrap();
+        let timestamp = unix_now();
+        let nonce = "service-webhook-test";
+        let mut mac = HmacSha256::new_from_slice(b"fixture-secret").unwrap();
+        mac.update(format!("{timestamp}.{nonce}.").as_bytes());
+        mac.update(&body);
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
         let request = axum::http::Request::builder()
             .method("POST")
             .uri("/api/integrations/webhooks")
-            .header(
-                "Authorization",
-                HeaderValue::from_static("Bearer fixture-secret"),
-            )
+            .header("X-VoidTower-Timestamp", timestamp.to_string())
+            .header("X-VoidTower-Nonce", nonce)
+            .header("X-VoidTower-Signature", signature)
             .header(
                 axum::http::header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
             )
-            .body(axum::body::Body::from(
-                serde_json::to_vec(&WebhookReq {
-                    automation_id: None,
-                    action: Some("service.start".into()),
-                    resource_id: Some("fixture.service".into()),
-                    dry_run: Some(false),
-                })
-                .unwrap(),
-            ))
+            .body(axum::body::Body::from(body))
             .unwrap();
         let result = webhook(State(crate::api::mcp::test_support::build(pool)), request).await;
 

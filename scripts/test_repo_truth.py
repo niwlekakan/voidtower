@@ -116,9 +116,10 @@ class RepoTruthCliTests(unittest.TestCase):
 
         commands = [command for _, command in steps]
         self.assertEqual(
-            commands[:3],
+            commands[:4],
             [
                 "python3 scripts/test_repo_truth.py -v",
+                "python3 -m unittest scripts.test_repository_prerequisites -v",
                 (
                     "python3 scripts/repo_truth.py --repo . --json --check "
                     '--base "$BASE_COMMIT" --head "$HEAD_COMMIT"'

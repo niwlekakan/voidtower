@@ -38,6 +38,36 @@ Gate entries use explicit `argv` arrays and repository-relative working director
 
 The manifest is source-owned. Add or change a gate only when its subsystem, required status, timeout, bounded diagnostics, and artifact evidence are part of the tracked release plan. The runner is intentionally not an artifact uploader or publisher.
 
+## Repository prerequisite gates
+
+Run the governance prerequisites directly before relying on a release report:
+
+```sh
+bash scripts/check-repository-hygiene.sh
+bash scripts/check-schema-migration-ownership.sh
+python3 -m unittest scripts.test_repository_prerequisites -v
+```
+
+Repository hygiene intentionally allows tracked continuity evidence under
+`docs/internal/`, while still rejecting tracked credentials, private keys,
+generated build output, local machine state, and all tracked symlinks. Git paths
+are read with NUL-safe records so unusual filenames cannot bypass the policy.
+The migration ownership gate does not depend on `rg` or another optional search
+utility: it scans Rust `sqlx` query/query-as/query-scalar/raw-SQL calls,
+including comment-separated paths, turbofish, and macro forms, conservatively
+rejects the complete `query_file_*` macro family,
+excludes only the documented legacy adopter, requires contiguous numbered SQL
+migrations starting at `0001`, rejects migration/source symlinks and paths that
+escape the repository, and rejects migrations that are not tracked by Git. A
+missing tool or malformed migration layout must fail the gate rather than print
+a success line.
+
+These checks establish repository/source governance only. CI installs and
+qualifies `cargo-deny@0.20.2` because current RustSec advisories use CVSS 4.0
+metadata that older cargo-deny releases cannot parse. Rust lint components,
+frontend dependencies, a host supervisor, Docker, a browser, and a packaged
+runtime remain explicit prerequisites in the machine-readable report.
+
 ## Verification
 
 The focused contract suites are:
@@ -48,6 +78,6 @@ python3 scripts/test_repo_truth.py -v
 python3 scripts/repo_truth.py --repo . --json --check
 ```
 
-The first suite covers manifest validation, explicit-argument execution, redaction, bounded output, timeout behavior, mandatory-skip failure, repository-contained evidence, nested subprocess compatibility, and runner-death cleanup for forked descendants. The repository-truth suite covers deterministic source inventory, Git status/range handling, symlink and output bounds, and credential-safe diagnostics.
+The first suite covers manifest validation, explicit-argument execution, redaction, bounded output, timeout behavior, mandatory-skip failure, repository-contained evidence, nested subprocess compatibility, and runner-death cleanup for forked descendants. The repository-truth suite covers deterministic source inventory, Git status/range handling, symlink and output bounds, and credential-safe diagnostics. The prerequisite suite covers NUL-safe hygiene, tracked symlinks, credential-like continuity paths, SQLx DDL call variants, query-file rejection, canonical-path containment, migration numbering, and missing optional tools.
 
 The full release run remains environment-dependent. Missing `cargo-deny`, unavailable Rust lint components, forbidden tracked historical internal paths, missing frontend dependencies, or unavailable host/runtime services are recorded as blockers; they must not be silently waived or represented as release-qualified evidence.

@@ -64,7 +64,6 @@ wildcards = "allow"
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"
-allow-workspace = false
 
 # This section is considered when running `cargo deny check sources`.
 [sources]

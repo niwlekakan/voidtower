@@ -19,6 +19,8 @@ jobs:
           fetch-depth: 0
       - name: Test deterministic repository truth
         run: python3 scripts/test_repo_truth.py -v
+      - name: Test repository prerequisite contracts
+        run: python3 -m unittest scripts.test_repository_prerequisites -v
       - name: Derive credential-safe repository truth
         env:
           BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -88,7 +90,7 @@ jobs:
       # runs clippy/test against this non-root layout, instead of depending on a
       # marketplace action's assumptions about where the lockfile lives.
       - name: Install cargo-deny and cargo-audit
-        run: cargo install --locked cargo-deny cargo-audit
+        run: cargo install --locked cargo-deny@0.20.2 cargo-audit
       - name: cargo deny check
         working-directory: backend
         run: cargo deny check

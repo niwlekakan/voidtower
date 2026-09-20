@@ -22,6 +22,26 @@ Use `--scope all --output dev-data/release-gate.json` when a complete
 candidate report is required. Read `docs/release-gates.md` for the manifest,
 exit-status, redaction, and evidence-boundary contract.
 
+Before review, also run the repository prerequisite contract checks:
+
+```sh
+bash scripts/check-repository-hygiene.sh
+bash scripts/check-schema-migration-ownership.sh
+python3 -m unittest scripts.test_repository_prerequisites -v
+```
+
+The hygiene gate permits tracked internal continuity evidence but rejects
+tracked credentials, symlinks, and generated/local state using NUL-safe Git
+path records. The schema gate is implemented without an `rg` dependency and
+fails closed on forbidden Rust SQLx DDL forms (including comment-separated
+paths and the complete `query_file_*` family), source or migration symlinks,
+repository escapes, missing or non-contiguous numbered migrations, and
+untracked migration files.
+
+The supply-chain job uses `cargo-deny@0.20.2`; use the same version locally
+when reproducing the release gate so the RustSec advisory parser and policy
+configuration match CI.
+
 ## Guidelines
 
 - No telemetry, analytics, or third-party tracking of any kind.

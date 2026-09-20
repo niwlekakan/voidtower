@@ -85,6 +85,29 @@ fn webhook_request_with_timestamp_nonce(
     builder.body(Body::from(body.to_owned())).unwrap()
 }
 
+async fn configure_webhook_secret(db: &SqlitePool, secret: &str) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let encrypted = crate::api::secrets::encrypt(&[0u8; 32], secret).unwrap();
+    sqlx::query(
+        "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+         VALUES (?, 'test-odysseus-webhook', 'test webhook credential', ?, 0, 0)",
+    )
+    .bind(&id)
+    .bind(encrypted)
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES
+         ('odysseus.enabled', 'true', 0), (?, ?, 0)",
+    )
+    .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+    .bind(id)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
 async fn submit_job(
     db: &SqlitePool,
     suffix: &str,
@@ -436,12 +459,7 @@ async fn automation_reads_are_operator_only_and_limits_are_bounded() {
 #[tokio::test]
 async fn automation_webhook_uses_canonical_durable_job_replay_and_dry_run_contract() {
     let db = test_support::setup_db().await;
-    sqlx::query(
-        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.enabled', 'true', 0), ('odysseus.webhook_secret', 'fixture-secret', 0)",
-    )
-    .execute(&db)
-    .await
-    .unwrap();
+    configure_webhook_secret(&db, "fixture-secret").await;
     sqlx::query(
         "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at) VALUES ('webhook-allow', 'automation', 'automation.run', 'automation_job', 0)",
     )
@@ -516,12 +534,7 @@ async fn automation_webhook_uses_canonical_durable_job_replay_and_dry_run_contra
 #[tokio::test]
 async fn automation_webhook_rejects_ambiguous_and_unknown_intents() {
     let db = test_support::setup_db().await;
-    sqlx::query(
-        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.enabled', 'true', 0), ('odysseus.webhook_secret', 'fixture-secret', 0)",
-    )
-    .execute(&db)
-    .await
-    .unwrap();
+    configure_webhook_secret(&db, "fixture-secret").await;
     let app = crate::api::router(test_support::build(db));
 
     let oversized_body = "x".repeat(64 * 1024 + 1);
@@ -612,12 +625,7 @@ async fn automation_webhook_rejects_ambiguous_and_unknown_intents() {
 #[tokio::test]
 async fn signed_webhook_auth_rejects_bearer_tampering_and_clock_skew() {
     let db = test_support::setup_db().await;
-    sqlx::query(
-        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.enabled', 'true', 0), ('odysseus.webhook_secret', 'fixture-secret', 0)",
-    )
-    .execute(&db)
-    .await
-    .unwrap();
+    configure_webhook_secret(&db, "fixture-secret").await;
     let app = crate::api::router(test_support::build(db));
     let body = r#"{"automation_id":"one"}"#;
 
@@ -677,12 +685,7 @@ async fn signed_webhook_auth_rejects_bearer_tampering_and_clock_skew() {
 #[tokio::test]
 async fn signed_webhook_nonce_is_persisted_and_replay_is_rejected() {
     let db = test_support::setup_db().await;
-    sqlx::query(
-        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.enabled', 'true', 0), ('odysseus.webhook_secret', 'fixture-secret', 0)",
-    )
-    .execute(&db)
-    .await
-    .unwrap();
+    configure_webhook_secret(&db, "fixture-secret").await;
     sqlx::query(
         "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at) VALUES ('webhook-replay-allow', 'automation', 'automation.run', 'automation_job', 0)",
     )

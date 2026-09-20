@@ -139,10 +139,13 @@ To send events from VoidTower to Odysseus:
 1. In VoidTower: **Settings → Integrations → Odysseus Config**
 2. Set **Allowed Odysseus URL** (e.g. `http://odysseus-host:7000`)
 3. Enable **MCP**
-4. Note the **Webhook Secret** (or regenerate it)
+4. Click **Regenerate** under **Webhook secret** and copy the returned value immediately. The value
+   is shown once; VoidTower stores only its encrypted secret-manager representation.
+5. Use **Revoke** to disable the current credential without deleting its metadata. Regenerate to
+   issue a replacement.
 
 In Odysseus: **Settings → Integrations → Voidwatch**
-- Set `webhook_secret` to the same value
+- Set `webhook_secret` to the copied one-time value
 - Ensure `webhook_enabled: true`
 
 VoidTower sends `POST` to `{odysseus_url}/api/voidwatch/webhook` with:

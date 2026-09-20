@@ -476,6 +476,7 @@ async fn main() -> Result<()> {
     api::secrets::migrate_legacy_provider_secrets(&pool, &secrets_key).await?;
     api::secrets::migrate_legacy_proxmox_token(&pool, &secrets_key).await?;
     api::secrets::migrate_legacy_ssh_session_passwords(&pool, &secrets_key).await?;
+    api::secrets::migrate_legacy_webhook_secret(&pool, &secrets_key).await?;
     operations::registry::validate()?;
 
     // Re-log bootstrap token on every restart while setup is still pending.

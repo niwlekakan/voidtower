@@ -55,10 +55,15 @@ const SUPPORTED_SECRET_PURPOSES: &[&str] = &[
     "oidc_client",
     "proxmox_api",
     "proxmox_compatibility",
+    "odysseus_webhook",
     "proxy_basic_auth",
     "redaction",
     "terminal_ssh",
 ];
+
+pub(crate) const ODYSSEUS_WEBHOOK_PURPOSE: &str = "odysseus_webhook";
+pub(crate) const ODYSSEUS_WEBHOOK_SECRET_REF_SETTING: &str = "odysseus.webhook_secret_id";
+const ODYSSEUS_WEBHOOK_LEGACY_SETTING: &str = "odysseus.webhook_secret";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolveError {
@@ -124,6 +129,64 @@ pub(crate) async fn resolve(
         last_use_result.map_err(|_| ResolveError::Database)?;
     }
     Ok(value)
+}
+
+/// Move the legacy Odysseus webhook credential into the encrypted secret
+/// store. The reference update and plaintext removal commit together, so a
+/// failed encryption/database operation leaves the prior credential available
+/// for recovery instead of silently disabling authentication.
+pub(crate) async fn migrate_legacy_webhook_secret(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    let legacy: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(ODYSSEUS_WEBHOOK_LEGACY_SETTING)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(legacy) = legacy else {
+        return tx.commit().await.map_err(Into::into);
+    };
+    anyhow::ensure!(!legacy.is_empty(), "legacy webhook secret is empty");
+    anyhow::ensure!(
+        legacy.len() <= MAX_SECRET_VALUE_BYTES,
+        "legacy webhook secret exceeds size limit"
+    );
+
+    let existing_id: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let secret_id = existing_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let encrypted = encrypt(key, &legacy)?;
+    let now = now_ts();
+    sqlx::query(
+        "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+         VALUES (?, 'odysseus-webhook', 'Odysseus inbound webhook credential', ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET value_enc = excluded.value_enc, updated_at = excluded.updated_at, disabled = 0",
+    )
+    .bind(&secret_id)
+    .bind(encrypted)
+    .bind(now)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+    .bind(&secret_id)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM settings WHERE key = ?")
+        .bind(ODYSSEUS_WEBHOOK_LEGACY_SETTING)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Convert legacy AI-provider settings into encrypted secret references.
@@ -867,6 +930,77 @@ pub(crate) fn now_ts() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod webhook_migration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn legacy_webhook_secret_moves_to_encrypted_reference_without_plaintext() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let legacy = "legacy-webhook-sentinel";
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.webhook_secret', ?, 0)",
+        )
+        .bind(legacy)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        migrate_legacy_webhook_secret(&db, &[0u8; 32])
+            .await
+            .unwrap();
+
+        let old: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.webhook_secret'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(old.is_none());
+        let secret_id: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'odysseus.webhook_secret_id'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(!encrypted.contains(legacy));
+        assert_eq!(
+            resolve(&db, &[0u8; 32], &secret_id, ODYSSEUS_WEBHOOK_PURPOSE)
+                .await
+                .unwrap(),
+            legacy
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_legacy_webhook_secret_preserves_plaintext_for_recovery() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let legacy = "x".repeat(MAX_SECRET_VALUE_BYTES + 1);
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.webhook_secret', ?, 0)",
+        )
+        .bind(&legacy)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let error = migrate_legacy_webhook_secret(&db, &[0u8; 32])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds size limit"));
+        let retained: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.webhook_secret'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(retained, legacy);
+    }
 }
 
 #[cfg(test)]

@@ -604,7 +604,7 @@ GET  /api/integrations/tokens
 POST /api/integrations/tokens                    { name, scopes[], expires_days? }
 DELETE /api/integrations/tokens/:id
 GET  /api/integrations/odysseus/config
-POST /api/integrations/odysseus/config           { enabled?, mcp_enabled?, allowed_url?, webhook_secret?, emergency_disable? }
+POST /api/integrations/odysseus/config           { enabled?, mcp_enabled?, allowed_url?, regenerate_webhook_secret?, revoke_webhook_secret?, emergency_disable? }
 GET  /api/integrations/odysseus/manifest
 GET  /api/integrations/events                    Durable cursor-resumable SSE alias
 GET  /api/integrations/events/legacy             Deprecated metrics/audit SSE
@@ -639,6 +639,14 @@ after the signature and replay checks.
 
 `Idempotency-Key` remains an independent canonical job key: a new signed delivery with the same
 key and unchanged intent replays the existing job, while a changed intent returns `409 conflict`.
+
+The inbound webhook credential is stored encrypted in the secret manager and is never returned by
+the GET config route or included in the status hint. An explicit regeneration request returns the
+new credential once in `webhook_secret`; clients must display/store it immediately and must not
+persist it in application settings. `revoke_webhook_secret: true` disables the current credential
+without deleting its metadata. Legacy `odysseus.webhook_secret` settings are migrated at startup
+transactionally; if migration fails, the legacy value remains for recovery and startup fails closed
+rather than silently disabling signed authentication.
 
 ## Voidwatch (Odysseus-side)
 

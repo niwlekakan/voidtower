@@ -285,6 +285,14 @@ async fn get_setting(state: &AppState, key: &str) -> String {
         .unwrap_or_default()
 }
 
+async fn get_setting_checked(state: &AppState, key: &str) -> Result<Option<String>> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AppError::Database)
+}
+
 async fn emergency_disabled(state: &AppState) -> Result<bool> {
     sqlx::query_scalar::<_, String>(
         "SELECT value FROM settings WHERE key = 'odysseus.emergency_disabled'",
@@ -295,9 +303,9 @@ async fn emergency_disabled(state: &AppState) -> Result<bool> {
     .map_err(|error| AppError::Internal(error.into()))
 }
 
-async fn set_setting(state: &AppState, key: &str, value: &str) {
+async fn set_setting(state: &AppState, key: &str, value: &str) -> Result<()> {
     let now = unix_now();
-    let _ = sqlx::query(
+    sqlx::query(
         "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
@@ -305,7 +313,32 @@ async fn set_setting(state: &AppState, key: &str, value: &str) {
     .bind(value)
     .bind(now)
     .execute(&state.db)
+    .await
+    .map(|_| ())
+    .map_err(AppError::Database)
+}
+
+async fn webhook_secret_metadata(state: &AppState) -> (Option<String>, &'static str) {
+    let secret_id = get_setting(
+        state,
+        crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING,
+    )
     .await;
+    if secret_id.is_empty() {
+        return (None, "");
+    }
+    let disabled = sqlx::query_scalar::<_, bool>("SELECT disabled FROM secrets WHERE id = ?")
+        .bind(&secret_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+    let hint = match disabled {
+        Some(true) => "disabled",
+        Some(false) => "configured",
+        None => "unavailable",
+    };
+    (Some(secret_id), hint)
 }
 
 // ---------------------------------------------------------------------------
@@ -548,7 +581,11 @@ pub struct SaveConfigReq {
     pub enabled: Option<bool>,
     pub mcp_enabled: Option<bool>,
     pub allowed_url: Option<String>,
+    /// Legacy plaintext credential input is recognized only to reject it after
+    /// authentication; it is never persisted or returned.
+    pub webhook_secret: Option<String>,
     pub regenerate_webhook_secret: Option<bool>,
+    pub revoke_webhook_secret: Option<bool>,
     pub emergency_disable: Option<bool>,
 }
 
@@ -577,20 +614,13 @@ pub async fn get_config(
         raw_url
     };
     let emergency_disabled = get_setting(&state, "odysseus.emergency_disabled").await == "true";
-    let secret = get_setting(&state, "odysseus.webhook_secret").await;
-    let webhook_secret_hint = if secret.len() >= 4 {
-        format!("…{}", &secret[secret.len() - 4..])
-    } else if !secret.is_empty() {
-        "****".to_string()
-    } else {
-        String::new()
-    };
+    let (_, webhook_secret_hint) = webhook_secret_metadata(&state).await;
 
     Ok(Json(OdysseusConfig {
         enabled,
         mcp_enabled,
         allowed_url,
-        webhook_secret_hint,
+        webhook_secret_hint: webhook_secret_hint.to_string(),
         emergency_disabled,
     }))
 }
@@ -602,8 +632,19 @@ pub async fn save_config(
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
 
+    if req.webhook_secret.is_some() {
+        return Err(AppError::BadRequest(
+            "plaintext webhook credentials are not accepted; regenerate the secret instead".into(),
+        ));
+    }
+    if req.regenerate_webhook_secret == Some(true) && req.revoke_webhook_secret == Some(true) {
+        return Err(AppError::BadRequest(
+            "regenerate_webhook_secret and revoke_webhook_secret cannot be combined".into(),
+        ));
+    }
+
     if let Some(e) = req.enabled {
-        set_setting(&state, "odysseus.enabled", if e { "true" } else { "false" }).await;
+        set_setting(&state, "odysseus.enabled", if e { "true" } else { "false" }).await?;
     }
     if let Some(e) = req.mcp_enabled {
         set_setting(
@@ -611,16 +652,101 @@ pub async fn save_config(
             "odysseus.mcp_enabled",
             if e { "true" } else { "false" },
         )
-        .await;
+        .await?;
     }
     if let Some(url) = &req.allowed_url {
-        set_setting(&state, "odysseus.allowed_url", url).await;
+        set_setting(&state, "odysseus.allowed_url", url).await?;
     }
     let mut new_webhook_secret: Option<String> = None;
     if req.regenerate_webhook_secret == Some(true) {
         let secret = generate_webhook_secret();
-        set_setting(&state, "odysseus.webhook_secret", &secret).await;
+        let encrypted = crate::api::secrets::encrypt(&state.secrets_key, &secret)
+            .map_err(AppError::Internal)?;
+        let now = unix_now();
+        let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+        let current_id: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(AppError::Database)?;
+        if let Some(secret_id) = current_id {
+            let updated = sqlx::query(
+                "UPDATE secrets SET value_enc = ?, version = version + 1, disabled = 0, updated_at = ? WHERE id = ?",
+            )
+            .bind(&encrypted)
+            .bind(now)
+            .bind(&secret_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+            if updated.rows_affected() == 0 {
+                let new_id = uuid::Uuid::new_v4().to_string();
+                sqlx::query(
+                    "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+                     VALUES (?, 'odysseus-webhook', 'Odysseus inbound webhook credential', ?, ?, ?)",
+                )
+                .bind(&new_id)
+                .bind(&encrypted)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .map_err(AppError::Database)?;
+                sqlx::query("UPDATE settings SET value = ?, updated_at = ? WHERE key = ?")
+                    .bind(new_id)
+                    .bind(now)
+                    .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(AppError::Database)?;
+            }
+        } else {
+            let secret_id = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+                 VALUES (?, 'odysseus-webhook', 'Odysseus inbound webhook credential', ?, ?, ?)",
+            )
+            .bind(&secret_id)
+            .bind(&encrypted)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+            sqlx::query(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            )
+            .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+            .bind(secret_id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+        }
+        sqlx::query("DELETE FROM settings WHERE key = 'odysseus.webhook_secret'")
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+        tx.commit().await.map_err(AppError::Database)?;
         new_webhook_secret = Some(secret);
+    }
+    if req.revoke_webhook_secret == Some(true) {
+        let secret_id = get_setting_checked(
+            &state,
+            crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING,
+        )
+        .await?
+        .unwrap_or_default();
+        if !secret_id.is_empty() {
+            sqlx::query("UPDATE secrets SET disabled = 1, updated_at = ? WHERE id = ?")
+                .bind(unix_now())
+                .bind(secret_id)
+                .execute(&state.db)
+                .await
+                .map_err(AppError::Database)?;
+        }
     }
     if let Some(disable) = req.emergency_disable {
         set_setting(
@@ -628,7 +754,7 @@ pub async fn save_config(
             "odysseus.emergency_disabled",
             if disable { "true" } else { "false" },
         )
-        .await;
+        .await?;
         audit::log(
             &state.db,
             Some(&user.id),
@@ -1015,13 +1141,25 @@ pub async fn webhook(
     }
 
     let (timestamp, nonce, signature) = parse_signed_webhook_headers(&headers)?;
-    let expected_secret = get_setting(&state, "odysseus.webhook_secret").await;
-    if expected_secret.is_empty() {
+    let secret_id = get_setting(
+        &state,
+        crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING,
+    )
+    .await;
+    if secret_id.is_empty() {
         return Err(AppError::FeatureUnavailable(
             "Webhook secret not configured — generate one in Settings → Integrations".into(),
         )
         .into());
     }
+    let expected_secret = crate::api::secrets::resolve(
+        &state.db,
+        &state.secrets_key,
+        &secret_id,
+        crate::api::secrets::ODYSSEUS_WEBHOOK_PURPOSE,
+    )
+    .await
+    .map_err(|_| AppError::FeatureUnavailable("Webhook secret unavailable".into()))?;
 
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
@@ -1306,8 +1444,9 @@ pub async fn recent_actions(
 mod tests {
     use super::*;
     use crate::api::operation_adoption::CompatibilityError;
-    use axum::http::HeaderValue;
+    use axum::http::{HeaderValue, Method, Request};
     use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+    use tower::ServiceExt;
 
     async fn setup_db() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -1316,6 +1455,136 @@ mod tests {
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn odysseus_config_creates_metadata_only_secret_and_revoke_disables_it() {
+        let db = setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "admin").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(
+                        r#"{"webhook_secret":"plaintext-must-not-be-accepted"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_client_error());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(
+                        r#"{"regenerate_webhook_secret":true,"revoke_webhook_secret":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_client_error());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(
+                        r#"{"enabled":true,"regenerate_webhook_secret":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+        assert_eq!(response_json["ok"], true);
+        assert!(response_json["webhook_secret"].as_str().is_some());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+        assert!(response_json.get("webhook_secret").is_none());
+
+        let secret_id: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'odysseus.webhook_secret_id'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(!encrypted.is_empty());
+        assert!(!encrypted.contains("odysseus"));
+        assert!(
+            crate::api::secrets::decrypt(&[0u8; 32], &encrypted)
+                .unwrap()
+                .len()
+                >= 32
+        );
+        let legacy: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.webhook_secret'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(legacy.is_none());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(r#"{"revoke_webhook_secret":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let disabled: bool = sqlx::query_scalar("SELECT disabled FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(disabled);
     }
 
     #[tokio::test]
@@ -1404,11 +1673,24 @@ mod tests {
     #[tokio::test]
     async fn service_webhook_mutation_fails_closed_until_canonical_adapter_exists() {
         let pool = setup_db().await;
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted = crate::api::secrets::encrypt(&[0u8; 32], "fixture-secret").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+             VALUES (?, 'test-webhook', 'test webhook credential', ?, 0, 0)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO settings (key, value, updated_at) VALUES
              ('odysseus.enabled', 'true', 0),
-             ('odysseus.webhook_secret', 'fixture-secret', 0)",
+             (?, ? , 0)",
         )
+        .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+        .bind(secret_id)
         .execute(&pool)
         .await
         .unwrap();

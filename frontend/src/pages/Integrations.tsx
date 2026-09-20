@@ -620,12 +620,22 @@ function OdysseusSection() {
       <div>
         <div className="flex items-center justify-between mb-1">
           <label className="text-xs text-zinc-400">Webhook secret</label>
-          <button
-            className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1"
-            onClick={() => { if (confirm('Regenerate webhook secret? Existing Odysseus webhook config will need updating.')) save({ regenerate_webhook_secret: true }) }}
-          >
-            <RefreshCw size={11} /> Regenerate
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1"
+              onClick={() => { if (confirm('Regenerate webhook secret? Existing Odysseus webhook config will need updating.')) save({ regenerate_webhook_secret: true }) }}
+            >
+              <RefreshCw size={11} /> Regenerate
+            </button>
+            {cfg.webhook_secret_hint && cfg.webhook_secret_hint !== 'disabled' && (
+              <button
+                className="text-xs text-red-400 hover:text-red-300"
+                onClick={() => { if (confirm('Revoke the inbound webhook secret? Signed webhook requests will stop working until you regenerate one.')) save({ revoke_webhook_secret: true }) }}
+              >
+                Revoke
+              </button>
+            )}
+          </div>
         </div>
         <div className="bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm font-mono text-zinc-400">
           {cfg.webhook_secret_hint ? cfg.webhook_secret_hint : <span className="italic text-zinc-600">Not set — click Regenerate</span>}
@@ -665,7 +675,7 @@ function OdysseusSection() {
       <RevealModal
         token={revealSecret}
         label="Copy your webhook secret"
-        note="This secret will not be shown again. Use it to compute the timestamped X-VoidTower-Signature HMAC over each raw webhook body."
+        note="This secret is shown only once. Store it in Odysseus securely; it is encrypted at rest in VoidTower."
         onClose={() => setRevealSecret(null)}
       />,
       document.body,

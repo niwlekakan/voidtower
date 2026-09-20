@@ -2,7 +2,7 @@
 
 Status: implemented, unit-verified, and integration-verified at the real Axum-router/SQLite boundary; runtime-verified: blocked; release-qualified: blocked.
 
-Implementation commit: pending local commit; this field is updated to the exact commit before handoff completion.
+Implementation commit: `65074a0452f968ca810019f7f25aae53e5a7fafe` (`[verified] harden signed webhook replay protection`).
 Branch: `dev`; base before this slice: `8d4d389ecd97ec1cb79713b15a2c0924b0e8fa95`; no push performed.
 
 Active slice

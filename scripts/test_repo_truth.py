@@ -283,7 +283,7 @@ class RepoTruthCliTests(unittest.TestCase):
             )
 
     def test_worktree_only_rename_status_maps_source_and_destination_gates(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
             repo = Path(temporary) / "voidtower"
             repo.mkdir()
             make_checkout(repo)
@@ -353,7 +353,7 @@ exec "$REAL_GIT" "$@"
             self.assertNotIn("R0_01_SECRET_SENTINEL", result.stdout + result.stderr)
 
     def test_git_output_is_bounded_and_child_diagnostics_are_not_emitted(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary:
             repo = Path(temporary) / "voidtower"
             repo.mkdir()
             make_checkout(repo)

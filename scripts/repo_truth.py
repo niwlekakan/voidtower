@@ -12,12 +12,14 @@ import json
 import os
 from pathlib import Path
 import re
-import resource
+import signal
 import subprocess
 import sys
 import tempfile
 import tomllib
 from typing import Any, Iterable
+
+from process_supervisor import kill_descendants
 
 
 class RepoTruthError(RuntimeError):
@@ -116,32 +118,53 @@ def run_git(
     check: bool = True,
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    def limit_output_file() -> None:
-        resource.setrlimit(resource.RLIMIT_FSIZE, (GIT_OUTPUT_LIMIT, GIT_OUTPUT_LIMIT))
+    def set_parent_death_signal() -> None:
+        if sys.platform.startswith("linux"):
+            import ctypes
+
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.prctl(1, signal.SIGTERM) != 0:  # PR_SET_PDEATHSIG
+                raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
+            if os.getppid() == 1:
+                os.kill(os.getpid(), signal.SIGTERM)
 
     try:
         with tempfile.TemporaryFile() as output:
-            result = subprocess.run(
-                ["git", *args],
+            supervisor = Path(__file__).with_name("process_supervisor.py").resolve(strict=True)
+            process = subprocess.Popen(
+                [sys.executable, str(supervisor), "--max-output-bytes", str(GIT_OUTPUT_LIMIT), "git", *args],
                 cwd=repo,
-                check=False,
-                input=None if input_text is None else input_text.encode("utf-8"),
+                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                 stdout=output,
                 stderr=subprocess.DEVNULL,
-                timeout=GIT_TIMEOUT_SECONDS,
-                preexec_fn=limit_output_file,
+                start_new_session=True,
+                preexec_fn=set_parent_death_signal,
             )
+            try:
+                process.communicate(None if input_text is None else input_text.encode("utf-8"), timeout=GIT_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as exc:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    kill_descendants(process.pid)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                raise RepoTruthError("git command exceeded the bounded execution timeout") from exc
             size = output.tell()
             if size > GIT_OUTPUT_LIMIT:
                 raise RepoTruthError("git output exceeded the bounded report limit")
             output.seek(0)
             stdout = output.read(GIT_OUTPUT_LIMIT + 1)
-    except subprocess.TimeoutExpired as exc:
-        raise RepoTruthError("git command exceeded the bounded execution timeout") from exc
-    except OSError as exc:
+            result = subprocess.CompletedProcess(["git", *args], process.returncode, stdout, b"")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise RepoTruthError(f"cannot execute git: {exc}") from exc
-    result.stdout = stdout
-    result.stderr = b""
     if check and result.returncode != 0:
         raise RepoTruthError(f"git command failed with exit code {result.returncode}")
     return result

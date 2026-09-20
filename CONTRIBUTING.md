@@ -11,6 +11,17 @@ VoidTower is open source under AGPL-3.0-or-later. Contributions are welcome.
 5. Make changes on a feature branch.
 6. Submit a pull request.
 
+Before requesting review, run the repository-owned release-candidate evidence
+collector from the repository root:
+
+```sh
+python3 scripts/release_gate.py --repo . --scope changed --json
+```
+
+Use `--scope all --output dev-data/release-gate.json` when a complete
+candidate report is required. Read `docs/release-gates.md` for the manifest,
+exit-status, redaction, and evidence-boundary contract.
+
 ## Guidelines
 
 - No telemetry, analytics, or third-party tracking of any kind.

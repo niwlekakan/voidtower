@@ -1,17 +1,53 @@
 # Release-candidate gate runner
 
-`python3 scripts/release_gate.py --repo . --manifest scripts/release-gates.json --output evidence/release-gate.json --json`
+VoidTower's release-candidate evidence collector is `scripts/release_gate.py`. It executes the repository-owned manifest at `scripts/release-gates.json` and writes a machine-readable report. The runner itself does not publish artifacts, stage or commit changes, or read environment files; declared gates may create their normal build and test outputs.
 
-The runner is a read-only evidence collector. It derives the current Git state and changed subsystems from `scripts/repo_truth.py`, selects governance gates plus gates for changed subsystems, and emits a JSON report on stdout. `--output` additionally persists the exact report at a repository-contained path (the parent directory is created if needed). Use `--scope all` to execute every declared gate for a release-candidate attempt.
+## Run the gates
 
-Each gate is declared in `scripts/release-gates.json` with an ID, subsystem, repository-relative working directory, explicit argument vector, timeout, and optional repository-contained artifact paths. Executable names are either approved tool names (`python3`, `cargo`, `npm`, `git`) or existing repository-relative scripts; absolute executables, path/symlink escapes, shell interpreters, and inline interpreter code are rejected. Commands are executed with `shell=False`. Gate output is bounded and common credential-like assignments, structured credential fields, URL parameters, command-line values, and bearer values are redacted. Artifact digests use SHA-256 and are reported only after the gate run.
+From the repository root:
 
-Exit status:
+```sh
+python3 scripts/release_gate.py --repo . --scope changed --json
+```
 
-- `0`: every selected required gate passed and no required gate was skipped. This is not runtime or release qualification by itself.
-- `1`: a selected required gate failed or was blocked by timeout/startup/artifact evidence.
-- `2`: the checkout or manifest could not be validated safely.
+Use `--scope all` for a release-candidate run that executes every declared gate:
 
-The report records selected and explicitly skipped gates. A skipped gate is not evidence that its check passed: in `changed` scope, any skipped `required: true` gate makes the report and process fail. Use `--scope all` for a complete candidate attempt. Missing tools, unavailable services, failing checks, and host-only requirements remain blocked in the report. The runner does not install dependencies, change source, stage or commit files, publish artifacts, or read `.env`/credential files.
+```sh
+python3 scripts/release_gate.py \
+  --repo . \
+  --scope all \
+  --json \
+  --output dev-data/release-gate.json
+```
 
-The checked-in manifest declares the repository's current CI-facing governance, schema, backend, frontend, standalone-MCP, supply-chain, and diff checks. Some gates intentionally require tools or services not available in the development sandbox; use their recorded result rather than promoting a local report to `release-qualified`. Installation, upgrade, rollback, and host-runtime evidence still require the named supported environment and are not created by this runner.
+`--scope changed` selects governance gates plus gates whose declared subsystem appears in the source-truth changed-subsystem inventory. Required gates that are skipped because their subsystem is unchanged are recorded in `skipped_gates` and make the report fail closed. Use `--scope all` when the evidence must cover the complete candidate.
+
+The output report contains the manifest schema version, Git state, platform information, selected subsystems, each gate's redacted explicit argument vector and bounded diagnostics, skipped gates, and SHA-256 hashes for declared artifacts. The output path must remain inside the repository.
+
+## Exit statuses
+
+- `0`: every selected required gate passed and no required gate was skipped.
+- `1`: the runner completed, but a required gate failed, was blocked, or was skipped. Unavailable gate tools and services are recorded in this report status.
+- `2`: the runner could not safely load the repository, manifest, or output path, or rejected an unsafe gate declaration.
+
+A `passed` source or unit gate is not runtime or release qualification. Promote evidence only when the applicable runtime, artifact, installation, upgrade, recovery, and named-platform checks have also run successfully.
+
+## Manifest safety contract
+
+Gate entries use explicit `argv` arrays and repository-relative working directories. Shell interpreters, absolute executables, unallowlisted repository executables, inline interpreter code, duplicate IDs, invalid timeouts, and paths escaping the checkout are rejected. Gate stdout and stderr are concurrently drained and retained only up to the bounded diagnostic limit. Each gate runs through `scripts/process_supervisor.py`: the supervisor and its command share a process group, Linux parent-death signaling handles runner disappearance, and the Linux child-subreaper tree cleanup also covers descendants that create a new session. Timeout and process-group cleanup therefore remain fail closed. Credential-like command arguments and diagnostics are redacted before they enter the report. The process-supervisor path is currently Linux-specific; non-Linux qualification is not claimed by this slice.
+
+The manifest is source-owned. Add or change a gate only when its subsystem, required status, timeout, bounded diagnostics, and artifact evidence are part of the tracked release plan. The runner is intentionally not an artifact uploader or publisher.
+
+## Verification
+
+The focused contract suites are:
+
+```sh
+python3 scripts/test_release_gate.py -v
+python3 scripts/test_repo_truth.py -v
+python3 scripts/repo_truth.py --repo . --json --check
+```
+
+The first suite covers manifest validation, explicit-argument execution, redaction, bounded output, timeout behavior, mandatory-skip failure, repository-contained evidence, nested subprocess compatibility, and runner-death cleanup for forked descendants. The repository-truth suite covers deterministic source inventory, Git status/range handling, symlink and output bounds, and credential-safe diagnostics.
+
+The full release run remains environment-dependent. Missing `cargo-deny`, unavailable Rust lint components, forbidden tracked historical internal paths, missing frontend dependencies, or unavailable host/runtime services are recorded as blockers; they must not be silently waived or represented as release-qualified evidence.

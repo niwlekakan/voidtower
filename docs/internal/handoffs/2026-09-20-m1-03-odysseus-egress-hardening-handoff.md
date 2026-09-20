@@ -40,7 +40,7 @@ Verification evidence after final source changes
 - `bash scripts/check-schema-migration-ownership.sh` — passed.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/repo_truth.py --repo . --json --check` — passed; source inventory only and `runtime_support_claimed` remained false.
 - `git diff --check` — passed before commit.
-- `cd backend && cargo test --all-targets --all-features` — one known unrelated SQLite-lock failure in `cmdb::assets::tests::concurrent_manual_creates_receive_distinct_identifiers`; 692 other unit tests and 2 golden-path tests passed. The same test also failed in an isolated focused rerun after disposable `/tmp/vt-*` and `/tmp/voidtower-*` cleanup. This is recorded as a pre-existing full-suite limitation, not attributed to this slice.
+- `cd backend && cargo test --all-targets --all-features -- --test-threads=1` — one known unrelated SQLite-lock failure in `cmdb::assets::tests::concurrent_manual_creates_receive_distinct_identifiers`; 692 of 693 unit tests passed and the command stopped before the golden-path target. The same test also failed in an isolated focused rerun after disposable `/tmp/vt-*` and `/tmp/voidtower-*` cleanup. A prior pre-final full run passed 692 unit tests and 2 golden-path tests before the last IPv6-only refinement, but the final full gate is recorded as blocked. This is not attributed to this slice.
 
 Limitations and blockers
 

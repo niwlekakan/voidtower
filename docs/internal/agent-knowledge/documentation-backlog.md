@@ -439,3 +439,11 @@
 
 - End-user documentation now records Studio MCP's preserved extractor statuses: `400` malformed JSON, `415` unsupported media, `413` oversized body, and `422` typed validation/unknown fields. No new end-user guide is required for this correction beyond the API contract.
 - Final reusable evidence is `cd backend && cargo test --all-targets --all-features` (679 unit tests and 2 golden-path integration tests), strict Clippy, rustfmt check, schema migration ownership, `git diff --check`, and source-truth check. Runtime/browser/provider qualification remains future documentation work.
+
+## M1-03 automation/webhook ingress contract hardening — 2026-09-20
+
+- End-user documentation changed: `docs/api.md` now documents operator-only automation reads, bounded run-history limits, strict create/update fields, timeout/name/command/description bounds, supported schedule forms, and canonical durable-job acceptance. `docs/integrations/odysseus.md` now documents the durable `automation_id` webhook contract, exact intent rules, dry-run, idempotency replay/conflict, and deferred service actions.
+- Developer continuity changed: `docs/internal/agent-knowledge/system-map.md` records the automation/webhook trust boundary, canonical actor/ingress semantics, and evidence class. No migration or schema ownership change was needed.
+- Future documentation required: signed inbound webhook requests with replay protection, outbound webhook URL/egress security, a canonical service-action adapter, CLI convergence, and provider/runtime/restart qualification remain open M1-03/M1-04 work.
+- Reusable focused checks: `cd backend && cargo test api::operation_workflows_tests --all-features -- --nocapture`; `cd backend && cargo test api::integrations::tests --all-features -- --nocapture`; `cd backend && cargo fmt --all -- --check`; `cd backend && cargo clippy --all-targets --all-features -- -D warnings`; and `git diff --check`.
+- Evidence boundary: integration-verified at the real Axum-router/SQLite boundary only. No host runtime, Docker provider, browser, packaged artifact, or release qualification was performed.

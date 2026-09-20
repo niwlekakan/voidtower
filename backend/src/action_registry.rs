@@ -990,7 +990,7 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Get,
         "/api/automation",
-        SessionPolicy::Required(RoleTier::Session),
+        SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Scope("automation:read"),
         RiskClass::Read,
@@ -1041,7 +1041,7 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Get,
         "/api/automation/:id/runs",
-        SessionPolicy::Required(RoleTier::Session),
+        SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Scope("automation:read"),
         RiskClass::Read,
@@ -1557,7 +1557,12 @@ pub const ROUTES: &[RouteMetadata] = &[
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
         AiExposure::Callable,
-        ["container.start", "container.stop", "container.restart",]
+        [
+            "automation.run",
+            "container.start",
+            "container.stop",
+            "container.restart",
+        ]
     ),
     route_metadata!(
         Get,

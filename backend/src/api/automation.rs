@@ -1,6 +1,7 @@
 use axum::{
+    body::to_bytes,
     extract::{Extension, Path, Query, State},
-    http::HeaderMap,
+    http::{header, HeaderMap},
     response::Response,
     Json,
 };
@@ -20,6 +21,109 @@ fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+const MAX_NAME_CHARS: usize = 200;
+const MAX_DESCRIPTION_CHARS: usize = 4_000;
+const MAX_COMMAND_CHARS: usize = 8_192;
+const MAX_TIMEOUT_SECS: i64 = 3_600;
+const MAX_RUN_LIMIT: i64 = 200;
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+
+fn schedule_interval_secs(schedule: &str) -> Option<i64> {
+    match schedule.trim() {
+        "@minutely" => Some(60),
+        "@hourly" => Some(3_600),
+        "@daily" | "@midnight" => Some(86_400),
+        "@weekly" => Some(86_400 * 7),
+        "@monthly" => Some(86_400 * 30),
+        value if value.starts_with("*/") => {
+            let mut parts = value[2..].split_whitespace();
+            let minutes = parts.next()?.parse::<i64>().ok()?;
+            if parts
+                .next()
+                .is_some_and(|unit| !matches!(unit, "min" | "mins" | "minute" | "minutes"))
+                || parts.next().is_some()
+            {
+                return None;
+            }
+            (1..=1_440).contains(&minutes).then_some(minutes * 60)
+        }
+        _ => None,
+    }
+}
+
+fn validate_text(field: &str, value: &str, max_chars: usize) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(AppError::BadRequest(format!("{field} required")));
+    }
+    if value.chars().count() > max_chars {
+        return Err(AppError::BadRequest(format!("{field} is too long")));
+    }
+    Ok(())
+}
+
+fn validate_schedule(schedule: Option<&str>) -> Result<()> {
+    if let Some(schedule) = schedule {
+        if schedule.chars().count() > 64 || schedule_interval_secs(schedule).is_none() {
+            return Err(AppError::BadRequest("invalid schedule".into()));
+        }
+    }
+    Ok(())
+}
+
+fn require_json_content_type(headers: &HeaderMap) -> Result<()> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| value.eq_ignore_ascii_case("application/json"));
+    if content_type.is_none() {
+        return Err(AppError::RequestBody {
+            status: axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        });
+    }
+    Ok(())
+}
+
+fn validate_create_job(body: &CreateJob) -> Result<()> {
+    validate_text("name", &body.name, MAX_NAME_CHARS)?;
+    validate_text("command", &body.command, MAX_COMMAND_CHARS)?;
+    if let Some(description) = &body.description {
+        if description.chars().count() > MAX_DESCRIPTION_CHARS {
+            return Err(AppError::BadRequest("description is too long".into()));
+        }
+    }
+    let timeout = body.timeout_secs.unwrap_or(300);
+    if !(1..=MAX_TIMEOUT_SECS).contains(&timeout) {
+        return Err(AppError::BadRequest(
+            "timeout_secs must be between 1 and 3600".into(),
+        ));
+    }
+    validate_schedule(body.schedule.as_deref())
+}
+
+fn validate_update_job(body: &UpdateJob) -> Result<()> {
+    if let Some(name) = &body.name {
+        validate_text("name", name, MAX_NAME_CHARS)?;
+    }
+    if let Some(description) = &body.description {
+        if description.chars().count() > MAX_DESCRIPTION_CHARS {
+            return Err(AppError::BadRequest("description is too long".into()));
+        }
+    }
+    if let Some(command) = &body.command {
+        validate_text("command", command, MAX_COMMAND_CHARS)?;
+    }
+    if let Some(timeout) = body.timeout_secs {
+        if !(1..=MAX_TIMEOUT_SECS).contains(&timeout) {
+            return Err(AppError::BadRequest(
+                "timeout_secs must be between 1 and 3600".into(),
+            ));
+        }
+    }
+    validate_schedule(body.schedule.as_deref())
 }
 
 async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
@@ -64,7 +168,8 @@ pub async fn list(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    super::role_guard::require_operator(&user)?;
     let jobs = sqlx::query_as::<_, AutomationJob>(
         "SELECT id, name, description, command, schedule, enabled, timeout_secs,
                 last_run_at, last_status, last_exit_code, created_at, updated_at
@@ -77,6 +182,7 @@ pub async fn list(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateJob {
     pub name: String,
     pub description: Option<String>,
@@ -89,16 +195,21 @@ pub struct CreateJob {
 pub async fn create(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(body): Json<CreateJob>,
+    request: axum::extract::Request,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
-    if body.name.trim().is_empty() {
-        return Err(AppError::BadRequest("name required".into()));
-    }
-    if body.command.trim().is_empty() {
-        return Err(AppError::BadRequest("command required".into()));
-    }
+    let headers = request.headers().clone();
+    require_json_content_type(&headers)?;
+    let body = to_bytes(request.into_body(), MAX_REQUEST_BODY_BYTES)
+        .await
+        .map_err(|_| AppError::RequestBody {
+            status: axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        })?;
+    let body: CreateJob = serde_json::from_slice(&body).map_err(|_| AppError::RequestBody {
+        status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+    })?;
+    validate_create_job(&body)?;
 
     let id = Uuid::new_v4().to_string();
     let ts = now();
@@ -126,6 +237,7 @@ pub async fn create(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateJob {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -139,10 +251,30 @@ pub async fn update(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(id): Path<String>,
-    Json(body): Json<UpdateJob>,
+    request: axum::extract::Request,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     super::role_guard::require_operator(&user)?;
+    let headers = request.headers().clone();
+    require_json_content_type(&headers)?;
+    let body = to_bytes(request.into_body(), MAX_REQUEST_BODY_BYTES)
+        .await
+        .map_err(|_| AppError::RequestBody {
+            status: axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        })?;
+    let body: UpdateJob = serde_json::from_slice(&body).map_err(|_| AppError::RequestBody {
+        status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+    })?;
+    validate_update_job(&body)?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM automation_jobs WHERE id = ?)")
+            .bind(&id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(AppError::Database)?;
+    if !exists {
+        return Err(AppError::NotFound);
+    }
     let ts = now();
     if let Some(v) = &body.name {
         sqlx::query("UPDATE automation_jobs SET name=?, updated_at=? WHERE id=?")
@@ -315,7 +447,13 @@ pub async fn runs(
     Path(id): Path<String>,
     Query(q): Query<RunsQuery>,
 ) -> Result<Json<serde_json::Value>> {
-    require_user(&state, &jar).await?;
+    let user = require_user(&state, &jar).await?;
+    super::role_guard::require_operator(&user)?;
+    if !(1..=MAX_RUN_LIMIT).contains(&q.limit) {
+        return Err(AppError::BadRequest(
+            "limit must be between 1 and 200".into(),
+        ));
+    }
     let runs = sqlx::query_as::<_, AutomationRun>(
         "SELECT id, job_id, started_at, finished_at, status, exit_code, output
          FROM automation_runs WHERE job_id=? ORDER BY started_at DESC LIMIT ?",
@@ -377,43 +515,14 @@ pub async fn run_scheduled_jobs(state: &AppState) {
 }
 
 fn schedule_slot(schedule: &str, now_ts: i64) -> i64 {
-    let interval = match schedule.trim() {
-        "@minutely" => 60,
-        "@hourly" => 3600,
-        "@daily" | "@midnight" => 86400,
-        "@weekly" => 86400 * 7,
-        "@monthly" => 86400 * 30,
-        value if value.starts_with("*/") => value
-            .split_whitespace()
-            .next()
-            .and_then(|part| part.strip_prefix("*/"))
-            .and_then(|minutes| minutes.parse::<i64>().ok())
-            .filter(|minutes| (1..=1440).contains(minutes))
-            .map(|minutes| minutes * 60)
-            .unwrap_or(60),
-        _ => 60,
-    };
+    let interval = schedule_interval_secs(schedule).unwrap_or(60);
     now_ts / interval
 }
 
 /// Simple cron-style check: supports "@hourly", "@daily", "@weekly", and "*/N min" patterns.
 fn is_due(schedule: &str, last_run: Option<i64>, now_ts: i64) -> bool {
-    let interval_secs: i64 = match schedule.trim() {
-        "@minutely" => 60,
-        "@hourly" => 3600,
-        "@daily" | "@midnight" => 86400,
-        "@weekly" => 86400 * 7,
-        "@monthly" => 86400 * 30,
-        s if s.starts_with("*/") => {
-            // "*/5 minutes" or "*/30" — parse number, treat as minutes
-            s[2..]
-                .split_whitespace()
-                .next()
-                .and_then(|n| n.parse::<i64>().ok())
-                .map(|n| n * 60)
-                .unwrap_or(3600)
-        }
-        _ => 3600, // default: hourly for unrecognised patterns
+    let Some(interval_secs) = schedule_interval_secs(schedule) else {
+        return false;
     };
     match last_run {
         None => true,

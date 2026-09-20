@@ -114,8 +114,9 @@ The adopted compatibility inventory is executable and validated by
 `backend/src/operations/registry.rs`; it must not be copied into documentation as a mutable route
 count. Each mapped durable branch returns `202 { "job": ... }`; a compatibility `dry_run: true`
 returns an advisory plan and creates no job. App Vault/model Compose lifecycle, AI proxy-settings
-orchestration, service and arbitrary-automation webhook actions, and ephemeral Proxmox VNC ticket
-creation remain synchronous exceptions because they do not yet have matching durable actions. The
+orchestration, service webhook actions, and ephemeral Proxmox VNC ticket creation remain synchronous
+exceptions because they do not yet have matching durable actions. Automation webhook actions use the
+canonical `automation.run` durable action described below. The
 current web clients follow submitted jobs locally and link to shared job detail. Owner/admin/operator
 sessions can list and inspect the newest 50 jobs in Tower or Void Mode; cancellation is offered only
 for queued/running records. Owner/admin sessions can list and decide exact immutable approvals with
@@ -498,12 +499,25 @@ GET  /status                       Public HTML page (no auth)
 
 ```
 GET  /api/automation
-POST /api/automation               { name, command, schedule, enabled? }
-PATCH /api/automation/:id
+POST /api/automation               { name, description?, command, schedule?, timeout_secs?, enabled? }
+PATCH /api/automation/:id          { name?, description?, command?, schedule?, timeout_secs?, enabled? }
 DELETE /api/automation/:id
 POST /api/automation/:id/run
-GET  /api/automation/:id/runs
+GET  /api/automation/:id/runs?limit=
 ```
+
+Automation list and run-history responses include commands and captured output, so they require an
+operator session (owner, admin, or operator). Viewer/member-style sessions are rejected with
+`403 forbidden`. Run-history `limit` must be between 1 and 200.
+
+Create/update bodies require `Content-Type: application/json`, reject unknown fields. Names are required and capped at 200 characters,
+commands are required and capped at 8192 characters, descriptions are capped at 4000 characters,
+and `timeout_secs` must be between 1 and 3600. Supported schedules are `@minutely`, `@hourly`,
+`@daily`, `@midnight`, `@weekly`, `@monthly`, or `*/N` with an optional `min`/`minutes` unit where
+N is 1–1440. Invalid schedules and timeouts return the bounded `bad_request` error envelope.
+
+`POST /api/automation/:id/run` and scheduler submissions converge on the canonical
+`automation.run` durable-job path; the HTTP response is job acceptance, not provider execution.
 
 ## Secrets
 
@@ -599,8 +613,10 @@ GET  /api/integrations/actions
 ```
 
 Webhook `container.start`, `container.stop`, and `container.restart` actions return a durable job;
-their dry runs return a canonical plan. `service.*` and `automation_id` webhook requests retain the
-legacy synchronous `{ "ok": true, ... }` response until matching durable actions are introduced.
+their dry runs return a canonical plan. `automation_id` webhook requests also return a durable
+`automation.run` job with the same dry-run and idempotency contract. `service.*` webhook requests
+remain explicitly deferred: policy-denied requests return `403 policy_denied`, while an allowlisted
+request returns `503 feature_unavailable` until a matching durable action is introduced.
 
 ## Voidwatch (Odysseus-side)
 

@@ -6,6 +6,7 @@ use crate::{
     voidwatch, AppState,
 };
 use axum::{
+    body::to_bytes,
     extract::{Extension, Path, Query, State},
     http::HeaderMap,
     response::{
@@ -824,6 +825,7 @@ pub async fn legacy_event_stream(
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookReq {
     pub automation_id: Option<String>,
     /// Structured action: "container.restart" | "container.start" | "container.stop"
@@ -832,6 +834,38 @@ pub struct WebhookReq {
     /// Resource ID — container ID or service name depending on action
     pub resource_id: Option<String>,
     pub dry_run: Option<bool>,
+}
+
+fn validate_webhook_request(req: &WebhookReq) -> Result<()> {
+    let has_automation = req.automation_id.is_some();
+    let has_action = req.action.is_some();
+    if has_automation == has_action {
+        return Err(AppError::BadRequest(
+            "exactly one of automation_id or action is required".into(),
+        ));
+    }
+    if let Some(automation_id) = &req.automation_id {
+        if automation_id.trim().is_empty() || automation_id.chars().count() > 200 {
+            return Err(AppError::BadRequest("invalid automation_id".into()));
+        }
+        if req.resource_id.is_some() {
+            return Err(AppError::BadRequest(
+                "resource_id is only valid with action".into(),
+            ));
+        }
+    }
+    if let Some(action) = &req.action {
+        if action.chars().count() > 100 || action.trim().is_empty() {
+            return Err(AppError::BadRequest("invalid action".into()));
+        }
+        let resource_id = req
+            .resource_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty() && value.chars().count() <= 200)
+            .ok_or_else(|| AppError::BadRequest("resource_id required".into()))?;
+        let _ = resource_id;
+    }
+    Ok(())
 }
 
 /// Legacy automation and service webhook mutations cannot park a verdict for later approval
@@ -874,9 +908,9 @@ async fn run_automation_job(
 
 pub async fn webhook(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<WebhookReq>,
+    request: axum::extract::Request,
 ) -> super::operation_adoption::CompatibilityResult<Response> {
+    let headers = request.headers().clone();
     if get_setting(&state, "odysseus.enabled").await != "true" {
         return Err(
             AppError::FeatureUnavailable("Odysseus integration is not enabled".into()).into(),
@@ -908,6 +942,31 @@ pub async fn webhook(
         return Err(AppError::Unauthorized.into());
     }
 
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| value.eq_ignore_ascii_case("application/json"));
+    if content_type.is_none() {
+        return Err(AppError::RequestBody {
+            status: axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        }
+        .into());
+    }
+    let body = to_bytes(request.into_body(), 64 * 1024)
+        .await
+        .map_err(|_| {
+            super::operation_adoption::CompatibilityError::from(AppError::RequestBody {
+                status: axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            })
+        })?;
+    let req: WebhookReq = serde_json::from_slice(&body).map_err(|_| {
+        super::operation_adoption::CompatibilityError::from(AppError::RequestBody {
+            status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        })
+    })?;
+    validate_webhook_request(&req)?;
     let dry_run = req.dry_run.unwrap_or(false);
 
     if let Some(ref automation_id) = req.automation_id {
@@ -917,16 +976,14 @@ pub async fn webhook(
         let resource =
             super::automation::resolve_run_resource(&state, &credential, automation_id).await?;
         let input = serde_json::json!({});
-        let idempotency_key = headers
-            .get("Idempotency-Key")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned)
-            .unwrap_or_else(|| {
-                format!(
-                    "webhook-{}",
-                    sha256_hex(&serde_json::to_string(&req).unwrap_or_default())
-                )
-            });
+        let idempotency_key = if headers.get("Idempotency-Key").is_some() {
+            super::operation_adoption::idempotency_key(&headers)?
+        } else {
+            format!(
+                "webhook-{}",
+                sha256_hex(&serde_json::to_string(&req).unwrap_or_default())
+            )
+        };
         if dry_run {
             let prepared = super::operation_adoption::prepare(
                 &state,
@@ -1044,7 +1101,7 @@ pub async fn webhook(
                 Some("odysseus"),
             )
             .await;
-            return Err(AppError::PolicyDenied(reason.to_string()).into());
+            return Err(AppError::PolicyDenied("Webhook action denied by policy".into()).into());
         }
 
         // Service actions remain unsupported until a canonical operation adapter can
@@ -1281,22 +1338,28 @@ mod tests {
         .await
         .unwrap();
 
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "Authorization",
-            HeaderValue::from_static("Bearer fixture-secret"),
-        );
-        let result = webhook(
-            State(crate::api::mcp::test_support::build(pool)),
-            headers,
-            Json(WebhookReq {
-                automation_id: None,
-                action: Some("service.start".into()),
-                resource_id: Some("fixture.service".into()),
-                dry_run: Some(false),
-            }),
-        )
-        .await;
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/integrations/webhooks")
+            .header(
+                "Authorization",
+                HeaderValue::from_static("Bearer fixture-secret"),
+            )
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&WebhookReq {
+                    automation_id: None,
+                    action: Some("service.start".into()),
+                    resource_id: Some("fixture.service".into()),
+                    dry_run: Some(false),
+                })
+                .unwrap(),
+            ))
+            .unwrap();
+        let result = webhook(State(crate::api::mcp::test_support::build(pool)), request).await;
 
         assert!(
             matches!(

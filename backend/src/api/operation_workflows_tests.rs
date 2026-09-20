@@ -50,6 +50,18 @@ fn automation_run_request(
         .unwrap()
 }
 
+fn webhook_request(secret: &str, body: &str, idempotency_key: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/api/integrations/webhooks")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {secret}"));
+    if let Some(key) = idempotency_key {
+        builder = builder.header("Idempotency-Key", key);
+    }
+    builder.body(Body::from(body.to_owned())).unwrap()
+}
+
 async fn submit_job(
     db: &SqlitePool,
     suffix: &str,
@@ -326,6 +338,355 @@ async fn automation_run_uses_canonical_job_and_replays_by_idempotency_key() {
         run_count, 0,
         "the HTTP seam must enqueue, not execute inline"
     );
+}
+
+#[tokio::test]
+async fn automation_reads_are_operator_only_and_limits_are_bounded() {
+    let db = test_support::setup_db().await;
+    sqlx::query(
+        "INSERT INTO automation_jobs (id, name, command, enabled, timeout_secs, created_at, updated_at) VALUES ('private-automation', 'Private automation', 'cat /sensitive/path', 1, 30, 0, 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO automation_runs (id, job_id, started_at, finished_at, status, output) VALUES ('private-run', 'private-automation', 0, 1, 'success', 'sensitive output')",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let app = crate::api::router(test_support::build(db.clone()));
+
+    for role in ["viewer", "guest", "member"] {
+        let session = test_support::user_with_role_session(&db, role).await;
+        let list = app
+            .clone()
+            .oneshot(request(Method::GET, "/api/automation", Some(&session), ""))
+            .await
+            .unwrap();
+        assert_eq!(
+            list.status(),
+            StatusCode::FORBIDDEN,
+            "{role} must not read commands"
+        );
+        let runs = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/api/automation/private-automation/runs?limit=999",
+                Some(&session),
+                "",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            runs.status(),
+            StatusCode::FORBIDDEN,
+            "{role} must not read output"
+        );
+    }
+
+    let operator = test_support::user_with_role_session(&db, "operator").await;
+    let list = app
+        .clone()
+        .oneshot(request(Method::GET, "/api/automation", Some(&operator), ""))
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    assert_eq!(
+        json(list).await["jobs"][0]["command"],
+        "cat /sensitive/path"
+    );
+
+    let invalid_limit = app
+        .oneshot(request(
+            Method::GET,
+            "/api/automation/private-automation/runs?limit=999",
+            Some(&operator),
+            "",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid_limit.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn automation_webhook_uses_canonical_durable_job_replay_and_dry_run_contract() {
+    let db = test_support::setup_db().await;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.enabled', 'true', 0), ('odysseus.webhook_secret', 'fixture-secret', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at) VALUES ('webhook-allow', 'automation', 'automation.run', 'automation_job', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO automation_jobs (id, name, command, enabled, timeout_secs, created_at, updated_at) VALUES ('webhook-automation', 'Webhook automation', 'printf webhook', 1, 30, 0, 0), ('webhook-other', 'Other automation', 'printf other', 1, 30, 0, 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let app = crate::api::router(test_support::build(db.clone()));
+
+    let dry_run = app
+        .clone()
+        .oneshot(webhook_request(
+            "fixture-secret",
+            r#"{"automation_id":"webhook-automation","dry_run":true}"#,
+            Some("webhook-dry-run"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(dry_run.status(), StatusCode::OK);
+    let dry_body = json(dry_run).await;
+    assert_eq!(dry_body["dry_run"], true);
+    assert!(dry_body["plan"].is_object());
+    let job_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(job_count, 0, "dry-run must not create a durable job");
+
+    let first = app
+        .clone()
+        .oneshot(webhook_request(
+            "fixture-secret",
+            r#"{"automation_id":"webhook-automation"}"#,
+            Some("webhook-replay"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first_body = json(first).await;
+    assert_eq!(first_body["job"]["action"], "automation.run");
+    assert_eq!(first_body["job"]["actor"]["actor_type"], "automation");
+    assert_eq!(first_body["job"]["ingress"], "webhook");
+
+    let repeat = app
+        .clone()
+        .oneshot(webhook_request(
+            "fixture-secret",
+            r#"{"automation_id":"webhook-automation"}"#,
+            Some("webhook-replay"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(repeat.status(), StatusCode::ACCEPTED);
+    assert_eq!(json(repeat).await["job"]["id"], first_body["job"]["id"]);
+
+    let conflict = app
+        .oneshot(webhook_request(
+            "fixture-secret",
+            r#"{"automation_id":"webhook-other"}"#,
+            Some("webhook-replay"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn automation_webhook_rejects_ambiguous_and_unknown_intents() {
+    let db = test_support::setup_db().await;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.enabled', 'true', 0), ('odysseus.webhook_secret', 'fixture-secret', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let app = crate::api::router(test_support::build(db));
+
+    let oversized_body = "x".repeat(64 * 1024 + 1);
+    let oversized_unauthenticated = app
+        .clone()
+        .oneshot(webhook_request("wrong-secret", &oversized_body, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        oversized_unauthenticated.status(),
+        StatusCode::UNAUTHORIZED,
+        "secret verification must precede bounded body reads"
+    );
+    let oversized_authenticated = app
+        .clone()
+        .oneshot(webhook_request("fixture-secret", &oversized_body, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        oversized_authenticated.status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(
+        json(oversized_authenticated).await["error"]["code"],
+        "payload_too_large"
+    );
+
+    let unauthenticated_malformed = app
+        .clone()
+        .oneshot(webhook_request("wrong-secret", "{", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        unauthenticated_malformed.status(),
+        StatusCode::UNAUTHORIZED,
+        "secret verification must precede JSON parsing"
+    );
+
+    let unsupported_media = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/integrations/webhooks")
+                .header(header::CONTENT_TYPE, "text/plain")
+                .header(header::AUTHORIZATION, "Bearer fixture-secret")
+                .body(Body::from(r#"{"automation_id":"one"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unsupported_media.status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+
+    let malformed_authenticated = app
+        .clone()
+        .oneshot(webhook_request("fixture-secret", "{", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        malformed_authenticated.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    for body in [
+        r#"{}"#,
+        r#"{"automation_id":"one","action":"container.start","resource_id":"web"}"#,
+        r#"{"automation_id":"one","unexpected":true}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(webhook_request("fixture-secret", body, None))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+            ),
+            "unexpected status for {body}: {}",
+            response.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn automation_write_contract_rejects_unknown_and_invalid_fields() {
+    let db = test_support::setup_db().await;
+    let session = test_support::user_with_role_session(&db, "operator").await;
+    let app = crate::api::router(test_support::build(db.clone()));
+
+    let oversized_body = "x".repeat(64 * 1024 + 1);
+    let oversized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/automation")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, format!("vt_session={session}"))
+                .body(Body::from(oversized_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(json(oversized).await["error"]["code"], "payload_too_large");
+
+    let unsupported_media = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/automation")
+                .header(header::CONTENT_TYPE, "text/plain")
+                .header(header::COOKIE, format!("vt_session={session}"))
+                .body(Body::from(r#"{"name":"job","command":"printf ok"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unsupported_media.status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+
+    for body in [
+        r#"{"name":"job","command":"printf ok","timeout_secs":0}"#,
+        r#"{"name":"job","command":"printf ok","schedule":"every tuesday"}"#,
+        r#"{"name":"job","command":"printf ok","unexpected":true}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/api/automation",
+                Some(&session),
+                body,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+            ),
+            "unexpected status for {body}: {}",
+            response.status()
+        );
+    }
+
+    let created = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/automation",
+            Some(&session),
+            r#"{"name":"valid job","command":"printf ok","schedule":"@hourly","timeout_secs":30}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let id = json(created).await["id"].as_str().unwrap().to_owned();
+
+    let invalid_update = app
+        .clone()
+        .oneshot(request(
+            Method::PATCH,
+            &format!("/api/automation/{id}"),
+            Some(&session),
+            r#"{"timeout_secs":3601}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid_update.status(), StatusCode::BAD_REQUEST);
+
+    let missing_update = app
+        .oneshot(request(
+            Method::PATCH,
+            "/api/automation/missing",
+            Some(&session),
+            r#"{"enabled":false}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing_update.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

@@ -177,9 +177,33 @@ provider success, and can be followed at `GET /api/jobs/:id`. Add `"dry_run": tr
 canonical plan without creating a job. Unknown actions and durable actions that are not explicitly
 webhook-enabled fail closed.
 
-The same endpoint still supports the legacy `service.start|stop|restart` and `automation_id`
-requests. Those branches return synchronous `{ "ok": true, ... }` responses and are intentionally
-not described as durable or approval-backed yet.
+The endpoint also accepts an `automation_id` intent:
+
+```http
+POST /api/integrations/webhooks
+Authorization: Bearer ***
+Content-Type: application/json
+Idempotency-Key: odysseus-run-2026-09-20-1
+
+{ "automation_id": "nightly-check", "dry_run": false }
+```
+
+Exactly one of `automation_id` or `action` is required. Unknown JSON fields, ambiguous intents,
+missing action resources, empty/oversized identifiers, invalid idempotency keys, and unsupported
+actions fail closed with the bounded error envelope. The webhook body is capped at 64 KiB and requires
+`Content-Type: application/json`; secret verification occurs before body parsing. Automation webhook requests use the same
+canonical `automation.run` resource/action/plan/policy/durable-job boundary as HTTP and scheduler
+submissions. A normal request returns `202 { "job": ... }`, with `actor_type = "automation"` and
+`ingress = "webhook"`; the returned job is acceptance, not provider success, and can be followed at
+`GET /api/jobs/:id`. Reusing an idempotency key with the same automation intent replays the same job;
+using it for a different intent returns `409 conflict`. Add `"dry_run": true` to receive the
+canonical plan and policy preview without creating a job.
+
+`container.start`, `container.stop`, and `container.restart` use the same canonical durable
+operation path when the provider resource is available. Legacy `service.start|stop|restart`
+requests remain explicitly deferred and return `503 feature_unavailable`; the handler does not call
+the legacy systemd helper. Unknown actions and durable actions that are not explicitly webhook-enabled
+fail closed.
 
 ---
 

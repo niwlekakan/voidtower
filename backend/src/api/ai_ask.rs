@@ -177,15 +177,26 @@ Key files:\n\
 • AIOS panels registry: frontend/src/aios/AiosLayout.tsx\n\
 • API client: frontend/src/api/client.ts\n\
 • AI providers: backend/src/ai/ (AiProvider trait + provider adapters)\n\n\
-MCP tools (odysseus-mcp-servers/voidtower_server.py — usable from Odysseus, Claude Desktop, Open WebUI, Cursor):\n\
+MCP tools (odysseus-mcp-servers/voidtower_server.py — usable from Odysseus, Claude Desktop, Open WebUI, Cursor; this prompt is read-only and does not execute tools):\n\
 Read: vt_get_metrics, vt_list_services, vt_get_service_logs, vt_list_containers, vt_get_container_logs, \
 vt_list_alerts, vt_get_status_summary, vt_list_status_checks, vt_list_deployed_apps, vt_list_app_catalog, \
 vt_get_app_status, vt_get_app_logs, vt_list_backups, vt_list_automations, vt_get_timeline, \
 vt_get_audit_log, vt_list_proxies, vt_list_firewall_rules, vt_list_wireguard_peers, \
 vt_get_storage, vt_get_network_neighbors, vt_list_vms, vt_list_secrets, vt_list_tags, \
 vt_list_users, vt_run_diagnostics, vt_get_capabilities.\n\
-Write: vt_control_service, vt_control_container, vt_control_app, vt_deploy_app, \
-vt_toggle_proxy, vt_create_proxy, vt_run_backup, vt_run_automation_job, \
-vt_control_vm, vt_acknowledge_alert, vt_resolve_alert."
+Mutation requests must use an explicitly approved built-in MCP or Studio typed action; this chat endpoint never performs mutations."
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::voidtower_system_prompt;
+
+    #[test]
+    fn chat_prompt_does_not_advertise_mutation_tools() {
+        let prompt = voidtower_system_prompt();
+        assert!(prompt.contains("this chat endpoint never performs mutations"));
+        assert!(!prompt.contains("Write: vt_"));
+        assert!(!prompt.contains("vt_control_service"));
+    }
 }

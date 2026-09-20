@@ -18,6 +18,8 @@ pub enum AppError {
     PolicyDenied(String),
     #[error("Bad request: {0}")]
     BadRequest(String),
+    #[error("Invalid request body")]
+    RequestBody { status: StatusCode },
     #[error("Payload too large")]
     PayloadTooLarge,
     #[error("Conflict: {0}")]
@@ -52,6 +54,33 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden", self.to_string()),
             AppError::PolicyDenied(m) => (StatusCode::FORBIDDEN, "policy_denied", m.clone()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone()),
+            AppError::RequestBody { status } => match *status {
+                StatusCode::BAD_REQUEST => (
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "Invalid request body".to_string(),
+                ),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE => (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "unsupported_media_type",
+                    "Unsupported request content type".to_string(),
+                ),
+                StatusCode::PAYLOAD_TOO_LARGE => (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "payload_too_large",
+                    "Request body exceeds the allowed size".to_string(),
+                ),
+                StatusCode::UNPROCESSABLE_ENTITY => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "unprocessable_entity",
+                    "Invalid request body".to_string(),
+                ),
+                _ => (
+                    *status,
+                    "invalid_request_body",
+                    "Invalid request body".to_string(),
+                ),
+            },
             AppError::PayloadTooLarge => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "payload_too_large",

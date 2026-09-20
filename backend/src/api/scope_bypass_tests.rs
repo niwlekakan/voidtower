@@ -157,6 +157,17 @@ fn bearer_req(
     )
 }
 
+fn bearer_raw_req(method: &str, uri: &str, token: Option<&str>, body: &str) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    with_connect_info(builder.body(Body::from(body.to_owned())).unwrap())
+}
+
 fn cookie_req(
     method: &str,
     uri: &str,
@@ -171,6 +182,24 @@ fn cookie_req(
             .header(header::COOKIE, format!("vt_session={session_id}"))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(b))
+            .unwrap(),
+    )
+}
+
+fn cookie_raw_req(
+    method: &str,
+    uri: &str,
+    session_id: &str,
+    content_type: &str,
+    body: &str,
+) -> Request<Body> {
+    with_connect_info(
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::COOKIE, format!("vt_session={session_id}"))
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from(body.to_owned()))
             .unwrap(),
     )
 }
@@ -671,4 +700,365 @@ async fn an_expired_cached_token_denies_the_next_real_router_request() {
         .await
         .unwrap();
     assert_eq!(after_expiry.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn built_in_mcp_bearer_reaches_handler_before_tool_scope_is_checked() {
+    let db = setup_db().await;
+    let owner = insert_user(&db, "owner").await;
+    let token = insert_token(&db, &owner, &["metrics:read"]).await;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.mcp_enabled', 'true', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let app = crate::api::router(test_support::build(db));
+    let response = app
+        .oneshot(bearer_req("GET", "/api/mcp", &token, None))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "valid MCP bearer auth must reach the handler; individual tools enforce their scopes"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8(body.to_vec())
+        .unwrap()
+        .contains("/api/mcp/message"));
+}
+
+#[tokio::test]
+async fn built_in_mcp_message_reaches_json_rpc_dispatch_and_denies_wrong_tool_scope() {
+    let db = setup_db().await;
+    let owner = insert_user(&db, "owner").await;
+    let token = insert_token(&db, &owner, &["containers:read"]).await;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.mcp_enabled', 'true', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let app = crate::api::router(test_support::build(db));
+    let response = app
+        .oneshot(bearer_req(
+            "POST",
+            "/api/mcp/message",
+            &token,
+            Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "container.start",
+                    "arguments": {
+                        "resource_id": "missing-resource",
+                        "request_id": "mcp-router-scope-denial"
+                    }
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["jsonrpc"], "2.0");
+    assert_eq!(json["result"]["isError"], true);
+    assert!(json["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("scope"));
+}
+
+#[tokio::test]
+async fn built_in_mcp_rejects_invalid_json_rpc_version_and_unknown_request_fields() {
+    let db = setup_db().await;
+    let owner = insert_user(&db, "owner").await;
+    let token = insert_token(&db, &owner, &["metrics:read"]).await;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.mcp_enabled', 'true', 0)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let app = crate::api::router(test_support::build(db));
+    let unauthenticated_malformed = app
+        .clone()
+        .oneshot(bearer_raw_req(
+            "POST",
+            "/api/mcp/message",
+            None,
+            "{ malformed",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated_malformed.status(), StatusCode::UNAUTHORIZED);
+
+    let malformed = app
+        .clone()
+        .oneshot(bearer_raw_req(
+            "POST",
+            "/api/mcp/message",
+            Some(&token),
+            "{ malformed",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    let malformed_body = axum::body::to_bytes(malformed.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let malformed_json: serde_json::Value = serde_json::from_slice(&malformed_body).unwrap();
+    assert_eq!(malformed_json["error"]["code"], -32600);
+
+    let invalid_version = app
+        .clone()
+        .oneshot(bearer_req(
+            "POST",
+            "/api/mcp/message",
+            &token,
+            Some(serde_json::json!({
+                "jsonrpc": "1.0",
+                "id": 1,
+                "method": "initialize"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid_version.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(invalid_version.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], -32600);
+
+    let unknown_field = app
+        .clone()
+        .oneshot(bearer_req(
+            "POST",
+            "/api/mcp/message",
+            &token,
+            Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "unexpected": true
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unknown_field.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let unknown_params = app
+        .clone()
+        .oneshot(bearer_req(
+            "POST",
+            "/api/mcp/message",
+            &token,
+            Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_nodes",
+                    "arguments": {},
+                    "unexpected": true
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unknown_params.status(), StatusCode::OK);
+    let unknown_params_body = axum::body::to_bytes(unknown_params.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let unknown_params_json: serde_json::Value =
+        serde_json::from_slice(&unknown_params_body).unwrap();
+    assert_eq!(unknown_params_json["error"]["code"], -32602);
+
+    let invalid_id = app
+        .clone()
+        .oneshot(bearer_req(
+            "POST",
+            "/api/mcp/message",
+            &token,
+            Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": { "not": "allowed" },
+                "method": "initialize"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid_id.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    for request in [
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": "not-an-object"
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": null
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "list_nodes", "arguments": null }
+        }),
+    ] {
+        let invalid_params = app
+            .clone()
+            .oneshot(bearer_req(
+                "POST",
+                "/api/mcp/message",
+                &token,
+                Some(request),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid_params.status(), StatusCode::OK);
+        let invalid_params_body = axum::body::to_bytes(invalid_params.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let invalid_params_json: serde_json::Value =
+            serde_json::from_slice(&invalid_params_body).unwrap();
+        assert_eq!(invalid_params_json["error"]["code"], -32602);
+    }
+
+    let oversized_body = "x".repeat(65 * 1024);
+    let unauthenticated_oversized = app
+        .clone()
+        .oneshot(bearer_raw_req(
+            "POST",
+            "/api/mcp/message",
+            None,
+            &oversized_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated_oversized.status(), StatusCode::UNAUTHORIZED);
+
+    let oversized = app
+        .oneshot(bearer_raw_req(
+            "POST",
+            "/api/mcp/message",
+            Some(&token),
+            &oversized_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn studio_mcp_router_exposes_tools_and_rejects_unknown_request_fields() {
+    let db = setup_db().await;
+    let session = test_support::user_with_role_session(&db, "owner").await;
+    let app = crate::api::router(test_support::build(db));
+
+    let tools = app
+        .clone()
+        .oneshot(cookie_req("GET", "/api/studio/mcp/tools", &session, None))
+        .await
+        .unwrap();
+    assert_eq!(tools.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(tools.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "container.start"));
+
+    let invalid = app
+        .clone()
+        .oneshot(cookie_req(
+            "POST",
+            "/api/studio/mcp/invoke",
+            &session,
+            Some(serde_json::json!({
+                "name": "list_nodes",
+                "arguments": {},
+                "unexpected": true
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = axum::body::to_bytes(invalid.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "unprocessable_entity");
+
+    let malformed = app
+        .clone()
+        .oneshot(cookie_raw_req(
+            "POST",
+            "/api/studio/mcp/invoke",
+            &session,
+            "application/json",
+            "{",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+
+    let unsupported = app
+        .clone()
+        .oneshot(cookie_raw_req(
+            "POST",
+            "/api/studio/mcp/invoke",
+            &session,
+            "text/plain",
+            "{}",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unsupported.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let oversized_body = "x".repeat(65 * 1024);
+    let unauthenticated_oversized = app
+        .clone()
+        .oneshot(cookie_raw_req(
+            "POST",
+            "/api/studio/mcp/invoke",
+            "missing-session",
+            "application/json",
+            &oversized_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated_oversized.status(), StatusCode::UNAUTHORIZED);
+
+    let oversized = app
+        .oneshot(cookie_raw_req(
+            "POST",
+            "/api/studio/mcp/invoke",
+            &session,
+            "application/json",
+            &oversized_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }

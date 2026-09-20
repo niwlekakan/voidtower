@@ -5,7 +5,7 @@ use crate::{
 };
 use axum::{
     body::Body,
-    extract::{Path, Request, State},
+    extract::{FromRequest, Path, Request, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -364,6 +364,7 @@ fn sanitize(name: &str) -> String {
 // ── MCP tool panel ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpInvokeRequest {
     pub name: String,
     pub arguments: serde_json::Value,
@@ -380,9 +381,14 @@ pub async fn mcp_tools(
 pub async fn mcp_invoke(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<McpInvokeRequest>,
+    request: Request,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
+    let Json(req) = Json::<McpInvokeRequest>::from_request(request, &state)
+        .await
+        .map_err(|rejection| AppError::RequestBody {
+            status: rejection.status(),
+        })?;
     match super::mcp::invoke_tool(
         &state,
         crate::operations::invocation::CredentialContext::Studio {
@@ -453,10 +459,16 @@ mod tests {
         let resp = mcp_invoke(
             State(state),
             jar,
-            Json(McpInvokeRequest {
-                name: "list_alerts".to_string(),
-                arguments: serde_json::json!({}),
-            }),
+            Request::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "list_alerts",
+                        "arguments": {}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
         )
         .await
         .unwrap();

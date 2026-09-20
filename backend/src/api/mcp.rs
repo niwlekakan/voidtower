@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{
     body::Body,
-    extract::State,
+    extract::{FromRequest, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -42,13 +42,33 @@ pub(crate) mod test_support;
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JsonRpcRequest {
     #[allow(dead_code)]
     pub jsonrpc: String,
+    #[serde(deserialize_with = "deserialize_json_rpc_id")]
     pub id: Option<Value>,
     pub method: String,
-    #[serde(default)]
-    pub params: Value,
+    #[serde(default, deserialize_with = "deserialize_json_rpc_params")]
+    pub params: Option<Value>,
+}
+
+fn deserialize_json_rpc_id<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let id = Option::<Value>::deserialize(deserializer)?;
+    match id {
+        None | Some(Value::Null | Value::String(_) | Value::Number(_)) => Ok(id),
+        Some(_) => Err(serde::de::Error::custom("invalid JSON-RPC id")),
+    }
+}
+
+fn deserialize_json_rpc_params<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Serialize)]
@@ -171,7 +191,7 @@ pub async fn sse_handler(State(state): State<AppState>, headers: HeaderMap) -> R
 pub async fn message_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<JsonRpcRequest>,
+    request: Request,
 ) -> (StatusCode, Json<JsonRpcResponse>) {
     let credential = match check_mcp_auth(&state, &headers).await {
         Ok(credential) => credential,
@@ -186,7 +206,17 @@ pub async fn message_handler(
             } else {
                 "MCP is not enabled"
             };
-            return (status, Json(err_response(req.id, code, msg)));
+            return (status, Json(err_response(None, code, msg)));
+        }
+    };
+
+    let Json(req) = match Json::<JsonRpcRequest>::from_request(request, &state).await {
+        Ok(request) => request,
+        Err(rejection) => {
+            return (
+                rejection.status(),
+                Json(err_response(None, -32600, "Invalid Request")),
+            )
         }
     };
 
@@ -226,12 +256,29 @@ async fn dispatch_with_context(
     credential: CredentialContext,
 ) -> JsonRpcResponse {
     let id = req.id.clone();
+    if req.jsonrpc != "2.0" {
+        return err_response(id, -32600, "Invalid Request");
+    }
     match req.method.as_str() {
-        "initialize" => handle_initialize(id),
-        "tools/list" => handle_tools_list(id),
+        "initialize" => {
+            if !structured_params(&req.params) {
+                return err_response(id, -32602, "Invalid params");
+            }
+            handle_initialize(id)
+        }
+        "tools/list" => {
+            if !structured_params(&req.params) {
+                return err_response(id, -32602, "Invalid params");
+            }
+            handle_tools_list(id)
+        }
         "tools/call" => handle_tools_call(state, id, req.params, credential).await,
         _ => err_response(id, -32601, "Method not found"),
     }
+}
+
+fn structured_params(params: &Option<Value>) -> bool {
+    params.as_ref().is_none_or(Value::is_object)
 }
 
 // ---------------------------------------------------------------------------
@@ -261,27 +308,27 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                 {
                     "name": "list_nodes",
                     "description": "List all VoidTower nodes with health status",
-                    "inputSchema": { "type": "object", "properties": {} }
+                    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
                 },
                 {
                     "name": "get_node_metrics",
                     "description": "Get current CPU/RAM/disk metrics for the local node",
-                    "inputSchema": { "type": "object", "properties": {} }
+                    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
                 },
                 {
                     "name": "list_containers",
                     "description": "List all Docker containers with status",
-                    "inputSchema": { "type": "object", "properties": {} }
+                    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
                 },
                 {
                     "name": "list_services",
                     "description": "List systemd services with active state",
-                    "inputSchema": { "type": "object", "properties": {} }
+                    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
                 },
                 {
                     "name": "list_alerts",
                     "description": "List active alerts",
-                    "inputSchema": { "type": "object", "properties": {} }
+                    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
                 },
                 {
                     "name": "get_container_logs",
@@ -291,7 +338,8 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                         "properties": {
                             "container_id": { "type": "string" }
                         },
-                        "required": ["container_id"]
+                        "required": ["container_id"],
+                        "additionalProperties": false
                     }
                 },
                 {
@@ -310,7 +358,7 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                 {
                     "name": "list_routes",
                     "description": "List all registered VoidTower API routes",
-                    "inputSchema": { "type": "object", "properties": {} }
+                    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
                 },
                 {
                     "name": "read_file",
@@ -320,7 +368,8 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                         "properties": {
                             "path": { "type": "string", "description": "Relative path within project root" }
                         },
-                        "required": ["path"]
+                        "required": ["path"],
+                        "additionalProperties": false
                     }
                 },
                 {
@@ -331,7 +380,8 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                         "properties": {
                             "query": { "type": "string", "description": "Search string (grep)" }
                         },
-                        "required": ["query"]
+                        "required": ["query"],
+                        "additionalProperties": false
                     }
                 },
                 {
@@ -342,7 +392,8 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                         "properties": {
                             "name": { "type": "string" }
                         },
-                        "required": ["name"]
+                        "required": ["name"],
+                        "additionalProperties": false
                     }
                 }
             ]
@@ -357,17 +408,36 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
 async fn handle_tools_call(
     state: &AppState,
     id: Option<Value>,
-    params: Value,
+    params: Option<Value>,
     credential: CredentialContext,
 ) -> JsonRpcResponse {
-    let tool_name = match params.get("name").and_then(|v| v.as_str()) {
-        Some(n) => n.to_string(),
-        None => return err_response(id, -32602, "Missing tool name in params"),
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ToolCallParams {
+        name: String,
+        #[serde(default, deserialize_with = "deserialize_json_rpc_params")]
+        arguments: Option<Value>,
+    }
+
+    let Some(params) = params else {
+        return err_response(id, -32602, "Invalid params");
     };
-    let args = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
+    if !params.is_object() {
+        return err_response(id, -32602, "Invalid params");
+    }
+
+    let ToolCallParams {
+        name: tool_name,
+        arguments,
+    } = match serde_json::from_value(params) {
+        Ok(params) => params,
+        Err(_) => return err_response(id, -32602, "Invalid params"),
+    };
+    let args = match arguments {
+        None => serde_json::json!({}),
+        Some(arguments) if arguments.is_object() => arguments,
+        Some(_) => return err_response(id, -32602, "Tool arguments must be an object"),
+    };
 
     let result = invoke_tool(state, credential, &tool_name, args).await;
 
@@ -381,7 +451,7 @@ async fn handle_tools_call(
         Err(e) => ok_response(
             id,
             serde_json::json!({
-                "content": [{ "type": "text", "text": format!("Error: {e}") }],
+                "content": [{ "type": "text", "text": serialized_tool_error(&e) }],
                 "isError": true
             }),
         ),
@@ -577,6 +647,65 @@ async fn tool_container_start(
     serde_json::to_string(&job).map_err(|error| error.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyToolArgs {}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContainerLogsArgs {
+    #[serde(rename = "container_id")]
+    _container_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PathToolArgs {
+    #[serde(rename = "path")]
+    _path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueryToolArgs {
+    #[serde(rename = "query")]
+    _query: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TemplateToolArgs {
+    #[serde(rename = "name")]
+    _name: String,
+}
+
+fn validate_tool_args<T: serde::de::DeserializeOwned>(
+    name: &str,
+    args: &Value,
+) -> Result<(), String> {
+    serde_json::from_value::<T>(args.clone())
+        .map(|_| ())
+        .map_err(|_| format!("Invalid {name} arguments"))
+}
+
+async fn redact_tool_error(state: &AppState, error: &str) -> String {
+    redact::redact_for_ai(state, error)
+        .await
+        .chars()
+        .take(4096)
+        .collect()
+}
+
+fn serialized_tool_error(error: &str) -> String {
+    const MAX_CHARS: usize = 4096;
+    const PREFIX: &str = "Error: ";
+    let available = MAX_CHARS.saturating_sub(PREFIX.chars().count());
+    format!(
+        "{PREFIX}{}",
+        error.chars().take(available).collect::<String>()
+    )
+}
+
 fn tool_action_kind(name: &str) -> ActionKind {
     match action_registry::action(name).map(|metadata| metadata.kind) {
         Some(RegistryActionKind::Read) => ActionKind::Read,
@@ -588,6 +717,18 @@ fn tool_action_kind(name: &str) -> ActionKind {
 /// Used by both the bearer-token JSON-RPC dispatch (`handle_tools_call`) and the
 /// session-authenticated Studio panel (`api/studio.rs`'s `mcp_invoke`).
 pub async fn invoke_tool(
+    state: &AppState,
+    credential: CredentialContext,
+    name: &str,
+    args: Value,
+) -> std::result::Result<String, String> {
+    match invoke_tool_unredacted(state, credential, name, args).await {
+        Ok(text) => Ok(redact::redact_for_ai(state, &text).await),
+        Err(error) => Err(redact_tool_error(state, &error).await),
+    }
+}
+
+async fn invoke_tool_unredacted(
     state: &AppState,
     credential: CredentialContext,
     name: &str,
@@ -632,28 +773,50 @@ pub async fn invoke_tool(
 
     let result = match name {
         "container.start" => tool_container_start(state, &credential, args).await,
-        "list_nodes" => tool_list_nodes(state).await,
-        "get_node_metrics" => tool_get_node_metrics(state).await,
-        "list_containers" => tool_list_containers().await,
-        "list_services" => tool_list_services().await,
-        "list_alerts" => tool_list_alerts(state).await,
-        "get_container_logs" => tool_get_container_logs(args).await,
-        "list_routes" => tool_list_routes(state),
-        "read_file" => tool_read_file(state, args),
-        "search_code" => tool_search_code(state, args),
-        "get_template" => tool_get_template(args),
+        "list_nodes" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_nodes(state).await
+        }
+        "get_node_metrics" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_get_node_metrics(state).await
+        }
+        "list_containers" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_containers().await
+        }
+        "list_services" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_services().await
+        }
+        "list_alerts" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_alerts(state).await
+        }
+        "get_container_logs" => {
+            validate_tool_args::<ContainerLogsArgs>(name, &args)?;
+            tool_get_container_logs(args).await
+        }
+        "list_routes" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_routes(state)
+        }
+        "read_file" => {
+            validate_tool_args::<PathToolArgs>(name, &args)?;
+            tool_read_file(state, args)
+        }
+        "search_code" => {
+            validate_tool_args::<QueryToolArgs>(name, &args)?;
+            tool_search_code(state, args)
+        }
+        "get_template" => {
+            validate_tool_args::<TemplateToolArgs>(name, &args)?;
+            tool_get_template(args)
+        }
         other => Err(format!("Unknown tool: {other}")),
     };
 
-    // Every tool output is a candidate AI-context leak surface (container logs,
-    // alert messages, file contents can all carry secret material) — redact
-    // here, once, so this single choke point covers both the bearer-token
-    // JSON-RPC dispatch and the session-authenticated Studio panel that also
-    // calls `invoke_tool` (see `api/studio.rs::mcp_invoke`).
-    match result {
-        Ok(text) => Ok(redact::redact_for_ai(state, &text).await),
-        Err(e) => Err(e),
-    }
+    result
 }
 
 #[cfg(test)]
@@ -792,6 +955,67 @@ mod tests {
         .await
         .expect_err("typed tool must reject unknown fields");
         assert!(error.starts_with("Invalid container.start arguments:"));
+    }
+
+    #[tokio::test]
+    async fn read_tools_reject_unknown_arguments() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Studio {
+            user_id: "studio-user".into(),
+            role: "owner".into(),
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "list_nodes",
+            serde_json::json!({ "unexpected": true }),
+        )
+        .await
+        .expect_err("read tools must reject unknown fields");
+        assert_eq!(error, "Invalid list_nodes arguments");
+
+        let long_unknown_tool = "x".repeat(10_000);
+        let error = invoke_tool(
+            &state,
+            CredentialContext::Studio {
+                user_id: "studio-user".into(),
+                role: "owner".into(),
+            },
+            &long_unknown_tool,
+            serde_json::json!({}),
+        )
+        .await
+        .expect_err("unknown tool errors must be bounded");
+        assert!(error.len() <= 4096);
+        assert!(!error.contains(&long_unknown_tool));
+    }
+
+    #[test]
+    fn serialized_tool_errors_remain_bounded_after_the_mcp_prefix() {
+        let rendered = serialized_tool_error(&"x".repeat(10_000));
+        assert_eq!(rendered.chars().count(), 4096);
+        assert!(rendered.starts_with("Error: "));
+    }
+
+    #[test]
+    fn direct_tool_schemas_accept_the_published_argument_names() {
+        assert!(validate_tool_args::<PathToolArgs>(
+            "read_file",
+            &serde_json::json!({ "path": "backend/src/api/mcp.rs" }),
+        )
+        .is_ok());
+        assert!(validate_tool_args::<QueryToolArgs>(
+            "search_code",
+            &serde_json::json!({ "query": "CredentialContext" }),
+        )
+        .is_ok());
+        assert!(validate_tool_args::<TemplateToolArgs>(
+            "get_template",
+            &serde_json::json!({ "name": "new_mcp_tool" }),
+        )
+        .is_ok());
     }
 
     #[tokio::test]
@@ -995,7 +1219,7 @@ mod tests {
                 jsonrpc: "2.0".into(),
                 id: Some(serde_json::json!(1)),
                 method: "tools/call".into(),
-                params: serde_json::json!({ "name": "list_alerts", "arguments": {} }),
+                params: Some(serde_json::json!({ "name": "list_alerts", "arguments": {} })),
             },
         )
         .await;
@@ -1035,7 +1259,7 @@ mod tests {
                 jsonrpc: "2.0".into(),
                 id: Some(serde_json::json!(1)),
                 method: "tools/call".into(),
-                params: serde_json::json!({ "name": "list_alerts", "arguments": {} }),
+                params: Some(serde_json::json!({ "name": "list_alerts", "arguments": {} })),
             },
         )
         .await;

@@ -21,11 +21,51 @@ Web-client session and recovery behavior:
 `backend/src/action_registry.rs` is the authoritative security inventory for every registered
 route and structured AI/automation action. Each route explicitly declares its session policy,
 concrete credential mechanism, bearer policy, risk class, approval policy, and AI exposure.
-Unknown bearer routes remain denied. Handler checks remain defense in depth. MCP's handlers expect
-API-token bearer credentials, but the global bearer policy deliberately remains denied pending a
-separate audited correction; S0-03 does not broaden that access path. The two embed-router paths
-explicitly retain their existing unscoped bearer-to-session bridge because that sub-router does not
-mount scope enforcement.
+Unknown bearer routes remain denied. Handler checks remain defense in depth. MCP's two handlers are
+explicitly `Unscoped` in the registry so a valid token can reach the protocol authentication
+handler; individual tools then enforce their exact declared MCP scope at the canonical invocation
+boundary. The two embed-router paths explicitly retain their existing unscoped bearer-to-session
+bridge because that sub-router does not mount scope enforcement.
+
+## Built-in MCP and Studio tool boundary
+
+Built-in MCP access is disabled unless the `odysseus.mcp_enabled` setting is `true`. When enabled,
+clients use an API-token bearer credential with the following protocol endpoints:
+
+```
+GET  /api/mcp
+POST /api/mcp/message
+```
+
+`GET /api/mcp` returns a short-lived SSE endpoint event pointing at `/api/mcp/message`. The POST
+body is JSON-RPC 2.0 (`jsonrpc`, `id`, `method`, and optional `params`); malformed JSON returns a
+bounded `400` JSON-RPC error, while unknown request fields, an unsupported JSON-RPC version,
+unknown `tools/call` parameter or tool-argument fields, invalid identifier types, explicit `null` arguments, and non-object parameters are rejected
+without dispatch. The message and Studio invoke bodies are capped at 64 KiB. Protocol errors use
+JSON-RPC error codes; tool and policy failures are returned as a bounded `result` with `isError:
+true` and never bypass the shared invocation boundary. Authentication runs before JSON parsing.
+
+The currently approved built-in mutation is `container.start`. It requires the `containers:restart`
+token scope, a canonical container resource ID, and a caller-supplied `request_id`. The handler
+submits through the typed action registry and durable operation kernel, so the response is a
+serialized job summary and repeating the same request ID replays the existing job. Unknown tools,
+wrong scopes, unknown resources, policy denials, and invalid typed arguments fail closed before a
+provider mutation. Tool output is passed through the shared AI redaction choke point.
+
+The Studio tool panel uses the same tool registry and invocation choke point with a session cookie:
+
+```
+GET  /api/studio/mcp/tools
+POST /api/studio/mcp/invoke   { "name": "...", "arguments": { ... } }
+```
+
+Studio invocation rejects malformed JSON with `400 bad_request`, unsupported content types with
+`415 unsupported_media_type`, and unknown request fields with the standard `422
+unprocessable_entity` validation envelope. It returns `{ "ok": false, "error": "..." }` for
+bounded tool/policy failures. Session authorization does not make an unapproved action callable.
+`POST /api/ai/ask` is a provider-streaming chat endpoint only; its prompt explicitly does not
+execute mutation tools. AI mutation requests must use an approved typed MCP/Studio action and are
+not inferred from chat text.
 
 ---
 

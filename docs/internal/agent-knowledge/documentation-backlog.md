@@ -421,3 +421,21 @@
 - No end-user behavior changed. Future operator documentation still needs the produced artifact, clean installation, first startup, upgrade, backup/restore or rollback, named-platform runtime, and publication runbook; this source/build milestone cannot establish those claims.
 - Reusable checks: `cd backend && cargo fmt --all -- --check`; `cd backend && cargo clippy --all-targets --all-features -- -D warnings`; `GITHUB_WORKSPACE=\"$PWD\" cargo test --manifest-path backend/Cargo.toml --all-targets --all-features`; `cargo deny check`; `PYTHONPATH=/workspace/.voidtower-mcp-deps python3 -m unittest discover -s odysseus-mcp-servers/tests -v`; and `PYTHONPATH=/workspace/.voidtower-mcp-deps PYTHONDONTWRITEBYTECODE=1 python3 scripts/release_gate.py --repo . --scope all --json --output dev-data/release-gate-r0-03-final-qualified.json`.
 - Evidence status: `integration-verified` at the repository/build/test boundary. Runtime, browser, Docker, clean-install, upgrade/recovery, named-platform, and release qualification remain blocked by unavailable host/runtime boundaries.
+
+## M1-02 built-in MCP and Studio ingress boundary — 2026-09-20
+
+- End-user API documentation changed: `docs/api.md` now documents enabling and authenticating built-in MCP, the JSON-RPC 2.0 request/error contract, 64 KiB bounds, the `container.start` scope and durable-job semantics, Studio's shared invocation boundary, and the fact that `/api/ai/ask` does not execute mutation tools.
+- Future documentation required: standalone MCP adapter parity is documented separately; the remaining M1-02 family still needs stable adapter contracts for webhook/automation/scheduler/CLI ingress, approval/recovery examples for ambiguous outcomes, and a supported runtime/provider qualification runbook.
+- Reusable focused checks: `cd backend && cargo test api::scope_bypass_tests --all-features`; `cd backend && cargo test api::mcp::tests --all-features`; `cd backend && cargo test api::studio::tests --all-features`; `cd backend && cargo test auth::scope_enforce --all-features`; `cd backend && cargo test api::ai_ask::tests --all-features`.
+- Evidence boundary: real-router source/test integration is verified for this bounded MCP/Studio/AI contract. External provider execution, browser/runtime qualification, packaged installation, upgrade/recovery, and release qualification remain blocked or untested.
+
+## M1-02 ingress validation correction — 2026-09-20
+
+- End-user API documentation was refined in `docs/api.md`: unauthenticated malformed MCP bodies are rejected before parsing; authenticated malformed JSON is `400` with a JSON-RPC error; invalid id types and unknown fields use typed `422` validation; non-object initialize/tools/list params and explicit null tool arguments return JSON-RPC `-32602`; Studio's standard validation envelope is documented.
+- Developer continuity now records strict `tools/call` params, direct-tool schemas, shared error redaction, and the 4096-character tool-error bound. Future documentation still needs standalone MCP adapter parity, webhook/automation/scheduler/CLI ingress contracts, ambiguous-outcome recovery examples, and supported runtime/provider qualification.
+- Reusable final checks: `cd backend && cargo test api::scope_bypass_tests --all-features`; `cd backend && cargo test api::mcp::tests --all-features`; `cd backend && cargo test api::studio::tests --all-features`; `cd backend && cargo test auth::scope_enforce --all-features`; `cd backend && cargo test api::ai_ask::tests --all-features`; `cd backend && cargo clippy --all-targets --all-features -- -D warnings`; `cd backend && cargo fmt --all -- --check`; and `cd backend && cargo test --all-targets --all-features`.
+
+## M1-02 final review correction — 2026-09-20
+
+- End-user documentation now records Studio MCP's preserved extractor statuses: `400` malformed JSON, `415` unsupported media, `413` oversized body, and `422` typed validation/unknown fields. No new end-user guide is required for this correction beyond the API contract.
+- Final reusable evidence is `cd backend && cargo test --all-targets --all-features` (679 unit tests and 2 golden-path integration tests), strict Clippy, rustfmt check, schema migration ownership, `git diff --check`, and source-truth check. Runtime/browser/provider qualification remains future documentation work.

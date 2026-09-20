@@ -1594,7 +1594,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         "/api/mcp",
         SessionPolicy::HandlerManaged,
         CredentialPolicy::BearerApiToken,
-        BearerPolicy::Denied,
+        // MCP authenticates the token in its handler, then applies the exact tool scope at the
+        // canonical invocation boundary. The generic bearer middleware must therefore allow the
+        // request to reach that handler rather than denying the entire protocol endpoint.
+        BearerPolicy::Unscoped,
         RiskClass::Read,
         ApprovalPolicy::RiskLadder,
         AiExposure::Context
@@ -1604,7 +1607,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         "/api/mcp/message",
         SessionPolicy::HandlerManaged,
         CredentialPolicy::BearerApiToken,
-        BearerPolicy::Denied,
+        BearerPolicy::Unscoped,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
         AiExposure::Callable
@@ -5137,7 +5140,7 @@ mod tests {
     }
 
     #[test]
-    fn unscoped_bearer_routes_are_limited_to_the_embed_router() {
+    fn unscoped_bearer_routes_are_limited_to_explicit_handler_managed_surfaces() {
         let unscoped: HashSet<(&str, &str)> = ROUTES
             .iter()
             .filter(|metadata| metadata.bearer == BearerPolicy::Unscoped)
@@ -5148,8 +5151,10 @@ mod tests {
             HashSet::from([
                 ("GET", "/api/apps/embed/:project_name/*path"),
                 ("GET", "/plugin-assets/:id/*path"),
+                ("GET", "/api/mcp"),
+                ("POST", "/api/mcp/message"),
             ]),
-            "only routes that bypass scope_enforce may declare unscoped bearer access"
+            "only explicitly handler-managed surfaces may declare unscoped bearer access"
         );
     }
 
@@ -5368,12 +5373,12 @@ mod tests {
     }
 
     #[test]
-    fn mcp_handler_credentials_remain_bearer_denied() {
+    fn mcp_handler_credentials_are_explicitly_handler_managed() {
         for (method, path) in [("GET", "/api/mcp"), ("POST", "/api/mcp/message")] {
             let metadata = route(method, path)
                 .unwrap_or_else(|| panic!("missing MCP route metadata: {method} {path}"));
             assert_eq!(metadata.credential, CredentialPolicy::BearerApiToken);
-            assert_eq!(metadata.bearer, BearerPolicy::Denied);
+            assert_eq!(metadata.bearer, BearerPolicy::Unscoped);
         }
     }
 }

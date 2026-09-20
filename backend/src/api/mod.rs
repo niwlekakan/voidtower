@@ -257,7 +257,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/studio/gallery",                      get(studio::gallery_list))
         .route("/api/studio/gallery/:kind/:filename",      delete(studio::gallery_delete))
         .route("/api/studio/mcp/tools",                    get(studio::mcp_tools))
-        .route("/api/studio/mcp/invoke",                   post(studio::mcp_invoke))
+        .route("/api/studio/mcp/invoke",                   post(studio::mcp_invoke).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         // Models
         .route("/api/models",              get(models::list_models))
         .route("/api/models/download",     post(models::start_download))
@@ -482,7 +482,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mods/rollback",     post(mods::rollback_mod))
         // MCP (Model Context Protocol) server
         .route("/api/mcp",         get(mcp::sse_handler))
-        .route("/api/mcp/message", post(mcp::message_handler))
+        .route("/api/mcp/message", post(mcp::message_handler).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         // Disaster Recovery
         .route("/api/disaster/export-config",          post(disaster::export_config))
         .route("/api/disaster/import-config",          post(disaster::import_config))

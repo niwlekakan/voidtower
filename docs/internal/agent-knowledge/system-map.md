@@ -624,6 +624,13 @@
 ## V6-01 activation recheck session — 2026-09-21
 
 - No new V6-01 product-contract implementation was started in this session because the approved handoff still requires observed protected activation of `.github/workflows/compatibility-enforcement.yml` before the remaining schema/generated-client work; existing version-negotiation, envelope, and SSE-recovery seams remain historical source/test evidence.
-- Current `HEAD` is `cf78751e7af644ff68db3df5a70dd6f3aa419de0`; `origin/dev` remains `b9a24729c2a7750900f285d61daa4439e0cd95f9`. The workflow is locally present, but this sandbox has no authenticated protected workflow-run or branch-protection evidence.
+- At that prior checkpoint, `HEAD` was `cf78751e7af644ff68db3df5a70dd6f3aa419de0`; `origin/dev` remains `b9a24729c2a7750900f285d61daa4439e0cd95f9`. The workflow is locally present, but that sandbox had no authenticated protected workflow-run or branch-protection evidence.
 - Repository truth and compatibility mutation inventory passed; `git diff --check` passed; pre-existing untracked cache/testing paths remain untouched. These are source/inventory checks only and do not activate protected enforcement.
 - Maturity remains `blocked`. After operator-side activation evidence, resume V6-01 across source-owned schemas, generated clients/OpenAPI where applicable, negotiation/errors, SSE recovery, drift tests, and documentation.
+
+## V6-01 activation recheck session 2 — 2026-09-21
+
+- No V6-01 product-contract implementation started because the approved handoff still requires protected activation of `.github/workflows/compatibility-enforcement.yml` before the remaining schema/generated-client work.
+- Fresh external evidence: `origin/dev` remains `b9a24729c2a7750900f285d61daa4439e0cd95f9`; the public workflow-runs endpoint returns HTTP 404 for the workflow on `dev`; the public branch-protection endpoint returns HTTP 401; and `gh` is unavailable. No protected run ID or required-status configuration is observable in this sandbox.
+- Local evidence passed: repository truth (`source_inventory_only`), compatibility inventory (`status: passed`, `unknown: []`), repository hygiene (`670 tracked files checked`), schema migration ownership, and `git diff --check`. The local workflow file exists, but this does not establish protected activation.
+- Maturity remains `blocked`; runtime/provider/browser/Docker/install/upgrade/recovery/release qualification was not attempted. The next dependency is operator-side protected-branch publication and observation, followed by V6-01 source-owned schemas, generated clients/OpenAPI, negotiation/errors, SSE recovery, drift tests, and documentation.

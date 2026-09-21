@@ -596,7 +596,7 @@
 ## V6-01 activation recheck — 2026-09-21
 
 - No end-user API documentation changed because no V6-01 contract behavior was implemented while protected verifier activation remains unresolved.
-- Required developer documentation before V6-01 can proceed: record the first protected `pull_request_target` compatibility-enforcement run ID and required branch-protection status after publication to the protected development branch.
+- Required developer documentation before V6-01 can proceed: record the first protected `pull_request_target` compatibility-enforcement run database ID and the required status context(s) returned by authenticated branch-protection inspection after publication to the protected development branch.
 - Required V6-01 documentation after activation: source-owned resource/action/plan/job/approval/error/inventory/event schema semantics, compatibility/deprecation rules, API-version/error negotiation, bounded SSE gap recovery, generated client/OpenAPI ownership, and exact drift-check commands. Generated fields must not be duplicated manually in prose.
 - Reusable blocked-checkpoint commands: `PYTHONDONTWRITEBYTECODE=1 python3 scripts/repo_truth.py --repo . --json --check`; `python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `git ls-remote origin refs/heads/dev refs/heads/main`; and `git diff --check`.
 - Evidence boundary: local source/inventory checks are passed, but protected GitHub activation and branch protection remain unverified. V6-01 remains `blocked`; no generated-contract or runtime qualification claim is made.
@@ -604,7 +604,15 @@
 ## V6-01 activation recheck session — 2026-09-21
 
 - No end-user API documentation changed because no new V6-01 contract behavior was implemented in this session while protected verifier activation remains unresolved; existing version-negotiation, envelope, and SSE-recovery behavior remains historical source/test evidence.
-- Required developer documentation before V6-01 can proceed: record the first protected `pull_request_target` compatibility-enforcement run ID and required branch-protection status after publication to the protected development branch.
+- Required developer documentation before V6-01 can proceed: record the first protected `pull_request_target` compatibility-enforcement run database ID and the required status context(s) returned by authenticated branch-protection inspection after publication to the protected development branch.
 - Required V6-01 documentation after activation: source-owned resource/action/plan/job/approval/error/inventory/event semantics, compatibility/deprecation and negotiation/error rules, bounded SSE gap recovery, generated client/OpenAPI ownership, and exact drift-check commands without manually duplicating generated fields.
 - Reusable blocked-session commands: `PYTHONDONTWRITEBYTECODE=1 python3 scripts/repo_truth.py --repo . --json --check`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `git ls-remote origin refs/heads/dev refs/heads/main`; and `git diff --check`.
 - Evidence boundary: source/inventory checks passed, but protected GitHub activation and branch protection remain unverified. V6-01 remains `blocked`; no generated-contract or runtime qualification claim is made.
+
+## V6-01 activation recheck session 2 — 2026-09-21
+
+- No end-user API documentation changed because no V6-01 contract behavior was implemented while protected verifier activation remains unresolved.
+- Required developer documentation before V6-01 can proceed: record the first protected `pull_request_target` compatibility-enforcement run database ID and the required status context(s) returned by authenticated branch-protection inspection after publication to the protected development branch.
+- Required V6-01 documentation after activation: source-owned resource/action/plan/job/approval/error/inventory/event semantics, compatibility/deprecation and negotiation/error rules, bounded SSE gap recovery, generated client/OpenAPI ownership, and exact drift-check commands without manually duplicating generated fields.
+- Reusable blocked-session commands: `git ls-remote origin refs/heads/dev refs/heads/main`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/repo_truth.py --repo . --json --check`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `bash scripts/check-repository-hygiene.sh`; `bash scripts/check-schema-migration-ownership.sh`; and `git diff --check`.
+- Evidence boundary: local source/inventory/hygiene/schema/diff checks passed, but protected GitHub activation and branch protection remain unverified. V6-01 remains `blocked`; no generated-contract or runtime qualification claim is made.

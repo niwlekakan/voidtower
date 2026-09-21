@@ -649,3 +649,9 @@
 - Frontend durable mutation callers use `parseJobSuccessEnvelope`; update routes preserve legacy dry-run plan responses but parse non-dry-run jobs. Event-stream URLs and setup snippets use `Authorization` headers rather than query-string bearer tokens.
 - Evidence passed: focused workflow/version tests, full backend tests, strict Clippy, manifest-scoped rustfmt, frontend full tests/type-check/lint/build, generated-contract drift check, repository truth, compatibility inventory, hygiene, migration ownership, and diff checks. This is integration-verified for the durable-operation envelope boundary.
 - Broader V6-01 remains blocked by the protected verifier activation recorded in the latest blocked handoff and still needs source-owned resource/action/inventory/event schemas, OpenAPI/client generation, deprecation rules, and SSE recovery integration evidence. Runtime and release claims remain absent.
+
+## V6-01 durable-operation envelope session closure — 2026-09-21
+
+- Verified commit `83ef1d39b01dc76b05759892a1e9277164f85dd9` standardizes v1 durable job/approval envelopes across canonical and adopted compatibility seams, bounds approval comments, and removes bearer-token query URLs.
+- Independent review passed with no security or logic findings. The exact final gates passed after removing only disposable `/tmp/vt-p1-*` and `/tmp/voidtower-*` fixtures: backend 693 unit + 2 golden-path integration tests, strict Clippy, rustfmt, frontend tests/type-check/lint/build, generated drift, source truth, compatibility inventory, hygiene, migration ownership, and diff checks.
+- Broader V6-01 remains blocked on protected verifier activation and still requires source-owned resource/action/inventory/event schemas, OpenAPI/client generation, deprecation rules, and SSE recovery integration evidence; runtime and release claims remain absent.

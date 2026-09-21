@@ -631,3 +631,9 @@
 - Future documentation required: complete source-owned resource/action/inventory/event schemas, OpenAPI/generated-client ownership, compatibility/deprecation windows, SSE reconnect/gap recovery client behavior, and protected drift enforcement after verifier activation.
 - Reusable checks: `cd backend && cargo test --all-features operation_workflows -- --nocapture`; `cd backend && cargo test --all-features api::version::tests -- --nocapture`; `cd backend && cargo test --all-targets --all-features`; `cd backend && cargo clippy --all-targets --all-features -- -D warnings`; `cargo fmt --manifest-path backend/Cargo.toml --check`; `cd frontend && npm test`; `cd frontend && npm run type-check`; `cd frontend && npm run lint`; `cd frontend && npm run build`; `node scripts/generate-api-contract.mjs --check`; `python3 scripts/repo_truth.py --repo . --json --check`; `python3 scripts/compatibility_mutation_inventory.py --repo . --check`; and `git diff --check`.
 - Evidence boundary: durable-operation envelope boundary is integration-verified locally; broader V6-01 remains blocked on protected verifier activation and the listed contract breadth. Runtime/provider/browser/release qualification is not claimed.
+
+## V6-01 durable-operation envelope session closure — 2026-09-21
+
+- End-user documentation delivered in `README.md`, `docs/api.md`, `docs/api-tokens.md`, `docs/integrations/odysseus.md`, and the Integrations setup snippet for v1 durable envelopes, bounded approval comments, consistent compatibility responses, and header-only SSE bearer authentication.
+- Future documentation remains required for complete resource/action/inventory/event schemas, OpenAPI/generated-client ownership, compatibility/deprecation windows, SSE reconnect/gap recovery client behavior, and protected drift enforcement after verifier activation.
+- Reusable final checks are recorded in the dated handoff; the exact verified commit is `83ef1d39b01dc76b05759892a1e9277164f85dd9`.

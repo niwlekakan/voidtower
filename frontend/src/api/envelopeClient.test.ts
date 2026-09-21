@@ -5,9 +5,13 @@ import {
   parseApprovalListEnvelope,
   parseApprovalReadEnvelope,
   parseApiErrorEnvelope,
+  parseEventHistoryEnvelope,
   parseJobListEnvelope,
   parseJobSuccessEnvelope,
   parsePlanSuccessEnvelope,
+  parseResourceCapabilitiesEnvelope,
+  parseResourceListEnvelope,
+  parseResourceReadEnvelope,
   parseVersionNegotiationErrorEnvelope,
 } from './envelopeClient'
 
@@ -18,6 +22,22 @@ const validJobEnvelope = {
   resource_id: 'resource-1',
   action: 'container.start',
   job,
+}
+
+const resource = { id: 'resource-1', kind: 'container', display_name: 'Example container', revision: 1 }
+const event = {
+  sequence: 1,
+  event_id: 'event-1',
+  schema_version: 1,
+  event_type: 'job.running.v1',
+  occurred_at: 100,
+  actor: null,
+  resource_id: 'resource-1',
+  job_id: 'job-1',
+  approval_id: null,
+  correlation_id: 'correlation-1',
+  causation_id: null,
+  payload: { state: 'running' },
 }
 
 describe('versioned API envelope adapters', () => {
@@ -32,6 +52,40 @@ describe('versioned API envelope adapters', () => {
     expect(parseApprovalListEnvelope({ schema_version: 1, approvals: [] })).toEqual({ schema_version: 1, approvals: [] })
     expect(parseApprovalReadEnvelope({ schema_version: 1, approval: { id: 'approval-1' } }))
       .toEqual({ schema_version: 1, approval: { id: 'approval-1' } })
+  })
+
+  it('parses source-owned resource and event-history envelopes', () => {
+    expect(parseResourceListEnvelope({ schema_version: 1, resources: [resource] }))
+      .toEqual({ schema_version: 1, resources: [resource] })
+    expect(parseResourceReadEnvelope({
+      schema_version: 1,
+      resource,
+      aliases: [{ resource_id: 'resource-1', namespace: 'provider', scope_key: 'default', value: 'container-1' }],
+      capabilities: [],
+    })).toMatchObject({ schema_version: 1, resource })
+    expect(parseResourceCapabilitiesEnvelope({ schema_version: 1, resource_id: 'resource-1', capabilities: [] }))
+      .toEqual({ schema_version: 1, resource_id: 'resource-1', capabilities: [] })
+    expect(parseEventHistoryEnvelope({
+      schema_version: 1,
+      events: [event],
+      next_cursor: 1,
+      earliest_available: 1,
+      latest_available: 1,
+    })).toMatchObject({ schema_version: 1, events: [event], next_cursor: 1 })
+  })
+
+  it.each([
+    ['an incompatible resource version', { schema_version: 2, resources: [] }],
+    ['a malformed resource identity', { schema_version: 1, resources: [{ ...resource, revision: -1 }] }],
+    ['an unknown event actor type', { schema_version: 1, events: [{ ...event, actor: { actor_type: 'future', id: null, source: null } }], next_cursor: 1, earliest_available: 1, latest_available: 1 }],
+    ['a non-monotonic history cursor', { schema_version: 1, events: [event], next_cursor: 0, earliest_available: 1, latest_available: 1 }],
+    ['an event outside retained bounds', { schema_version: 1, events: [event], next_cursor: 1, earliest_available: 2, latest_available: 3 }],
+    ['inverted retained bounds', { schema_version: 1, events: [], next_cursor: 0, earliest_available: 2, latest_available: 1 }],
+  ])('rejects %s at the source-owned read contract', (_description, body) => {
+    expect(() => {
+      if ('resources' in body) return parseResourceListEnvelope(body)
+      return parseEventHistoryEnvelope(body)
+    }).toThrowError(ApiEnvelopeError)
   })
 
   it('rejects unversioned collection envelopes', () => {

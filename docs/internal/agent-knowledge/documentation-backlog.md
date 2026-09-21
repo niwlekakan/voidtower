@@ -637,3 +637,10 @@
 - End-user documentation delivered in `README.md`, `docs/api.md`, `docs/api-tokens.md`, `docs/integrations/odysseus.md`, and the Integrations setup snippet for v1 durable envelopes, bounded approval comments, consistent compatibility responses, and header-only SSE bearer authentication.
 - Future documentation remains required for complete resource/action/inventory/event schemas, OpenAPI/generated-client ownership, compatibility/deprecation windows, SSE reconnect/gap recovery client behavior, and protected drift enforcement after verifier activation.
 - Reusable final checks are recorded in the dated handoff; the exact verified commit is `83ef1d39b01dc76b05759892a1e9277164f85dd9`.
+
+## V6-01 resource and event read-contract continuation — 2026-09-21
+
+- End-user API documentation changed in `docs/api.md`: resource list/read/capability and event-history response envelopes, pagination bounds, client parser validation, and authoritative history-read semantics are documented.
+- Future documentation required: source-owned action/inventory schemas, generated/OpenAPI client ownership, compatibility/deprecation windows, and protected drift enforcement after verifier activation. Runtime/browser/release documentation remains unclaimed.
+- Reusable checks: `cd backend && cargo test --all-features api::event_stream_tests -- --nocapture`; `cd backend && cargo test --all-features api::version::tests -- --nocapture`; `cd frontend && npm test -- --run src/api/envelopeClient.test.ts src/api/operationsClient.test.ts src/api/generatedApiContract.test.ts src/operations/durableEvents.test.ts`; `cd frontend && npm run type-check`; `cd frontend && npm run lint`; `cd frontend && npm run build`; `cargo fmt --manifest-path backend/Cargo.toml -- --check`; `node scripts/generate-api-contract.mjs --check`; `python3 scripts/repo_truth.py --repo . --json --check`; and `git diff --check`.
+- Evidence boundary: this read-contract continuation is integration-verified locally at the backend real-router and frontend parser/client boundaries; protected activation and runtime/browser/release qualification remain blocked or unclaimed.

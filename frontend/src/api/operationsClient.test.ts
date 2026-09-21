@@ -70,4 +70,48 @@ describe('durable operation API client', () => {
     expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ comment: 'reviewed' })
     expect(fetch).toHaveBeenCalledTimes(2)
   })
+
+  it('uses versioned resource and event-history read contracts', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(ok({ schema_version: 1, resources: [] }))
+      .mockResolvedValueOnce(ok({
+        schema_version: 1,
+        resource: { id: 'resource/id', kind: 'container', display_name: 'Example', revision: 1 },
+        aliases: [],
+        capabilities: [],
+      }))
+      .mockResolvedValueOnce(ok({ schema_version: 1, resource_id: 'resource/id', capabilities: [] }))
+      .mockResolvedValueOnce(ok({
+        schema_version: 1,
+        events: [],
+        next_cursor: 7,
+        earliest_available: 3,
+        latest_available: 7,
+      }))
+    vi.stubGlobal('fetch', fetch)
+
+    await api.resources.list(25)
+    await api.resources.get('resource/id')
+    await api.resources.capabilities('resource/id')
+    await api.events.history(3, 10)
+    expect(api.events.streamUrl(3)).toBe('/api/events/stream?after=3')
+
+    expect(fetch.mock.calls.map(call => call[0])).toEqual([
+      '/api/resources?limit=25',
+      '/api/resources/resource%2Fid',
+      '/api/resources/resource%2Fid/capabilities',
+      '/api/events?after=3&limit=10',
+    ])
+  })
+
+  it('rejects invalid read pagination before making a request', () => {
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+
+    expect(() => api.resources.list(0)).toThrowError(expect.objectContaining({ code: 'invalid_pagination', status: 400 }))
+    expect(() => api.events.history(-1)).toThrowError(expect.objectContaining({ code: 'invalid_pagination', status: 400 }))
+    expect(() => api.events.history(0, 501)).toThrowError(expect.objectContaining({ code: 'invalid_pagination', status: 400 }))
+    expect(() => api.events.streamUrl(-1)).toThrowError(expect.objectContaining({ code: 'invalid_pagination', status: 400 }))
+    expect(fetch).not.toHaveBeenCalled()
+  })
 })

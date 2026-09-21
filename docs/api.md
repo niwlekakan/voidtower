@@ -99,6 +99,20 @@ POST /api/approvals/:id/reject                 { "comment": "..." }
 GET  /api/events?after=&limit=
 ```
 
+Resource reads and retained event history are versioned read contracts. Resource list/read/capability
+responses include `schema_version: 1`; event history includes `schema_version: 1`, `events`,
+`next_cursor`, `earliest_available`, and `latest_available`. `limit` is optional (default `100`)
+and must be an integer from `1` through `500`; event `after` is optional (default `0`) and must be
+non-negative. Invalid query values return the bounded `400 bad_request` envelope before the database
+read. The frontend client validates resource identity, alias/capability ownership, event actor types,
+event sequence ordering, and cursor bounds before exposing these responses to callers.
+
+The web client exposes these seams through `api.resources.list`, `api.resources.get`,
+`api.resources.capabilities`, and `api.events.history`; all four use the source-owned contract
+parsers. The event history endpoint is an authoritative recovery read only. It does not execute
+mutations and its events remain bounded history/invalidation facts rather than a materialized state
+store.
+
 All durable-operation responses negotiate API version `1` through the optional
 `x-voidtower-api-version` request header. A successful response echoes that version. Job and
 approval reads use source-owned v1 envelopes: job lists return

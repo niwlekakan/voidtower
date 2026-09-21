@@ -1,4 +1,5 @@
 use crate::{
+    api::version::{EventHistoryEnvelopeV1, EVENT_HISTORY_ENVELOPE_SCHEMA_VERSION, MAX_PAGE_LIMIT},
     auth,
     error::{AppError, Result},
     operations::events::{self, sse_frame_fits, EventBounds},
@@ -28,10 +29,8 @@ pub struct StreamQuery {
 
 #[derive(Deserialize)]
 pub struct HistoryQuery {
-    #[serde(default)]
-    pub after: i64,
-    #[serde(default = "default_history_limit")]
-    pub limit: i64,
+    pub after: Option<String>,
+    pub limit: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,11 +74,39 @@ fn default_history_limit() -> i64 {
     100
 }
 
+fn parse_history_query(query: HistoryQuery) -> Result<(i64, i64)> {
+    let after = query
+        .after
+        .as_deref()
+        .map(|value| value.parse::<i64>())
+        .transpose()
+        .map_err(|_| AppError::BadRequest("after must be a non-negative event sequence".into()))?
+        .unwrap_or(0);
+    if after < 0 {
+        return Err(AppError::BadRequest(
+            "after must be a non-negative event sequence".into(),
+        ));
+    }
+    let limit = query
+        .limit
+        .as_deref()
+        .map(|value| value.parse::<i64>())
+        .transpose()
+        .map_err(|_| AppError::BadRequest("limit must be an integer between 1 and 500".into()))?
+        .unwrap_or_else(default_history_limit);
+    if !(1..=MAX_PAGE_LIMIT).contains(&limit) {
+        return Err(AppError::BadRequest(
+            "limit must be an integer between 1 and 500".into(),
+        ));
+    }
+    Ok((after, limit))
+}
+
 pub async fn history_handler(
     State(state): State<AppState>,
     jar: CookieJar,
     Query(query): Query<HistoryQuery>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<EventHistoryEnvelopeV1<crate::operations::contracts::EventEnvelopeV1>>> {
     let session_id = jar
         .get("vt_session")
         .map(|cookie| cookie.value().to_owned())
@@ -89,17 +116,21 @@ pub async fn history_handler(
         .map_err(AppError::Internal)?
         .ok_or(AppError::Unauthorized)?;
     super::role_guard::require_operator(&user)?;
-    let events = events::list_after(&state.db, query.after, query.limit)
+    let (after, limit) = parse_history_query(query)?;
+    let events = events::list_after(&state.db, after, limit)
         .await
         .map_err(AppError::Internal)?;
-    let next_cursor = events
-        .last()
-        .map(|event| event.sequence)
-        .unwrap_or(query.after);
-    Ok(axum::Json(serde_json::json!({
-        "events": events,
-        "next_cursor": next_cursor,
-    })))
+    let bounds = events::bounds(&state.db)
+        .await
+        .map_err(AppError::Internal)?;
+    let next_cursor = events.last().map(|event| event.sequence).unwrap_or(after);
+    Ok(axum::Json(EventHistoryEnvelopeV1 {
+        schema_version: EVENT_HISTORY_ENVELOPE_SCHEMA_VERSION,
+        events,
+        next_cursor,
+        earliest_available: bounds.earliest,
+        latest_available: bounds.latest,
+    }))
 }
 
 /// Cursor-resumable durable event delivery. `GET /api/integrations/events` is mounted to this

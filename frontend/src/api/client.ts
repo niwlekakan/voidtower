@@ -6,16 +6,21 @@ import {
   parseApprovalListEnvelope,
   parseApprovalReadEnvelope,
   parseApiErrorEnvelope,
+  parseEventHistoryEnvelope,
   parseJobListEnvelope,
   parseJobReadEnvelope,
   parseJobSuccessEnvelope,
   parsePlanSuccessEnvelope,
+  parseResourceCapabilitiesEnvelope,
+  parseResourceListEnvelope,
+  parseResourceReadEnvelope,
   parseVersionNegotiationErrorEnvelope,
 } from './envelopeClient'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 const API_VERSION_HEADER = 'x-voidtower-api-version'
 const MAX_CANONICAL_TARGET_LENGTH = 256
+const MAX_PAGE_LIMIT = 500
 
 export class ApiClientError extends Error {
   constructor(
@@ -126,6 +131,18 @@ function validateCanonicalTarget(value: string): void {
   }
 }
 
+function validatePageLimit(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_LIMIT) {
+    throw new ApiClientError('Invalid page limit.', 'invalid_pagination', 400)
+  }
+}
+
+function validateEventCursor(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ApiClientError('Invalid event cursor.', 'invalid_pagination', 400)
+  }
+}
+
 function proxyOptsBody(opts: import('./types').ProxyOptions) {
   return {
     custom_headers: opts.customHeaders ?? [],
@@ -183,10 +200,43 @@ export const api = {
   },
 
   events: {
+    history: (after = 0, limit = 100) => {
+      validateEventCursor(after)
+      validatePageLimit(limit)
+      return request<import('./types').DurableEventHistoryResponse>(
+        `/api/events?after=${encodeURIComponent(String(after))}&limit=${encodeURIComponent(String(limit))}`,
+        undefined,
+        parseEventHistoryEnvelope,
+      )
+    },
     streamUrl: (after?: number) => {
+      if (after !== undefined) validateEventCursor(after)
       const query = after === undefined ? '' : `?after=${encodeURIComponent(String(after))}`
       return `${BASE}/api/events/stream${query}`
     },
+  },
+
+  resources: {
+    list: (limit = 100) => {
+      validatePageLimit(limit)
+      return request<import('./types').DurableResourceListResponse>(
+        `/api/resources?limit=${encodeURIComponent(String(limit))}`,
+        undefined,
+        parseResourceListEnvelope,
+      )
+    },
+    get: (id: string) =>
+      request<import('./types').DurableResourceReadResponse>(
+        `/api/resources/${encodeURIComponent(id)}`,
+        undefined,
+        parseResourceReadEnvelope,
+      ),
+    capabilities: (id: string) =>
+      request<import('./types').DurableResourceCapabilitiesResponse>(
+        `/api/resources/${encodeURIComponent(id)}/capabilities`,
+        undefined,
+        parseResourceCapabilitiesEnvelope,
+      ),
   },
 
   services: {

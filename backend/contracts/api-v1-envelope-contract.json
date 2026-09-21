@@ -101,6 +101,47 @@
       "requested_after": 0,
       "earliest_available": 1,
       "latest_available": 1
+    },
+    "resource_list_v1": {
+      "schema_version": 1,
+      "resources": [
+        {
+          "id": "resource-1",
+          "kind": "container",
+          "display_name": "Example container",
+          "revision": 1
+        }
+      ]
+    },
+    "resource_read_v1": {
+      "schema_version": 1,
+      "resource": {
+        "id": "resource-1",
+        "kind": "container",
+        "display_name": "Example container",
+        "revision": 1
+      },
+      "aliases": [
+        {
+          "resource_id": "resource-1",
+          "namespace": "provider",
+          "scope_key": "default",
+          "value": "container-1"
+        }
+      ],
+      "capabilities": []
+    },
+    "resource_capabilities_v1": {
+      "schema_version": 1,
+      "resource_id": "resource-1",
+      "capabilities": []
+    },
+    "event_history_v1": {
+      "schema_version": 1,
+      "events": [],
+      "next_cursor": 0,
+      "earliest_available": null,
+      "latest_available": 0
     }
   }
 }

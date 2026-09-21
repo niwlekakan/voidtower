@@ -43,6 +43,43 @@ export interface DurableResourceRef {
   revision: number
 }
 
+export interface DurableResourceAlias {
+  resource_id: string
+  namespace: string
+  scope_key: string
+  value: string
+}
+
+export type DurableResourceCapabilityAvailability = 'available' | 'unavailable' | 'unknown'
+
+export interface DurableResourceCapability {
+  resource_id: string
+  action: string
+  availability: DurableResourceCapabilityAvailability
+  reason_code: string | null
+  detail: string | null
+  schema_version: number
+  observed_at: number
+}
+
+export interface DurableResourceReadResponse {
+  schema_version: number
+  resource: DurableResourceRef
+  aliases: DurableResourceAlias[]
+  capabilities: DurableResourceCapability[]
+}
+
+export interface DurableResourceListResponse {
+  schema_version: number
+  resources: DurableResourceRef[]
+}
+
+export interface DurableResourceCapabilitiesResponse {
+  schema_version: number
+  resource_id: string
+  capabilities: DurableResourceCapability[]
+}
+
 export interface DurableActorRef {
   actor_type: DurableActorType
   id: string | null
@@ -151,6 +188,14 @@ export interface DurableEventEnvelope {
   correlation_id: string
   causation_id: string | null
   payload: unknown
+}
+
+export interface DurableEventHistoryResponse {
+  schema_version: number
+  events: DurableEventEnvelope[]
+  next_cursor: number
+  earliest_available: number | null
+  latest_available: number
 }
 
 export interface DurableEventStreamReady {

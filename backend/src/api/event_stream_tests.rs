@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use axum::{
-    body::Body,
+    body::{to_bytes, Body},
     http::{header, Request, StatusCode},
 };
 use futures_util::StreamExt;
@@ -482,4 +482,105 @@ async fn last_event_id_is_monotonic_and_gap_frames_close_without_durable_deliver
     assert!(output.contains(r#""reason":"future_cursor""#));
     assert!(!output.contains("event: stream.ready"));
     assert!(!output.contains("event: durable_event"));
+}
+
+#[tokio::test]
+async fn resource_reads_use_versioned_envelopes_and_reject_invalid_limits() {
+    let db = test_support::setup_db().await;
+    let resource = crate::operations::resources::observe(
+        &db,
+        crate::operations::resources::ObserveResource {
+            kind: "container",
+            display_name: "contract-test",
+            node_id: None,
+            provider: Some("test"),
+            namespace: "contract-test",
+            scope_key: "default",
+            alias: "container-1",
+        },
+        None,
+        "resource-contract-test",
+    )
+    .await
+    .unwrap();
+    let session = test_support::user_with_role_session(&db, "operator").await;
+    let app = crate::api::router(test_support::build(db));
+
+    let response = app
+        .clone()
+        .oneshot(request("/api/resources?limit=1", Some(&session)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["resources"][0]["id"], resource.id);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            &format!("/api/resources/{}", resource.id),
+            Some(&session),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["resource"]["id"], resource.id);
+    assert_eq!(value["aliases"][0]["value"], "container-1");
+
+    for query in ["limit=0", "limit=501", "limit=not-a-number"] {
+        let response = app
+            .clone()
+            .oneshot(request(&format!("/api/resources?{query}"), Some(&session)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "bad_request");
+    }
+}
+
+#[tokio::test]
+async fn event_history_uses_versioned_envelope_and_rejects_invalid_cursors() {
+    let db = test_support::setup_db().await;
+    let sequence = append_event(&db, 42).await;
+    let session = test_support::user_with_role_session(&db, "operator").await;
+    let app = crate::api::router(test_support::build(db));
+
+    let response = app
+        .clone()
+        .oneshot(request("/api/events?after=0&limit=10", Some(&session)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["events"][0]["sequence"], sequence);
+    assert_eq!(value["next_cursor"], sequence);
+    assert_eq!(value["earliest_available"], sequence);
+    assert_eq!(value["latest_available"], sequence);
+
+    for query in [
+        "after=-1",
+        "after=not-a-number",
+        "limit=0",
+        "limit=501",
+        "limit=not-a-number",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(&format!("/api/events?{query}"), Some(&session)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "bad_request");
+    }
 }

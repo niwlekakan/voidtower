@@ -11,7 +11,40 @@ pub const ACTION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const JOB_READ_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const COLLECTION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: u16 = 1;
+pub const RESOURCE_ENVELOPE_SCHEMA_VERSION: u16 = 1;
+pub const EVENT_HISTORY_ENVELOPE_SCHEMA_VERSION: u16 = 1;
+pub const MAX_PAGE_LIMIT: i64 = 500;
 const VERSION_HEADER: &str = "x-voidtower-api-version";
+
+#[derive(Debug, Serialize)]
+pub struct ResourceListEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub resources: Vec<T>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourceReadEnvelopeV1<R, A, C> {
+    pub schema_version: u16,
+    pub resource: R,
+    pub aliases: Vec<A>,
+    pub capabilities: Vec<C>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourceCapabilitiesEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub resource_id: String,
+    pub capabilities: Vec<T>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventHistoryEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub events: Vec<T>,
+    pub next_cursor: i64,
+    pub earliest_available: Option<i64>,
+    pub latest_available: i64,
+}
 
 #[derive(Debug, Serialize)]
 pub struct PlanSuccessEnvelopeV1<T> {
@@ -311,6 +344,43 @@ mod tests {
                     "requested_after": 0,
                     "earliest_available": 1,
                     "latest_available": 1
+                },
+                "resource_list_v1": {
+                    "schema_version": RESOURCE_ENVELOPE_SCHEMA_VERSION,
+                    "resources": [{
+                        "id": "resource-1",
+                        "kind": "container",
+                        "display_name": "Example container",
+                        "revision": 1
+                    }]
+                },
+                "resource_read_v1": {
+                    "schema_version": RESOURCE_ENVELOPE_SCHEMA_VERSION,
+                    "resource": {
+                        "id": "resource-1",
+                        "kind": "container",
+                        "display_name": "Example container",
+                        "revision": 1
+                    },
+                    "aliases": [{
+                        "resource_id": "resource-1",
+                        "namespace": "provider",
+                        "scope_key": "default",
+                        "value": "container-1"
+                    }],
+                    "capabilities": []
+                },
+                "resource_capabilities_v1": {
+                    "schema_version": RESOURCE_ENVELOPE_SCHEMA_VERSION,
+                    "resource_id": "resource-1",
+                    "capabilities": []
+                },
+                "event_history_v1": {
+                    "schema_version": EVENT_HISTORY_ENVELOPE_SCHEMA_VERSION,
+                    "events": [],
+                    "next_cursor": 0,
+                    "earliest_available": null,
+                    "latest_available": 0
                 }
             }
         });

@@ -1,0 +1,413 @@
+{
+  "schema_version": "voidtower.compatibility-mutation-exception-evidence.v1",
+  "exceptions": {
+    "ai::llama_unload": {
+      "file": "backend/src/api/ai.rs",
+      "sha256": "9633259ae0aa1b10bca303fefbbad272b3e6c41ae4bd502a79a8f6ed84d2768a"
+    },
+    "ai::nvidia_smi_info": {
+      "file": "backend/src/api/ai.rs",
+      "sha256": "9e45f1e0087a39dc1ae03044c7c29dc6be4a493eeeb94e349c1b19979bd8241e"
+    },
+    "ai_ask::legacy_odysseus_fallback": {
+      "file": "backend/src/api/ai_ask.rs",
+      "sha256": "ba3d1946a1af0d05403466aaf693a92a71a49e980bd5fc71b761dac53312f07c"
+    },
+    "ai_context::search_project_code": {
+      "file": "backend/src/api/ai_context.rs",
+      "sha256": "b120c8045ed117f9ec850043c342ee8a93453d9da57ef9f7ab150ee542621ccc"
+    },
+    "apps::detect_cuda_major_version": {
+      "file": "backend/src/api/apps.rs",
+      "sha256": "15d1c7bf7369d5443482594a7b5b3d128771b0127cfb92e98690eef95e92781c"
+    },
+    "apps::detect_gpu": {
+      "file": "backend/src/api/apps.rs",
+      "sha256": "6fb7fb31fe3d9748261f0c232d22f277b3c7e1e137f41069a17fb66e353ef0d5"
+    },
+    "apps::ensure_volume_dirs": {
+      "file": "backend/src/api/apps.rs",
+      "sha256": "eeb43cc89ac0e2c5e166dde7d0423d805b955843947d05c5f65b8d93b39063a3"
+    },
+    "apps::ensure_vt_proxy_network": {
+      "file": "backend/src/api/apps.rs",
+      "sha256": "3b12287822e6a2622cacd3f5defe901b38699e2179a82c607feb5aa1b541bd80"
+    },
+    "apps::recreate_vt_proxy_network_ipv4": {
+      "file": "backend/src/api/apps.rs",
+      "sha256": "feea21fab236ccd5d9519bcff4e40757fc3b450811705ee98b595f5da06a280f"
+    },
+    "apps::rewrite_named_volumes_to_storage_root": {
+      "file": "backend/src/api/apps.rs",
+      "sha256": "d54e9b4588492b30df3f550da8e1e62cad6ae2dce7db1aaf7c4da3c95127d7b5"
+    },
+    "apps::run_probe": {
+      "file": "backend/src/api/apps.rs",
+      "sha256": "de053f5a790bd03907dbd9f7cf9a0dbb0ba1bd9a1df185e023cb5c90f16ea73f"
+    },
+    "apps::spawn_post_deploy_hook": {
+      "file": "backend/src/api/apps.rs",
+      "sha256": "a073b3a668d2e48b35af647f72bf77a9e784a8583f216d1bc1c2494e80e7852e"
+    },
+    "auth::provision_voidwatch": {
+      "file": "backend/src/api/auth.rs",
+      "sha256": "e0cc98ed64fd668763810ed490fb6388dd0db21f7a9bf3045ebec47303df97b6"
+    },
+    "capabilities::cmd_version": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "c4e20578cde77dce3b44c488f7a6755d8cb903c1fa87cb23691d6bd4cd2e9d2b"
+    },
+    "capabilities::detect_docker": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "648c81db759d445f98f938b04a26b305cf16b4463f2efe9cb4ef9bcf7aae7f2e"
+    },
+    "capabilities::detect_docker_compose": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "cfd1115d69d88cda696f75d55b8cab734b5622d893ff3639e919dc4f5176744d"
+    },
+    "capabilities::detect_libvirt": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "018f22e5d4f16e132e5216fbfa85b0432290afcc345ac4c373aaeb794403ce6f"
+    },
+    "capabilities::detect_nginx": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "4df095e4826bb5df96b79c10db47f3e4ef246c1bad46cc498d5df3ad5bd85aae"
+    },
+    "capabilities::detect_nvidia": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "d556854ff2a4e8419142f4329bf1777e1b9e703953674e820d4901eedcf21ded"
+    },
+    "capabilities::detect_systemd": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "08bb2f41cf8e097e8a78d46c3d262cfde0a7b33272fed4fe371fbc9200dc0df6"
+    },
+    "capabilities::detect_ufw": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "62e8b49fe7a3263593d2ea32a7d966f40fef348592d90dfaf3b2871b887f5968"
+    },
+    "capabilities::detect_wireguard": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "79fdbd5ae33f93042cf2e79ca10eaea36273c24f2ee54fe8a3c74fb4d3c68bc4"
+    },
+    "capabilities::which": {
+      "file": "backend/src/api/capabilities.rs",
+      "sha256": "b095db1322fec8a5475a1aed7408b52c4b1b7de8c1dde636b5081a3ef4e1555e"
+    },
+    "containers::exec_ws": {
+      "file": "backend/src/api/containers.rs",
+      "sha256": "eae14b9d461e1907c1394989eb68a222aa6329e6345275e948a9b2a626781b0b"
+    },
+    "containers::get_compose": {
+      "file": "backend/src/api/containers.rs",
+      "sha256": "aa93d302ecaa8c74ae12d91b378f9a47e177ca917e6047a9e0e0f5b657ac9163"
+    },
+    "containers::inspect_label": {
+      "file": "backend/src/api/containers.rs",
+      "sha256": "461ac13afabec208d9d7a89192dd5eca1d8127b41a109c35a03e42a3e9f6ac79"
+    },
+    "diagnostics::check_config_dir": {
+      "file": "backend/src/api/diagnostics.rs",
+      "sha256": "69a54cb822639f46406683dcc40d0557227ed9db610601971c32fd058e5a479d"
+    },
+    "diagnostics::check_disk_space": {
+      "file": "backend/src/api/diagnostics.rs",
+      "sha256": "4eb4c3c1f98dbcf5627b199593bd594e01254a0e0c127bad08acd449d1d81718"
+    },
+    "diagnostics::check_docker": {
+      "file": "backend/src/api/diagnostics.rs",
+      "sha256": "0b451be9fbcd9c60155cdb91c600584b70d5089f89af700ce7e1fa98c640b8d4"
+    },
+    "diagnostics::check_nginx": {
+      "file": "backend/src/api/diagnostics.rs",
+      "sha256": "3d4f3532e8b78aa5c76242c76c89e53866a9922625bbc1be819054581198d7af"
+    },
+    "diagnostics::check_restic": {
+      "file": "backend/src/api/diagnostics.rs",
+      "sha256": "5bcf1be8f44b0b887ab0435271ec25c4fb174c59744c39a2c69127317bcef731"
+    },
+    "disaster::cli_export": {
+      "file": "backend/src/api/disaster.rs",
+      "sha256": "ef9ef8652103b291f3ebadb5bf401924ea3c51241f91b71fde0982ea950fd3a2"
+    },
+    "files::delete": {
+      "file": "backend/src/api/files.rs",
+      "sha256": "0c93545f6fdab859fd91f6fea213178139fd72c4de93cace083062aabade0096"
+    },
+    "files::mkdir": {
+      "file": "backend/src/api/files.rs",
+      "sha256": "e4a2cc90c8d13060e9c8ab7c1efcb27e2e9c440ec745befcb50311e9e5817aab"
+    },
+    "files::rename": {
+      "file": "backend/src/api/files.rs",
+      "sha256": "60a9d7ff7e9400b05ce4a5caee7c537f72af844e9da0b91279ec9916f38417f4"
+    },
+    "files::write_file": {
+      "file": "backend/src/api/files.rs",
+      "sha256": "9d3915d5a94f5bc88be503fbb9001026c1139da464142b917d8ffe8f0f2d4669"
+    },
+    "lxc::action": {
+      "file": "backend/src/api/lxc.rs",
+      "sha256": "cd5da7da3eca2d47bd4ba2b7a0f587ef54fd6dbc8b2a612a608038de46e1c014"
+    },
+    "lxc::get_config": {
+      "file": "backend/src/api/lxc.rs",
+      "sha256": "40016ceee8a50342be785473c32901b8ccd5fef6a29bbd370f5597383d90baf7"
+    },
+    "lxc::list": {
+      "file": "backend/src/api/lxc.rs",
+      "sha256": "691d5050e56081ee0cfed10179672813357ff1e9c90aed130c8224f1c27a8cd7"
+    },
+    "members::dir_size_bytes": {
+      "file": "backend/src/api/members.rs",
+      "sha256": "83828fbc6c048e032b65b328aeea05152a852e509a05a97fe05f96cbe8bc3b83"
+    },
+    "members::resolve_member_storage_root": {
+      "file": "backend/src/api/members.rs",
+      "sha256": "7c4c347c97a721095294e1f86f8cefb346a42dba4adf62b2d920ba198e4a9602"
+    },
+    "members::statvfs_bytes": {
+      "file": "backend/src/api/members.rs",
+      "sha256": "29ac4e33a6524b65cbc1205d3ca995089a98a820349e945d47ccb49e5a114845"
+    },
+    "models::delete_model": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "834c1d72e40f1ec9e2d1d0a360e429ee0c3e469887bd4031eeb7a7873d394355"
+    },
+    "models::do_ollama_create": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "db34e5bd596974df999ca0f1284c8f544dae169a0556fa622d481d72e5e0d424"
+    },
+    "models::do_ollama_pull": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "9f146cea70793cc962e4efa0c87a27efb0840edca4ddcb8364a8837667254be5"
+    },
+    "models::download_file": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "55d244c3d59ebf0791b0738686ab53a157cc2772f7efcc5ed649a830ce81a342"
+    },
+    "models::load_model": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "0156de0ff120dda83cd52b94062bc15e3bd627bfd9a0bc285bef791cf2dafa27"
+    },
+    "models::models_dir": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "5297edc6456bcd952bbe430ac1618cfcb942775b101038f426f8ae1ede4ddefe"
+    },
+    "models::openai_chat_completions": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "2cab0cd6abc732ac80664d5779e8e0a37b4e34303671cdd879a86ae2f22c6fc0"
+    },
+    "models::save_llama_config": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "2dbee2a35eb5349369ceee500597f8337dbdf68c91d4e0001b3da12c1d9f7b3e"
+    },
+    "models::save_ollama_config": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "084fec1c59853f325635cdb6fc528b7c0e9f4b99890cc214f9dc1a0c0fb80fca"
+    },
+    "models::start_download": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "7ae0216fb6953fc62c7c194a1c8f8acd92ffed48bba6d99835490b791e4e4f47"
+    },
+    "models::start_ollama_create": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "15dcbf60fcd2afb6d868a0ae243dc0d1915363a5efcc0e2ca72349e12c33a144"
+    },
+    "models::start_ollama_pull": {
+      "file": "backend/src/api/models.rs",
+      "sha256": "7d65388d7977f78e6ed66917bca1eccd5237f9c2d5914fb4479182ca083bc7f2"
+    },
+    "mods::apply_mod": {
+      "file": "backend/src/api/mods.rs",
+      "sha256": "9d88a5fa07d68a21b03001024c32a843f196f7ce0e73525dc632cb6da1932e8b"
+    },
+    "mods::fetch_mod": {
+      "file": "backend/src/api/mods.rs",
+      "sha256": "fe26a1f8d44aa895a283280ba4418670509b2a4f5f1a12e99bd793e3151ff07f"
+    },
+    "mods::rollback_mod": {
+      "file": "backend/src/api/mods.rs",
+      "sha256": "638efb15d687fd05fbbdcbab931c63a5d57b64c27a057df5b01383dcd05d1a38"
+    },
+    "mods::run": {
+      "file": "backend/src/api/mods.rs",
+      "sha256": "7256f786883f8ce79a1129240e0bd354375a6119b2ba55075cac08590654a9a5"
+    },
+    "mods::run_checked": {
+      "file": "backend/src/api/mods.rs",
+      "sha256": "dea0a6a1e4ea0973bc3a432207965533d4515c312ac80bb719a79371566bc0f1"
+    },
+    "network::lookup_hostnames": {
+      "file": "backend/src/api/network.rs",
+      "sha256": "88a28b68b07476fe07f20735632fdcdac1f2ade26a058fd5618e9d25c75ce5f0"
+    },
+    "network::read_ip_neigh": {
+      "file": "backend/src/api/network.rs",
+      "sha256": "b3d21c2d3875d8d8e78c14901177e35e4055c794fe8cb0dfdd379d0e4eb873d8"
+    },
+    "plugins::extract_zip": {
+      "file": "backend/src/api/plugins.rs",
+      "sha256": "f0f75b2dceedd23dfe7be5d1a98607a697a313ae1a6982b94743e6c45eb0ffd7"
+    },
+    "plugins::install": {
+      "file": "backend/src/api/plugins.rs",
+      "sha256": "43dfbf029016595ab55bda869fe11777dcdc7299920bddee7752125b12297d85"
+    },
+    "plugins::uninstall": {
+      "file": "backend/src/api/plugins.rs",
+      "sha256": "09472f7e3ca0dccdde523ee771c98f8fcb12e5c7d57a3cdca3852c74152be433"
+    },
+    "plugins::update": {
+      "file": "backend/src/api/plugins.rs",
+      "sha256": "8f0b3d92a313105692be7fe926aadd6f43a1b02ac70972e889f65c8a0f6c08c8"
+    },
+    "proxmox::upload_storage_content": {
+      "file": "backend/src/api/proxmox.rs",
+      "sha256": "a459c7516258f5007b3c035bf611bb87b015b30020856a0a5786dd6d8b2af005"
+    },
+    "proxmox::vm_vncproxy": {
+      "file": "backend/src/api/proxmox.rs",
+      "sha256": "3458150fa88870cbe7be567ef8b68e74e257cba9973d66bfa7cb30dda51534a8"
+    },
+    "proxy::ai_auto_proxy": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "0b066bd19df01b0d914b93de6cc1eb0fe9611393501e3803a7e4573c0162e73a"
+    },
+    "proxy::check_nginx_setup": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "c28f20895d68e643e3f23ccee68235ad0c9bdb6cea5c26d9c70e333309b1bfd2"
+    },
+    "proxy::docker_host_ip": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "dcaa7e6af6657de75604088686f0fbda3101cc753f3b7b0a1144cf5a240707e0"
+    },
+    "proxy::nginx_logs": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "bee738c0c445ac6954df188b781d79e6b2f21d45322024d0cacffe945ef6eaeb"
+    },
+    "proxy::nginx_status": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "0e2e084bf78f22547043eb4bffef10d1ba6494ed4dbbc09b29f6a1c084c0e5ac"
+    },
+    "proxy::remove_htpasswd_file_checked": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "7e4c89443fa2445bd306377b205d16b48823bad206bad22f4422ea62bfed0c1e"
+    },
+    "proxy::remove_nginx_conf_checked": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "2497301e511734fc9d0fae187bcd6a8b2859848d29865bfb279abb5c1a2563dc"
+    },
+    "proxy::write_htpasswd_file": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "da6b979ec459cd171ede742b80c66d26f63ea292bb918fefbfda64e55579de95"
+    },
+    "proxy::write_nginx_conf": {
+      "file": "backend/src/api/proxy.rs",
+      "sha256": "b1f404b6f94670349482d270e647d30f6d408576664e83bf43d2308a31fbf094"
+    },
+    "services::action": {
+      "file": "backend/src/api/services.rs",
+      "sha256": "13b97a5a0f79cae6b0aec7aba36a8806f3283f1eef3d1d29cccc9d522b613467"
+    },
+    "storage::add_fstab": {
+      "file": "backend/src/api/storage.rs",
+      "sha256": "1fe53cbf13df6a9df5e1f5c6e5da42f99110a47574d8f63b18b8fc78e9c23b45"
+    },
+    "storage::create_raid": {
+      "file": "backend/src/api/storage.rs",
+      "sha256": "27e5356ff18db991ca3267e361ccc33d75451e5f8dc832108bf26f4de9014698"
+    },
+    "storage::format_device": {
+      "file": "backend/src/api/storage.rs",
+      "sha256": "53deb0fec1c34073ac417171c5a474463761c7f4b0cad816a5879ace8ece2cda"
+    },
+    "storage::mount_device": {
+      "file": "backend/src/api/storage.rs",
+      "sha256": "4cf145d2b5be42bde759cf6ae4e143784912fd27f8c1d5b46b7f9e64b986d2c7"
+    },
+    "storage::remove_fstab": {
+      "file": "backend/src/api/storage.rs",
+      "sha256": "8817c4473cfcb3882485593321217238df98da80b7799bafe937329d000a2c19"
+    },
+    "storage::set_storage_paths": {
+      "file": "backend/src/api/storage.rs",
+      "sha256": "5f25f5e2d997172f80e92dedcde192d4e8fcb275e0ea0d45049082995b041784"
+    },
+    "storage::stop_raid": {
+      "file": "backend/src/api/storage.rs",
+      "sha256": "e4b8e5687ce9cfe654ba804f1d304c5f3f1f9cb32aa00e4c4cc735179f8cce2e"
+    },
+    "storage::umount_device": {
+      "file": "backend/src/api/storage.rs",
+      "sha256": "ea741e1aa402e79956b0a733d63f57ed8e2263f0c4b1ed749a5a3a4a50259180"
+    },
+    "studio::gallery_delete": {
+      "file": "backend/src/api/studio.rs",
+      "sha256": "e0e39877e1ba0cd0cc42a0b08ff7db447b3e5a4378f14c4bebf5248e76799c50"
+    },
+    "studio::gpu_summary": {
+      "file": "backend/src/api/studio.rs",
+      "sha256": "3edff2ddb1ff2ae6375ec057c96de43d52868e456d2ca4936f9e29f2244ea72a"
+    },
+    "studio::image_generate": {
+      "file": "backend/src/api/studio.rs",
+      "sha256": "fb1f20f57126d8ceae561d02cc8653eab1be29c82193fe200d6550cbf5c954ec"
+    },
+    "studio::stt_transcribe": {
+      "file": "backend/src/api/studio.rs",
+      "sha256": "986cd018483935fbd5135adaf49861d3a46a66d12006719a00bde6075ec569b9"
+    },
+    "studio::tts_generate": {
+      "file": "backend/src/api/studio.rs",
+      "sha256": "6ff5cf79bfb6a2902fde65f31851aeb8970b129d070e744be0e8f6f8fad1fa02"
+    },
+    "system::git": {
+      "file": "backend/src/api/system.rs",
+      "sha256": "e880c7b30d9d1f5e49361610b851bdaf3edd124cfd56959bdaccb6d37ded8942"
+    },
+    "system::restart": {
+      "file": "backend/src/api/system.rs",
+      "sha256": "52a24e27708a400dd1de831d250402b296479674c47d43094eaf9234a6e8f466"
+    },
+    "terminal::ssh_ws_handler": {
+      "file": "backend/src/api/terminal.rs",
+      "sha256": "1ab2f7ca7755b45d4fbe9eb9f8f426ad57aca17d8cb526967f58d4b043c542b9"
+    },
+    "terminal::ws_handler": {
+      "file": "backend/src/api/terminal.rs",
+      "sha256": "6b0d7d509251544637239a9a4e452ebdeb4fa49fc4d79bc651afab80edbd76b7"
+    },
+    "vms::list_local": {
+      "file": "backend/src/api/vms.rs",
+      "sha256": "edb4e9d0f5ad938fb376bfdebf7fb883676924eb22b94d8495605ddeadafb048"
+    },
+    "vms::local_action": {
+      "file": "backend/src/api/vms.rs",
+      "sha256": "76587b4c2decb11b224aa657a13b1114db3c1140f4edc3f237fafbb05626aca0"
+    },
+    "webhooks::dispatch_one": {
+      "file": "backend/src/api/webhooks.rs",
+      "sha256": "389ec392a3444d68070c70b735e91557241dd69efa14c51e5c462226eea6be6a"
+    },
+    "webhooks::fire_webhooks": {
+      "file": "backend/src/api/webhooks.rs",
+      "sha256": "12c132e1eefee3822f2f0793110b2ec172721bb6aaa3e6b469180d19e6de54d3"
+    },
+    "wireguard::add_peer": {
+      "file": "backend/src/api/wireguard.rs",
+      "sha256": "3e37f2e254de7ace7007054e751e9f3b3a7028a21af176d8ca4841b628732a42"
+    },
+    "wireguard::delete_peer": {
+      "file": "backend/src/api/wireguard.rs",
+      "sha256": "67d9a6289af46f36b8f67242369ca49a8d4d22d7332a2af10dc68859a49b81c1"
+    },
+    "wireguard::wg_available": {
+      "file": "backend/src/api/wireguard.rs",
+      "sha256": "ca169a65bb68a1d26b1f9f2c190af450944367c1df288f6959502168b5324868"
+    },
+    "wireguard::wg_cmd": {
+      "file": "backend/src/api/wireguard.rs",
+      "sha256": "b929281f65ac6460805b4bec85709e63c1c0a1ec4adfa4c0a5818370f3f33047"
+    }
+  }
+}

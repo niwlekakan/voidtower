@@ -468,3 +468,119 @@
 - Future documentation required: a supported-runtime runbook with an observed Odysseus service, DNS-rebinding fixture, redirect/oversized-response fixture, and provider outage/restart behavior; browser qualification remains separate from the source/build evidence.
 - Reusable checks: `cd backend && cargo test ai::egress::tests --all-features -- --nocapture`; `cd backend && cargo test api::integrations::tests --all-features -- --nocapture`; `cd backend && cargo fmt --all -- --check`; `cd backend && cargo clippy --all-targets --all-features -- -D warnings`; `cd frontend && npm test -- --passWithNoTests`; `cd frontend && npm run type-check`; `cd frontend && npm run lint`; `cd frontend && npm run build`; `bash scripts/check-schema-migration-ownership.sh`; `python3 scripts/repo_truth.py --repo . --json --check`; and `git diff --check`.
 - Evidence boundary: integration-verified for backend focused real-router/controlled-upstream checks and frontend type/lint/build gates. Runtime, browser, Docker, installation, upgrade/recovery, and release qualification remain unavailable in this sandbox.
+
+## M1-04 production compatibility mutation inventory — 2026-09-20
+
+- End-user/developer API documentation changed: `docs/api.md` now documents the credential-safe source-boundary command, its classification families, fail-closed unknown-callsite behavior, and the separate generic notification-webhook egress boundary.
+- CI now runs `scripts/test_compatibility_mutation_inventory.py` and `scripts/compatibility_mutation_inventory.py --repo . --check` before repository hygiene. The scanner output is suitable for handoff evidence but is source-only, not runtime/provider proof; exact module/function exception identities and source-boundary failures are covered by fixtures.
+- Future documentation required: canonical adapters and operator contracts for deferred App Vault/model/service/storage/local-host mutations; generic notification-webhook URL/egress controls; and named provider/runtime/restart qualification. Do not copy the current classified-marker total into docs.
+- Reusable checks: `python3 -m unittest scripts.test_compatibility_mutation_inventory -v`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `python3 scripts/repo_truth.py --repo . --json --check`; and `git diff --check`.
+- Evidence boundary: unit-verified scanner fixtures plus implemented CI enforcement. No provider runtime, browser, Docker, installation, upgrade/recovery, or release qualification was performed.
+
+## M1-04 parser-backed compatibility inventory continuation — 2026-09-20
+
+- Developer documentation required and added: `docs/api.md` now states that the source check uses `rustfmt` syntax validation, exact token call shapes, alias/module/`impl` identity, immediate `cfg(test)` item handling, and immutable deferred-body evidence.
+- Future end-user/operator documentation remains required for the eventual canonical adapters and plan/approval/job/audit/recovery contracts of deferred App Vault, model, service, storage, and local-host mutations. This checker does not make those operations available.
+- Future qualification documentation remains required for provider/runtime/browser/Docker/install/upgrade/recovery evidence; this sandbox only establishes source/unit evidence.
+- Reusable checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory scripts.test_repo_truth -v`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `bash scripts/check-schema-migration-ownership.sh`; `bash scripts/check-repository-hygiene.sh`; and `git diff --check`.
+
+## M1-04 compatibility inventory review blocker retrospective — 2026-09-20
+
+- Learned: a passing lexical inventory is not sufficient proof of a fail-closed Rust mutation boundary; independent review found valid-syntax and exception-spoofing paths beyond the fixtures.
+- Verified: the current checkout scan reports zero unknown findings, 13 inventory fixtures and 31 combined Python tests pass, repository truth/migration/hygiene checks pass, frontend checks pass, and backend full-suite evidence is intermittent on an unrelated SQLite lock test.
+- Blocked: no commit or release qualification; independent review requires AST/parser-backed exact call-shape, alias, cfg-module, inline-module, and immutable exception evidence.
+- Reusable commands: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory scripts.test_repo_truth -v`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/repo_truth.py --repo . --json --check`; `bash scripts/check-schema-migration-ownership.sh`; `bash scripts/check-repository-hygiene.sh`; and `git diff --cached --check`.
+- End-user documentation changed: `docs/api.md` documents the source-boundary command and evidence limit; future documentation still requires canonical adapters for deferred mutations and a reviewed parser-backed enforcement contract.
+
+## M1-04 parser-backed inventory hardening — 2026-09-20
+
+- Developer documentation updated: `docs/api.md` now records normalized-token digest pinning, exact evidence file/path checks, unsupported-syntax/macro fail-closed behavior, and CI rustfmt provisioning.
+- Future end-user/operator documentation remains required for the canonical adapters behind deferred App Vault/model/service/storage/local-host mutations and for generic notification-webhook egress controls. The parser inventory does not qualify provider, host, browser, installation, upgrade/recovery, or release behavior.
+- Reusable checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory scripts.test_repo_truth -v`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/repo_truth.py --repo . --json --check`; `bash scripts/check-schema-migration-ownership.sh`; `bash scripts/check-repository-hygiene.sh`; and `git diff --check`.
+- Evidence boundary: `unit-verified` for the parser fixtures and source check, `implemented` for CI enforcement; no runtime or release claim is allowed from this batch.
+
+## M1-04 parser-resolution adversarial closure — 2026-09-21
+
+- Developer documentation updated: `docs/api.md` now records rejection of unknown wildcard imports, private/module-qualified mutation aliases, bare aliases with unallowlisted provenance, qualified filesystem `File` mutators, async/closure/nested-function-scoped deferred errors, local helper shadowing, local canonical-module spoofing, and allowlisted resolved canonical targets.
+- Future developer documentation remains required for compiler-grade Rust module/import/call-shape resolution or a complete unsupported-form contract, plus an independently immutable/reviewed exception-ledger approval workflow. The checkout-local digest remains edit detection only.
+- Final independent review blocked commit: broad `crate::operations::`/`crate::networking::` prefixes still permit arbitrary aliases, imported canonical names remain shadowable by locals/parameters, and nested canonical calls can authorize an enclosing mutation. The next slice must close these exact gaps before runtime or release claims.
+- Future operator documentation remains required for canonical adapters and plan/approval/job/audit/recovery contracts behind deferred App Vault/model/service/storage/local-host mutations and generic notification-webhook egress controls.
+- Reusable checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory scripts.test_repo_truth -v`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `python3 -m py_compile scripts/rust_source_parser.py scripts/compatibility_mutation_inventory.py scripts/test_compatibility_mutation_inventory.py`; then schema/hygiene, backend format/Clippy/full tests, repository truth, and diff checks.
+- Evidence boundary: focused parser/repository-truth tests and source inventory are unit/source-enforcement evidence only. Provider, runtime, browser, Docker, installation, upgrade/recovery, and release qualification remain unperformed.
+
+## M1-04 parser resolution blocker — 2026-09-20
+
+- Independent review remains blocking: valid raw identifiers, multi-hop aliases, function values, receiver provenance, UFCS/request-builder forms, and executable item-level aliases can still evade a lightweight token scanner.
+- Documentation boundary: do not describe the current source check as complete fail-closed Rust coverage. The next slice must adopt compiler-grade AST/module/import resolution or reject every unsupported expression/item form.
+- Reusable checks remain the focused 48-test command and source inventory command in the preceding entry; no commit was created and no runtime/provider qualification was attempted.
+
+## M1-04 parser-resolution closure — 2026-09-20
+
+- Developer documentation changed: `docs/api.md` now names raw-identifier and multi-hop alias resolution plus the fail-closed boundary for mutation function values, request-builder receiver aliases, unsupported call shapes/macros, and executable item initializers.
+- Future documentation remains required for canonical adapters and operator contracts behind deferred App Vault/model/service/storage/local-host mutations, plus generic notification-webhook egress controls. The source inventory still does not make deferred operations available.
+- Reusable checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory scripts.test_repo_truth -v`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `python3 /workspace/.hermes/profiles/voidtower-dev/skills/software-development/voidtower-dev/scripts/slice_batch.py --repo . --manifest docs/internal/evidence/2026-09-20-m1-04-parser-resolution-closure/batch.json --output docs/internal/evidence/2026-09-20-m1-04-parser-resolution-closure/final-report`; and `git diff --check`.
+- Limitation: evidence is unit/source-enforcement only. Provider, runtime, browser, Docker, installation, upgrade/recovery, and release qualification remain unperformed; the next dependency is the tracked M1-04 broader acceptance before V6-01.
+
+## M1-04 parser-resolution closure review blocker — 2026-09-20
+
+- Developer documentation corrected: `docs/api.md` now states that the checker is a bounded token-parser aid and explicitly records the unresolved re-export/module, UFCS/angle-bracket, closure/control-flow, canonical-suffix, and independent-exception-ledger limitations.
+- Future documentation required: a reviewed parser contract must define compiler-grade module/import/call-shape coverage or fail-closed rejection, and an independently reviewed exception-ledger workflow must define who may approve and regenerate compatibility exceptions. Only then can the API page describe the source check as an enforcement boundary rather than a bounded aid.
+- Reusable checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory scripts.test_repo_truth -v`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `bash scripts/check-schema-migration-ownership.sh`; `bash scripts/check-repository-hygiene.sh`; `cd backend && cargo fmt --all -- --check`; `cd backend && cargo clippy --all-targets --all-features -- -D warnings`; and `git diff --check`.
+- Blocker: independent review rejects completion despite 55 focused Python tests and a 146/0 source report. No commit or provider/runtime/browser/Docker/install/upgrade/recovery qualification was produced; align staged/worktree parser files and resolve the semantic gaps before the next review.
+
+## M1-04 parser-resolution fail-closed continuation — 2026-09-21
+
+- End-user/developer documentation updated: `docs/api.md` now describes fail-closed rejection of unsafe re-exports, UFCS/angle-bracket mutation calls, closure-local unavailable errors, and suffix-shaped helper spoofing; it documents same-module exact-adapter proof for trusted helpers.
+- Future developer documentation remains required for a compiler-grade Rust module/import/call-shape resolver or a complete unsupported-form contract, plus an independently immutable/reviewed exception-ledger approval workflow. The current checkout-local digest remains edit detection only.
+- Future operator documentation remains required for canonical adapters and plan/approval/job/audit/recovery contracts behind deferred App Vault/model/service/storage/local-host mutations and for generic notification-webhook egress controls.
+- Reusable checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory scripts.test_repo_truth -v`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; `python3 -m py_compile scripts/rust_source_parser.py scripts/compatibility_mutation_inventory.py scripts/test_compatibility_mutation_inventory.py`; then schema/hygiene, backend, and diff gates.
+- Evidence boundary: `unit-verified` for the 59 parser/repository-truth tests and source check; no provider, runtime, browser, Docker, installation, upgrade/recovery, or release qualification was performed.
+
+## M1-04 parser-resolution canonical scope closure — 2026-09-21
+
+- Developer documentation updated: `docs/api.md` now documents exact canonical adapter identities, rejection of broad operations/networking/CMDB/support provenance, imported-name shadow handling across common Rust patterns, nested-function/closure/async-block item-scope isolation, typed filesystem receiver markers, and external `cfg(test)` module exclusion.
+- Future developer documentation remains required for compiler-grade Rust module/import/call-shape resolution or a complete unsupported-form contract, plus an independently immutable/reviewed exception-ledger approval workflow. The checkout-local digest remains edit detection only.
+- Future operator documentation remains required for the canonical adapters and plan/approval/job/audit/recovery contracts behind deferred App Vault/model/service/storage/local-host mutations and for generic notification-webhook egress controls.
+- Reusable checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory -q`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check`; Python compilation; repository truth; schema/hygiene; backend format/Clippy/full tests; and `git diff --check`.
+- Evidence boundary: focused parser tests and the source inventory are `unit-verified`/source-enforcement evidence only. Provider, runtime, browser, Docker, installation, upgrade/recovery, and release qualification remain unperformed.
+
+## M1-04 parser-resolution review-blocked continuation — 2026-09-21
+
+- Developer documentation now records the broader parser contract: exact canonical provenance, ancestor module/use/extern shadow rejection, receiver/reference forwarding, valid contained `#[path]` targets, and escaping path rejection.
+- Required next developer documentation: independently immutable exception approval (reviewed baseline/signature or removal of self-updatable evidence), then a final parser contract review. Do not describe the checkout-local exception digest as approval or claim release support.
+- Retrospective: learned that full backend tests can exhaust the 512 MiB sandbox `/tmp`; removing only generated `vt-*`/`voidtower-*` fixtures restored space and the exact 693+2 Rust gate passed. Reusable evidence is the 100-test combined Python command, the 144/0 inventory check, source/repository gates, and the Rust commands in `docs/internal/handoffs/2026-09-21-m1-04-parser-resolution-review-blocked-handoff.md`.
+- Blocker: no commit was created because the independent review still failed the exception-evidence trust boundary; the latest post-review receiver/cursor fixes have focused tests but await another independent review after the approval boundary is resolved. No runtime/provider/browser/Docker/install/upgrade/recovery/release qualification was performed.
+
+## M1-04 Git-anchored exception approval closure — 2026-09-21
+
+- Developer documentation delivered: `docs/api.md` now documents `--base`, CI's protected pull-request base, local `HEAD` behavior, bounded approval diagnostics, and the two-phase workflow for changing an exception body and regenerating its digest.
+- Future developer documentation: define the reviewer/branch-protection ownership for the protected base and document how a legitimate new or changed deferred exception becomes part of an approved base without weakening the source check.
+- Future operator documentation: document the canonical plan/approval/job/audit/recovery contracts for deferred App Vault, model, service, storage, and local-host routes, plus generic notification-webhook egress controls; this source gate does not make any of them available.
+- Reusable checks: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory scripts.test_repo_truth -q`; `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check --base HEAD`; Python compilation; schema/hygiene; backend format/Clippy/full tests; and `git diff --check`.
+- Evidence boundary: the focused parser/inventory and Git-baseline regressions are `unit-verified`; the production inventory is source-enforcement evidence only. Provider, runtime, browser, Docker, installation, upgrade/recovery, and release qualification remain unperformed.
+
+## M1-04 parser-resolution approval and provenance hardening — 2026-09-21
+
+- Developer documentation updated: `docs/api.md` now states that the active exception registry is Git-base anchored, approval bases must be full commit IDs, and unprotected push contexts are rejected; it also documents explicit unknown receiver provenance for unsupported filesystem value flows.
+- Future developer documentation remains required for branch-protection ownership and the reviewed workflow for introducing legitimate new/changed deferred exceptions. Future operator documentation remains required for canonical adapters and their plan/approval/job/audit/recovery contracts.
+- Retrospective: independent review reproduced registry-entry, symbolic-base, push-context, and complex receiver gaps; fixes added direct regressions for each. Reusable checks are the combined Python suite, inventory `--check --base <full-commit-id>`, Python compilation, schema/hygiene, Rust fmt/Clippy/full tests, repository truth, and diff checks.
+- Evidence boundary: implementation and focused tests are `unit-verified`; the source inventory is source-enforcement evidence only. Provider, runtime, browser, Docker, installation, upgrade, and release qualification remain unperformed until a later supported environment.
+
+## M1-04 final review blocker — 2026-09-21
+
+- Documentation backlog now records a blocked trust-boundary follow-up: the inventory parser has focused fail-closed regressions, but independent review still requires coverage for valid qualified/UFCS, generic, borrowed, function-value, and helper-returned forms and a verifier execution path that cannot be modified by PR-controlled tests.
+- Next documentation slice: specify the trusted clean-checkout verifier artifact, its branch-protection ownership, and the canonical compiler-backed mutation extraction contract before documenting broader compatibility support.
+
+## M1-04 trusted verifier bootstrap and syntax contract — 2026-09-21
+
+- Developer/API documentation delivered: `docs/api.md` now names the base-owned `pull_request_target` verifier workflow, its trusted/candidate checkout separation, fail-closed bootstrap behavior, and the explicit bounded mutation-syntax contract.
+- Required follow-up documentation: after this commit is merged to a protected branch, record the observed workflow run ID and branch-protection rule that bootstraps `trusted-verifier`; do not claim the gate is active from local YAML tests alone.
+- Required future developer documentation remains the compiler-backed Rust module/import/call-shape decision or a maintained expansion of the explicit fail-closed syntax contract. Future operator documentation remains required for canonical adapters and their plan/approval/job/audit/recovery contracts.
+- Reusable checks added/updated: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory.CompatibilityMutationInventoryTests.test_rust_mutation_syntax_contract_is_explicit_and_never_silent -q` and `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_repo_truth.RepoTruthCliTests.test_compatibility_enforcement_uses_trusted_base_verifier_and_untrusted_candidate_as_data -q`. Full final gates remain pending.
+
+## M1-04 trusted verifier bootstrap and syntax contract final — 2026-09-21
+
+- Developer/API documentation is complete for this bounded slice: `docs/api.md` describes the pinned trusted verifier/candidate-data workflow, fork materialization, disabled checkout credentials, fail-closed bootstrap, and explicit unsupported syntax markers.
+- Required follow-up documentation: after merge to a protected branch, record the observed `pull_request_target` workflow run and required branch-protection status; local tests do not establish GitHub activation. The next tracked documentation dependency is V6-01 versioned API/event schemas and generated-client drift behavior.
+- Retrospective: the final 111-test Python suite, Git-base inventory (`148 classified/0 unknown`), repository truth, schema ownership, hygiene, Rust format, strict Clippy, and full Rust gate (`693 unit + 2 integration + examples`) all passed. Reusable commands are recorded in the dated handoff; no host/provider/browser/Docker/release runtime was available.
+- Evidence boundary: `unit-verified` for parser/inventory/workflow contracts and `implemented` for the trusted workflow source boundary; GitHub runtime activation, representative external providers, browser, installation, recovery, and release qualification remain unverified.

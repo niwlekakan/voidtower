@@ -1,0 +1,57 @@
+name: Compatibility mutation enforcement
+
+on:
+  pull_request_target:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  compatibility-inventory:
+    name: Trusted compatibility mutation inventory
+    if: github.event_name == 'pull_request_target' || github.ref_protected
+    runs-on: ubuntu-latest
+    steps:
+      # This checkout is the verifier authority. On pull_request_target it is
+      # the approved base, never the PR head. The candidate checkout below is
+      # treated only as data by this verifier.
+      - name: Checkout approved verifier
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted-verifier
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout candidate source as data
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate-source
+          fetch-depth: 0
+          persist-credentials: false
+          # checkout v5 blocks fork PR heads in pull_request_target by default.
+          # This checkout is never executed: the approved verifier reads it as
+          # inert source data only, so fork coverage remains fail-closed at the
+          # verifier boundary rather than silently skipping the PR.
+          allow-unsafe-pr-checkout: true
+
+      - name: Require the approved verifier artifact
+        working-directory: candidate-source
+        run: >-
+          test -f "$GITHUB_WORKSPACE/trusted-verifier/scripts/compatibility_mutation_inventory.py"
+          && test -f "$GITHUB_WORKSPACE/trusted-verifier/scripts/rust_source_parser.py"
+          || (echo 'trusted verifier is absent from the approved base; bootstrap this gate on a protected branch before accepting compatibility changes' >&2 && exit 1)
+
+      - name: Enforce candidate inventory with approved verifier
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: >-
+          PYTHONDONTWRITEBYTECODE=1 python3
+          "$GITHUB_WORKSPACE/trusted-verifier/scripts/compatibility_mutation_inventory.py"
+          --repo "$GITHUB_WORKSPACE/candidate-source"
+          --check --base "$BASE_COMMIT"

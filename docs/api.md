@@ -2,6 +2,14 @@
 
 `backend/contracts/api-v1-envelope-contract.json` is the source-owned contract artifact for the versioned canonical operation responses and the shared frontend generated artifact. The current API version is `1`; clients may omit `x-voidtower-api-version` for compatibility, while an explicit unsupported, malformed, or duplicate value receives `406` with the bounded `unsupported_api_version` envelope. Successful responses echo `x-voidtower-api-version: 1`.
 
+Compatibility mutation source boundary:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/compatibility_mutation_inventory.py --repo . --check` is the credential-safe developer/CI check over production Rust under `backend/src/api`; CI adds `--base "$BASE_COMMIT"` from a pull-request base or a protected-branch push baseline; unprotected push approval contexts are rejected. It validates Rust syntax through `rustfmt`, resolves the bounded import/alias and inline module/`impl` forms covered by its fixtures, excludes selected `#[cfg(test)]` items, and recognizes the covered provider/filesystem/process call shapes rather than textual comments or strings. Local runs default to `HEAD` only in a Git checkout. A checkout without a resolvable Git base fails closed. Exit `0` means the inventory is clean, exit `1` means unknown findings were emitted, and exit `2` means parser, source-layout, registry, Git-approval, or evidence setup failed.
+- The enforcement workflow is `.github/workflows/compatibility-enforcement.yml`. Its `pull_request_target` job checks out the approved base into `trusted-verifier/`, checks out the PR head (including fork heads) into `candidate-source/` as inert data, and executes only the base verifier against the candidate. Both checkouts pin `actions/checkout` to a reviewed commit and disable persisted credentials; the candidate checkout explicitly opts into fork materialization but is never executed. If the approved base does not contain the verifier artifact, the job fails closed and maintainers must bootstrap the artifact on a protected branch; the normal `ci.yml` job runs fixtures but does not execute PR-controlled verifier code as an enforcement decision.
+- Canonical delegation is proven only by the exact resolved targets `operation_adoption::{submit,submit_with_key,prepare}`, their `super::`/`crate::api::` forms, or `crate::operations::invocation::{submit,prepare}`; broad `crate::operations::`, `crate::networking::`, `crate::cmdb::`, and `super::support` prefixes are not trusted. Reviewed CMDB/support service calls and local proxy helpers use explicit exact identities. Same-module helper propagation excludes nested functions, closures, and async blocks and ignores imported canonical names shadowed by parameters, destructuring/`if let`/`for`/`match` bindings, locals, or closure parameters; untrusted mutation aliases become unknown instead of inheriting a module-prefix proof. Unsupported re-exports, wildcard imports, UFCS/qualified associated mutation dispatch (including filesystem `File` mutators and typed receivers), and helper names that merely end in `prepare_or_submit` also fail closed. This is still not compiler-grade Rust call resolution, so unsupported syntax/provenance must remain an explicit source-check failure rather than a safety claim.
+- The parser contract is intentionally bounded and executable: `scripts.test_compatibility_mutation_inventory.test_rust_mutation_syntax_contract_is_explicit_and_never_silent` covers qualified calls, UFCS, generic calls, borrowed typed receivers, mutation function values, helper-returned receivers, and exact canonical delegation. Each form must emit either its recognized marker or an explicit unsupported/provenance marker; a form that emits no marker is a test failure. This contract is not a claim to resolve arbitrary Rust semantics.
+- Deferred compatibility exceptions use registry identities and checkout-local SHA-256 body evidence for deterministic metadata, then compare both the complete active registry and every evidence-bound function with the protected Git base supplied by CI. Updating a registry entry, body, or local digest together therefore fails closed until the change is present in an already-approved base commit; a new or moved exception has no approved base. The checker reports only file, function, line, marker, classification, bounded reason metadata, and the redacted base commit ID; it is not provider, runtime, browser, or release qualification.
+
 Canonical action requests use the same JSON body for planning and submission:
 
 ```
@@ -124,6 +132,27 @@ an optional comment. These shared workflows use bounded, visibility-aware HTTP p
 retry a mutation automatically. `/api/events` exposes durable history; `/api/events/stream` and
 `/api/integrations/events` expose the same cursor-resumable durable SSE stream. Shared operation
 views use it only to invalidate authoritative HTTP reads and retain bounded polling as fallback.
+
+### Compatibility source-boundary check
+
+The repository also enforces the compatibility boundary from production source rather than a copied
+route total. Run `python3 scripts/compatibility_mutation_inventory.py --repo . --check` from the
+repository root. The report contains only file, function, line, marker, classification, and reason
+metadata; it never emits source lines, request bodies, URLs, or credential values. Canonical adapter
+delegation, authentication-first deferred handlers, read-only probes, the inference-only model
+proxy, the explicit Proxmox VNC exception, and local synchronous exceptions are classified separately.
+Unknown provider or destructive callsites fail the check. Generic notification-webhook delivery is
+classified as separate outbound-egress work and is not counted as canonical mutation convergence.
+The checker validates each allowlisted function against the source digest and file recorded in
+`scripts/compatibility_mutation_exception_evidence.json`, and against the protected Git base passed
+with `--base`; stale, missing, extra, changed, new, or out-of-checkout evidence fails closed.
+Unsupported macros, path aliases, source forms, and syntax are not assumed safe. Exact canonical
+adapter call shapes are required; a similarly named local helper, a private or public re-export, an
+unknown wildcard import, a closure/async-block-local unavailable error, local shadowing, or
+UFCS/qualified associated mutation dispatch cannot authorize a provider/filesystem/process marker.
+Rustfmt is installed by CI before the parser runs. A legitimate exception-body change must land in
+an approved base first, followed by its regenerated evidence digest; the base comparison is the
+approval boundary rather than a self-updatable checkout manifest.
 
 ---
 

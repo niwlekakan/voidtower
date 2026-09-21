@@ -17,17 +17,27 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - name: Test deterministic repository truth
-        run: python3 scripts/test_repo_truth.py -v
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_repo_truth.py -v
       - name: Test repository prerequisite contracts
-        run: python3 -m unittest scripts.test_repository_prerequisites -v
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_repository_prerequisites -v
       - name: Derive credential-safe repository truth
         env:
           BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 scripts/repo_truth.py --repo . --json --check --base "$BASE_COMMIT" --head "$HEAD_COMMIT"
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/repo_truth.py --repo . --json --check --base "$BASE_COMMIT" --head "$HEAD_COMMIT"
+      - name: Test compatibility mutation inventory fixtures
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory -v
       - name: Reject internal, sensitive, and generated tracked files
         run: bash scripts/check-repository-hygiene.sh
+      - name: Reject unprotected push approval context
+        if: github.event_name == 'push' && !github.ref_protected
+        run: >-
+          echo 'Compatibility mutation approval requires a pull-request base or a protected branch push.'
+          && exit 1
       - name: Scan Git history for secrets
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
@@ -60,7 +70,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend

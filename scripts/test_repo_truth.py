@@ -116,19 +116,40 @@ class RepoTruthCliTests(unittest.TestCase):
 
         commands = [command for _, command in steps]
         self.assertEqual(
-            commands[:4],
+            commands[:5],
             [
-                "python3 scripts/test_repo_truth.py -v",
-                "python3 -m unittest scripts.test_repository_prerequisites -v",
+                "PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_repo_truth.py -v",
+                "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_repository_prerequisites -v",
                 (
-                    "python3 scripts/repo_truth.py --repo . --json --check "
+                    "PYTHONDONTWRITEBYTECODE=1 python3 scripts/repo_truth.py --repo . --json --check "
                     '--base "$BASE_COMMIT" --head "$HEAD_COMMIT"'
                 ),
+                "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_compatibility_mutation_inventory -v",
                 "bash scripts/check-repository-hygiene.sh",
             ],
         )
+        self.assertNotIn(
+            "scripts/compatibility_mutation_inventory.py --repo . --check",
+            workflow,
+        )
         self.assertIn("BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}", workflow)
         self.assertIn("HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}", workflow)
+
+    def test_compatibility_enforcement_uses_trusted_base_verifier_and_untrusted_candidate_as_data(self) -> None:
+        workflow = (SCRIPT.parent.parent / ".github/workflows/compatibility-enforcement.yml").read_text(encoding="utf-8")
+
+        self.assertIn("pull_request_target:", workflow)
+        self.assertIn("uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0", workflow)
+        self.assertEqual(workflow.count("persist-credentials: false"), 2)
+        self.assertIn("allow-unsafe-pr-checkout: true", workflow)
+        self.assertIn("path: trusted-verifier", workflow)
+        self.assertIn("path: candidate-source", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha || github.sha }}", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", workflow)
+        self.assertIn("trusted-verifier/scripts/compatibility_mutation_inventory.py", workflow)
+        self.assertIn("--repo \"$GITHUB_WORKSPACE/candidate-source\"", workflow)
+        self.assertIn("BASE_COMMIT", workflow)
+        self.assertIn("trusted verifier is absent from the approved base", workflow)
 
     def test_json_check_reports_source_inventory_and_git_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

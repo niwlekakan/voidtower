@@ -195,6 +195,7 @@ async fn real_router_jobs_use_exact_operator_allowlist_and_complete_shape() {
             .unwrap();
         assert_eq!(list.status(), StatusCode::OK, "{role} must list jobs");
         let list = json(list).await;
+        assert_eq!(list["schema_version"], 1);
         assert_eq!(list["jobs"][0]["id"], job.id);
         assert_eq!(list["jobs"][0]["resource"]["display_name"], "web-jobs");
         assert_eq!(list["jobs"][0]["actor"]["actor_type"], "human");
@@ -261,6 +262,7 @@ async fn real_router_approvals_use_admin_allowlist_and_reject_exact_record() {
             .unwrap();
         assert_eq!(list.status(), StatusCode::OK, "{role} must list approvals");
         let list = json(list).await;
+        assert_eq!(list["schema_version"], 1);
         assert_eq!(list["approvals"].as_array().unwrap().len(), 2);
         assert!(list["approvals"][0]["expires_at"].is_number());
         assert!(list["approvals"][0]["job_id"].is_string());
@@ -287,6 +289,21 @@ async fn real_router_approvals_use_admin_allowlist_and_reject_exact_record() {
         );
     }
 
+    let approval_detail = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &format!("/api/approvals/{selected_approval}"),
+            Some(&test_support::user_with_role_session(&db, "admin").await),
+            "",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(approval_detail.status(), StatusCode::OK);
+    let approval_detail_body = json(approval_detail).await;
+    assert_eq!(approval_detail_body["schema_version"], 1);
+    assert_eq!(approval_detail_body["approval"]["id"], selected_approval);
+
     let admin = test_support::user_with_role_session(&db, "admin").await;
     let rejected = app
         .clone()
@@ -299,7 +316,11 @@ async fn real_router_approvals_use_admin_allowlist_and_reject_exact_record() {
         .await
         .unwrap();
     assert_eq!(rejected.status(), StatusCode::OK);
-    assert_eq!(json(rejected).await["job"]["id"], selected.id);
+    let rejected_body = json(rejected).await;
+    assert_eq!(rejected_body["schema_version"], 1);
+    assert_eq!(rejected_body["resource_id"], selected.resource.id);
+    assert_eq!(rejected_body["action"], "container.restart");
+    assert_eq!(rejected_body["job"]["id"], selected.id);
 
     let selected_status: String = sqlx::query_scalar("SELECT status FROM approvals WHERE id = ?")
         .bind(&selected_approval)
@@ -324,6 +345,7 @@ async fn real_router_approvals_use_admin_allowlist_and_reject_exact_record() {
     );
 
     let repeat = app
+        .clone()
         .oneshot(request(
             Method::POST,
             &format!("/api/approvals/{selected_approval}/reject"),
@@ -333,6 +355,43 @@ async fn real_router_approvals_use_admin_allowlist_and_reject_exact_record() {
         .await
         .unwrap();
     assert_eq!(repeat.status(), StatusCode::CONFLICT);
+    let repeat_body = json(repeat).await;
+    assert_eq!(repeat_body["error"]["code"], "approval_conflict");
+    assert_eq!(
+        repeat_body["error"]["message"],
+        "The approval can no longer be decided."
+    );
+    assert!(!repeat_body
+        .to_string()
+        .contains("approval is no longer pending"));
+
+    let oversized_comment = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &format!("/api/approvals/{untouched_approval}/reject"),
+            Some(&admin),
+            &format!(r#"{{"comment":"{}"}}"#, "x".repeat(501)),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(oversized_comment.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json(oversized_comment).await["error"]["code"],
+        "bad_request"
+    );
+
+    let missing = app
+        .oneshot(request(
+            Method::POST,
+            "/api/approvals/missing-approval/reject",
+            Some(&admin),
+            r#"{"comment":null}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json(missing).await["error"]["code"], "not_found");
 }
 
 #[tokio::test]
@@ -360,6 +419,12 @@ async fn automation_run_uses_canonical_job_and_replays_by_idempotency_key() {
         .unwrap();
     assert_eq!(first.status(), StatusCode::ACCEPTED);
     let first_body = json(first).await;
+    assert_eq!(first_body["schema_version"], 1);
+    assert_eq!(
+        first_body["resource_id"],
+        first_body["job"]["resource"]["id"]
+    );
+    assert_eq!(first_body["action"], "automation.run");
     assert_eq!(first_body["job"]["action"], "automation.run");
     assert_eq!(first_body["job"]["resource"]["kind"], "automation_job");
     assert_eq!(first_body["job"]["actor"]["actor_type"], "human");

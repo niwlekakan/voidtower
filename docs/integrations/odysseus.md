@@ -195,10 +195,11 @@ bounded `401 webhook_authentication_failed` response. The exact raw body is capp
 must be signed before it is parsed as JSON.
 
 `container.start`, `container.stop`, and `container.restart` use VoidTower's canonical durable
-operation path. A normal request returns `202 { "job": ... }`; the returned job is acceptance, not
-provider success, and can be followed at `GET /api/jobs/:id`. Add `"dry_run": true` to receive the
-canonical plan without creating a job. Unknown actions and durable actions that are not explicitly
-webhook-enabled fail closed.
+operation path. A normal request returns `202` with the v1 job envelope
+`{ "schema_version": 1, "resource_id": "...", "action": "...", "job": ... }`; the returned job is
+acceptance, not provider success, and can be followed at `GET /api/jobs/:id`. Add `"dry_run": true`
+to receive the canonical plan without creating a job. Unknown actions and durable actions that are
+not explicitly webhook-enabled fail closed.
 
 The endpoint also accepts an `automation_id` intent. Include an `Idempotency-Key` when the caller
 needs canonical job replay semantics across distinct signed deliveries:
@@ -219,8 +220,9 @@ missing action resources, empty/oversized identifiers, invalid idempotency keys,
 actions fail closed with the bounded error envelope. The webhook body is capped at 64 KiB and
 requires `Content-Type: application/json`. Automation webhook requests use the same canonical
 `automation.run` resource/action/plan/policy/durable-job boundary as HTTP and scheduler submissions.
-A normal request returns `202 { "job": ... }`, with `actor_type = "automation"` and
-`ingress = "webhook"`; the returned job is acceptance, not provider success, and can be followed at
+A normal request returns `202` with the same v1 job envelope, including
+`actor_type = "automation"` and `ingress = "webhook"`; the returned job is acceptance, not provider
+success, and can be followed at
 `GET /api/jobs/:id`. Reusing an idempotency key with the same automation intent replays the same job;
 using it for a different intent returns `409 conflict`. Add `"dry_run": true` to receive the
 canonical plan and policy preview without creating a job.

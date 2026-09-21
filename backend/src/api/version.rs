@@ -9,6 +9,8 @@ use serde::Serialize;
 pub const API_VERSION: &str = "1";
 pub const ACTION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const JOB_READ_ENVELOPE_SCHEMA_VERSION: u16 = 1;
+pub const COLLECTION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
+pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 const VERSION_HEADER: &str = "x-voidtower-api-version";
 
 #[derive(Debug, Serialize)]
@@ -64,6 +66,51 @@ impl<T> JobReadEnvelopeV1<T> {
             resource_id: resource_id.into(),
             action: action.into(),
             job: data,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobListEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub jobs: Vec<T>,
+}
+
+impl<T> JobListEnvelopeV1<T> {
+    pub fn new(jobs: Vec<T>) -> Self {
+        Self {
+            schema_version: COLLECTION_ENVELOPE_SCHEMA_VERSION,
+            jobs,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApprovalListEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub approvals: Vec<T>,
+}
+
+impl<T> ApprovalListEnvelopeV1<T> {
+    pub fn new(approvals: Vec<T>) -> Self {
+        Self {
+            schema_version: APPROVAL_ENVELOPE_SCHEMA_VERSION,
+            approvals,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApprovalReadEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub approval: T,
+}
+
+impl<T> ApprovalReadEnvelopeV1<T> {
+    pub fn new(approval: T) -> Self {
+        Self {
+            schema_version: APPROVAL_ENVELOPE_SCHEMA_VERSION,
+            approval,
         }
     }
 }
@@ -218,6 +265,18 @@ mod tests {
                     "resource_id": "resource-1",
                     "action": "container.start",
                     "job": {"id": "job-1"}
+                },
+                "job_list_v1": {
+                    "schema_version": COLLECTION_ENVELOPE_SCHEMA_VERSION,
+                    "jobs": [{"id": "job-1"}]
+                },
+                "approval_list_v1": {
+                    "schema_version": APPROVAL_ENVELOPE_SCHEMA_VERSION,
+                    "approvals": [{"id": "approval-1"}]
+                },
+                "approval_read_v1": {
+                    "schema_version": APPROVAL_ENVELOPE_SCHEMA_VERSION,
+                    "approval": {"id": "approval-1"}
                 },
                 "error_v1": {
                     "error": {

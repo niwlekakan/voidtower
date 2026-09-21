@@ -770,7 +770,7 @@ function SetupSection() {
     {
       key: 'sse',
       label: 'Subscribe to event stream',
-      code: `curl -H "Accept: text/event-stream" \\\n  "http://localhost:8743/api/integrations/events?token=<your-token>"`,
+      code: `curl -H "Authorization: Bearer <your-token>" \\\n  -H "Accept: text/event-stream" \\\n  http://localhost:8743/api/integrations/events`,
     },
     {
       key: 'webhook',

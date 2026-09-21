@@ -12,7 +12,7 @@ describe('durable operation API client', () => {
 
   it('encodes list/detail/cancel and idempotency lookup requests', async () => {
     const fetch = vi.fn()
-      .mockResolvedValueOnce(ok({ jobs: [] }))
+      .mockResolvedValueOnce(ok({ schema_version: 1, jobs: [] }))
       .mockResolvedValueOnce(ok(envelope))
       .mockResolvedValueOnce(ok(envelope))
       .mockResolvedValueOnce(ok(envelope))
@@ -60,8 +60,8 @@ describe('durable operation API client', () => {
 
   it('omits absent approval status and sends one trimmed exact-record decision', async () => {
     const fetch = vi.fn()
-      .mockResolvedValueOnce(ok({ approvals: [] }))
-      .mockResolvedValueOnce(ok({ job: {} }))
+      .mockResolvedValueOnce(ok({ schema_version: 1, approvals: [] }))
+      .mockResolvedValueOnce(ok({ schema_version: 1, resource_id: 'resource-1', action: 'test.approval', job: { id: 'job-1' } }))
     vi.stubGlobal('fetch', fetch)
     await api.approvals.list({ limit: 10 })
     await api.approvals.approve('approval/id', '  reviewed  ')

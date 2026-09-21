@@ -34,7 +34,12 @@ describe('ApprovalsPage decisions', () => {
   })
 
   it('approves the exact URL record once and refetches approval and job', async () => {
-    const approve = vi.spyOn(api.approvals, 'approve').mockResolvedValue({ job: durableJob({ id: job.id, state: 'queued' }) })
+    const approve = vi.spyOn(api.approvals, 'approve').mockResolvedValue({
+      schema_version: 1,
+      resource_id: job.resource.id,
+      action: job.action,
+      job: durableJob({ id: job.id, state: 'queued' }),
+    })
     render(
       <MemoryRouter initialEntries={[`/approvals/${approval.id}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes><Route path="/approvals/:id" element={<ApprovalsPage />} /></Routes>

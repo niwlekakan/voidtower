@@ -23,6 +23,7 @@ use crate::{
 
 use super::actions::CanonicalApiError;
 use super::mcp::action_registry;
+use super::version::JobSuccessEnvelopeV1;
 
 #[derive(Debug)]
 pub(crate) enum CompatibilityError {
@@ -267,7 +268,8 @@ pub(crate) async fn submit_with_key(
     if job.state == JobState::Rejected {
         return Err(CanonicalApiError::policy_denied(job.id).into());
     }
-    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"job": job}))).into_response())
+    let envelope = JobSuccessEnvelopeV1::new(job.resource.id.clone(), job.action.clone(), job);
+    Ok((StatusCode::ACCEPTED, Json(envelope)).into_response())
 }
 
 #[cfg(test)]

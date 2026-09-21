@@ -21,7 +21,7 @@ use crate::{
 use super::{
     actions::CanonicalApiError,
     bearer_auth::AuthenticatedApiToken,
-    version::{JobReadEnvelopeV1, JobSuccessEnvelopeV1},
+    version::{JobListEnvelopeV1, JobReadEnvelopeV1, JobSuccessEnvelopeV1},
 };
 
 #[derive(Deserialize)]
@@ -51,12 +51,12 @@ pub async fn list(
     State(state): State<AppState>,
     jar: CookieJar,
     Query(query): Query<ListQuery>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<JobListEnvelopeV1<crate::operations::contracts::JobSummaryV1>>> {
     require_operator(&state, &jar).await?;
     let jobs = jobs::list(&state.db, query.limit)
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(serde_json::json!({"jobs": jobs})))
+    Ok(Json(JobListEnvelopeV1::new(jobs)))
 }
 
 pub async fn get_by_idempotency(

@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from './client'
 import {
   ApiEnvelopeError,
+  parseApprovalListEnvelope,
+  parseApprovalReadEnvelope,
   parseApiErrorEnvelope,
+  parseJobListEnvelope,
   parseJobSuccessEnvelope,
   parsePlanSuccessEnvelope,
   parseVersionNegotiationErrorEnvelope,
@@ -22,6 +25,19 @@ describe('versioned API envelope adapters', () => {
 
   it('parses a v1 job success envelope without changing its payload', () => {
     expect(parseJobSuccessEnvelope(validJobEnvelope)).toEqual(validJobEnvelope)
+  })
+
+  it('parses versioned job and approval collection envelopes', () => {
+    expect(parseJobListEnvelope({ schema_version: 1, jobs: [job] })).toEqual({ schema_version: 1, jobs: [job] })
+    expect(parseApprovalListEnvelope({ schema_version: 1, approvals: [] })).toEqual({ schema_version: 1, approvals: [] })
+    expect(parseApprovalReadEnvelope({ schema_version: 1, approval: { id: 'approval-1' } }))
+      .toEqual({ schema_version: 1, approval: { id: 'approval-1' } })
+  })
+
+  it('rejects unversioned collection envelopes', () => {
+    expect(() => parseJobListEnvelope({ jobs: [] })).toThrowError(
+      new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid collection envelope.', 1),
+    )
   })
 
   it('rejects an incompatible schema version with a bounded client error', () => {

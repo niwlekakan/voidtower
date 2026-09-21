@@ -99,8 +99,20 @@ POST /api/approvals/:id/reject                 { "comment": "..." }
 GET  /api/events?after=&limit=
 ```
 
+All durable-operation responses negotiate API version `1` through the optional
+`x-voidtower-api-version` request header. A successful response echoes that version. Job and
+approval reads use source-owned v1 envelopes: job lists return
+`{ "schema_version": 1, "jobs": [...] }`, approval lists return
+`{ "schema_version": 1, "approvals": [...] }`, and an individual approval returns
+`{ "schema_version": 1, "approval": {...} }`. Job detail and idempotency lookup use the v1 read
+envelope; accepted submission, cancellation, approval, and rejection use the v1 job envelope with
+`resource_id`, `action`, and `job`. The checked-in examples and generated frontend artifact come
+from `backend/contracts/api-v1-envelope-contract.json`; run `node scripts/generate-api-contract.mjs
+--check` to detect drift. A repeated decision for an approval that is no longer pending returns
+the bounded `409 approval_conflict` envelope and never exposes internal decision diagnostics.
+
 Planning returns `200` and has no durable side effect. Canonical submission requires an
-`Idempotency-Key` header and returns `202 { "job": ... }` when the request is accepted. Keys are
+`Idempotency-Key` header and returns `202` with the same v1 job envelope when the request is accepted. Keys are
 1–128 ASCII characters, begin with an alphanumeric character, and thereafter may also contain
 `.`, `_`, `:`, or `-`. Reusing a key with the same credential and identical intent returns the same
 job; reusing it for different intent returns `409 idempotency_conflict`. Adopted compatibility
@@ -120,15 +132,16 @@ use bounded, redacted representations; credentials and staged secret contents ar
 
 The adopted compatibility inventory is executable and validated by
 `backend/src/operations/registry.rs`; it must not be copied into documentation as a mutable route
-count. Each mapped durable branch returns `202 { "job": ... }`; a compatibility `dry_run: true`
-returns an advisory plan and creates no job. App Vault/model Compose lifecycle, AI proxy-settings
+count. Each mapped durable branch returns `202` with the same v1 job envelope as canonical
+submissions: `{ "schema_version": 1, "resource_id": "...", "action": "...", "job": ... }`.
+A compatibility `dry_run: true` returns an advisory plan and creates no job. App Vault/model Compose lifecycle, AI proxy-settings
 orchestration, service webhook actions, and ephemeral Proxmox VNC ticket creation remain synchronous
 exceptions because they do not yet have matching durable actions. Automation webhook actions use the
 canonical `automation.run` durable action described below. The
 current web clients follow submitted jobs locally and link to shared job detail. Owner/admin/operator
 sessions can list and inspect the newest 50 jobs in Tower or Void Mode; cancellation is offered only
 for queued/running records. Owner/admin sessions can list and decide exact immutable approvals with
-an optional comment. These shared workflows use bounded, visibility-aware HTTP polling and never
+an optional comment of at most 500 characters. These shared workflows use bounded, visibility-aware HTTP polling and never
 retry a mutation automatically. `/api/events` exposes durable history; `/api/events/stream` and
 `/api/integrations/events` expose the same cursor-resumable durable SSE stream. Shared operation
 views use it only to invalidate authoritative HTTP reads and retain bounded polling as fallback.
@@ -221,10 +234,10 @@ emits `stream.gap` with `reason`, `requested_after`, `earliest_available`, and `
 then closes. Clients must refetch complete authoritative resources before reconnecting at a known
 high-water mark. They must never infer or replay a mutation from an event.
 
-Owner, admin, and operator sessions may connect. API tokens require `alerts:read`; browser
-`EventSource` clients may pass the token as `?token=` when they cannot set an Authorization header.
-Emergency disable rejects token-backed streams on either durable URL while leaving local session
-recovery available.
+Owner, admin, and operator sessions may connect. API tokens require `alerts:read` and must be sent
+in the Authorization header (for example, `Bearer ***`); query-string tokens are rejected and are never accepted
+as an EventSource fallback. Emergency disable rejects token-backed streams on either durable URL
+while leaving local session recovery available.
 
 ## Services
 
@@ -248,7 +261,8 @@ POST /api/containers/:id/compose/apply     { path?, content }
 ```
 
 Container mutations submit through the durable operation boundary. A normal action/apply returns
-`202 { "job": ... }`; `dry_run: true` returns the current advisory plan without creating a job.
+`202` with the v1 job envelope `{ "schema_version": 1, "resource_id": "...", "action": "...", "job": ... }`;
+`dry_run: true` returns the current advisory plan without creating a job.
 Callers may provide `Idempotency-Key`; compatibility callers that omit it receive legacy
 at-most-once-per-request behavior through a generated key. Compose content is validated and staged
 as a controlled opaque artifact before the job is submitted—the handler never applies it directly.

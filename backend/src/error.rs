@@ -28,6 +28,8 @@ pub enum AppError {
     PayloadTooLarge,
     #[error("Conflict: {0}")]
     Conflict(String),
+    #[error("Approval cannot be decided")]
+    ApprovalConflict,
     #[error("Feature unavailable: {0}")]
     FeatureUnavailable(String),
     #[error("Too many requests")]
@@ -101,6 +103,11 @@ impl IntoResponse for AppError {
                 "Request body exceeds the allowed size".to_string(),
             ),
             AppError::Conflict(m) => (StatusCode::CONFLICT, "conflict", m.clone()),
+            AppError::ApprovalConflict => (
+                StatusCode::CONFLICT,
+                "approval_conflict",
+                "The approval can no longer be decided.".to_string(),
+            ),
             AppError::FeatureUnavailable(m) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "feature_unavailable",

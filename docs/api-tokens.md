@@ -27,12 +27,11 @@ Pass the token as a Bearer header:
 Authorization: Bearer vt_<your_token>
 ```
 
-For the durable SSE stream (`/api/integrations/events`, an alias of `/api/events/stream`), browser
-`EventSource` clients that cannot set headers may pass the token as a query parameter:
-
-```
-GET /api/integrations/events?token=vt_<your_token>
-```
+The durable SSE stream (`/api/integrations/events`, an alias of `/api/events/stream`) accepts bearer
+credentials only in the `Authorization` header. Query-string tokens are rejected and must never be
+placed in URLs, browser history, proxy logs, or referrers. Native browser `EventSource` cannot set
+custom headers, so use the authenticated frontend stream client or another header-capable HTTP/SSE
+client for token-backed connections.
 
 The default connection is live-only. Add `after=0` for complete retained replay or resume with
 `Last-Event-ID`. Tokens require `alerts:read`. The deprecated transient metrics/audit feed is at

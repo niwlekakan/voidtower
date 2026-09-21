@@ -10,10 +10,14 @@ use crate::{
     error::{AppError, Result},
     operations::{
         approvals,
-        contracts::{ActorRef, ActorType},
+        contracts::{ActorRef, ActorType, ApprovalViewV1, JobSummaryV1},
     },
     AppState,
 };
+
+use super::version::{ApprovalListEnvelopeV1, ApprovalReadEnvelopeV1, JobSuccessEnvelopeV1};
+
+const MAX_DECISION_COMMENT_CHARS: usize = 500;
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -52,29 +56,54 @@ fn actor(user: auth::User) -> ActorRef {
     }
 }
 
+fn validate_decision_comment(comment: Option<&str>) -> Result<()> {
+    if comment.is_some_and(|value| value.chars().count() > MAX_DECISION_COMMENT_CHARS) {
+        return Err(AppError::BadRequest(
+            "Approval comments must be 500 characters or fewer.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn map_decision_error(error: anyhow::Error) -> AppError {
+    if error
+        .chain()
+        .any(|cause| cause.to_string() == "approval not found")
+    {
+        AppError::NotFound
+    } else if error
+        .chain()
+        .any(|cause| cause.to_string() == "approval is no longer pending")
+    {
+        AppError::ApprovalConflict
+    } else {
+        AppError::Internal(error)
+    }
+}
+
 pub async fn list(
     State(state): State<AppState>,
     jar: CookieJar,
     Query(query): Query<ListQuery>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<ApprovalListEnvelopeV1<ApprovalViewV1>>> {
     require_admin(&state, &jar).await?;
     let approvals = approvals::list(&state.db, query.status.as_deref(), query.limit)
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(serde_json::json!({"approvals": approvals})))
+    Ok(Json(ApprovalListEnvelopeV1::new(approvals)))
 }
 
 pub async fn get(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<ApprovalReadEnvelopeV1<ApprovalViewV1>>> {
     require_admin(&state, &jar).await?;
     let approval = approvals::get(&state.db, &id)
         .await
         .map_err(AppError::Internal)?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(serde_json::json!({"approval": approval})))
+    Ok(Json(ApprovalReadEnvelopeV1::new(approval)))
 }
 
 pub async fn approve(
@@ -82,8 +111,9 @@ pub async fn approve(
     jar: CookieJar,
     Path(id): Path<String>,
     Json(request): Json<DecisionRequest>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<JobSuccessEnvelopeV1<JobSummaryV1>>> {
     let user = require_admin(&state, &jar).await?;
+    validate_decision_comment(request.comment.as_deref())?;
     let job = approvals::approve(
         &state.db,
         &state.operation_adapters,
@@ -92,8 +122,12 @@ pub async fn approve(
         request.comment.as_deref(),
     )
     .await
-    .map_err(|error| AppError::Conflict(error.to_string()))?;
-    Ok(Json(serde_json::json!({"job": job})))
+    .map_err(map_decision_error)?;
+    Ok(Json(JobSuccessEnvelopeV1::new(
+        job.resource.id.clone(),
+        job.action.clone(),
+        job,
+    )))
 }
 
 pub async fn reject(
@@ -101,10 +135,15 @@ pub async fn reject(
     jar: CookieJar,
     Path(id): Path<String>,
     Json(request): Json<DecisionRequest>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<JobSuccessEnvelopeV1<JobSummaryV1>>> {
     let user = require_admin(&state, &jar).await?;
+    validate_decision_comment(request.comment.as_deref())?;
     let job = approvals::reject(&state.db, &id, actor(user), request.comment.as_deref())
         .await
-        .map_err(|error| AppError::Conflict(error.to_string()))?;
-    Ok(Json(serde_json::json!({"job": job})))
+        .map_err(map_decision_error)?;
+    Ok(Json(JobSuccessEnvelopeV1::new(
+        job.resource.id.clone(),
+        job.action.clone(),
+        job,
+    )))
 }

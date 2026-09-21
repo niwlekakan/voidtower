@@ -29,7 +29,12 @@ describe('JobsPage actions', () => {
   })
 
   it('sends one cancellation for the selected job and refetches authoritative detail', async () => {
-    const cancel = vi.spyOn(api.operationJobs, 'cancel').mockResolvedValue({ job: durableJob({ state: 'cancelled' }) })
+    const cancel = vi.spyOn(api.operationJobs, 'cancel').mockResolvedValue({
+      schema_version: 1,
+      resource_id: job.resource.id,
+      action: job.action,
+      job: durableJob({ state: 'cancelled' }),
+    })
     render(
       <MemoryRouter initialEntries={[`/jobs/${job.id}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes><Route path="/jobs/:id" element={<JobsPage />} /></Routes>

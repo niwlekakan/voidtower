@@ -43,6 +43,28 @@
         "id": "job-1"
       }
     },
+    "job_list_v1": {
+      "schema_version": 1,
+      "jobs": [
+        {
+          "id": "job-1"
+        }
+      ]
+    },
+    "approval_list_v1": {
+      "schema_version": 1,
+      "approvals": [
+        {
+          "id": "approval-1"
+        }
+      ]
+    },
+    "approval_read_v1": {
+      "schema_version": 1,
+      "approval": {
+        "id": "approval-1"
+      }
+    },
     "error_v1": {
       "error": {
         "code": "job_not_found",

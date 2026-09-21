@@ -3,7 +3,10 @@ import type { ApiError } from './types'
 import { useAuthStore } from '@/store/auth'
 import { API_V1_ENVELOPE_CONTRACT } from './generatedApiContract'
 import {
+  parseApprovalListEnvelope,
+  parseApprovalReadEnvelope,
   parseApiErrorEnvelope,
+  parseJobListEnvelope,
   parseJobReadEnvelope,
   parseJobSuccessEnvelope,
   parsePlanSuccessEnvelope,
@@ -102,6 +105,21 @@ async function request<T>(path: string, init?: RequestInit, parse?: (value: unkn
   return parse ? parse(body) : body as T
 }
 
+function requestJob(path: string, init?: RequestInit): Promise<import('./types').DurableJobResponse> {
+  return request<import('./types').DurableJobResponse>(path, init, parseJobSuccessEnvelope)
+}
+
+type DurablePlanOrJobResponse =
+  | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
+  | import('./types').DurableJobResponse
+
+function parsePlanOrJobResponse(value: unknown): DurablePlanOrJobResponse {
+  if (typeof value === 'object' && value !== null && (value as Record<string, unknown>).dry_run === true) {
+    return value as DurablePlanOrJobResponse
+  }
+  return parseJobSuccessEnvelope<import('./types').DurableJob>(value)
+}
+
 function validateCanonicalTarget(value: string): void {
   if (typeof value !== 'string' || value.length === 0 || value === '.' || value === '..' || value.trim().length === 0 || value.length > MAX_CANONICAL_TARGET_LENGTH) {
     throw new ApiClientError('Invalid canonical action target.', 'invalid_action_target', 400)
@@ -193,7 +211,7 @@ export const api = {
   containers: {
     list: () => request<import('./types').ContainersResponse>('/api/containers'),
     action: (id: string, action: import('./types').ContainerAction) =>
-      request<import('./types').DurableJobResponse>(`/api/containers/${id}/action`, {
+      requestJob(`/api/containers/${id}/action`, {
         method: 'POST',
         body: JSON.stringify({ action }),
       }),
@@ -213,7 +231,7 @@ export const api = {
         method: 'POST', body: JSON.stringify({ path, content }),
       }),
     applyCompose: (id: string, path: string, content: string) =>
-      request<import('./types').DurableJobResponse>(`/api/containers/${id}/compose/apply`, {
+      requestJob(`/api/containers/${id}/compose/apply`, {
         method: 'POST', body: JSON.stringify({ path, content }),
       }),
   },
@@ -260,7 +278,7 @@ export const api = {
         body: JSON.stringify({ project_name: projectName, primary_port: primaryPort }),
       }),
     expose: (projectName: string, body: { domain: string; ssl?: boolean; allow_embed?: boolean }) =>
-      request<import('./types').DurableJobResponse>(`/api/apps/${projectName}/expose`, {
+      requestJob(`/api/apps/${projectName}/expose`, {
         method: 'POST', body: JSON.stringify(body),
       }),
     detectExternal: () =>
@@ -289,19 +307,19 @@ export const api = {
     list: () =>
       request<{ proxies: import('./types').ProxyConfig[]; nginx_available: boolean; nginx_backend: 'docker' | 'system' | 'none'; sites_dir: string }>('/api/proxy'),
     create: (domain: string, upstream: string, ssl: boolean, allow_embed = false, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
-      request<import('./types').DurableJobResponse>('/api/proxy', {
+      requestJob('/api/proxy', {
         method: 'POST',
         body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, ...proxyOptsBody(opts) }),
       }),
     delete: (id: string) =>
-      request<import('./types').DurableJobResponse>(`/api/proxy/${id}`, { method: 'DELETE' }),
+      requestJob(`/api/proxy/${id}`, { method: 'DELETE' }),
     update: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
-      request<import('./types').DurableJobResponse>(`/api/proxy/${id}`, {
+      requestJob(`/api/proxy/${id}`, {
         method: 'PUT',
         body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, ...proxyOptsBody(opts) }),
       }),
     toggle: (id: string) =>
-      request<import('./types').DurableJobResponse>(`/api/proxy/${id}/toggle`, { method: 'POST' }),
+      requestJob(`/api/proxy/${id}/toggle`, { method: 'POST' }),
     health: (id: string) =>
       request<{ status: 'up' | 'down'; latency_ms: number; checked_at: number }>(`/api/proxy/${id}/health`),
     plan: (domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
@@ -545,16 +563,16 @@ export const api = {
       }),
     getProxmoxConfig: () => request<import('./types').ProxmoxConfig | null>('/api/vms/proxmox/config'),
     setProxmoxConfig: (cfg: import('./types').ProxmoxConfig) =>
-      request<import('./types').DurableJobResponse>('/api/vms/proxmox/config', {
+      requestJob('/api/vms/proxmox/config', {
         method: 'POST', body: JSON.stringify(cfg),
       }),
     listProxmox: () => request<import('./types').ProxmoxVmsResponse>('/api/vms/proxmox/vms'),
     proxmoxAction: (vmid: number, kind: string, node: string, action: string) =>
-      request<import('./types').DurableJobResponse>('/api/vms/proxmox/action', {
+      requestJob('/api/vms/proxmox/action', {
         method: 'POST', body: JSON.stringify({ vmid, kind, node, action }),
       }),
     testProxmox: () =>
-      request<import('./types').DurableJobResponse>('/api/vms/proxmox/test', { method: 'POST' }),
+      requestJob('/api/vms/proxmox/test', { method: 'POST' }),
   },
 
   mods: {
@@ -583,9 +601,9 @@ export const api = {
     }) => request<{ ok: boolean; webhook_secret?: string }>('/api/integrations/odysseus/config', { method: 'POST', body: JSON.stringify(cfg) }),
     manifest: () => request<import('./types').OdysseusManifest>('/api/integrations/odysseus/manifest'),
     recentActions: () => request<{ actions: import('./types').AuditAction[] }>('/api/integrations/actions'),
-    eventsUrl: (token?: string) => {
+    eventsUrl: () => {
       const base = (import.meta.env.VITE_API_BASE ?? '')
-      return token ? `${base}/api/integrations/events?token=${encodeURIComponent(token)}` : `${base}/api/integrations/events`
+      return `${base}/api/integrations/events`
     },
   },
 
@@ -604,32 +622,32 @@ export const api = {
   proxmox: {
     listHosts:  () => request<import('./types').ProxmoxHost[]>('/api/proxmox/hosts'),
     addHost:    (data: import('./types').AddHostRequest) =>
-      request<import('./types').DurableJobResponse>('/api/proxmox/hosts', { method: 'POST', body: JSON.stringify(data) }),
+      requestJob('/api/proxmox/hosts', { method: 'POST', body: JSON.stringify(data) }),
     deleteHost: (id: string) =>
-      request<import('./types').DurableJobResponse>(`/api/proxmox/hosts/${id}`, { method: 'DELETE' }),
+      requestJob(`/api/proxmox/hosts/${id}`, { method: 'DELETE' }),
     getNodes:   (hostId: string) => request<import('./types').PveNode[]>(`/api/proxmox/${hostId}/nodes`),
     getVms:     (hostId: string) => request<import('./types').PveVm[]>(`/api/proxmox/${hostId}/vms`),
     getStorage: (hostId: string) => request<import('./types').PveStorage[]>(`/api/proxmox/${hostId}/storage`),
     getTasks:   (hostId: string) => request<import('./types').PveTask[]>(`/api/proxmox/${hostId}/tasks`),
     vmAction:     (hostId: string, vmid: number, action: 'start' | 'stop' | 'shutdown' | 'reboot' | 'reset' | 'suspend' | 'resume') =>
-      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
     vmActionPlan: (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot' | 'reset' | 'suspend') =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST', body: JSON.stringify({ dry_run: true }) }),
     getSnapshots: (hostId: string, vmid: number, kind: 'qemu' | 'lxc') =>
       request<import('./types').PveSnapshot[]>(`/api/proxmox/${hostId}/vms/${vmid}/snapshots?kind=${kind}`),
     createSnapshot: (hostId: string, vmid: number, name: string, desc: string) =>
-      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
     createSnapshotPlan: (hostId: string, vmid: number, name: string, desc: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc, dry_run: true }) }),
     deleteSnapshot: (hostId: string, vmid: number, snapname: string) =>
-      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
     deleteSnapshotPlan: (hostId: string, vmid: number, snapname: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE', body: JSON.stringify({ dry_run: true }) }),
     rollbackSnapshot: (hostId: string, vmid: number, snapname: string) =>
-      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
     rollbackSnapshotPlan: (hostId: string, vmid: number, snapname: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST', body: JSON.stringify({ dry_run: true }) }),
@@ -642,7 +660,7 @@ export const api = {
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus, dry_run: true }) }),
     diskPassthrough: (hostId: string, vmid: number, diskPath: string, bus: string) =>
-      request<import('./types').DurableJobResponse>(`/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus }) }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus }) }),
 
     // Storage content browser
     getStorageContent: (hostId: string, node: string, storage: string) =>
@@ -652,7 +670,7 @@ export const api = {
         `/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content?volid=${encodeURIComponent(volid)}`,
         { method: 'DELETE', body: JSON.stringify({ dry_run: true }) }),
     deleteStorageContent: (hostId: string, node: string, storage: string, volid: string) =>
-      request<import('./types').DurableJobResponse>(
+      requestJob(
         `/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content?volid=${encodeURIComponent(volid)}`,
         { method: 'DELETE', body: JSON.stringify({ dry_run: false }) }),
 
@@ -665,13 +683,13 @@ export const api = {
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/nodes/${node}/disks/wipe`, { method: 'POST', body: JSON.stringify({ disk, dry_run: true }) }),
     wipeDisk: (hostId: string, node: string, disk: string) =>
-      request<import('./types').DurableJobResponse>(
+      requestJob(
         `/api/proxmox/${hostId}/nodes/${node}/disks/wipe`, { method: 'POST', body: JSON.stringify({ disk }) }),
     initDiskPlan: (hostId: string, node: string, disk: string, fstype: string, name: string, raidlevel?: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/nodes/${node}/disks/init`, { method: 'POST', body: JSON.stringify({ disk, fstype, name, raidlevel, dry_run: true }) }),
     initDisk: (hostId: string, node: string, disk: string, fstype: string, name: string, raidlevel?: string) =>
-      request<import('./types').DurableJobResponse>(
+      requestJob(
         `/api/proxmox/${hostId}/nodes/${node}/disks/init`, { method: 'POST', body: JSON.stringify({ disk, fstype, name, raidlevel }) }),
   },
 
@@ -679,7 +697,7 @@ export const api = {
     deployToLxc: (hostId: string, req: {
       node: string; hostname: string; ostemplate: string; compose_yaml: string;
       cores?: number; memory?: number; storage?: string; disk_gb?: number;
-    }) => request<import('./types').DurableJobResponse>(
+    }) => requestJob(
       `/api/proxmox/${hostId}/lxc/deploy`, { method: 'POST', body: JSON.stringify(req) }),
   },
 
@@ -759,42 +777,46 @@ export const api = {
     infoVt: () =>
       request<import('./types').VoidTowerUpdateInfo>('/api/updates/voidtower'),
     checkVt: () =>
-      request<import('./types').DurableJobResponse>('/api/updates/voidtower/check', { method: 'POST' }),
+      requestJob('/api/updates/voidtower/check', { method: 'POST' }),
     applyVt: (dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
         | import('./types').DurableJobResponse
-      >('/api/updates/voidtower/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+      >('/api/updates/voidtower/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }, parsePlanOrJobResponse),
     rollbackVt: (tag: string, dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
         | import('./types').DurableJobResponse
-      >('/api/updates/voidtower/rollback', { method: 'POST', body: JSON.stringify({ tag, dry_run: dryRun }) }),
+      >('/api/updates/voidtower/rollback', { method: 'POST', body: JSON.stringify({ tag, dry_run: dryRun }) }, parsePlanOrJobResponse),
     infoOdysseus: () =>
       request<import('./types').OdysseusUpdateInfo>('/api/updates/odysseus'),
     applyOdysseus: () =>
-      request<import('./types').DurableJobResponse>('/api/updates/odysseus/apply', { method: 'POST' }),
+      requestJob('/api/updates/odysseus/apply', { method: 'POST' }),
     infoDocker: () =>
       request<import('./types').DockerUpdateRow[]>('/api/updates/docker'),
     checkDocker: () =>
-      request<import('./types').DurableJobResponse>('/api/updates/docker/check', { method: 'POST' }),
+      requestJob('/api/updates/docker/check', { method: 'POST' }),
     dockerApply: (id: string, dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
         | import('./types').DurableJobResponse
-      >(`/api/updates/docker/${id}/apply`, { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+      >(`/api/updates/docker/${id}/apply`, { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }, parsePlanOrJobResponse),
     infoOs: () =>
       request<import('./types').OsUpdateInfo>('/api/updates/os'),
     applyOs: (dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
         | import('./types').DurableJobResponse
-      >('/api/updates/os/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+      >('/api/updates/os/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }, parsePlanOrJobResponse),
   },
 
   operationJobs: {
     list: (limit = 50) =>
-      request<import('./types').DurableJobListResponse>(`/api/jobs?limit=${encodeURIComponent(limit)}`),
+      request<import('./types').DurableJobListResponse>(
+        `/api/jobs?limit=${encodeURIComponent(limit)}`,
+        undefined,
+        parseJobListEnvelope<import('./types').DurableJob>,
+      ),
     get: (id: string) =>
       request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}`, undefined, parseJobReadEnvelope),
     getByIdempotency: (key: string) =>
@@ -809,7 +831,7 @@ export const api = {
         )
       })(),
     cancel: (id: string) =>
-      request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }, parseJobSuccessEnvelope),
+      requestJob(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   },
 
   canonicalActions: {
@@ -840,23 +862,31 @@ export const api = {
       const query = new URLSearchParams()
       if (params.status) query.set('status', params.status)
       query.set('limit', String(params.limit ?? 50))
-      return request<import('./types').DurableApprovalListResponse>(`/api/approvals?${query}`)
+      return request<import('./types').DurableApprovalListResponse>(
+        `/api/approvals?${query}`,
+        undefined,
+        parseApprovalListEnvelope<import('./types').DurableApproval>,
+      )
     },
     get: (id: string) =>
-      request<import('./types').DurableApprovalResponse>(`/api/approvals/${encodeURIComponent(id)}`),
+      request<import('./types').DurableApprovalResponse>(
+        `/api/approvals/${encodeURIComponent(id)}`,
+        undefined,
+        parseApprovalReadEnvelope<import('./types').DurableApproval>,
+      ),
     approve: (id: string, comment?: string) =>
-      request<import('./types').DurableJobResponse>(`/api/approvals/${encodeURIComponent(id)}/approve`, {
+      requestJob(`/api/approvals/${encodeURIComponent(id)}/approve`, {
         method: 'POST', body: JSON.stringify({ comment: comment?.trim() || null }),
       }),
     reject: (id: string, comment?: string) =>
-      request<import('./types').DurableJobResponse>(`/api/approvals/${encodeURIComponent(id)}/reject`, {
+      requestJob(`/api/approvals/${encodeURIComponent(id)}/reject`, {
         method: 'POST', body: JSON.stringify({ comment: comment?.trim() || null }),
       }),
   },
 
   systemUpdate: {
     version: () => request<import('./types').SystemVersionInfo>('/api/system/version'),
-    check: () => request<import('./types').DurableJobResponse>('/api/system/update-check'),
-    apply: () => request<import('./types').DurableJobResponse>('/api/system/update', { method: 'POST' }),
+    check: () => requestJob('/api/system/update-check'),
+    apply: () => requestJob('/api/system/update', { method: 'POST' }),
   },
 }

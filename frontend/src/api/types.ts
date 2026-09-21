@@ -101,10 +101,14 @@ export interface DurableJob {
 export type DurableJobSummary = DurableJob
 
 export interface DurableJobResponse {
+  schema_version: number
+  resource_id: string
+  action: string
   job: DurableJob
 }
 
 export interface DurableJobListResponse {
+  schema_version: number
   jobs: DurableJob[]
 }
 
@@ -125,10 +129,12 @@ export interface DurableApproval {
 }
 
 export interface DurableApprovalResponse {
+  schema_version: number
   approval: DurableApproval
 }
 
 export interface DurableApprovalListResponse {
+  schema_version: number
   approvals: DurableApproval[]
 }
 

@@ -3,6 +3,8 @@ import { API_V1_ENVELOPE_CONTRACT } from './generatedApiContract'
 const EXPECTED_PLAN_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.plan_success_v1.schema_version
 const EXPECTED_JOB_SUCCESS_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.job_success_v1.schema_version
 const EXPECTED_JOB_READ_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.job_read_v1.schema_version
+const EXPECTED_COLLECTION_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.job_list_v1.schema_version
+const EXPECTED_APPROVAL_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.approval_list_v1.schema_version
 const MAX_ERROR_CODE_LENGTH = 128
 const MAX_ERROR_MESSAGE_LENGTH = 1024
 const MAX_ERROR_JOB_ID_LENGTH = 128
@@ -83,6 +85,30 @@ export function parseJobSuccessEnvelope<T = unknown>(value: unknown): ApiSuccess
 
 export function parseJobReadEnvelope<T = unknown>(value: unknown): ApiSuccessEnvelope<T> & { job: T } {
   return requireSuccessEnvelope(value, 'job', EXPECTED_JOB_READ_SCHEMA_VERSION) as ApiSuccessEnvelope<T> & { job: T }
+}
+
+function requireCollectionEnvelope(value: unknown, payloadKey: 'jobs' | 'approvals', expectedSchemaVersion: number): RecordValue {
+  const envelope = asRecord(value)
+  if (!envelope || envelope.schema_version !== expectedSchemaVersion || !Array.isArray(envelope[payloadKey])) {
+    throw new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid collection envelope.', expectedSchemaVersion)
+  }
+  return envelope
+}
+
+export function parseJobListEnvelope<T = unknown>(value: unknown): { schema_version: number; jobs: T[] } {
+  return requireCollectionEnvelope(value, 'jobs', EXPECTED_COLLECTION_SCHEMA_VERSION) as { schema_version: number; jobs: T[] }
+}
+
+export function parseApprovalListEnvelope<T = unknown>(value: unknown): { schema_version: number; approvals: T[] } {
+  return requireCollectionEnvelope(value, 'approvals', EXPECTED_APPROVAL_SCHEMA_VERSION) as { schema_version: number; approvals: T[] }
+}
+
+export function parseApprovalReadEnvelope<T = unknown>(value: unknown): { schema_version: number; approval: T } {
+  const envelope = asRecord(value)
+  if (!envelope || envelope.schema_version !== EXPECTED_APPROVAL_SCHEMA_VERSION || !asRecord(envelope.approval)) {
+    throw new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid approval envelope.', EXPECTED_APPROVAL_SCHEMA_VERSION)
+  }
+  return envelope as { schema_version: number; approval: T }
 }
 
 export function parseApiErrorEnvelope(value: unknown): ApiErrorEnvelope {

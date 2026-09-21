@@ -620,3 +620,10 @@
 - At local `HEAD` `77e9529a05f9074862f57a580e24f5728223964d`, `origin/dev` remains `b9a24729c2a7750900f285d61daa4439e0cd95f9`; the workflow file is present locally, but protected GitHub run and required-status evidence remain unavailable in this sandbox.
 - Recheck evidence: repository truth passed, compatibility mutation inventory passed with `status: passed` and `unknown: []`, `git diff --check` passed, and the local workflow file exists. These are source/inventory checks only and do not activate protected enforcement.
 - Maturity remains `blocked` for V6-01 activation. The next dependency is operator-side protected-branch publication and observation, then source-owned schemas, generated clients/OpenAPI where applicable, negotiation, SSE recovery, drift tests, and documentation.
+
+## V6-01 activation recheck session — 2026-09-21
+
+- No new V6-01 product-contract implementation was started in this session because the approved handoff still requires observed protected activation of `.github/workflows/compatibility-enforcement.yml` before the remaining schema/generated-client work; existing version-negotiation, envelope, and SSE-recovery seams remain historical source/test evidence.
+- Current `HEAD` is `cf78751e7af644ff68db3df5a70dd6f3aa419de0`; `origin/dev` remains `b9a24729c2a7750900f285d61daa4439e0cd95f9`. The workflow is locally present, but this sandbox has no authenticated protected workflow-run or branch-protection evidence.
+- Repository truth and compatibility mutation inventory passed; `git diff --check` passed; pre-existing untracked cache/testing paths remain untouched. These are source/inventory checks only and do not activate protected enforcement.
+- Maturity remains `blocked`. After operator-side activation evidence, resume V6-01 across source-owned schemas, generated clients/OpenAPI where applicable, negotiation/errors, SSE recovery, drift tests, and documentation.

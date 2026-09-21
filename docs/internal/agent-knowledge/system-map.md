@@ -613,3 +613,10 @@
 - Paginated public GitHub Actions API read-only queries covered all 583 listed runs and returned no compatibility-named run; the workflow-specific endpoint returned HTTP 404. `gh` is unavailable and the public branch-protection endpoint returned HTTP 401, so no run ID or required-status configuration can be recorded from this sandbox.
 - `scripts/repo_truth.py --repo . --json --check` and `scripts/compatibility_mutation_inventory.py --repo . --check` passed at local `HEAD`; this is source/inventory evidence only and does not activate GitHub enforcement.
 - Maturity remains `blocked` for V6-01 activation. The next action is operator-side protected-branch publication and observation, followed by V6-01 source-owned schemas, generated clients/OpenAPI where applicable, negotiation, SSE recovery, drift tests, and documentation.
+
+## V6-01 activation recheck — 2026-09-21
+
+- No V6-01 product-contract implementation was started because the newest approved handoff still gates the remaining schema/generated-client work on observed protected-branch activation of `.github/workflows/compatibility-enforcement.yml`.
+- At local `HEAD` `77e9529a05f9074862f57a580e24f5728223964d`, `origin/dev` remains `b9a24729c2a7750900f285d61daa4439e0cd95f9`; the workflow file is present locally, but protected GitHub run and required-status evidence remain unavailable in this sandbox.
+- Recheck evidence: repository truth passed, compatibility mutation inventory passed with `status: passed` and `unknown: []`, `git diff --check` passed, and the local workflow file exists. These are source/inventory checks only and do not activate protected enforcement.
+- Maturity remains `blocked` for V6-01 activation. The next dependency is operator-side protected-branch publication and observation, then source-owned schemas, generated clients/OpenAPI where applicable, negotiation, SSE recovery, drift tests, and documentation.

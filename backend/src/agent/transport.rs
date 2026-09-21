@@ -1,5 +1,6 @@
 use crate::{
     agent::state::{AgentState, HeartbeatToken},
+    api::version::InventoryUploadEnvelopeV1,
     cmdb::contracts::{InventorySnapshotResultV1, InventorySnapshotV1},
 };
 use anyhow::{bail, Context, Result};
@@ -277,7 +278,12 @@ impl AgentTransport {
             .send()
             .await
             .context("inventory upload request failed")?;
-        let result: InventorySnapshotResultV1 = read_json_response(response).await?;
+        let response: InventoryUploadEnvelopeV1<InventorySnapshotResultV1> =
+            read_json_response(response).await?;
+        if response.schema_version != 1 {
+            bail!("agent server returned an unsupported inventory response schema");
+        }
+        let result = response.result;
         if result.snapshot_id.trim() != snapshot.snapshot_id.trim() {
             bail!("agent server acknowledged a different inventory snapshot");
         }
@@ -465,7 +471,7 @@ mod tests {
     async fn inventory_upload_uses_node_path_and_scoped_token() {
         let (server_url, request_rx) = serve_once(
             "200 OK",
-            "{\"snapshot_id\":\"snapshot-1\",\"replayed\":false,\"linked\":1,\"registered\":0,\"review_required\":0,\"missing\":0}".into(),
+            "{\"schema_version\":1,\"result\":{\"snapshot_id\":\"snapshot-1\",\"replayed\":false,\"linked\":1,\"registered\":0,\"review_required\":0,\"missing\":0}}".into(),
         )
         .await;
         let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
@@ -584,7 +590,8 @@ mod tests {
     async fn inventory_upload_rejects_incomplete_success_response() {
         let (server_url, _request_rx) = serve_once(
             "200 OK",
-            "{\"snapshot_id\":\"snapshot-1\",\"replayed\":false}".into(),
+            "{\"schema_version\":1,\"result\":{\"snapshot_id\":\"snapshot-1\",\"replayed\":false}}"
+                .into(),
         )
         .await;
         let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
@@ -612,10 +619,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inventory_upload_rejects_an_unsupported_success_schema() {
+        let (server_url, _request_rx) = serve_once(
+            "200 OK",
+            "{\"schema_version\":2,\"result\":{\"snapshot_id\":\"snapshot-1\",\"replayed\":false,\"linked\":1,\"registered\":0,\"review_required\":0,\"missing\":0}}".into(),
+        )
+        .await;
+        let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();
+        let state = AgentState {
+            server_url: "https://controller.example.test".into(),
+            node_id: uuid::Uuid::new_v4(),
+            heartbeat_token: HeartbeatToken::new("inventory-schema-token".into()).unwrap(),
+            ca_certificate_pem: None,
+            wireguard_client_config: None,
+            schedule: crate::agent::state::AgentSchedule::default(),
+        };
+        let snapshot: InventorySnapshotV1 = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "snapshot_id": "snapshot-1", "collector_version": "test",
+            "platform": "linux", "collected_at": 0,
+            "host": {"entity_key":"host","identities":[],"attributes":{},"runtime":{}},
+            "entities": []
+        }))
+        .unwrap();
+
+        let error = transport
+            .upload_inventory(&state, &snapshot)
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported inventory response schema"));
+    }
+
+    #[tokio::test]
     async fn inventory_upload_rejects_success_for_a_different_snapshot() {
         let (server_url, _request_rx) = serve_once(
             "200 OK",
-            "{\"snapshot_id\":\"different-snapshot\",\"replayed\":false,\"linked\":1,\"registered\":0,\"review_required\":0,\"missing\":0}".into(),
+            "{\"schema_version\":1,\"result\":{\"snapshot_id\":\"different-snapshot\",\"replayed\":false,\"linked\":1,\"registered\":0,\"review_required\":0,\"missing\":0}}".into(),
         )
         .await;
         let transport = AgentTransport::new_loopback_test(&server_url, None).unwrap();

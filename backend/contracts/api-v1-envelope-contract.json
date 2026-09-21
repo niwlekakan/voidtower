@@ -142,6 +142,17 @@
       "next_cursor": 0,
       "earliest_available": null,
       "latest_available": 0
+    },
+    "inventory_upload_v1": {
+      "schema_version": 1,
+      "result": {
+        "snapshot_id": "snapshot-1",
+        "replayed": false,
+        "linked": 1,
+        "registered": 0,
+        "review_required": 0,
+        "missing": 0
+      }
     }
   }
 }

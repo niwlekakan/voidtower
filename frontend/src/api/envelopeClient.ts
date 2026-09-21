@@ -7,6 +7,7 @@ const EXPECTED_COLLECTION_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.jo
 const EXPECTED_APPROVAL_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.approval_list_v1.schema_version
 const EXPECTED_RESOURCE_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.resource_list_v1.schema_version
 const EXPECTED_EVENT_HISTORY_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.event_history_v1.schema_version
+const EXPECTED_INVENTORY_SCHEMA_VERSION = API_V1_ENVELOPE_CONTRACT.envelopes.inventory_upload_v1.schema_version
 const MAX_ERROR_CODE_LENGTH = 128
 const MAX_ERROR_MESSAGE_LENGTH = 1024
 const MAX_ERROR_JOB_ID_LENGTH = 128
@@ -189,6 +190,23 @@ export function parseApprovalReadEnvelope<T = unknown>(value: unknown): { schema
     throw new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid approval envelope.', EXPECTED_APPROVAL_SCHEMA_VERSION)
   }
   return envelope as { schema_version: number; approval: T }
+}
+
+export function parseInventoryUploadEnvelope(value: unknown): import('./types').InventoryUploadResponse {
+  const envelope = asRecord(value)
+  const result = envelope && asRecord(envelope.result)
+  const counts = ['linked', 'registered', 'review_required', 'missing']
+  if (
+    !envelope
+    || envelope.schema_version !== EXPECTED_INVENTORY_SCHEMA_VERSION
+    || !result
+    || !isBoundedEnvelopeString(result.snapshot_id)
+    || typeof result.replayed !== 'boolean'
+    || counts.some(field => !isSequence(result[field]))
+  ) {
+    throw new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid inventory envelope.', EXPECTED_INVENTORY_SCHEMA_VERSION)
+  }
+  return envelope as unknown as import('./types').InventoryUploadResponse
 }
 
 export function parseResourceListEnvelope<T = import('./types').DurableResourceRef>(value: unknown): {

@@ -1,5 +1,5 @@
 use crate::{
-    api::node_enroll,
+    api::{node_enroll, version::InventoryUploadEnvelopeV1},
     cmdb::{
         assets::MutationContext,
         contracts::InventorySnapshotV1,
@@ -14,7 +14,6 @@ use axum::{
     http::HeaderMap,
     Json,
 };
-use serde_json::Value;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 fn map_error(error: ObservationError) -> AppError {
     match error {
@@ -39,7 +38,7 @@ pub async fn upload(
     Path(node_id): Path<String>,
     headers: HeaderMap,
     body: std::result::Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
-) -> Result<Json<Value>> {
+) -> Result<Json<InventoryUploadEnvelopeV1<crate::cmdb::contracts::InventorySnapshotResultV1>>> {
     node_enroll::verify_node_token(state.clone(), node_id.clone(), headers.clone()).await?;
     let body = match body {
         Ok(body) => body,
@@ -66,7 +65,7 @@ pub async fn upload(
         _ => {
             return Err(AppError::Conflict(
                 "node has ambiguous canonical CMDB host resources".into(),
-            ))
+            ));
         }
     };
     let actor = ActorRef {
@@ -90,7 +89,5 @@ pub async fn upload(
     )
     .await
     .map_err(map_error)?;
-    Ok(Json(serde_json::to_value(result).map_err(|_| {
-        AppError::Internal(anyhow::anyhow!("response encoding failed"))
-    })?))
+    Ok(Json(InventoryUploadEnvelopeV1::new(result)))
 }

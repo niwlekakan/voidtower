@@ -531,12 +531,15 @@ mod tests {
         first_server.await.unwrap();
 
         let response = serde_json::json!({
-            "snapshot_id": first_snapshot_id,
-            "replayed": false,
-            "linked": 1,
-            "registered": 0,
-            "review_required": 0,
-            "missing": 0
+            "schema_version": 1,
+            "result": {
+                "snapshot_id": first_snapshot_id,
+                "replayed": false,
+                "linked": 1,
+                "registered": 0,
+                "review_required": 0,
+                "missing": 0
+            }
         })
         .to_string();
         let (second_url, second_snapshot_rx, second_server) =

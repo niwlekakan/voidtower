@@ -203,12 +203,14 @@ pub struct AssetRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdentityEvidenceV1 {
     pub kind: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostObservationV1 {
     pub entity_key: String,
     #[serde(default)]
@@ -220,6 +222,7 @@ pub struct HostObservationV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservedEntityV1 {
     pub entity_key: String,
     pub entity_type: String,
@@ -234,6 +237,7 @@ pub struct ObservedEntityV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InventorySnapshotV1 {
     pub schema_version: u16,
     pub snapshot_id: String,
@@ -431,6 +435,51 @@ mod tests {
         snapshot.entities.clear();
         snapshot.schema_version = 2;
         assert!(snapshot.validate().is_err());
+    }
+
+    #[test]
+    fn snapshot_validation_rejects_unknown_fields_at_each_public_boundary() {
+        let base = serde_json::json!({
+            "schema_version": 1,
+            "snapshot_id": "58b99686-7b8e-4d7f-a169-89cc56a6052c",
+            "collector_version": "0.9.0",
+            "platform": "linux",
+            "collected_at": 1,
+            "host": {
+                "entity_key": "host",
+                "identities": [{ "kind": "serial", "value": "host-1" }]
+            },
+            "entities": [{
+                "entity_key": "disk-1",
+                "entity_type": "physical_disk",
+                "identities": [{ "kind": "serial", "value": "disk-1" }]
+            }]
+        });
+        let rejects = |value| {
+            assert!(serde_json::from_value::<InventorySnapshotV1>(value).is_err());
+        };
+
+        let mut top_level = base.clone();
+        top_level["unexpected"] = serde_json::json!(true);
+        rejects(top_level);
+
+        let mut host = base["host"].clone();
+        host["unexpected"] = serde_json::json!(true);
+        let mut host_boundary = base.clone();
+        host_boundary["host"] = host;
+        rejects(host_boundary);
+
+        let mut identity = base["host"]["identities"][0].clone();
+        identity["unexpected"] = serde_json::json!(true);
+        let mut identity_boundary = base.clone();
+        identity_boundary["host"]["identities"][0] = identity;
+        rejects(identity_boundary);
+
+        let mut entity = base["entities"][0].clone();
+        entity["unexpected"] = serde_json::json!(true);
+        let mut entity_boundary = base.clone();
+        entity_boundary["entities"][0] = entity;
+        rejects(entity_boundary);
     }
 
     #[test]

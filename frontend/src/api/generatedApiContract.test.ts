@@ -35,5 +35,9 @@ describe('generated API v1 envelope contract', () => {
     })
     expect(API_V1_ENVELOPE_CONTRACT.envelopes.stream_ready_v1).toEqual({ cursor: 0, high_water: 0 })
     expect(API_V1_ENVELOPE_CONTRACT.envelopes.stream_gap_v1.reason).toBe('behind_retention')
+    expect(API_V1_ENVELOPE_CONTRACT.envelopes.inventory_upload_v1).toMatchObject({
+      schema_version: 1,
+      result: { snapshot_id: 'snapshot-1', replayed: false, linked: 1 },
+    })
   })
 })

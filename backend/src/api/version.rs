@@ -4,7 +4,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const API_VERSION: &str = "1";
 pub const ACTION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
@@ -13,6 +13,7 @@ pub const COLLECTION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const RESOURCE_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const EVENT_HISTORY_ENVELOPE_SCHEMA_VERSION: u16 = 1;
+pub const INVENTORY_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const MAX_PAGE_LIMIT: i64 = 500;
 const VERSION_HEADER: &str = "x-voidtower-api-version";
 
@@ -148,6 +149,21 @@ impl<T> ApprovalReadEnvelopeV1<T> {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InventoryUploadEnvelopeV1<T> {
+    pub schema_version: u16,
+    pub result: T,
+}
+
+impl<T> InventoryUploadEnvelopeV1<T> {
+    pub fn new(result: T) -> Self {
+        Self {
+            schema_version: INVENTORY_ENVELOPE_SCHEMA_VERSION,
+            result,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApiErrorV1 {
     pub code: &'static str,
@@ -253,6 +269,34 @@ mod tests {
         assert_eq!(
             body,
             r#"{"error":{"code":"job_not_found","message":"The requested job does not exist."}}"#
+        );
+    }
+
+    #[test]
+    fn inventory_upload_contract_is_versioned_and_nested() {
+        let envelope =
+            InventoryUploadEnvelopeV1::new(crate::cmdb::contracts::InventorySnapshotResultV1 {
+                snapshot_id: "snapshot-1".into(),
+                replayed: false,
+                linked: 1,
+                registered: 0,
+                review_required: 0,
+                missing: 0,
+            });
+
+        assert_eq!(
+            serde_json::to_value(envelope).unwrap(),
+            serde_json::json!({
+                "schema_version": 1,
+                "result": {
+                    "snapshot_id": "snapshot-1",
+                    "replayed": false,
+                    "linked": 1,
+                    "registered": 0,
+                    "review_required": 0,
+                    "missing": 0
+                }
+            })
         );
     }
 
@@ -381,6 +425,17 @@ mod tests {
                     "next_cursor": 0,
                     "earliest_available": null,
                     "latest_available": 0
+                },
+                "inventory_upload_v1": {
+                    "schema_version": INVENTORY_ENVELOPE_SCHEMA_VERSION,
+                    "result": {
+                        "snapshot_id": "snapshot-1",
+                        "replayed": false,
+                        "linked": 1,
+                        "registered": 0,
+                        "review_required": 0,
+                        "missing": 0
+                    }
                 }
             }
         });

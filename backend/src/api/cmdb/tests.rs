@@ -377,8 +377,9 @@ async fn inventory_upload_is_authenticated_idempotent_and_binds_the_node_host() 
     let response = app.clone().oneshot(first).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let result = json_body(response).await;
-    assert_eq!(result["snapshot_id"], snapshot_id);
-    assert_eq!(result["replayed"], false);
+    assert_eq!(result["schema_version"], 1);
+    assert_eq!(result["result"]["snapshot_id"], snapshot_id);
+    assert_eq!(result["result"]["replayed"], false);
 
     let mut replay = request(
         Method::POST,
@@ -391,7 +392,7 @@ async fn inventory_upload_is_authenticated_idempotent_and_binds_the_node_host() 
         format!("Bearer {token}").parse().unwrap(),
     );
     let replayed = json_body(app.clone().oneshot(replay).await.unwrap()).await;
-    assert_eq!(replayed["replayed"], true);
+    assert_eq!(replayed["result"]["replayed"], true);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM cmdb_inventory_snapshots WHERE source_resource_id = ?"
@@ -417,8 +418,8 @@ async fn linux_collector_snapshot_reaches_reconciliation_classification() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let result = json_body(response).await;
-    assert_eq!(result["registered"], 1);
-    assert_eq!(result["review_required"], 0);
+    assert_eq!(result["result"]["registered"], 1);
+    assert_eq!(result["result"]["review_required"], 0);
 
     let (attributes, identities): (String, String) = sqlx::query_as(
         "SELECT attributes_json, identity_json FROM cmdb_observations WHERE source_resource_id = ? AND entity_type = 'physical_disk'",
@@ -492,7 +493,7 @@ async fn empty_inventory_snapshot_does_not_mark_existing_inventory_missing() {
     )
     .await;
     assert_eq!(first.status(), StatusCode::OK);
-    assert_eq!(json_body(first).await["registered"], 1);
+    assert_eq!(json_body(first).await["result"]["registered"], 1);
 
     let snapshot = inventory_snapshot(&uuid::Uuid::new_v4().to_string(), "fixture-host");
     let empty = send_node_raw(
@@ -504,9 +505,9 @@ async fn empty_inventory_snapshot_does_not_mark_existing_inventory_missing() {
     .await;
     assert_eq!(empty.status(), StatusCode::OK);
     let result = json_body(empty).await;
-    assert_eq!(result["missing"], 0);
-    assert_eq!(result["linked"], 0);
-    assert_eq!(result["registered"], 0);
+    assert_eq!(result["result"]["missing"], 0);
+    assert_eq!(result["result"]["linked"], 0);
+    assert_eq!(result["result"]["registered"], 0);
 
     let (observation_state, discovery_status): (String, String) = sqlx::query_as(
         "SELECT o.state, a.discovery_status FROM cmdb_observations o \

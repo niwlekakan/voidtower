@@ -6,6 +6,7 @@ import {
   parseApprovalReadEnvelope,
   parseApiErrorEnvelope,
   parseEventHistoryEnvelope,
+  parseInventoryUploadEnvelope,
   parseJobListEnvelope,
   parseJobSuccessEnvelope,
   parsePlanSuccessEnvelope,
@@ -52,6 +53,24 @@ describe('versioned API envelope adapters', () => {
     expect(parseApprovalListEnvelope({ schema_version: 1, approvals: [] })).toEqual({ schema_version: 1, approvals: [] })
     expect(parseApprovalReadEnvelope({ schema_version: 1, approval: { id: 'approval-1' } }))
       .toEqual({ schema_version: 1, approval: { id: 'approval-1' } })
+  })
+
+  it('parses the versioned inventory upload result envelope', () => {
+    expect(parseInventoryUploadEnvelope({
+      schema_version: 1,
+      result: {
+        snapshot_id: 'snapshot-1', replayed: false, linked: 1, registered: 0,
+        review_required: 0, missing: 0,
+      },
+    })).toMatchObject({ schema_version: 1, result: { snapshot_id: 'snapshot-1', linked: 1 } })
+  })
+
+  it.each([
+    ['an unsupported schema', { schema_version: 2, result: {} }],
+    ['a malformed snapshot identity', { schema_version: 1, result: { snapshot_id: '', replayed: false, linked: 0, registered: 0, review_required: 0, missing: 0 } }],
+    ['a negative result count', { schema_version: 1, result: { snapshot_id: 'snapshot-1', replayed: false, linked: -1, registered: 0, review_required: 0, missing: 0 } }],
+  ])('rejects %s in the inventory result envelope', (_description, body) => {
+    expect(() => parseInventoryUploadEnvelope(body)).toThrowError(ApiEnvelopeError)
   })
 
   it('parses source-owned resource and event-history envelopes', () => {

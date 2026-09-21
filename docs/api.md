@@ -160,6 +160,48 @@ retry a mutation automatically. `/api/events` exposes durable history; `/api/eve
 `/api/integrations/events` expose the same cursor-resumable durable SSE stream. Shared operation
 views use it only to invalidate authoritative HTTP reads and retain bounded polling as fallback.
 
+### Authenticated inventory upload
+
+An enrolled, approved agent uploads its bounded snapshot through:
+
+```
+POST /api/nodes/:node_id/inventory
+Authorization: Bearer <node-token>
+Content-Type: application/json
+```
+
+The node token and URL path are checked before the body is parsed. The request is an
+`InventorySnapshotV1` with `schema_version: 1`, a UUID `snapshot_id`, bounded collector/platform
+metadata, a positive collection timestamp, one host observation, and bounded unique entities. The
+payload cannot select a canonical resource UUID; the server derives the node's existing canonical
+host resource. Invalid snapshots receive a bounded `400`, oversized bodies receive `413`, and
+node authentication or binding failures do not reveal inventory details.
+
+A successful upload returns the source-owned v1 envelope:
+
+```
+{
+  "schema_version": 1,
+  "result": {
+    "snapshot_id": "...",
+    "replayed": false,
+    "linked": 0,
+    "registered": 0,
+    "review_required": 0,
+    "missing": 0
+  }
+}
+```
+
+The result is redacted and bounded. Repeating the same snapshot content and ID returns the same
+result with `replayed: true`; reusing an ID for different content returns a conflict. Reconciliation
+preserves administrator-owned resource and CMDB fields, and the event/audit records are evidence
+only rather than an alternate source of canonical state. `backend/contracts/api-v1-envelope-contract.json`
+is the source-owned example and `node scripts/generate-api-contract.mjs --check` verifies the
+frontend generated artifact. The agent transport rejects an unsupported response schema or an
+acknowledgement for a different snapshot. Service-managed runtime qualification remains separate
+from this contract and is not implied by the endpoint or fixture tests.
+
 ### Compatibility source-boundary check
 
 The repository also enforces the compatibility boundary from production source rather than a copied

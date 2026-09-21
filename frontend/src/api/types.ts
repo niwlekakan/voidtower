@@ -175,6 +175,20 @@ export interface DurableApprovalListResponse {
   approvals: DurableApproval[]
 }
 
+export interface InventorySnapshotResult {
+  snapshot_id: string
+  replayed: boolean
+  linked: number
+  registered: number
+  review_required: number
+  missing: number
+}
+
+export interface InventoryUploadResponse {
+  schema_version: number
+  result: InventorySnapshotResult
+}
+
 export interface DurableEventEnvelope {
   sequence: number
   event_id: string

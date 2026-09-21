@@ -39,22 +39,26 @@ resolving the canonical host. Invalid schema, control characters, oversized
 bodies (over 4 MiB), and unknown schema versions are rejected without CMDB
 mutation.
 
-A successful upload response is the complete `InventorySnapshotResultV1`
-object; clients require all six fields and treat malformed JSON or missing
-fields as a failed upload eligible for bounded retry. The response
-`snapshot_id` must match the uploaded request after trimming the contract's
-allowed surrounding whitespace; an acknowledgement for another snapshot is
-rejected so a pending snapshot remains eligible for retry. The controller
-returns the canonical trimmed ID:
+A successful upload response is the source-owned `InventoryUploadEnvelopeV1`
+with `schema_version: 1` and a nested `InventorySnapshotResultV1`; clients require
+all six result fields and treat malformed JSON, an unsupported response schema, or
+missing fields as a failed upload eligible for bounded retry. The nested response
+`snapshot_id` must match the uploaded request after trimming the contract's allowed
+surrounding whitespace; an acknowledgement for another snapshot is rejected so a
+pending snapshot remains eligible for retry. The controller returns the canonical
+trimmed ID:
 
 ```json
 {
-  "snapshot_id": "uuid",
-  "replayed": false,
-  "linked": 1,
-  "registered": 0,
-  "review_required": 0,
-  "missing": 0
+  "schema_version": 1,
+  "result": {
+    "snapshot_id": "uuid",
+    "replayed": false,
+    "linked": 1,
+    "registered": 0,
+    "review_required": 0,
+    "missing": 0
+  }
 }
 ```
 

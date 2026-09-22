@@ -6,6 +6,13 @@ use super::{
 };
 use anyhow::{bail, Context, Result};
 use sqlx::SqlitePool;
+use std::sync::OnceLock;
+
+static APPROVAL_WRITE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn approval_write_lock() -> &'static tokio::sync::Mutex<()> {
+    APPROVAL_WRITE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 #[derive(Debug, sqlx::FromRow)]
 struct ApprovalPreflight {
@@ -128,6 +135,7 @@ pub async fn reject(
 }
 
 pub async fn expire_pending(pool: &SqlitePool, now: i64) -> Result<u64> {
+    let _write_guard = approval_write_lock().lock().await;
     let mut transaction = pool.begin().await?;
     let expired: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT a.id, a.job_id, j.resource_id FROM approvals a \
@@ -159,8 +167,8 @@ pub async fn expire_pending(pool: &SqlitePool, now: i64) -> Result<u64> {
         if updated.rows_affected() == 0 {
             continue;
         }
-        sqlx::query(
-            "UPDATE jobs SET state = 'expired', finished_at = ?, updated_at = ? \
+        let updated = sqlx::query(
+            "UPDATE jobs SET state = 'expired', error_code = 'approval_expired', error_message = 'Approval expired before a decision was recorded', finished_at = ?, updated_at = ? \
              WHERE id = ? AND state = 'awaiting_approval'",
         )
         .bind(now)
@@ -168,6 +176,9 @@ pub async fn expire_pending(pool: &SqlitePool, now: i64) -> Result<u64> {
         .bind(&job_id)
         .execute(&mut *transaction)
         .await?;
+        if updated.rows_affected() != 1 {
+            bail!("approval expiry lost the job-state race");
+        }
         for (event_type, payload) in [
             (
                 "approval.expired.v1",
@@ -224,6 +235,7 @@ async fn decide(
     observed_external_fingerprint: Option<&str>,
 ) -> Result<super::contracts::JobSummaryV1> {
     validate_human_actor(&actor)?;
+    let _write_guard = approval_write_lock().lock().await;
     let now = unix_now();
     let mut transaction = pool.begin().await?;
     let row: DecisionRow = sqlx::query_as(
@@ -245,20 +257,22 @@ async fn decide(
         bail!("approval is no longer pending");
     }
 
-    let stale = row.expires_at <= now
-        || row.approved_resource_revision != row.current_resource_revision
+    let expired = row.expires_at <= now;
+    let stale = row.approved_resource_revision != row.current_resource_revision
         || row.immutable_mismatch != 0
         || (approved
             && observed_external_fingerprint
                 .is_some_and(|value| value != row.external_fingerprint));
-    let (approval_status, job_state, event_type) = if stale {
+    let (approval_status, job_state, event_type) = if expired {
+        ("expired", "expired", "approval.expired.v1")
+    } else if stale {
         ("stale", "expired", "approval.stale.v1")
     } else if approved {
         ("approved", "queued", "approval.approved.v1")
     } else {
         ("rejected", "rejected", "approval.rejected.v1")
     };
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE approvals SET status = ?, decided_by = ?, decision_comment = ?, \
          decided_at = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
     )
@@ -270,12 +284,30 @@ async fn decide(
     .bind(approval_id)
     .execute(&mut *transaction)
     .await?;
-    sqlx::query(
-        "UPDATE jobs SET state = ?, queued_at = CASE WHEN ? = 'queued' THEN ? ELSE queued_at END, \
+    if updated.rows_affected() != 1 {
+        bail!("approval decision lost the approval-state race");
+    }
+    let (error_code, error_message) = match job_state {
+        "rejected" => (Some("approval_rejected"), Some("Approval was rejected")),
+        "expired" if expired => (
+            Some("approval_expired"),
+            Some("Approval expired before execution"),
+        ),
+        "expired" => (
+            Some("approval_stale"),
+            Some("Approval became stale before a decision was recorded"),
+        ),
+        _ => (None, None),
+    };
+    let updated = sqlx::query(
+        "UPDATE jobs SET state = ?, error_code = ?, error_message = ?, \
+         queued_at = CASE WHEN ? = 'queued' THEN ? ELSE queued_at END, \
          finished_at = CASE WHEN ? IN ('rejected', 'expired') THEN ? ELSE finished_at END, updated_at = ? \
          WHERE id = ? AND state = 'awaiting_approval'",
     )
     .bind(job_state)
+    .bind(error_code)
+    .bind(error_message)
     .bind(job_state)
     .bind(now)
     .bind(job_state)
@@ -284,6 +316,9 @@ async fn decide(
     .bind(&row.job_id)
     .execute(&mut *transaction)
     .await?;
+    if updated.rows_affected() != 1 {
+        bail!("approval decision lost the job-state race");
+    }
     events::append(
         &mut transaction,
         PendingEvent {
@@ -608,6 +643,17 @@ mod tests {
             get(&pool, &approval_id).await.unwrap().unwrap().status,
             "stale"
         );
+        let stale_error: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT error_code, error_message FROM jobs WHERE id = ?")
+                .bind(&expired.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stale_error.0.as_deref(), Some("approval_stale"));
+        assert_eq!(
+            stale_error.1.as_deref(),
+            Some("Approval became stale before a decision was recorded")
+        );
         let event_types: Vec<String> =
             sqlx::query_scalar("SELECT event_type FROM events WHERE job_id = ? ORDER BY sequence")
                 .bind(&expired.id)
@@ -615,6 +661,80 @@ mod tests {
                 .await
                 .unwrap();
         assert!(event_types.ends_with(&["approval.stale.v1".into(), "job.expired.v1".into(),]));
+    }
+
+    #[tokio::test]
+    async fn late_decision_marks_expired_approval_expired_before_sweeper_runs() {
+        let (pool, job) = pending_approval("late", unix_now() - 1).await;
+        let approval_id = job.approval_id.unwrap();
+        let adapters = AdapterRegistry::new();
+        let expired = approve(
+            &pool,
+            &adapters,
+            &approval_id,
+            ActorRef {
+                actor_type: ActorType::Human,
+                id: Some("owner".into()),
+                source: Some("web".into()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(expired.state, JobState::Expired);
+        assert_eq!(
+            get(&pool, &approval_id).await.unwrap().unwrap().status,
+            "expired"
+        );
+        let persisted_error: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT error_code, error_message FROM jobs WHERE id = ?")
+                .bind(&job.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(persisted_error.0.as_deref(), Some("approval_expired"));
+        assert_eq!(
+            persisted_error.1.as_deref(),
+            Some("Approval expired before execution")
+        );
+        let event_types: Vec<String> =
+            sqlx::query_scalar("SELECT event_type FROM events WHERE job_id = ? ORDER BY sequence")
+                .bind(&job.id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(event_types.ends_with(&["approval.expired.v1".into(), "job.expired.v1".into()]));
+    }
+
+    #[tokio::test]
+    async fn concurrent_expiry_and_decision_have_one_terminal_transition() {
+        let (pool, job) = pending_approval("race", unix_now() - 1).await;
+        let approval_id = job.approval_id.unwrap();
+        let adapters = AdapterRegistry::new();
+        let actor = ActorRef {
+            actor_type: ActorType::Human,
+            id: Some("owner".into()),
+            source: Some("web".into()),
+        };
+        let (decision, sweep) = tokio::join!(
+            approve(&pool, &adapters, &approval_id, actor, None),
+            expire_pending(&pool, unix_now()),
+        );
+        let swept = sweep.unwrap();
+        assert_eq!(decision.is_ok() as u8 + (swept == 1) as u8, 1);
+        assert_eq!(
+            get(&pool, &approval_id).await.unwrap().unwrap().status,
+            "expired"
+        );
+        let event_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE job_id = ? AND event_type IN \
+             ('approval.expired.v1', 'job.expired.v1')",
+        )
+        .bind(&job.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(event_count, 2);
     }
 
     #[tokio::test]
@@ -626,6 +746,18 @@ mod tests {
             jobs::get(&pool, &job.id).await.unwrap().unwrap().state,
             JobState::Expired
         );
+        let persisted_error: (Option<String>, Option<String>, Option<i64>) =
+            sqlx::query_as("SELECT error_code, error_message, finished_at FROM jobs WHERE id = ?")
+                .bind(&job.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(persisted_error.0.as_deref(), Some("approval_expired"));
+        assert_eq!(
+            persisted_error.1.as_deref(),
+            Some("Approval expired before a decision was recorded")
+        );
+        assert!(persisted_error.2.is_some());
         assert_eq!(
             get(&pool, &approval_id).await.unwrap().unwrap().status,
             "expired"

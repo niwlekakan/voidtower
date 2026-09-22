@@ -5,7 +5,38 @@ function ok(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
 }
 
-const envelope = { schema_version: 1, resource_id: 'resource-1', action: 'container.start', job: { id: 'job-1' } }
+const envelope = {
+  schema_version: 1,
+  resource_id: 'resource-1',
+  action: 'container.start',
+  job: {
+    id: 'job-1',
+    resource: { id: 'resource-1', kind: 'container', display_name: 'Example container', revision: 1 },
+    action: 'container.start',
+    actor: { actor_type: 'system', id: null, source: 'fixture' },
+    ingress: 'api',
+    state: 'queued',
+    progress_current: 0,
+    progress_total: 1,
+    progress_message: null,
+    plan: {
+      schema_version: 1,
+      title: 'Start the web container',
+      risk: 'mutate',
+      changes: [],
+      preview: null,
+      external_fingerprint: 'container-stopped',
+      steps: [{ kind: 'execute', name: 'Start container', retry_class: 'never', recovery_class: 'reconcile' }],
+    },
+    approval_id: null,
+    result: null,
+    error: null,
+    submitted_at: 1,
+    started_at: null,
+    finished_at: null,
+    updated_at: 1,
+  },
+}
 
 describe('durable operation API client', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -61,7 +92,12 @@ describe('durable operation API client', () => {
   it('omits absent approval status and sends one trimmed exact-record decision', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(ok({ schema_version: 1, approvals: [] }))
-      .mockResolvedValueOnce(ok({ schema_version: 1, resource_id: 'resource-1', action: 'test.approval', job: { id: 'job-1' } }))
+      .mockResolvedValueOnce(ok({
+        schema_version: 1,
+        resource_id: 'resource-1',
+        action: 'test.approval',
+        job: { ...envelope.job, action: 'test.approval' },
+      }))
     vi.stubGlobal('fetch', fetch)
     await api.approvals.list({ limit: 10 })
     await api.approvals.approve('approval/id', '  reviewed  ')

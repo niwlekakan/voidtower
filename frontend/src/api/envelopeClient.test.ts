@@ -16,13 +16,55 @@ import {
   parseVersionNegotiationErrorEnvelope,
 } from './envelopeClient'
 
-const job = { id: 'job-1', state: 'queued' }
+const plan = {
+  action: 'container.start',
+  resource: { id: 'resource-1', kind: 'container', display_name: 'Example container', revision: 1 },
+  input_schema_id: 'container.start.input.v1',
+  result_schema_id: 'container.start.result.v1',
+  operation: {
+    schema_version: 1,
+    title: 'Start the web container',
+    risk: 'mutate',
+    changes: [],
+    preview: null,
+    external_fingerprint: 'container-stopped',
+    steps: [{ kind: 'execute', name: 'Start container', retry_class: 'never', recovery_class: 'reconcile' }],
+  },
+  policy: { outcome: 'require_approval', reason: 'Action registry requires approval' },
+}
+
+const job = {
+  id: 'job-1',
+  resource: { id: 'resource-1', kind: 'container', display_name: 'Example container', revision: 1 },
+  action: 'container.start',
+  actor: { actor_type: 'system', id: null, source: 'fixture' },
+  ingress: 'api',
+  state: 'queued',
+  progress_current: 0,
+  progress_total: 1,
+  progress_message: null,
+  plan: plan.operation,
+  approval_id: null,
+  result: null,
+  error: null,
+  submitted_at: 1,
+  started_at: null,
+  finished_at: null,
+  updated_at: 1,
+}
 
 const validJobEnvelope = {
   schema_version: 1,
   resource_id: 'resource-1',
   action: 'container.start',
   job,
+}
+
+const validPlanEnvelope = {
+  schema_version: 1,
+  resource_id: 'resource-1',
+  action: 'container.start',
+  plan,
 }
 
 const resource = { id: 'resource-1', kind: 'container', display_name: 'Example container', revision: 1 }
@@ -48,11 +90,59 @@ describe('versioned API envelope adapters', () => {
     expect(parseJobSuccessEnvelope(validJobEnvelope)).toEqual(validJobEnvelope)
   })
 
+  it.each([
+    ['a missing job resource identity', { ...job, resource: undefined }],
+    ['a mismatched job resource identity', { ...job, resource: { ...job.resource, id: 'resource-2' } }],
+    ['a mismatched job action identity', { ...job, action: 'container.stop' }],
+  ])('rejects %s in a job success envelope', (_description, invalidJob) => {
+    expect(() => parseJobSuccessEnvelope({ ...validJobEnvelope, job: invalidJob })).toThrow(ApiEnvelopeError)
+  })
+
+  it('parses the complete source-owned PlanView payload and binds its identities', () => {
+    expect(parsePlanSuccessEnvelope(validPlanEnvelope)).toEqual(validPlanEnvelope)
+  })
+
   it('parses versioned job and approval collection envelopes', () => {
     expect(parseJobListEnvelope({ schema_version: 1, jobs: [job] })).toEqual({ schema_version: 1, jobs: [job] })
     expect(parseApprovalListEnvelope({ schema_version: 1, approvals: [] })).toEqual({ schema_version: 1, approvals: [] })
-    expect(parseApprovalReadEnvelope({ schema_version: 1, approval: { id: 'approval-1' } }))
-      .toEqual({ schema_version: 1, approval: { id: 'approval-1' } })
+    expect(parseApprovalReadEnvelope({
+      schema_version: 1,
+      approval: {
+        id: 'approval-1', job_id: 'job-1', requirement: 'operator', reason: 'policy', status: 'pending',
+        expires_at: 100, decided_by: null, decision_comment: null, requested_at: 1, decided_at: null, updated_at: 1,
+      },
+    })).toEqual({
+      schema_version: 1,
+      approval: {
+        id: 'approval-1', job_id: 'job-1', requirement: 'operator', reason: 'policy', status: 'pending',
+        expires_at: 100, decided_by: null, decision_comment: null, requested_at: 1, decided_at: null, updated_at: 1,
+      },
+    })
+  })
+
+  it('rejects oversized result bytes, oversized job collections, and unknown job fields', () => {
+    const oversizedResult = Array.from({ length: 64 }, () => 'x'.repeat(4160))
+    expect(() => parseJobSuccessEnvelope({ ...validJobEnvelope, job: { ...job, result: oversizedResult } }))
+      .toThrow(ApiEnvelopeError)
+    expect(() => parseJobListEnvelope({ schema_version: 1, jobs: Array.from({ length: 257 }, () => job) }))
+      .toThrow(ApiEnvelopeError)
+    expect(() => parseJobSuccessEnvelope({ ...validJobEnvelope, job: { ...job, unexpected: true } }))
+      .toThrow(ApiEnvelopeError)
+    expect(() => parseJobSuccessEnvelope({
+      ...validJobEnvelope,
+      job: { ...job, error: { code: 'failed', message: 'bounded', retryable: false, job_id: null, unexpected: true } },
+    })).toThrow(ApiEnvelopeError)
+  })
+
+  it('rejects contradictory job progress and terminal payload fields', () => {
+    expect(() => parseJobSuccessEnvelope({
+      ...validJobEnvelope,
+      job: { ...job, progress_current: 4, progress_total: 3 },
+    })).toThrow(ApiEnvelopeError)
+    expect(() => parseJobSuccessEnvelope({
+      ...validJobEnvelope,
+      job: { ...job, result: { ok: true }, error: { code: 'failed', message: 'also failed', retryable: false, job_id: null } },
+    })).toThrow(ApiEnvelopeError)
   })
 
   it('parses the versioned inventory upload result envelope', () => {
@@ -118,7 +208,7 @@ describe('versioned API envelope adapters', () => {
       schema_version: 2,
       resource_id: 'resource-1',
       action: 'container.start',
-      plan: { job_id: 'job-1' },
+      plan,
     })).toThrowError(new ApiEnvelopeError('unsupported_api_schema', 'Unsupported API envelope schema version.', 1))
   })
 
@@ -143,8 +233,39 @@ describe('versioned API envelope adapters', () => {
       schema_version: 1,
       resource_id: 'resource-1',
       action: 'container.start',
-      plan: { job_id: 'p'.repeat(257) },
+      plan: { ...plan, operation: { ...plan.operation, title: 'p'.repeat(257) } },
     })).toThrowError(new ApiEnvelopeError('invalid_api_envelope', 'The API returned an invalid success envelope.', 1))
+  })
+
+  it.each([
+    ['a scalar input schema identity', { ...plan, input_schema_id: 'container.start.input.v0' }],
+    ['a non-ASCII input schema identity', { ...plan, input_schema_id: '😀.input.v1' }],
+    ['an oversized input schema identity', { ...plan, input_schema_id: `${'a'.repeat(250)}.input.v1` }],
+    ['an action schema identity from another action', { ...plan, input_schema_id: 'container.stop.input.v1', result_schema_id: 'container.stop.result.v1' }],
+    ['an empty operation step list', { ...plan, operation: { ...plan.operation, steps: [] } }],
+    ['a mismatched resource identity', { ...plan, resource: { ...plan.resource, id: 'resource-2' } }],
+  ])('rejects %s in a PlanView payload', (_description, invalidPlan) => {
+    expect(() => parsePlanSuccessEnvelope({ ...validPlanEnvelope, plan: invalidPlan })).toThrowError(ApiEnvelopeError)
+  })
+
+  it('accepts the documented long preview and policy reason bounds', () => {
+    const longPreview = 'x'.repeat(16 * 1024)
+    const longReason = 'x'.repeat(1024)
+    expect(parsePlanSuccessEnvelope({
+      ...validPlanEnvelope,
+      plan: {
+        ...plan,
+        operation: { ...plan.operation, preview: longPreview },
+        policy: { ...plan.policy, reason: longReason },
+      },
+    })).toEqual({
+      ...validPlanEnvelope,
+      plan: {
+        ...plan,
+        operation: { ...plan.operation, preview: longPreview },
+        policy: { ...plan.policy, reason: longReason },
+      },
+    })
   })
 
   it('parses canonical errors and rejects malformed error bodies', () => {
@@ -154,6 +275,16 @@ describe('versioned API envelope adapters', () => {
     expect(() => parseApiErrorEnvelope({ error: { code: 'x', message: 42 } }))
       .toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
     expect(() => parseApiErrorEnvelope({ error: { code: 'x', message: 'x'.repeat(1025) } }))
+      .toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
+    expect(() => parseApiErrorEnvelope({ error: { code: 'x', message: 'x', unexpected: true } }))
+      .toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
+    expect(() => parseApiErrorEnvelope({ error: { code: 'x', message: 'x' }, unexpected: true }))
+      .toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
+    expect(() => parseApiErrorEnvelope({ error: { code: 'job_not_found', message: 'x', supported_versions: ['1'] } }))
+      .toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
+    expect(parseApiErrorEnvelope({ error: { code: 'x', message: '😀'.repeat(1024) } }).error.message)
+      .toHaveLength(2048)
+    expect(() => parseApiErrorEnvelope({ error: { code: 'x', message: '😀'.repeat(1025) } }))
       .toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
   })
 
@@ -169,6 +300,14 @@ describe('versioned API envelope adapters', () => {
       error: {
         code: 'unsupported_api_version',
         message: 'The requested API version is not supported',
+        job_id: 'job-1',
+        supported_versions: ['1'],
+      },
+    })).toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
+    expect(() => parseVersionNegotiationErrorEnvelope({
+      error: {
+        code: 'unsupported_api_version',
+        message: 'The requested API version is not supported',
         ...(supported_versions === undefined ? {} : { supported_versions }),
       },
     })).toThrowError(new ApiEnvelopeError('invalid_api_error', 'The API returned an invalid error envelope.', 0))
@@ -177,14 +316,14 @@ describe('versioned API envelope adapters', () => {
   it('routes canonical plan and job responses through production parsing', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        schema_version: 1, resource_id: 'resource-1', action: 'container.start', plan: { job_id: 'job-1' },
+        ...validPlanEnvelope,
       }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(validJobEnvelope), { status: 202 }))
     vi.stubGlobal('fetch', fetch)
 
     await expect(api.canonicalActions.plan('resource/1', 'container/start')).resolves.toMatchObject({
       schema_version: 1,
-      plan: { job_id: 'job-1' },
+      plan: { action: 'container.start', input_schema_id: 'container.start.input.v1' },
     })
     await expect(api.canonicalActions.submit('resource/1', 'container/start', { force: true }, 'key-1'))
       .resolves.toMatchObject({ job: { id: 'job-1' } })

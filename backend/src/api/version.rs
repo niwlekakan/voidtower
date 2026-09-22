@@ -329,31 +329,137 @@ mod tests {
                     "schema_version": ACTION_ENVELOPE_SCHEMA_VERSION,
                     "resource_id": "resource-1",
                     "action": "container.start",
-                    "plan": {"job_id": "job-1"}
+                    "plan": {
+                        "action": "container.start",
+                        "resource": {
+                            "id": "resource-1",
+                            "kind": "container",
+                            "display_name": "Example container",
+                            "revision": 1
+                        },
+                        "input_schema_id": "container.start.input.v1",
+                        "result_schema_id": "container.start.result.v1",
+                        "operation": {
+                            "schema_version": 1,
+                            "title": "Start the web container",
+                            "risk": "mutate",
+                            "changes": [],
+                            "preview": null,
+                            "external_fingerprint": "container-stopped",
+                            "steps": [{
+                                "kind": "execute",
+                                "name": "Start container",
+                                "retry_class": "never",
+                                "recovery_class": "reconcile"
+                            }]
+                        },
+                        "policy": {
+                            "outcome": "require_approval",
+                            "reason": "Action registry requires approval"
+                        }
+                    }
                 },
                 "job_success_v1": {
                     "schema_version": ACTION_ENVELOPE_SCHEMA_VERSION,
                     "resource_id": "resource-1",
                     "action": "container.start",
-                    "job": {"id": "job-1"}
+                    "job": {
+                        "id": "job-1",
+                        "action": "container.start",
+                        "resource": {"id": "resource-1", "kind": "container", "display_name": "Example container", "revision": 1},
+                        "actor": {"actor_type": "system", "id": null, "source": "fixture"},
+                        "ingress": "api",
+                        "state": "queued",
+                        "progress_current": 0,
+                        "progress_total": 1,
+                        "progress_message": null,
+                        "plan": {"schema_version": 1, "title": "Start the web container", "risk": "mutate", "changes": [], "preview": null, "external_fingerprint": "container-stopped", "steps": [{"kind": "execute", "name": "Start container", "retry_class": "never", "recovery_class": "reconcile"}]},
+                        "approval_id": null,
+                        "result": null,
+                        "error": null,
+                        "submitted_at": 1,
+                        "started_at": null,
+                        "finished_at": null,
+                        "updated_at": 1
+                    }
                 },
                 "job_read_v1": {
                     "schema_version": JOB_READ_ENVELOPE_SCHEMA_VERSION,
                     "resource_id": "resource-1",
                     "action": "container.start",
-                    "job": {"id": "job-1"}
+                    "job": {
+                        "id": "job-1",
+                        "action": "container.start",
+                        "resource": {"id": "resource-1", "kind": "container", "display_name": "Example container", "revision": 1},
+                        "actor": {"actor_type": "system", "id": null, "source": "fixture"},
+                        "ingress": "api",
+                        "state": "queued",
+                        "progress_current": 0,
+                        "progress_total": 1,
+                        "progress_message": null,
+                        "plan": {"schema_version": 1, "title": "Start the web container", "risk": "mutate", "changes": [], "preview": null, "external_fingerprint": "container-stopped", "steps": [{"kind": "execute", "name": "Start container", "retry_class": "never", "recovery_class": "reconcile"}]},
+                        "approval_id": null,
+                        "result": null,
+                        "error": null,
+                        "submitted_at": 1,
+                        "started_at": null,
+                        "finished_at": null,
+                        "updated_at": 1
+                    }
                 },
                 "job_list_v1": {
                     "schema_version": COLLECTION_ENVELOPE_SCHEMA_VERSION,
-                    "jobs": [{"id": "job-1"}]
+                    "jobs": [{
+                        "id": "job-1",
+                        "action": "container.start",
+                        "resource": {"id": "resource-1", "kind": "container", "display_name": "Example container", "revision": 1},
+                        "actor": {"actor_type": "system", "id": null, "source": "fixture"},
+                        "ingress": "api",
+                        "state": "queued",
+                        "progress_current": 0,
+                        "progress_total": 1,
+                        "progress_message": null,
+                        "plan": {"schema_version": 1, "title": "Start the web container", "risk": "mutate", "changes": [], "preview": null, "external_fingerprint": "container-stopped", "steps": [{"kind": "execute", "name": "Start container", "retry_class": "never", "recovery_class": "reconcile"}]},
+                        "approval_id": null,
+                        "result": null,
+                        "error": null,
+                        "submitted_at": 1,
+                        "started_at": null,
+                        "finished_at": null,
+                        "updated_at": 1
+                    }]
                 },
                 "approval_list_v1": {
                     "schema_version": APPROVAL_ENVELOPE_SCHEMA_VERSION,
-                    "approvals": [{"id": "approval-1"}]
+                    "approvals": [{
+                        "id": "approval-1",
+                        "job_id": "job-1",
+                        "requirement": "operator",
+                        "reason": "policy",
+                        "status": "pending",
+                        "expires_at": 100,
+                        "decided_by": null,
+                        "decision_comment": null,
+                        "requested_at": 1,
+                        "decided_at": null,
+                        "updated_at": 1
+                    }]
                 },
                 "approval_read_v1": {
                     "schema_version": APPROVAL_ENVELOPE_SCHEMA_VERSION,
-                    "approval": {"id": "approval-1"}
+                    "approval": {
+                        "id": "approval-1",
+                        "job_id": "job-1",
+                        "requirement": "operator",
+                        "reason": "policy",
+                        "status": "pending",
+                        "expires_at": 100,
+                        "decided_by": null,
+                        "decision_comment": null,
+                        "requested_at": 1,
+                        "decided_at": null,
+                        "updated_at": 1
+                    }
                 },
                 "error_v1": {
                     "error": {
@@ -439,7 +545,13 @@ mod tests {
                 }
             }
         });
-        assert_eq!(artifact, expected);
+        let mut envelope_artifact = artifact.clone();
+        envelope_artifact.as_object_mut().unwrap().remove("openapi");
+        assert_eq!(envelope_artifact, expected);
+        assert_eq!(artifact["openapi"]["openapi"], "3.1.0");
+        assert!(artifact["openapi"]["paths"].as_object().is_some_and(
+            |paths| paths.contains_key("/api/resources/{resource_id}/actions/{action}")
+        ));
     }
 
     #[test]
@@ -447,34 +559,102 @@ mod tests {
         let plan = serde_json::to_string(&PlanSuccessEnvelopeV1::new(
             "resource-1",
             "container.start",
-            serde_json::json!({"job_id": "job-1"}),
+            serde_json::json!({
+                "action": "container.start",
+                "resource": {
+                    "id": "resource-1",
+                    "kind": "container",
+                    "display_name": "Example container",
+                    "revision": 1
+                },
+                "input_schema_id": "container.start.input.v1",
+                "result_schema_id": "container.start.result.v1",
+                "operation": {
+                    "schema_version": 1,
+                    "title": "Start the web container",
+                    "risk": "mutate",
+                    "changes": [],
+                    "preview": null,
+                    "external_fingerprint": "container-stopped",
+                    "steps": [{
+                        "kind": "execute",
+                        "name": "Start container",
+                        "retry_class": "never",
+                        "recovery_class": "reconcile"
+                    }]
+                },
+                "policy": {
+                    "outcome": "require_approval",
+                    "reason": "Action registry requires approval"
+                }
+            }),
         ))
         .unwrap();
         let job = serde_json::to_string(&JobSuccessEnvelopeV1::new(
             "resource-1",
             "container.start",
-            serde_json::json!({"id": "job-1"}),
+            serde_json::json!({
+                "id": "job-1",
+                "action": "container.start",
+                "resource": {"id": "resource-1", "kind": "container", "display_name": "Example container", "revision": 1},
+                "actor": {"actor_type": "system", "id": null, "source": "fixture"},
+                "ingress": "api",
+                "state": "queued",
+                "progress_current": 0,
+                "progress_total": 1,
+                "progress_message": null,
+                "plan": {"schema_version": 1, "title": "Start the web container", "risk": "mutate", "changes": [], "preview": null, "external_fingerprint": "container-stopped", "steps": [{"kind": "execute", "name": "Start container", "retry_class": "never", "recovery_class": "reconcile"}]},
+                "approval_id": null,
+                "result": null,
+                "error": null,
+                "submitted_at": 1,
+                "started_at": null,
+                "finished_at": null,
+                "updated_at": 1
+            }),
         ))
         .unwrap();
         let read = serde_json::to_string(&JobReadEnvelopeV1::new(
             "resource-1",
             "container.start",
-            serde_json::json!({"id": "job-1"}),
+            serde_json::json!({
+                "id": "job-1",
+                "action": "container.start",
+                "resource": {"id": "resource-1", "kind": "container", "display_name": "Example container", "revision": 1},
+                "actor": {"actor_type": "system", "id": null, "source": "fixture"},
+                "ingress": "api",
+                "state": "queued",
+                "progress_current": 0,
+                "progress_total": 1,
+                "progress_message": null,
+                "plan": {"schema_version": 1, "title": "Start the web container", "risk": "mutate", "changes": [], "preview": null, "external_fingerprint": "container-stopped", "steps": [{"kind": "execute", "name": "Start container", "retry_class": "never", "recovery_class": "reconcile"}]},
+                "approval_id": null,
+                "result": null,
+                "error": null,
+                "submitted_at": 1,
+                "started_at": null,
+                "finished_at": null,
+                "updated_at": 1
+            }),
         ))
         .unwrap();
 
-        assert_eq!(
-            plan,
-            r#"{"schema_version":1,"resource_id":"resource-1","action":"container.start","plan":{"job_id":"job-1"}}"#
-        );
-        assert_eq!(
-            job,
-            r#"{"schema_version":1,"resource_id":"resource-1","action":"container.start","job":{"id":"job-1"}}"#
-        );
-        assert_eq!(
-            read,
-            r#"{"schema_version":1,"resource_id":"resource-1","action":"container.start","job":{"id":"job-1"}}"#
-        );
+        let plan_value: serde_json::Value = serde_json::from_str(&plan).unwrap();
+        assert_eq!(plan_value["schema_version"], 1);
+        assert_eq!(plan_value["plan"]["action"], "container.start");
+        assert_eq!(plan_value["plan"]["resource"]["id"], "resource-1");
+        assert_eq!(plan_value["plan"]["operation"]["schema_version"], 1);
+        assert_eq!(plan_value["plan"]["policy"]["outcome"], "require_approval");
+        for serialized in [&job, &read] {
+            let value: serde_json::Value = serde_json::from_str(serialized).unwrap();
+            assert_eq!(value["schema_version"], 1);
+            assert_eq!(value["resource_id"], "resource-1");
+            assert_eq!(value["action"], "container.start");
+            assert_eq!(value["job"]["id"], "job-1");
+            assert_eq!(value["job"]["resource"]["id"], "resource-1");
+            assert_eq!(value["job"]["state"], "queued");
+            assert_eq!(value["job"]["result"], serde_json::Value::Null);
+        }
     }
 
     #[tokio::test]

@@ -136,9 +136,58 @@ A returned job is an acceptance record, not evidence that the provider mutation 
 states are `awaiting_approval`, `queued`, `running`, `succeeded`, `failed`, `cancelled`,
 `needs_attention`, `rejected`, and `expired`. `needs_attention` is deliberately non-terminal while
 the reconciler resolves an uncertain provider outcome. Plans are immutable and approval decisions
-remain bound to the exact job and observed resource revision. Cancellation is cooperative and is
+remain bound to the exact job and observed resource revision. Approval expiry is terminal: the
+approval becomes `expired`, the job becomes `expired`, and the job error is the stable
+`approval_expired` code with a bounded explanatory message. Rejection similarly records
+`approval_rejected`. If the approval's resource revision or provider fingerprint changes before a
+ decision, the job is terminal `expired` with the distinct `approval_stale` error code.
+Cancellation is cooperative and is
 accepted only while a job is queued or running. Retry and recovery policy come from the registered
 action and plan; callers must not resubmit while following a job.
+
+The v1 plan payload is a complete `PlanViewV1`, not a job placeholder:
+
+```
+{
+  "action": "container.start",
+  "resource": { "id": "resource-1", "kind": "container", "display_name": "web", "revision": 7 },
+  "input_schema_id": "container.start.input.v1",
+  "result_schema_id": "container.start.result.v1",
+  "operation": {
+    "schema_version": 1,
+    "title": "Start the web container",
+    "risk": "mutate",
+    "changes": [],
+    "preview": null,
+    "external_fingerprint": "...",
+    "steps": [{ "kind": "execute", "name": "Start container", "retry_class": "never", "recovery_class": "reconcile" }]
+  },
+  "policy": { "outcome": "require_approval", "reason": "..." }
+}
+```
+
+Every registered durable action owns a versioned `<action>.input.v1` and
+`<action>.result.v1` schema identity. The validator resolves those identities back through the
+immutable action registry rather than trusting caller-supplied metadata. Canonical input must be a
+JSON object with at most 64
+properties, 64 array items at each level, eight nested levels, 128-character object keys, 4 KiB
+strings, and a 64 KiB canonical encoding. The adapter remains responsible for action-specific
+fields and rejects unsupported fields or values before planning. Results use the same registered
+identity and bounded encoding; redaction occurs before persistence and API exposure. Job error codes are
+limited to 128 characters and error messages to 1,024 characters; provider diagnostics are redacted
+and bounded before they are persisted.
+Plan titles and fingerprints are limited to 256 characters, risk/step classification fields to
+64, change labels to 128, change values to 2 KiB, previews to 16 KiB, and policy reasons to 1 KiB.
+Non-object or over-bounded input fails before adapter execution with `400 invalid_action_input`.
+Unknown wrapper fields and malformed JSON use `400 invalid_request`; safe planning failures use
+`422 planning_rejected`.
+
+The source-owned artifact also contains the applicable OpenAPI 3.1 action paths and schemas.
+`node scripts/generate-api-contract.mjs` derives both
+`frontend/src/api/generatedApiContract.ts` and `docs/api-v1.openapi.json`; run it with `--check`
+to fail on stale generated output. The checked-in OpenAPI file covers the canonical plan and
+submit routes and references the same bounded request, PlanView, job, error, and version-negotiation
+schemas; it is not a claim that every legacy route has OpenAPI coverage.
 
 Policy denial returns `403 policy_denied` with the rejected durable `job_id`. Other canonical errors
 use `{ "error": { "code", "message", "job_id"? } }`. Persisted plans, results, events, and errors
@@ -766,3 +815,25 @@ POST /api/voidwatch/webhook
 GET /api/capabilities   Authenticated session or diagnostics:read Bearer
 GET /api/diagnostics    Admin/owner session or diagnostics:read Bearer
 ```
+
+## Durable operation envelope invariants
+
+Versioned plan, job, approval, inventory, resource, and event-history envelopes are parsed
+fail-closed by the generated contract clients. Unknown object keys, unsupported schema versions,
+blank or oversized identifiers, action/schema identity mismatches, and resource identity mismatches
+are invalid responses rather than partially trusted data.
+
+A job envelope carries the complete immutable operation plan. `progress_current` cannot exceed
+`progress_total`, and `progress_total` must equal the plan step count. A succeeded job must carry a
+result and no error; failed, rejected, expired, and needs-attention jobs must carry an error; a job
+never carries both result and error. Result JSON is bounded recursively and by encoded byte size.
+
+Approval reads require the complete source-owned approval record (`id`, `job_id`, requirement,
+reason, status, expiry, decision, and timestamps). Event records require the exact source-owned
+fields and actor shape. Clients reject extra fields so contract drift is detected at the boundary.
+
+Worker and reconciliation paths validate a raw action result against its registered result schema
+before sanitization and durable persistence. Sanitization is still required for bounded recursive
+redaction and fails closed if a diagnostic or result cannot be safely represented. Provider adapters
+must redact exact configured secret values before returning results; the worker additionally redacts
+credential-shaped field names and never persists raw provider diagnostics.

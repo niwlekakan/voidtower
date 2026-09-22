@@ -108,6 +108,29 @@ export interface DurableOperationPlan {
   steps: DurablePlannedStep[]
 }
 
+export type DurablePolicyOutcome = 'allow' | 'require_approval' | 'deny'
+
+export interface DurablePolicyPreview {
+  outcome: DurablePolicyOutcome
+  reason: string | null
+}
+
+export interface DurablePlanView {
+  action: string
+  resource: DurableResourceRef
+  input_schema_id: string
+  result_schema_id: string
+  operation: DurableOperationPlan
+  policy: DurablePolicyPreview
+}
+
+export interface DurablePlanResponse {
+  schema_version: number
+  resource_id: string
+  action: string
+  plan: DurablePlanView
+}
+
 export interface DurableOperationError {
   code: string
   message: string

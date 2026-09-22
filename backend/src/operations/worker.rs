@@ -10,13 +10,15 @@ use super::{
     clock::Clock,
     contracts::{ActorRef, ActorType, JobState, PlannedStepV1, ResourceRef},
     events::{self, PendingEvent},
+    schemas,
 };
 use crate::api::mcp::action_registry::{self, RetryClass};
 use anyhow::{ensure, Context, Result};
 use serde_json::Value;
 use sqlx::{FromRow, SqlitePool};
 
-const MAX_PERSISTED_TEXT_CHARS: usize = 4 * 1024;
+const MAX_PERSISTED_TEXT_CHARS: usize = 4096;
+const REDACTION_LOOKAHEAD_CHARS: usize = 256;
 
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum CancellationError {
@@ -436,7 +438,6 @@ pub async fn complete_step(
     now: i64,
     outcome: StepOutcome,
 ) -> Result<JobState> {
-    let outcome = sanitize_outcome(outcome)?;
     let mut transaction = pool.begin().await?;
     acquire_write_intent(&mut transaction).await?;
     let row: CompletionRow = sqlx::query_as(
@@ -465,12 +466,19 @@ pub async fn complete_step(
     let retry = action
         .retry
         .context("durable action has no retry metadata")?;
+    if let StepOutcome::Succeeded { result, .. } = &outcome {
+        schemas::validate_result(action, result)
+            .map_err(|reason| anyhow::anyhow!("action result rejected: {reason}"))?;
+    }
+    let outcome = sanitize_outcome(outcome)?;
 
     let (state, event_type, audit_outcome) = match outcome {
         StepOutcome::Succeeded {
             result,
             external_operation_id,
         } => {
+            schemas::validate_result(action, &result)
+                .map_err(|reason| anyhow::anyhow!("action result rejected: {reason}"))?;
             let result_json = canonical_json::to_canonical_string(&result)?;
             finish_attempt(&mut transaction, step, now, "succeeded", None).await?;
             sqlx::query(
@@ -1106,7 +1114,6 @@ pub async fn complete_reconciliation(
     now: i64,
     outcome: ReconcileOutcome,
 ) -> Result<JobState> {
-    let outcome = sanitize_reconciliation(outcome);
     let mut transaction = pool.begin().await?;
     acquire_write_intent(&mut transaction).await?;
     let row: CompletionRow = sqlx::query_as(
@@ -1136,6 +1143,14 @@ pub async fn complete_reconciliation(
         "step does not need reconciliation"
     );
 
+    let action =
+        action_registry::action(&row.action).context("reconciliation action is not registered")?;
+    if let ReconcileOutcome::Succeeded { result } = &outcome {
+        schemas::validate_result(action, result)
+            .map_err(|reason| anyhow::anyhow!("reconciliation result rejected: {reason}"))?;
+    }
+    let outcome = sanitize_reconciliation(outcome)?;
+
     let outcome = if matches!(&outcome, ReconcileOutcome::Succeeded { .. }) {
         let incomplete_other_steps: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM job_steps WHERE job_id = ? AND id != ? AND state != 'succeeded'",
@@ -1158,6 +1173,8 @@ pub async fn complete_reconciliation(
 
     let (state, event_type, audit_outcome) = match outcome {
         ReconcileOutcome::Succeeded { result } => {
+            schemas::validate_result(action, &result)
+                .map_err(|reason| anyhow::anyhow!("reconciliation result rejected: {reason}"))?;
             let result_json = canonical_json::to_canonical_string(&result)?;
             finish_attempt(
                 &mut transaction,
@@ -1331,6 +1348,8 @@ async fn finish_job_with_error(
     code: &str,
     message: &str,
 ) -> Result<()> {
+    let code = safe_error_code(code);
+    let message = safe_error_text(message);
     sqlx::query(
         "UPDATE job_steps SET state = 'cancelled', error_code = 'dependency_not_run', \
          error_message = 'A previous step did not complete', finished_at = ?, updated_at = ? \
@@ -1363,7 +1382,7 @@ fn sanitize_outcome(outcome: StepOutcome) -> Result<StepOutcome> {
             result,
             external_operation_id,
         } => StepOutcome::Succeeded {
-            result: safe_value(result),
+            result: safe_value(result)?,
             external_operation_id: external_operation_id.map(|value| safe_text(&value)),
         },
         StepOutcome::Failed {
@@ -1372,10 +1391,10 @@ fn sanitize_outcome(outcome: StepOutcome) -> Result<StepOutcome> {
             retryable,
             diagnostic,
         } => StepOutcome::Failed {
-            code: safe_text(&code),
-            message: safe_text(&message),
+            code: safe_error_code(&code),
+            message: safe_error_text(&message),
             retryable,
-            diagnostic: diagnostic.map(safe_value),
+            diagnostic: diagnostic.map(safe_value).transpose()?,
         },
         StepOutcome::Cancelled { message } => StepOutcome::Cancelled {
             message: safe_text(&message),
@@ -1386,62 +1405,115 @@ fn sanitize_outcome(outcome: StepOutcome) -> Result<StepOutcome> {
             external_operation_id,
             diagnostic,
         } => StepOutcome::Uncertain {
-            code: safe_text(&code),
-            message: safe_text(&message),
+            code: safe_error_code(&code),
+            message: safe_error_text(&message),
             external_operation_id: external_operation_id.map(|value| safe_text(&value)),
-            diagnostic: diagnostic.map(safe_value),
+            diagnostic: diagnostic.map(safe_value).transpose()?,
         },
     })
 }
 
-fn sanitize_reconciliation(outcome: ReconcileOutcome) -> ReconcileOutcome {
+fn sanitize_reconciliation(outcome: ReconcileOutcome) -> Result<ReconcileOutcome> {
     match outcome {
-        ReconcileOutcome::Succeeded { result } => ReconcileOutcome::Succeeded {
-            result: safe_value(result),
-        },
-        ReconcileOutcome::Failed { code, message } => ReconcileOutcome::Failed {
-            code: safe_text(&code),
-            message: safe_text(&message),
-        },
-        ReconcileOutcome::StillUncertain { message } => ReconcileOutcome::StillUncertain {
-            message: safe_text(&message),
-        },
+        ReconcileOutcome::Succeeded { result } => Ok(ReconcileOutcome::Succeeded {
+            result: safe_value(result)?,
+        }),
+        ReconcileOutcome::Failed { code, message } => Ok(ReconcileOutcome::Failed {
+            code: safe_error_code(&code),
+            message: safe_error_text(&message),
+        }),
+        ReconcileOutcome::StillUncertain { message } => Ok(ReconcileOutcome::StillUncertain {
+            message: safe_error_text(&message),
+        }),
     }
 }
 
-fn safe_value(value: Value) -> Value {
+fn safe_value(value: Value) -> Result<Value> {
+    safe_value_at_depth(value, 0)
+}
+
+fn safe_value_at_depth(value: Value, depth: usize) -> Result<Value> {
+    anyhow::ensure!(
+        depth <= schemas::MAX_ACTION_INPUT_DEPTH,
+        "action result exceeds maximum nesting depth"
+    );
     match value {
-        Value::String(value) => Value::String(safe_text(&value)),
-        Value::Array(values) => Value::Array(values.into_iter().map(safe_value).collect()),
-        Value::Object(values) => Value::Object(
+        Value::String(value) => Ok(Value::String(safe_text(&value))),
+        Value::Array(values) => {
+            anyhow::ensure!(
+                values.len() <= schemas::MAX_ACTION_INPUT_ITEMS,
+                "action result contains too many array items"
+            );
             values
                 .into_iter()
-                .map(|(key, value)| {
-                    let normalized = key.to_ascii_lowercase();
-                    let value = if ["password", "passwd", "token", "secret", "credential"]
-                        .iter()
-                        .any(|needle| normalized.contains(needle))
+                .map(|value| safe_value_at_depth(value, depth + 1))
+                .collect::<Result<Vec<_>>>()
+                .map(Value::Array)
+        }
+        Value::Object(values) => {
+            anyhow::ensure!(
+                values.len() <= schemas::MAX_ACTION_INPUT_ITEMS,
+                "action result contains too many object properties"
+            );
+            values
+                .into_iter()
+                .map(|(key, value)| -> Result<_> {
+                    anyhow::ensure!(
+                        key.chars().count() <= schemas::MAX_ACTION_INPUT_STRING_CHARS,
+                        "action result object key is too long"
+                    );
+                    let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
+                    let value = if [
+                        "password",
+                        "passwd",
+                        "token",
+                        "secret",
+                        "credential",
+                        "apikey",
+                        "accesskey",
+                        "privatekey",
+                        "authtoken",
+                        "secretkey",
+                        "clientsecret",
+                        "refreshtoken",
+                        "pwd",
+                    ]
+                    .iter()
+                    .any(|needle| normalized.contains(needle))
                     {
                         Value::String("[REDACTED]".into())
                     } else {
-                        safe_value(value)
+                        safe_value_at_depth(value, depth + 1)?
                     };
-                    (key, value)
+                    Ok((key, value))
                 })
-                .collect(),
-        ),
-        scalar => scalar,
+                .collect::<Result<serde_json::Map<_, _>>>()
+                .map(Value::Object)
+        }
+        scalar => Ok(scalar),
     }
 }
 
 fn safe_text(value: &str) -> String {
-    let redacted = crate::api::mcp::redact::redact_patterns(value);
+    let bounded_input: String = value
+        .chars()
+        .take(MAX_PERSISTED_TEXT_CHARS + REDACTION_LOOKAHEAD_CHARS)
+        .collect();
+    let redacted = crate::api::mcp::redact::redact_patterns(&bounded_input);
     let mut chars = redacted.chars();
     let mut bounded: String = chars.by_ref().take(MAX_PERSISTED_TEXT_CHARS).collect();
     if chars.next().is_some() {
         bounded.push_str("…[truncated]");
     }
     bounded
+}
+
+fn safe_error_code(value: &str) -> String {
+    safe_text(value).chars().take(128).collect()
+}
+
+fn safe_error_text(value: &str) -> String {
+    safe_text(value).chars().take(1024).collect()
 }
 
 pub async fn request_cancellation(
@@ -1712,6 +1784,56 @@ mod tests {
         Arc,
     };
 
+    #[test]
+    fn successful_results_redact_credential_named_fields_before_persistence() {
+        let sanitized = safe_value(serde_json::json!({
+            "api_key": "api-value",
+            "access_key": "access-value",
+            "private_key": "private-value",
+            "auth_token": "auth-value",
+            "secret_key": "secret-value",
+            "client_secret": "client-value",
+            "refresh_token": "refresh-value",
+            "pwd": "pwd-value",
+            "apiKey": "camel-api-value",
+            "access-key": "hyphen-access-value",
+            "privateKey": "camel-private-value",
+        }))
+        .expect("sanitized value");
+        let object = sanitized.as_object().expect("sanitized object");
+        for key in [
+            "api_key",
+            "access_key",
+            "private_key",
+            "auth_token",
+            "secret_key",
+            "client_secret",
+            "refresh_token",
+            "pwd",
+            "apiKey",
+            "access-key",
+            "privateKey",
+        ] {
+            assert_eq!(object[key], serde_json::json!("[REDACTED]"));
+        }
+    }
+
+    #[test]
+    fn result_sanitization_rejects_unbounded_shape_before_recursive_redaction() {
+        let oversized_items = serde_json::Value::Array(
+            (0..=schemas::MAX_ACTION_INPUT_ITEMS)
+                .map(|item| serde_json::json!(item))
+                .collect(),
+        );
+        assert!(safe_value(oversized_items).is_err());
+
+        let mut nested = serde_json::json!(null);
+        for _ in 0..=schemas::MAX_ACTION_INPUT_DEPTH {
+            nested = serde_json::json!([nested]);
+        }
+        assert!(safe_value(nested).is_err());
+    }
+
     struct FixedClock(i64);
 
     impl Clock for FixedClock {
@@ -1910,7 +2032,7 @@ mod tests {
                     result: serde_json::json!({
                         "password": secret,
                         "message": format!("api_key={secret}"),
-                        "bounded": "x".repeat(MAX_PERSISTED_TEXT_CHARS + 100),
+                        "bounded": "completed",
                         "safe": "completed",
                     }),
                     external_operation_id: None,
@@ -1926,7 +2048,6 @@ mod tests {
         let persisted = serde_json::to_string(&summary.result).unwrap();
         assert!(!persisted.contains(secret));
         assert!(persisted.contains("completed"));
-        assert!(persisted.contains("[truncated]"));
         let attempt: (String, i64) =
             sqlx::query_as("SELECT outcome, finished_at FROM job_attempts WHERE job_id = ?")
                 .bind(&job.id)
@@ -2095,6 +2216,54 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(outcomes, vec!["uncertain", "reconciliation_succeeded"]);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_rejects_an_oversized_result_before_persistence() {
+        let (pool, adapters, resource) = setup().await;
+        let (job, step) =
+            claim_job_and_step(&pool, &adapters, &resource, "reconcile-bounded").await;
+        complete_step(
+            &pool,
+            &step,
+            "worker-a",
+            102,
+            StepOutcome::Uncertain {
+                code: "provider_timeout".into(),
+                message: "Provider outcome could not be verified".into(),
+                external_operation_id: Some("task-bounded".into()),
+                diagnostic: None,
+            },
+        )
+        .await
+        .unwrap();
+        let (_, reconciliation) = claim_reconciliation(&pool, &adapters, "reconciler-a", 103, 20)
+            .await
+            .unwrap()
+            .unwrap();
+        let oversized = (0..schemas::MAX_ACTION_INPUT_ITEMS)
+            .map(|_| Value::String("x".repeat(1024)))
+            .collect();
+        assert!(complete_reconciliation(
+            &pool,
+            &reconciliation,
+            "reconciler-a",
+            104,
+            ReconcileOutcome::Succeeded {
+                result: Value::Array(oversized),
+            },
+        )
+        .await
+        .is_err());
+        let summary = jobs::get(&pool, &job.id).await.unwrap().unwrap();
+        assert_eq!(summary.state, JobState::NeedsAttention);
+        let persisted: Option<String> =
+            sqlx::query_scalar("SELECT result_json FROM job_steps WHERE id = ?")
+                .bind(&reconciliation.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(persisted.is_none());
     }
 
     #[tokio::test]
@@ -2549,6 +2718,21 @@ mod tests {
         assert!(!error.message.contains("provider-secret"));
         assert!(error.message.contains("[REDACTED]"));
         assert!(error.message.chars().count() <= MAX_PERSISTED_TEXT_CHARS + 20);
+    }
+
+    #[test]
+    fn persisted_error_sanitizers_redact_boundary_values_and_bound_codes() {
+        let mut boundary = "x".repeat(MAX_PERSISTED_TEXT_CHARS - 8);
+        boundary.push_str("api_");
+        boundary.push_str("key=boundary-value");
+        let sanitized = safe_text(&boundary);
+        assert!(!sanitized.contains("boundary-value"));
+        assert!(
+            sanitized.chars().count() <= MAX_PERSISTED_TEXT_CHARS + "…[truncated]".chars().count()
+        );
+
+        let code = safe_error_code(&"x".repeat(256));
+        assert_eq!(code.chars().count(), 128);
     }
 
     #[tokio::test]

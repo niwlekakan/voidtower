@@ -151,6 +151,11 @@ impl From<InvocationError> for CanonicalApiError {
                 "planning_rejected",
                 "The operation could not be planned safely.",
             ),
+            InvocationError::InvalidActionInput => (
+                StatusCode::BAD_REQUEST,
+                "invalid_action_input",
+                "The action input does not match its bounded schema.",
+            ),
             InvocationError::IdempotencyConflict => (
                 StatusCode::CONFLICT,
                 "idempotency_conflict",
@@ -883,6 +888,84 @@ mod tests {
         assert_eq!(denied_replay.status(), StatusCode::FORBIDDEN);
         assert_eq!(json(denied_replay).await["error"]["job_id"], denied_job_id);
         assert_eq!(calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn real_router_rejects_non_object_action_input_before_adapter_execution() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&db).await;
+        let resource = resources::observe(
+            &db,
+            ObserveResource {
+                kind: "container",
+                display_name: "web",
+                node_id: None,
+                provider: Some("docker"),
+                namespace: "test.container",
+                scope_key: "local",
+                alias: "web-invalid-input",
+            },
+            None,
+            "setup-invalid-input",
+        )
+        .await
+        .unwrap();
+        resources::set_capability(
+            &db,
+            &resource.id,
+            "container.start",
+            CapabilityAvailability::Available,
+            None,
+            None,
+            "setup-invalid-input-capability",
+        )
+        .await
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = AdapterRegistry::new();
+        registry
+            .register(Arc::new(HttpAdapter {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        let mut state = crate::api::mcp::test_support::build(db.clone());
+        state.operation_adapters = Arc::new(registry);
+        let app = crate::api::router(state);
+        let base = format!("/api/resources/{}/actions/container.start", resource.id);
+
+        let planned = app
+            .clone()
+            .oneshot(request(
+                &format!("{base}/plan"),
+                &session,
+                r#"{"input":null}"#,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(planned.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json(planned).await["error"]["code"], "invalid_action_input");
+
+        let submitted = app
+            .oneshot(request(
+                &base,
+                &session,
+                r#"{"input":[]}"#,
+                Some("invalid-input-1"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(submitted.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json(submitted).await["error"]["code"],
+            "invalid_action_input"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(jobs, 0);
     }
 
     #[tokio::test]

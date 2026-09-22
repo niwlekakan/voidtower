@@ -8,7 +8,7 @@ use crate::{
         canonical_json,
         contracts::{ActorRef, ActorType, OperationPlanV1, ResourceCapability, ResourceRef},
         jobs::{self, IdempotencyLookup, SubmissionPolicy, SubmitJob},
-        resources, unix_now,
+        resources, schemas, unix_now,
     },
     voidwatch::{self, ActionKind, Actor, ActorKind, Resource, Verdict},
 };
@@ -70,6 +70,8 @@ pub enum InvocationError {
     StaleState,
     #[error("operation planning rejected the request")]
     PlanningRejected,
+    #[error("action input does not match its bounded schema")]
+    InvalidActionInput,
     #[error("idempotency key belongs to different intent")]
     IdempotencyConflict,
     #[error("idempotency key is invalid")]
@@ -315,6 +317,7 @@ pub async fn prepare(
         .filter(|action| action.execution == ActionExecution::DurableJob)
         .ok_or(InvocationError::UnknownAction)?;
     authorize_action(action, credential)?;
+    schemas::validate_input(action, &input).map_err(|_| InvocationError::InvalidActionInput)?;
     canonical_json::to_canonical_string(&input).map_err(|_| InvocationError::PlanningRejected)?;
 
     let resource = resources::get_active(pool, resource_id)
@@ -389,6 +392,7 @@ pub async fn submit(
         .filter(|action| action.execution == ActionExecution::DurableJob)
         .ok_or(InvocationError::UnknownAction)?;
     authorize_action(action, credential)?;
+    schemas::validate_input(action, &input).map_err(|_| InvocationError::InvalidActionInput)?;
     validate_idempotency_key(idempotency_key)?;
     let scope = credential.idempotency_scope();
     let digest = jobs::intent_digest(action_name, resource_id, &input)

@@ -116,11 +116,11 @@ jobs:
       - name: cargo deny check
         working-directory: backend
         run: cargo deny check
-      # The only retained exceptions are RUSTSEC-2023-0071 (rsa 0.9.10, no patched
-      # 0.9.x release) and RUSTSEC-2026-0543 (chrono 0.4.45, unmaintained, no
-      # maintained replacement), both reached only via the git-pinned openidconnect.
-      # Mirrors backend/deny.toml; see docs/lane-notes/M1.md. Do not add other
-      # ignores to bypass a supply-chain failure.
+      # The only retained exceptions are RUSTSEC-2023-0071 (rsa 0.9.10; the latest
+      # openidconnect release has no version compatible with fixed rsa 0.10) and
+      # RUSTSEC-2026-0543 (chrono 0.4.45, unmaintained, no patched versions).
+      # Both are reached through openidconnect. Mirrors backend/deny.toml; see
+      # docs/lane-notes/M1.md. Do not add other ignores to bypass a failure.
       - name: cargo audit
         working-directory: backend
         run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0543

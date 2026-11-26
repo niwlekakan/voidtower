@@ -1121,18 +1121,20 @@ pub async fn deployed(
     // Members only ever see their own deployed apps (owner_user_id = self);
     // every other role keeps seeing everything, exactly as before.
     let rows = if user.role == "member" {
-        sqlx::query_as::<_, DeployedAppRow>(&format!(
+        sqlx::query_as::<_, DeployedAppRow>(sqlx::AssertSqlSafe(format!(
             "{SELECT_DEPLOYED} WHERE owner_user_id = ? ORDER BY deployed_at DESC"
-        ))
+        )))
         .bind(&user.id)
         .fetch_all(&state.db)
         .await
         .map_err(AppError::Database)?
     } else {
-        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} ORDER BY deployed_at DESC"))
-            .fetch_all(&state.db)
-            .await
-            .map_err(AppError::Database)?
+        sqlx::query_as::<_, DeployedAppRow>(sqlx::AssertSqlSafe(format!(
+            "{SELECT_DEPLOYED} ORDER BY deployed_at DESC"
+        )))
+        .fetch_all(&state.db)
+        .await
+        .map_err(AppError::Database)?
     };
     let docker_available = containers::is_docker_available();
     let apps = rows.into_iter().map(row_to_app).collect();
@@ -1462,13 +1464,14 @@ pub async fn app_logs(
     let user = require_user(&state, &jar).await?;
     require_app_read_role(&user)?;
 
-    let row =
-        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
-            .bind(&project_name)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or(AppError::NotFound)?;
+    let row = sqlx::query_as::<_, DeployedAppRow>(sqlx::AssertSqlSafe(format!(
+        "{SELECT_DEPLOYED} WHERE project_name = ?"
+    )))
+    .bind(&project_name)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
@@ -1507,13 +1510,14 @@ pub async fn app_status(
     let user = require_user(&state, &jar).await?;
     require_app_read_role(&user)?;
 
-    let row =
-        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
-            .bind(&project_name)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or(AppError::NotFound)?;
+    let row = sqlx::query_as::<_, DeployedAppRow>(sqlx::AssertSqlSafe(format!(
+        "{SELECT_DEPLOYED} WHERE project_name = ?"
+    )))
+    .bind(&project_name)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
 
     let compose_path = std::path::PathBuf::from(&row.compose_path);
@@ -1544,13 +1548,14 @@ pub async fn get_compose(
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_app_read_role(&user)?;
-    let row =
-        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
-            .bind(&project_name)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or(AppError::NotFound)?;
+    let row = sqlx::query_as::<_, DeployedAppRow>(sqlx::AssertSqlSafe(format!(
+        "{SELECT_DEPLOYED} WHERE project_name = ?"
+    )))
+    .bind(&project_name)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
 
     let content = read_bounded_compose(StdPath::new(&row.compose_path))?;
@@ -1994,13 +1999,14 @@ pub async fn open_ui(
             "invalid app identifier or port".into(),
         ));
     }
-    let row =
-        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
-            .bind(&req.project_name)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or(AppError::NotFound)?;
+    let row = sqlx::query_as::<_, DeployedAppRow>(sqlx::AssertSqlSafe(format!(
+        "{SELECT_DEPLOYED} WHERE project_name = ?"
+    )))
+    .bind(&req.project_name)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or(AppError::NotFound)?;
     require_app_owner_or_admin(&user, &row)?;
     if row.primary_port != Some(i64::from(req.primary_port)) {
         return Err(AppError::BadRequest(
@@ -2125,9 +2131,9 @@ pub async fn embed_proxy(
         return embed_error(StatusCode::FORBIDDEN, "forbidden", "Forbidden");
     }
 
-    let row = match sqlx::query_as::<_, DeployedAppRow>(&format!(
+    let row = match sqlx::query_as::<_, DeployedAppRow>(sqlx::AssertSqlSafe(format!(
         "{SELECT_DEPLOYED} WHERE project_name = ?"
-    ))
+    )))
     .bind(&project_name)
     .fetch_optional(&state.db)
     .await
@@ -2571,13 +2577,14 @@ pub async fn expose_app(
     super::role_guard::require_admin(&user)?;
     let req: ExposeAppRequest =
         parse_json_body(body).map_err(super::operation_adoption::CompatibilityError::from)?;
-    let row =
-        sqlx::query_as::<_, DeployedAppRow>(&format!("{SELECT_DEPLOYED} WHERE project_name = ?"))
-            .bind(&project_name)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or(AppError::NotFound)?;
+    let row = sqlx::query_as::<_, DeployedAppRow>(sqlx::AssertSqlSafe(format!(
+        "{SELECT_DEPLOYED} WHERE project_name = ?"
+    )))
+    .bind(&project_name)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or(AppError::NotFound)?;
     let port = row
         .primary_port
         .and_then(|port| u16::try_from(port).ok())

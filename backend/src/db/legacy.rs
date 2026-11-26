@@ -1,6 +1,6 @@
 use super::schema;
 use anyhow::{Context, Result};
-use sqlx::{Acquire, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Acquire, AssertSqlSafe, Row, Sqlite, SqlitePool, Transaction};
 use std::path::{Path, PathBuf};
 
 const LEGACY_COLUMNS: &[(&str, &str, &str)] = &[
@@ -124,7 +124,9 @@ async fn column_exists(
     column: &str,
 ) -> Result<bool> {
     let pragma = format!("PRAGMA table_info({})", quoted_identifier(table));
-    let rows = sqlx::query(&pragma).fetch_all(&mut **transaction).await?;
+    let rows = sqlx::query(AssertSqlSafe(pragma))
+        .fetch_all(&mut **transaction)
+        .await?;
     Ok(rows
         .iter()
         .filter_map(|row| row.try_get::<String, _>("name").ok())
@@ -148,7 +150,7 @@ async fn normalize(transaction: &mut Transaction<'_, Sqlite>) -> Result<()> {
                 quoted_identifier(table),
                 quoted_identifier(column)
             );
-            sqlx::query(&statement)
+            sqlx::query(AssertSqlSafe(statement))
                 .execute(&mut **transaction)
                 .await
                 .with_context(|| format!("failed to add legacy column {table}.{column}"))?;

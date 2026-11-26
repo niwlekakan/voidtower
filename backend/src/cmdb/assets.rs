@@ -10,7 +10,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, Sqlite, SqlitePool, Transaction};
 
 const ASSET_SELECT: &str =
     "SELECT a.resource_id, r.kind AS resource_kind, r.display_name, a.asset_id, \
@@ -98,7 +98,7 @@ pub async fn get(pool: &SqlitePool, selector: &str) -> Result<Option<AssetRecord
          ORDER BY CASE WHEN a.resource_id = ? THEN 0 WHEN a.asset_id = ? THEN 1 ELSE 2 END \
          LIMIT 1"
     );
-    Ok(sqlx::query_as(&sql)
+    Ok(sqlx::query_as(AssertSqlSafe(sql))
         .bind(selector)
         .bind(selector)
         .bind(selector)
@@ -110,7 +110,7 @@ pub async fn get(pool: &SqlitePool, selector: &str) -> Result<Option<AssetRecord
 
 pub async fn list(pool: &SqlitePool, limit: i64, offset: i64) -> Result<Vec<AssetRecord>> {
     let sql = format!("{ASSET_SELECT} ORDER BY a.asset_id LIMIT ? OFFSET ?");
-    Ok(sqlx::query_as(&sql)
+    Ok(sqlx::query_as(AssertSqlSafe(sql))
         .bind(limit.clamp(1, 200))
         .bind(offset.max(0))
         .fetch_all(pool)

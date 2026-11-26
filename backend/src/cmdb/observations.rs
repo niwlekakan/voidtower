@@ -17,7 +17,7 @@ use crate::{
     },
 };
 use serde_json::{Map, Value};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
 const MAX_ENTITIES: usize = 512;
@@ -1369,7 +1369,7 @@ pub async fn get_observation(
     observation_id: &str,
 ) -> Result<Option<ObservationRecord>> {
     let sql = format!("{OBSERVATION_SELECT} WHERE id = ?");
-    Ok(sqlx::query_as(&sql)
+    Ok(sqlx::query_as(AssertSqlSafe(sql))
         .bind(observation_id)
         .fetch_optional(pool)
         .await?)
@@ -1385,7 +1385,7 @@ pub async fn list_by_asset(
         "{OBSERVATION_SELECT} WHERE resource_id = ? \
          ORDER BY last_seen_at DESC, id DESC LIMIT ? OFFSET ?"
     );
-    Ok(sqlx::query_as(&sql)
+    Ok(sqlx::query_as(AssertSqlSafe(sql))
         .bind(resource_id)
         .bind(limit)
         .bind(offset)
@@ -1398,7 +1398,7 @@ async fn observation_in(
     observation_id: &str,
 ) -> Result<ObservationRecord> {
     let sql = format!("{OBSERVATION_SELECT} WHERE id = ?");
-    sqlx::query_as(&sql)
+    sqlx::query_as(AssertSqlSafe(sql))
         .bind(observation_id)
         .fetch_optional(&mut **transaction)
         .await?

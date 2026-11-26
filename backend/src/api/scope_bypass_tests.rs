@@ -2369,10 +2369,11 @@ async fn built_in_mcp_and_studio_reject_mismatched_resource_kinds_before_plannin
         "a kind mismatch must be refused before any plan is derived"
     );
     for table in ["jobs", "approvals", "audit_log"] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(&db)
-            .await
-            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(count, 0, "a kind mismatch must not persist into {table}");
     }
     // Resource observation and capability registration legitimately emit their own events; the

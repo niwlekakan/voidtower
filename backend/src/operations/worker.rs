@@ -15,7 +15,7 @@ use super::{
 use crate::api::mcp::action_registry::{self, RetryClass};
 use anyhow::{ensure, Context, Result};
 use serde_json::Value;
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{AssertSqlSafe, FromRow, SqlitePool};
 
 const MAX_PERSISTED_TEXT_CHARS: usize = 4096;
 const REDACTION_LOOKAHEAD_CHARS: usize = 256;
@@ -114,7 +114,7 @@ pub async fn claim_next(
     // `submitted_at` has one-second resolution, so two intents accepted in the same second tie;
     // the tie-break is `rowid`, the insertion order, never the random job UUID (which would let a
     // later submission jump an unresolved earlier one).
-    let candidate: Option<ClaimRow> = sqlx::query_as(&format!(
+    let candidate: Option<ClaimRow> = sqlx::query_as(AssertSqlSafe(format!(
         "SELECT j.id, j.action, j.resource_id, j.resource_revision, r.kind AS resource_kind, \
                 r.display_name AS resource_name, j.input_json, j.external_fingerprint \
          FROM jobs j JOIN resources r ON r.id = j.resource_id \
@@ -129,7 +129,7 @@ pub async fn claim_next(
                              AND (prior.submitted_at, prior.rowid) \
                                < (j.submitted_at, j.rowid)) \
          ORDER BY j.submitted_at, j.rowid LIMIT 1"
-    ))
+    )))
     .fetch_optional(&mut *transaction)
     .await?;
     let Some(candidate) = candidate else {
@@ -143,7 +143,7 @@ pub async fn claim_next(
     // The same precedence predicate decides the write, so a sibling that lands between the
     // candidate read and this update cannot be jumped over: the claim takes the head of the key
     // or nothing.
-    let updated = sqlx::query(&format!(
+    let updated = sqlx::query(AssertSqlSafe(format!(
         "UPDATE jobs SET state = 'running', lease_owner = ?, lease_expires_at = ?, \
          started_at = COALESCE(started_at, ?), updated_at = ? \
          WHERE id = ? AND state = 'queued' \
@@ -153,7 +153,7 @@ pub async fn claim_next(
                              AND prior.state NOT IN ({TERMINAL_JOB_STATES}) \
                              AND (prior.submitted_at, prior.rowid) \
                                < (jobs.submitted_at, jobs.rowid))"
-    ))
+    )))
     .bind(worker_id)
     .bind(lease_expires_at)
     .bind(now)
@@ -343,7 +343,7 @@ pub async fn execute_claimed_step(
     // by approval resumption, retry requeue, runtime release and lease recovery. The tie-break is
     // `rowid` (insertion order), because two intents submitted in the same second share
     // `submitted_at`.
-    let preflight: Option<(i64, String, String, i64, i64)> = sqlx::query_as(&format!(
+    let preflight: Option<(i64, String, String, i64, i64)> = sqlx::query_as(AssertSqlSafe(format!(
         "SELECT r.revision, r.lifecycle_state, COALESCE(c.availability, 'missing'), \
                 j.cancel_requested, \
                 (SELECT COUNT(*) FROM jobs prior \
@@ -357,7 +357,7 @@ pub async fn execute_claimed_step(
          LEFT JOIN resource_capabilities c ON c.resource_id = j.resource_id AND c.action = j.action \
          WHERE j.id = ? AND j.state = 'running' AND j.lease_owner = ? \
            AND j.lease_expires_at > ?"
-    ))
+    )))
     .bind(&job.id)
     .bind(worker_id)
     .bind(now)

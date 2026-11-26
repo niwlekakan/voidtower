@@ -1,7 +1,7 @@
 use crate::operations::resources::{self, ObserveResource};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 
 pub const SELECT_COLS: &str =
     "id, name, source_path, repo_path, schedule, retention_days, enabled, \
@@ -140,17 +140,17 @@ pub struct BackupProbe {
 }
 
 pub async fn list_configs(pool: &SqlitePool) -> Result<Vec<BackupConfig>> {
-    Ok(sqlx::query_as::<_, BackupConfig>(&format!(
+    Ok(sqlx::query_as::<_, BackupConfig>(AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM backup_configs ORDER BY created_at DESC"
-    ))
+    )))
     .fetch_all(pool)
     .await?)
 }
 
 pub async fn get_config(pool: &SqlitePool, id: &str) -> Result<Option<BackupConfig>> {
-    Ok(sqlx::query_as::<_, BackupConfig>(&format!(
+    Ok(sqlx::query_as::<_, BackupConfig>(AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM backup_configs WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(pool)
     .await?)

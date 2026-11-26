@@ -47,7 +47,7 @@ pub struct TimelineEvent {
 
 /// Appends the shared WHERE clause (outcome/search/from/to filters) to a query builder,
 /// using bound parameters so user-supplied values never reach the SQL string directly.
-fn push_timeline_where(qb: &mut QueryBuilder<'_, Sqlite>, q: &TimelineQuery) {
+fn push_timeline_where(qb: &mut QueryBuilder<Sqlite>, q: &TimelineQuery) {
     let mut first = true;
 
     if let Some(o) = q.outcome.as_deref().filter(|o| *o != "all") {
@@ -152,7 +152,7 @@ pub async fn list(
 
     let limit = q.limit.clamp(1, 200);
 
-    let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         "SELECT a.id, a.timestamp, a.user_id, a.actor_type, a.action,
                 a.resource_type, a.resource_id, a.outcome, a.details, a.ip_address, a.source
          FROM audit_log a",
@@ -181,8 +181,7 @@ pub async fn list(
         .await
         .map_err(AppError::Database)?;
 
-    let mut count_qb: QueryBuilder<'_, Sqlite> =
-        QueryBuilder::new("SELECT COUNT(*) FROM audit_log a");
+    let mut count_qb: QueryBuilder<Sqlite> = QueryBuilder::new("SELECT COUNT(*) FROM audit_log a");
     push_timeline_where(&mut count_qb, &q);
     let total: i64 = count_qb
         .build_query_scalar()

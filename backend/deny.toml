@@ -19,7 +19,11 @@ feature-depth = 1
 # Recheck each entry after dependency updates and remove it once resolved.
 # Any advisory not listed here still fails the check; this is not a blanket exemption.
 ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 (Marvin Attack); upstream has no fixed release yet" },
+    # Both residual advisories are reached only through the git-pinned
+    # openidconnect 4.1.0 (ramosbugs/openidconnect-rs @ e20ddbb0), which
+    # upstream has not released past. Tracking: docs/lane-notes/M1.md.
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 (Marvin Attack); no fixed 0.9.x release, 0.10.0 needs a newer openidconnect than the pinned upstream commit. Tracking: docs/lane-notes/M1.md" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 flagged unmaintained; latest release, no maintained replacement in the openidconnect dependency path. Tracking: docs/lane-notes/M1.md" },
 ]
 
 # This section is considered when running `cargo deny check licenses`.

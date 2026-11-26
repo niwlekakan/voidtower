@@ -7,7 +7,7 @@ use crate::{
         resources::{self, ObserveResource},
     },
 };
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackupAdoptionError {
@@ -73,10 +73,10 @@ pub async fn resolve_config_target(
         BackupSelector::Id(id) => backups::get_config(pool, id)
             .await
             .map_err(BackupAdoptionError::Internal)?,
-        BackupSelector::Name(name) => sqlx::query_as::<_, BackupConfig>(&format!(
+        BackupSelector::Name(name) => sqlx::query_as::<_, BackupConfig>(AssertSqlSafe(format!(
             "SELECT {} FROM backup_configs WHERE name = ?",
             backups::SELECT_COLS
-        ))
+        )))
         .bind(name)
         .fetch_optional(pool)
         .await

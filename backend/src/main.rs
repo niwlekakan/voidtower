@@ -32,7 +32,7 @@ mod voidwatch;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use monitoring::{MetricsBroadcaster, MetricsCollector, MetricsSnapshot};
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 use std::{collections::HashMap, io::Read, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
@@ -757,8 +757,8 @@ async fn main() -> Result<()> {
                 continue;
             }
             let Ok(cfgs) = sqlx::query_as::<_, backups::BackupConfig>(
-                &format!("SELECT {} FROM backup_configs WHERE enabled = 1 AND restore_test_schedule IS NOT NULL",
-                    "id, name, source_path, repo_path, schedule, retention_days, enabled, last_run_at, last_status, created_at, last_check_at, last_check_status, last_restore_test_at, last_restore_test_status, restore_test_schedule")
+                AssertSqlSafe(format!("SELECT {} FROM backup_configs WHERE enabled = 1 AND restore_test_schedule IS NOT NULL",
+                    "id, name, source_path, repo_path, schedule, retention_days, enabled, last_run_at, last_status, created_at, last_check_at, last_check_status, last_restore_test_at, last_restore_test_status, restore_test_schedule"))
             ).fetch_all(&rt_state.db).await else { continue };
 
             let now_ts = std::time::SystemTime::now()
@@ -1325,9 +1325,9 @@ async fn run_backup_command(
 ) -> Result<()> {
     match action {
         BackupCommand::List => {
-            let configs = sqlx::query_as::<_, backups::BackupConfig>(&format!(
+            let configs = sqlx::query_as::<_, backups::BackupConfig>(AssertSqlSafe(format!(
                 "SELECT {BACKUP_SELECT_COLS} FROM backup_configs ORDER BY created_at DESC"
-            ))
+            )))
             .fetch_all(pool)
             .await?;
 

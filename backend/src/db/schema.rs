@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use sqlx::{Connection, Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 use std::collections::BTreeMap;
 
 pub(crate) const BASELINE_SQL: &str = include_str!("../../migrations/0001_current_baseline.sql");
@@ -83,7 +83,7 @@ async fn table_names(connection: &mut SqliteConnection) -> Result<Vec<String>> {
 
 async fn inspect_table(connection: &mut SqliteConnection, table: &str) -> Result<TableShape> {
     let pragma = format!("PRAGMA table_info({})", quoted_identifier(table));
-    let rows = sqlx::query(&pragma)
+    let rows = sqlx::query(AssertSqlSafe(pragma))
         .fetch_all(&mut *connection)
         .await
         .with_context(|| format!("failed to inspect columns for managed table {table}"))?;
@@ -103,7 +103,7 @@ async fn inspect_table(connection: &mut SqliteConnection, table: &str) -> Result
     }
 
     let pragma = format!("PRAGMA foreign_key_list({})", quoted_identifier(table));
-    let rows = sqlx::query(&pragma)
+    let rows = sqlx::query(AssertSqlSafe(pragma))
         .fetch_all(&mut *connection)
         .await
         .with_context(|| format!("failed to inspect foreign keys for managed table {table}"))?;

@@ -1,5 +1,5 @@
 VoidTower
-Copyright (C) 2024 VoidTower Contributors
+Copyright (C) 2024-2026 Elwin Långdal Lidman <elwin@live.se>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -14,5 +14,9 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-Third-party components are governed by their own licenses. See
-frontend/node_modules and backend/Cargo.lock for details.
+The full license text is in LICENSE. Commercial licensing terms and the
+contribution policy are described in LICENSING.md and CLA.md.
+
+Third-party components are governed by their own licenses. See the dependency
+manifests and lockfiles (backend/Cargo.toml, backend/Cargo.lock,
+frontend/package.json, frontend/package-lock.json) for details.

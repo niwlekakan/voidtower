@@ -28,4 +28,18 @@ VoidTower is open source under AGPL-3.0-or-later. Contributions are welcome.
 
 ## License
 
-By contributing you agree your contributions are licensed under AGPL-3.0-or-later.
+VoidTower is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE) for the full text
+and [LICENSING.md](LICENSING.md) for the commercial licensing terms.
+
+Contributions are accepted only under the terms of [CLA.md](CLA.md). Include the
+following trailer in every commit, with your real name and contributing email:
+
+```
+Contribution-License-Agreement: 1.0
+Signed-off-by: Full Name <email@example.com>
+```
+
+A pull request without this trailer cannot be merged. The CLA is what allows the project
+to keep offering both the AGPL edition and commercial licenses; accepting a contribution
+without it would permanently prevent relicensing that code.
+

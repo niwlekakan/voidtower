@@ -209,6 +209,11 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check --requirement odysseus-mcp-servers/requirements.txt
       - name: Install cargo-deny
         run: cargo install --locked cargo-deny@0.20.2
+      - name: Prefetch the dependency closure
+        # The gates run with CARGO_NET_OFFLINE=true against a private Cargo home
+        # populated from this runner's cache. The tree pins one git dependency
+        # (openidconnect), which only lands in that cache after a fetch.
+        run: cargo fetch --manifest-path backend/Cargo.toml
       - name: Run the source-owned all-scope release gates
         run: >-
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/release_gate.py

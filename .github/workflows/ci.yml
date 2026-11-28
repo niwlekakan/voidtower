@@ -259,6 +259,33 @@ jobs:
           print("which npm:", shutil.which("npm"))
           print("which node:", shutil.which("node"))
           print("PATH:", os.environ.get("PATH", ""))
+          from scripts.release_gate import SAFE_TOOL_DIRECTORIES, TOOLCHAIN_MARKERS, secure_path
+
+          root = Path(".").resolve()
+          for name in ("npm", "node"):
+              for entry in dict.fromkeys(os.environ.get("PATH", "").split(os.pathsep)):
+                  if not entry:
+                      continue
+                  candidate = Path(entry) / name
+                  if not candidate.exists():
+                      continue
+                  try:
+                      resolved = Path(os.path.abspath(candidate)).resolve(strict=True)
+                  except OSError as exc:
+                      print(f"{name}: {candidate} resolve failed: {exc}")
+                      continue
+                  print(
+                      f"{name}: {candidate}"
+                      f" file={candidate.is_file()}"
+                      f" x={os.access(candidate, os.X_OK)}"
+                      f" secure_file={secure_path(candidate, root)}"
+                      f" lexical_dir_symlink={candidate.parent.is_symlink()}"
+                      f" secure_lexical_dir={secure_path(candidate.parent, root)}"
+                      f" secure_resolved_dir={secure_path(resolved.parent, root)}"
+                      f" safe_dir={candidate.parent in SAFE_TOOL_DIRECTORIES}"
+                      f" marker={candidate.parent.name == 'bin' and any(m in candidate.parent.parts for m in TOOLCHAIN_MARKERS)}"
+                      f" resolved={resolved}"
+                  )
           missing = [name for name in ("node", "npm") if name not in selected]
           if missing:
               raise SystemExit(f"gate tool selection is missing: {', '.join(missing)}")

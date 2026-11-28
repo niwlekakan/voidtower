@@ -615,7 +615,9 @@ async fn deploy_vaultwarden(server: &TestServer) -> Result<VaultwardenDeployment
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE && body.contains("feature_unavailable") {
+        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            && body.contains("feature_unavailable")
+        {
             return Err(anyhow!(APP_VAULT_UNAVAILABLE));
         }
         bail!("App Vault deploy failed with {status}: {body}");
@@ -757,7 +759,11 @@ async fn wait_for_job(server: &TestServer, job_id: &str, operation: &str) -> Res
     }
 }
 
-async fn await_operation(server: &TestServer, response: Response, operation: &str) -> Result<Value> {
+async fn await_operation(
+    server: &TestServer,
+    response: Response,
+    operation: &str,
+) -> Result<Value> {
     let status = response.status();
     let body: Value = if status.is_success() {
         response.json().await.unwrap_or(Value::Null)

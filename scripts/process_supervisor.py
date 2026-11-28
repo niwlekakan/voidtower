@@ -346,8 +346,17 @@ def main(argv: list[str]) -> int:
         else:
             child.wait()
         return_code = child.returncode
-    except (OSError, subprocess.SubprocessError):
-        print(os.environ.get(START_FAILURE_MARKER_ENV, START_FAILURE_MARKER), file=sys.stderr, flush=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Keep the marker first so the caller can still classify this as a start
+        # failure, then include the cause. Without it the report says only
+        # "command was unavailable", which is indistinguishable from a missing
+        # executable, a failed preexec hook, or a sandbox that refused to start.
+        detail = f"{type(exc).__name__}: {exc}"[:400].replace("\n", " ")
+        print(
+            f"{os.environ.get(START_FAILURE_MARKER_ENV, START_FAILURE_MARKER)} {detail}",
+            file=sys.stderr,
+            flush=True,
+        )
         return 125
     try:
         kill_descendants(

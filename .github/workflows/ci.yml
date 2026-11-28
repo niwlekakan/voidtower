@@ -233,6 +233,7 @@ jobs:
           from pathlib import Path
 
           sys.path.insert(0, ".")
+          sys.path.insert(0, "scripts")
           from scripts.release_gate import selected_tool_executables
 
           selected = selected_tool_executables(Path(".").resolve())

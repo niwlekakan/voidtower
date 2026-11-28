@@ -864,7 +864,7 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send backup configuration deletion request")?;
-    expect_success(response, "backup configuration deletion").await?;
+    await_operation(server, response, "backup configuration deletion").await?;
 
     let response = server
         .request(Method::GET, "/api/backups")

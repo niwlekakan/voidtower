@@ -223,6 +223,24 @@ jobs:
         continue-on-error: true
         working-directory: backend
         run: cargo deny check advisories
+      - name: Report selected gate tools
+        # A missing tool inside the sandbox surfaces 15 minutes later as exit 125
+        # with "gate executable or command was unavailable". Print the selection
+        # up front so the cause is visible in the first minute.
+        run: |
+          python3 - <<'PY'
+          import json, os, shutil, sys
+          from pathlib import Path
+
+          sys.path.insert(0, ".")
+          from scripts.release_gate import selected_tool_executables
+
+          selected = selected_tool_executables(Path(".").resolve())
+          print("selected:", json.dumps({k: str(v.path) for k, v in sorted(selected.items())}, indent=2))
+          print("which npm:", shutil.which("npm"))
+          print("which node:", shutil.which("node"))
+          print("PATH:", os.environ.get("PATH", ""))
+          PY
       - name: Run the source-owned all-scope release gates
         run: >-
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/release_gate.py

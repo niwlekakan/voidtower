@@ -4,7 +4,7 @@
 //! household is a local authorization boundary; it never creates a second user identity or a
 //! second resource identity.
 
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrantPermission {
@@ -174,7 +174,7 @@ pub async fn revoke_resource_grant(
                AND actor_type = 'human' AND actor_id = ?
                AND action IN ({placeholders})"
         );
-        let mut query = sqlx::query(&sql)
+        let mut query = sqlx::query(AssertSqlSafe(sql))
             .bind(now)
             .bind(now)
             .bind(resource_id)

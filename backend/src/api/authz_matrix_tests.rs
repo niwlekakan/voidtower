@@ -138,6 +138,8 @@ const NUMBER_FIELDS: &[&str] = &[
     "vmid",
     "exported_at",
     "parallel",
+    "number_width",
+    "starting_number",
 ];
 const BOOL_FIELDS: &[&str] = &[
     "enabled",
@@ -700,11 +702,7 @@ async fn wrong_role_session_is_rejected_for_every_role_gated_route() {
 
 /// Acceptance test: the inverse regression guard -- routes the matrix marks `Public` must not
 /// be accidentally caught by the assertions above. Restricted to a representative,
-/// side-effect-free subset so
-/// this doesn't depend on network/AI-provider state (`POST /v1/chat/completions`, the other
-/// `Public` route, would need a configured upstream to return 200 and isn't needed to prove
-/// the point -- it's excluded from the *live* assertions here, though it still has a matrix
-/// entry and is covered by the exhaustiveness test).
+/// side-effect-free subset so this doesn't depend on network/AI-provider state.
 #[tokio::test]
 async fn public_routes_remain_reachable_without_auth() {
     let db = setup_db().await;
@@ -714,7 +712,6 @@ async fn public_routes_remain_reachable_without_auth() {
         "/api/health",
         "/status",
         "/api/settings/public",
-        "/v1/models",
         "/api/integrations/scopes",
         "/api/integrations/odysseus/manifest",
     ];
@@ -742,6 +739,60 @@ async fn public_routes_remain_reachable_without_auth() {
             "{path}: a Public route must not be blocked by the session-auth layer, got 403"
         );
     }
+}
+
+#[tokio::test]
+async fn model_proxy_requires_authentication() {
+    let db = setup_db().await;
+    let app = crate::api::router(test_support::build(db));
+
+    let models = app
+        .clone()
+        .oneshot(unauth_req("GET", "/v1/models"))
+        .await
+        .unwrap();
+    assert_eq!(models.status(), StatusCode::UNAUTHORIZED);
+
+    let chat = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"messages":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(chat.status(), StatusCode::UNAUTHORIZED);
+
+    let malformed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::UNAUTHORIZED);
+
+    let oversized = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("x".repeat(1024 * 1024 + 1)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -1130,30 +1181,45 @@ async fn apps_delete_app_volumes_operator_guard_rejects_guest_and_member() {
 }
 
 #[tokio::test]
-async fn app_vault_admin_guard_admits_owner_for_expose_and_purge() {
+async fn apps_remove_app_admin_guard_rejects_guest_and_member() {
+    let db = setup_db().await;
+    assert_mutation_guard_rejects_guest_and_member(
+        &db,
+        "DELETE",
+        "/api/apps/:project_name",
+        "apps::remove_app",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn app_vault_admin_guard_admits_owner_for_expose_and_purge_is_closed() {
     let db = setup_db().await;
     let owner_session = session_for_role(&db, "owner").await;
     let app = crate::api::router(test_support::build(db));
 
-    for (path, body) in [
-        (
+    let expose = app
+        .clone()
+        .oneshot(cookie_req(
+            "POST",
             "/api/apps/missing-project/expose",
+            &owner_session,
             Some(serde_json::json!({ "domain": "missing.invalid" })),
-        ),
-        ("/api/apps/missing-project/purge", None),
-    ] {
-        let res = app
-            .clone()
-            .oneshot(cookie_req("POST", path, &owner_session, body))
-            .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::NOT_FOUND,
-            "an owner must clear {path}'s admin guard and reach the missing-app lookup, got {}",
-            res.status()
-        );
-    }
+        ))
+        .await
+        .unwrap();
+    assert_eq!(expose.status(), StatusCode::NOT_FOUND);
+
+    let purge = app
+        .oneshot(cookie_req(
+            "POST",
+            "/api/apps/missing-project/purge",
+            &owner_session,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(purge.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

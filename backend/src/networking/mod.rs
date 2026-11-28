@@ -6,3 +6,7 @@
 //   - list_routes() -> Vec<RouteInfo>
 //   - get_firewall_status() -> FirewallStatus
 //   - list_listening_ports() -> Vec<PortInfo>
+
+pub mod firewall;
+pub mod npm;
+pub mod proxy;

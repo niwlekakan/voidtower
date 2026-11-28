@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 
@@ -22,6 +22,28 @@ pub enum ServiceAction {
     Disable,
 }
 
+pub fn canonical_unit_name(name: &str) -> Result<String> {
+    let trimmed = name.trim();
+    ensure!(
+        !trimmed.is_empty() && trimmed.len() <= 255,
+        "invalid service name"
+    );
+    ensure!(!trimmed.starts_with('-'), "invalid service name");
+    ensure!(
+        trimmed.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'@' | b':' | b'%')
+        }),
+        "invalid service name"
+    );
+    let unit = if trimmed.ends_with(".service") {
+        trimmed.to_owned()
+    } else {
+        format!("{trimmed}.service")
+    };
+    ensure!(unit != ".service", "invalid service name");
+    Ok(unit)
+}
+
 pub fn is_systemd_available() -> bool {
     std::path::Path::new("/run/systemd/private").exists()
         || std::path::Path::new("/sys/fs/cgroup/systemd").exists()
@@ -34,7 +56,13 @@ pub fn list_services() -> Result<Vec<ServiceInfo>> {
     }
 
     let output = Command::new("systemctl")
-        .args(["list-units", "--type=service", "--all", "--no-pager", "--output=json"])
+        .args([
+            "list-units",
+            "--type=service",
+            "--all",
+            "--no-pager",
+            "--output=json",
+        ])
         .output()?;
 
     if !output.status.success() {
@@ -50,8 +78,7 @@ pub fn list_services() -> Result<Vec<ServiceInfo>> {
         sub: String,
     }
 
-    let units: Vec<SystemdUnit> = serde_json::from_slice(&output.stdout)
-        .unwrap_or_default();
+    let units: Vec<SystemdUnit> = serde_json::from_slice(&output.stdout).unwrap_or_default();
 
     let services = units
         .into_iter()
@@ -83,8 +110,12 @@ pub fn get_service(name: &str) -> Result<Option<ServiceInfo>> {
     };
 
     let output = Command::new("systemctl")
-        .args(["show", &unit, "--no-pager",
-               "--property=Description,LoadState,ActiveState,SubState,UnitFileState"])
+        .args([
+            "show",
+            &unit,
+            "--no-pager",
+            "--property=Description,LoadState,ActiveState,SubState,UnitFileState",
+        ])
         .output()?;
 
     if !output.status.success() {
@@ -110,38 +141,11 @@ pub fn get_service(name: &str) -> Result<Option<ServiceInfo>> {
         load_state: props.get("LoadState").unwrap_or(&"").to_string(),
         active_state,
         sub_state: props.get("SubState").unwrap_or(&"").to_string(),
-        enabled: props.get("UnitFileState").map(|s| *s == "enabled").unwrap_or(false),
+        enabled: props
+            .get("UnitFileState")
+            .map(|s| *s == "enabled")
+            .unwrap_or(false),
     }))
-}
-
-pub fn run_service_action(name: &str, action: ServiceAction) -> Result<()> {
-    if !is_systemd_available() {
-        return Err(anyhow::anyhow!("systemd is not available on this system"));
-    }
-
-    let unit = if name.ends_with(".service") {
-        name.to_string()
-    } else {
-        format!("{}.service", name)
-    };
-
-    let cmd = match action {
-        ServiceAction::Start => "start",
-        ServiceAction::Stop => "stop",
-        ServiceAction::Restart => "restart",
-        ServiceAction::Enable => "enable",
-        ServiceAction::Disable => "disable",
-    };
-
-    let output = Command::new("systemctl")
-        .args([cmd, &unit])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("systemctl {} failed: {}", cmd, stderr));
-    }
-    Ok(())
 }
 
 pub fn get_service_logs(name: &str, lines: usize) -> Result<Vec<String>> {
@@ -155,7 +159,14 @@ pub fn get_service_logs(name: &str, lines: usize) -> Result<Vec<String>> {
     };
 
     let output = Command::new("journalctl")
-        .args(["-u", &unit, "--no-pager", "-n", &lines.to_string(), "--output=short-iso"])
+        .args([
+            "-u",
+            &unit,
+            "--no-pager",
+            "-n",
+            &lines.to_string(),
+            "--output=short-iso",
+        ])
         .output()?;
 
     let text = String::from_utf8_lossy(&output.stdout);

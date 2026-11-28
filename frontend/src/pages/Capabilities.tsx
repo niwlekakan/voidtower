@@ -34,7 +34,7 @@ const CAPABILITY_META: Record<string, CapabilityMeta> = {
     },
   },
   systemd: {
-    unlocks: ['Services page', 'Service start/stop/restart', 'Service enable/disable'],
+    unlocks: ['Services page', 'Durable service restart'],
     install: { apt: 'Use a systemd-based distribution (Debian, Ubuntu, Fedora, Arch…)' },
   },
   kvm: {

@@ -1,0 +1,14 @@
+backend/target
+frontend/node_modules
+mobile/node_modules
+.git
+.env*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_*
+known_hosts
+credentials*
+secrets*

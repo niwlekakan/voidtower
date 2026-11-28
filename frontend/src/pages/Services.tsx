@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Play, Square, RotateCcw, Tag as TagIcon } from 'lucide-react'
-import { api, ApiClientError } from '@/api/client'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { RefreshCw, RotateCcw, Tag as TagIcon } from 'lucide-react'
+import { api, ApiClientError, createIdempotencyKey } from '@/api/client'
 import type { ServiceInfo, ServiceAction, Tag, TagMap } from '@/api/types'
 import { useAuthStore } from '@/store/auth'
 import { notify } from '@/store/notifications'
@@ -11,6 +11,8 @@ import LogViewer from '@/components/ui/LogViewer'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import SendToOdysseus from '@/components/ui/SendToOdysseus'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 type ActionMeta = { service: string; action: ServiceAction }
 
@@ -21,6 +23,7 @@ export default function ServicesPage() {
   const [logs, setLogs] = useState<{ name: string; lines: string[] } | null>(null)
   const [confirm, setConfirm] = useState<ActionMeta | null>(null)
   const [acting, setActing] = useState<string | null>(null)
+  const pendingActionKeys = useRef(new Map<string, string>())
   const [allTags, setAllTags] = useState<Tag[]>([])
   const [tagMap, setTagMap] = useState<TagMap>({})
   const [filterTag, setFilterTag] = useState<string | null>(null)
@@ -28,6 +31,7 @@ export default function ServicesPage() {
   const globalTag = useFiltersStore((s) => s.globalTag)
   const user = useAuthStore((s) => s.user)
   const canAct = user?.role !== 'viewer'
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -53,7 +57,14 @@ export default function ServicesPage() {
 
   const runAction = async (name: string, action: ServiceAction) => {
     setActing(name); setConfirm(null)
-    try { await api.services.action(name, action); notify.success(`${action} ${name}`); setTimeout(load, 800) }
+    const intent = `${name}:${action}`
+    const idempotencyKey = pendingActionKeys.current.get(intent) ?? createIdempotencyKey()
+    pendingActionKeys.current.set(intent, idempotencyKey)
+    try {
+      const { job } = await api.services.action(name, action, idempotencyKey)
+      pendingActionKeys.current.delete(intent)
+      track(job, { label: `${action} ${name}`, onSucceeded: load })
+    }
     catch (err) { notify.error(`Failed: ${err instanceof ApiClientError ? err.message : action}`) }
     finally { setActing(null) }
   }
@@ -76,6 +87,7 @@ export default function ServicesPage() {
         <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Services</h1>
         <Button size="sm" onClick={load} loading={loading}><RefreshCw size={13} /> Refresh</Button>
       </div>
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
 
       {/* Tag filter bar — only shown when no global tag is active */}
       {allTags.length > 0 && !globalTag && (
@@ -131,12 +143,6 @@ export default function ServicesPage() {
                 </td>
                 <td className="px-4 py-2.5">
                   <div className="flex items-center gap-1">
-                    {canAct && svc.active_state !== 'active' && (
-                      <Button size="sm" variant="ghost" loading={acting === svc.name} onClick={() => setConfirm({ service: svc.name, action: 'start' })} title="Start"><Play size={12} /></Button>
-                    )}
-                    {canAct && svc.active_state === 'active' && (
-                      <Button size="sm" variant="ghost" loading={acting === svc.name} onClick={() => setConfirm({ service: svc.name, action: 'stop' })} title="Stop"><Square size={12} /></Button>
-                    )}
                     {canAct && (
                       <Button size="sm" variant="ghost" loading={acting === svc.name} onClick={() => setConfirm({ service: svc.name, action: 'restart' })} title="Restart"><RotateCcw size={12} /></Button>
                     )}
@@ -176,22 +182,6 @@ export default function ServicesPage() {
                   {svc.name}
                 </span>
                 <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                  {canAct && !isActive && (
-                    <button title="Start" onClick={() => setConfirm({ service: svc.name, action: 'start' })} style={{
-                      width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-subtle)',
-                      background: 'var(--bg-elevated)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-success)',
-                    }}>
-                      <Play size={12} />
-                    </button>
-                  )}
-                  {canAct && isActive && (
-                    <button title="Stop" onClick={() => setConfirm({ service: svc.name, action: 'stop' })} style={{
-                      width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-subtle)',
-                      background: 'var(--bg-elevated)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-danger)',
-                    }}>
-                      <Square size={12} />
-                    </button>
-                  )}
                   {canAct && (
                     <button title="Restart" onClick={() => setConfirm({ service: svc.name, action: 'restart' })} style={{
                       width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-subtle)',
@@ -245,7 +235,7 @@ export default function ServicesPage() {
           title={`${confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)} service`}
           message={`Are you sure you want to ${confirm.action} ${confirm.service}?`}
           confirmLabel={confirm.action}
-          danger={confirm.action === 'stop'}
+          danger={false}
           onConfirm={() => runAction(confirm.service, confirm.action)}
           onCancel={() => setConfirm(null)}
         />

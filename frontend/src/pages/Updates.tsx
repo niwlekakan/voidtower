@@ -1,35 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   ArrowUpCircle, CheckCircle, RefreshCw, RotateCcw, Server,
-  Package, Loader2, XCircle, ChevronDown, ChevronUp, AlertTriangle, Container, Box,
+  Package, Loader2, ChevronDown, ChevronUp, AlertTriangle, Container, Box, Bot,
 } from 'lucide-react'
 import { api } from '@/api/client'
+import type { DockerUpdateRow, OdysseusUpdateInfo, OsUpdateInfo, VoidTowerUpdateInfo } from '@/api/types'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import { notify } from '@/store/notifications'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface CommitInfo { hash: string; subject: string; author: string; date: string }
-interface VtInfo {
-  mode: 'git' | 'docker'
-  // git mode
-  current_commit: string; remote_commit: string
-  behind: number; ahead: number
-  commits: CommitInfo[]; backup_tags: string[]
-  fetch_error: string | null
-  // docker mode
-  current_image: string | null
-  update_status: 'unknown' | 'checking' | 'up-to-date' | 'update-available' | 'error' | null
-  update_detail: string | null
-}
-interface DockerRow {
-  container_id: string; container_name: string; image: string
-  status: 'unknown' | 'checking' | 'up-to-date' | 'update-available' | 'error'
-  detail: string | null
-}
-interface OsInfo {
-  package_manager: string; available: boolean; count: number
-  packages: string[]; error: string | null
-}
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
 
 // ─── Shared ───────────────────────────────────────────────────────────────────
 
@@ -73,25 +52,20 @@ function Btn({ onClick, disabled, variant = 'primary', children }: {
 
 // ─── VoidTower — Docker mode ──────────────────────────────────────────────────
 
-function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }) {
-  const [checking, setChecking] = useState(false)
+function VtDockerPanel({ info, onRefresh }: { info: VoidTowerUpdateInfo; onRefresh: () => void }) {
   const [applying, setApplying] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [plan, setPlan] = useState<ChangePlan | null>(null)
-  const [notification, setNotification] = useState<string | null>(null)
-
-  // Poll while checking
-  useEffect(() => {
-    if (info.update_status !== 'checking') return
-    const t = setInterval(onRefresh, 2000)
-    return () => clearInterval(t)
-  }, [info.update_status, onRefresh])
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
+  const checking = tracking && trackedJob?.action === 'update.voidtower.check'
 
   const check = async () => {
-    setChecking(true)
-    await fetch('/api/updates/voidtower/check', { method: 'POST', credentials: 'include' })
-    // status switches to "checking" on next poll
-    setTimeout(() => { setChecking(false); onRefresh() }, 500)
+    try {
+      const { job } = await api.updates.checkVt()
+      track(job, { label: 'VoidTower update check', onSucceeded: onRefresh })
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit update check')
+    }
   }
 
   const preview = async () => {
@@ -105,26 +79,24 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
 
   const confirmApply = async () => {
     setConfirming(true)
-    setNotification('Update triggered — VoidTower will restart momentarily.')
     try {
-      await api.updates.applyVt(false)
+      const response = await api.updates.applyVt(false)
+      if ('job' in response) {
+        track(response.job, { label: 'VoidTower update', onSucceeded: onRefresh })
+      }
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit VoidTower update')
     } finally {
       setConfirming(false)
       setPlan(null)
+      setApplying(false)
     }
-    const poll = setInterval(async () => {
-      try {
-        const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
-        if (r.ok) { clearInterval(poll); setApplying(false); onRefresh() }
-      } catch { /* container restarting */ }
-    }, 3000)
   }
 
   const statusColor = () => {
     switch (info.update_status) {
       case 'update-available': return 'var(--accent-warning, #f59e0b)'
       case 'up-to-date':       return 'var(--accent-success)'
-      case 'error':            return 'var(--accent-danger)'
       default:                 return 'var(--text-muted)'
     }
   }
@@ -132,8 +104,6 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
     switch (info.update_status) {
       case 'update-available': return 'Update available'
       case 'up-to-date':       return 'Up to date'
-      case 'checking':         return 'Checking…'
-      case 'error':            return 'Check failed'
       default:                 return 'Not checked'
     }
   }
@@ -149,16 +119,11 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
         />
       )}
 
-      {notification && (
-        <div className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-primary)18', border: '1px solid var(--accent-primary)44', color: 'var(--accent-primary)' }}>
-          {notification}
-        </div>
-      )}
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
 
       <div className="flex flex-wrap gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
         <span>Image: <code style={{ color: 'var(--text-primary)' }}>{info.current_image ?? 'unknown'}</code></span>
         <span style={{ color: statusColor() }}>
-          {info.update_status === 'checking' && <Loader2 size={11} className="animate-spin inline mr-1" />}
           {statusLabel()}
         </span>
       </div>
@@ -166,20 +131,11 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
       {info.update_detail && (
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{info.update_detail}</p>
       )}
-      {info.update_status === 'error' && info.update_detail && (
-        <div className="flex items-center gap-2 text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-danger)18', color: 'var(--accent-danger)' }}>
-          <AlertTriangle size={13} />{info.update_detail}
-        </div>
-      )}
-
       <div className="flex flex-wrap gap-2">
         <Btn onClick={onRefresh} variant="secondary"><RefreshCw size={12} />Refresh</Btn>
-        <Btn onClick={check} variant="secondary"
-          disabled={checking || info.update_status === 'checking'}>
-          {checking || info.update_status === 'checking'
-            ? <Loader2 size={12} className="animate-spin" />
-            : <RefreshCw size={12} />}
-          {info.update_status === 'checking' ? 'Checking…' : 'Check for update'}
+        <Btn onClick={check} variant="secondary" disabled={checking}>
+          {checking ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          {checking ? 'Checking…' : 'Check for update'}
         </Btn>
         {info.update_status === 'update-available' && (
           <Btn onClick={preview} disabled={applying}>
@@ -199,14 +155,14 @@ function VtDockerPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => voi
 
 // ─── VoidTower — git mode ─────────────────────────────────────────────────────
 
-function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }) {
+function VtGitPanel({ info, onRefresh }: { info: VoidTowerUpdateInfo; onRefresh: () => void }) {
   const [applying, setApplying] = useState(false)
   const [rollingBack, setRollingBack] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [showLog, setShowLog] = useState(false)
-  const [notification, setNotification] = useState<string | null>(null)
   const [applyPlan, setApplyPlan] = useState<ChangePlan | null>(null)
   const [rollbackPlan, setRollbackPlan] = useState<{ plan: ChangePlan; tag: string } | null>(null)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const previewApply = async () => {
     setApplying(true)
@@ -219,19 +175,18 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
 
   const confirmApply = async () => {
     setConfirming(true)
-    setNotification('Update started — VoidTower will restart when done (may take a few minutes).')
     try {
-      await api.updates.applyVt(false)
+      const response = await api.updates.applyVt(false)
+      if ('job' in response) {
+        track(response.job, { label: 'VoidTower update', onSucceeded: onRefresh })
+      }
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit VoidTower update')
     } finally {
       setConfirming(false)
       setApplyPlan(null)
+      setApplying(false)
     }
-    const poll = setInterval(async () => {
-      try {
-        const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
-        if (r.ok) { clearInterval(poll); setApplying(false); onRefresh() }
-      } catch { /* empty */ }
-    }, 3000)
   }
 
   const previewRollback = async (tag: string) => {
@@ -246,19 +201,18 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
   const confirmRollback = async () => {
     if (!rollbackPlan) return
     setConfirming(true)
-    setNotification(`Rolling back to ${rollbackPlan.tag}…`)
     try {
-      await api.updates.rollbackVt(rollbackPlan.tag, false)
+      const response = await api.updates.rollbackVt(rollbackPlan.tag, false)
+      if ('job' in response) {
+        track(response.job, { label: `VoidTower rollback to ${rollbackPlan.tag}`, onSucceeded: onRefresh })
+      }
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit VoidTower rollback')
     } finally {
       setConfirming(false)
       setRollbackPlan(null)
+      setRollingBack(false)
     }
-    const poll = setInterval(async () => {
-      try {
-        const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
-        if (r.ok) { clearInterval(poll); setRollingBack(false); onRefresh() }
-      } catch { /* empty */ }
-    }, 3000)
   }
 
   const riskColor = (behind: number) =>
@@ -283,11 +237,7 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
         />
       )}
 
-      {notification && (
-        <div className="text-xs px-3 py-2 rounded" style={{ background: 'var(--accent-primary)18', border: '1px solid var(--accent-primary)44', color: 'var(--accent-primary)' }}>
-          {notification}
-        </div>
-      )}
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
 
       <div className="flex flex-wrap gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
         <span>Current: <code style={{ color: 'var(--text-primary)' }}>{info.current_commit}</code></span>
@@ -355,14 +305,13 @@ function VtGitPanel({ info, onRefresh }: { info: VtInfo; onRefresh: () => void }
 // ─── VoidTower section (mode-aware) ──────────────────────────────────────────
 
 function VoidTowerSection() {
-  const [info, setInfo] = useState<VtInfo | null>(null)
+  const [info, setInfo] = useState<VoidTowerUpdateInfo | null>(null)
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const r = await fetch('/api/updates/voidtower', { credentials: 'include' })
-      if (r.ok) setInfo(await r.json())
+      setInfo(await api.updates.infoVt())
     } finally { setLoading(false) }
   }, [])
 
@@ -397,33 +346,29 @@ function VoidTowerSection() {
 // ─── Docker images section ────────────────────────────────────────────────────
 
 function DockerSection() {
-  const [rows, setRows] = useState<DockerRow[]>([])
+  const [rows, setRows] = useState<DockerUpdateRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [checking, setChecking] = useState(false)
   const [applying, setApplying] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [applyPlan, setApplyPlan] = useState<{ plan: ChangePlan; containerId: string } | null>(null)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
+  const checking = tracking && trackedJob?.action === 'update.docker.check'
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/api/updates/docker', { credentials: 'include' })
-      if (r.ok) setRows(await r.json())
+      setRows(await api.updates.infoDocker())
     } finally { setLoading(false) }
   }, [])
 
   useEffect(() => { load() }, [load])
 
-  useEffect(() => {
-    const isChecking = rows.some(r => r.status === 'checking')
-    if (!isChecking) return
-    const t = setInterval(load, 2000)
-    return () => clearInterval(t)
-  }, [rows, load])
-
   const check = async () => {
-    setChecking(true)
-    await fetch('/api/updates/docker/check', { method: 'POST', credentials: 'include' })
-    setTimeout(() => { setChecking(false); load() }, 500)
+    try {
+      const { job } = await api.updates.checkDocker()
+      track(job, { label: 'Docker image check', onSucceeded: load })
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit Docker image check')
+    }
   }
 
   const previewApply = async (containerId: string) => {
@@ -439,8 +384,12 @@ function DockerSection() {
     if (!applyPlan) return
     setConfirming(true)
     try {
-      await api.updates.dockerApply(applyPlan.containerId, false)
-      await load()
+      const response = await api.updates.dockerApply(applyPlan.containerId, false)
+      if ('job' in response) {
+        track(response.job, { label: 'Container image update', onSucceeded: load })
+      }
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit container image update')
     } finally {
       setConfirming(false)
       setApplying(null)
@@ -448,11 +397,9 @@ function DockerSection() {
     }
   }
 
-  const statusIcon = (s: DockerRow['status']) => {
+  const statusIcon = (s: DockerUpdateRow['status']) => {
     if (s === 'up-to-date')       return <CheckCircle size={13} style={{ color: 'var(--accent-success)' }} />
     if (s === 'update-available') return <ArrowUpCircle size={13} style={{ color: 'var(--accent-warning, #f59e0b)' }} />
-    if (s === 'checking')         return <Loader2 size={13} className="animate-spin" style={{ color: 'var(--text-muted)' }} />
-    if (s === 'error')            return <XCircle size={13} style={{ color: 'var(--accent-danger)' }} />
     return <span style={{ color: 'var(--text-disabled)', fontSize: 11 }}>—</span>
   }
 
@@ -468,6 +415,7 @@ function DockerSection() {
           onCancel={() => { setApplyPlan(null); setApplying(null) }}
         />
       )}
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       <SectionHeader icon={Container} title="Docker Images" badge={
         updatesAvailable > 0
           ? <Badge label={`${updatesAvailable} update${updatesAvailable !== 1 ? 's' : ''}`} color="var(--accent-warning, #f59e0b)" />
@@ -520,7 +468,7 @@ function DockerSection() {
       )}
 
       <div className="flex gap-2">
-        <Btn onClick={check} variant="secondary" disabled={checking || rows.some(r => r.status === 'checking')}>
+        <Btn onClick={check} variant="secondary" disabled={checking}>
           <RefreshCw size={12} className={checking ? 'animate-spin' : ''} />
           {checking ? 'Checking…' : 'Check all images'}
         </Btn>
@@ -533,22 +481,91 @@ function DockerSection() {
   )
 }
 
-// ─── OS packages section ──────────────────────────────────────────────────────
+// ─── Odysseus section ────────────────────────────────────────────────────────
 
-function OsSection() {
-  const [info, setInfo] = useState<OsInfo | null>(null)
+function OdysseusSection() {
+  const [info, setInfo] = useState<OdysseusUpdateInfo | null>(null)
   const [loading, setLoading] = useState(true)
-  const [applying, setApplying] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [output, setOutput] = useState<string | null>(null)
-  const [showPkgs, setShowPkgs] = useState(false)
-  const [plan, setPlan] = useState<ChangePlan | null>(null)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const r = await fetch('/api/updates/os', { credentials: 'include' })
-      if (r.ok) setInfo(await r.json())
+      setInfo(await api.updates.infoOdysseus())
+    } catch {
+      setInfo(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const apply = async () => {
+    try {
+      const { job } = await api.updates.applyOdysseus()
+      track(job, { label: 'Odysseus update', onSucceeded: load })
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit Odysseus update')
+    }
+  }
+
+  return (
+    <div style={card} className="space-y-3">
+      <SectionHeader
+        icon={Bot}
+        title="Odysseus"
+        badge={info?.installed
+          ? info.behind > 0
+            ? <Badge label={`${info.behind} update${info.behind !== 1 ? 's' : ''} available`} color="var(--accent-warning, #f59e0b)" />
+            : <Badge label="Up to date" color="var(--accent-success)" />
+          : <Badge label="Not installed" color="var(--text-muted)" />}
+      />
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+          <Loader2 size={13} className="animate-spin" />Loading…
+        </div>
+      ) : info?.installed ? (
+        <>
+          <div className="flex flex-wrap gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+            <span>Current: <code style={{ color: 'var(--text-primary)' }}>{info.current_commit}</code></span>
+            <span>Remote: <code style={{ color: 'var(--text-primary)' }}>{info.remote_commit}</code></span>
+          </div>
+          <div className="flex gap-2">
+            <Btn onClick={load} variant="secondary"><RefreshCw size={12} />Refresh</Btn>
+            {info.behind > 0 && (
+              <Btn onClick={apply} disabled={tracking}>
+                {tracking ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpCircle size={12} />}
+                Submit update
+              </Btn>
+            )}
+          </div>
+        </>
+      ) : (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Odysseus is not installed at the configured update target.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ─── OS packages section ──────────────────────────────────────────────────────
+
+function OsSection() {
+  const [info, setInfo] = useState<OsUpdateInfo | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [applying, setApplying] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [showPkgs, setShowPkgs] = useState(false)
+  const [plan, setPlan] = useState<ChangePlan | null>(null)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setInfo(await api.updates.infoOs())
     } finally { setLoading(false) }
   }, [])
 
@@ -564,10 +581,13 @@ function OsSection() {
 
   const confirmApply = async () => {
     setConfirming(true)
-    setOutput(null)
     try {
-      const res = await api.updates.applyOs(false)
-      if ('output' in res) setOutput(res.output)
+      const response = await api.updates.applyOs(false)
+      if ('job' in response) {
+        track(response.job, { label: 'Operating-system update', onSucceeded: load })
+      }
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit operating-system update')
     } finally {
       setConfirming(false)
       setPlan(null)
@@ -584,6 +604,7 @@ function OsSection() {
           onCancel={() => setPlan(null)}
         />
       )}
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       <SectionHeader icon={Package} title="OS Packages" badge={
         !loading && info ? (
           info.error ? <Badge label="Error" color="var(--accent-danger)" />
@@ -638,11 +659,6 @@ function OsSection() {
             )}
           </div>
 
-          {output && (
-            <pre className="rounded p-3 text-xs overflow-auto max-h-64" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-              {output}
-            </pre>
-          )}
         </>
       )}
     </div>
@@ -660,6 +676,7 @@ export default function UpdatesPage() {
       </div>
       <VoidTowerSection />
       <DockerSection />
+      <OdysseusSection />
       <OsSection />
     </div>
   )

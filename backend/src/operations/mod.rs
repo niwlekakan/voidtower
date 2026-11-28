@@ -1,0 +1,28 @@
+//! Shared operation kernel. Some public contracts are intentionally staged before
+//! their six domain adapters; keep them compiled and tested throughout that rollout.
+#![allow(dead_code)]
+
+pub mod adapters;
+pub mod approvals;
+pub mod backup_adoption;
+pub mod canonical_json;
+pub mod clock;
+pub mod contracts;
+pub mod events;
+pub mod invocation;
+pub mod jobs;
+pub mod proxmox_adoption;
+pub mod registry;
+pub mod resources;
+pub mod runtime;
+pub mod schemas;
+pub mod state;
+pub mod update_adoption;
+pub mod worker;
+
+pub(crate) fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}

@@ -92,8 +92,8 @@ pub async fn revoke_session(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let (owner_id,) = target
-        .ok_or_else(|| AppError::BadRequest("Session not found".to_string()))?;
+    let (owner_id,) =
+        target.ok_or_else(|| AppError::BadRequest("Session not found".to_string()))?;
 
     let is_admin = matches!(user.role.as_str(), "owner" | "admin");
     if owner_id != user.id && !is_admin {
@@ -113,15 +113,13 @@ pub async fn revoke_all_other(
 ) -> Result<Json<serde_json::Value>> {
     let (user, current_id) = require_user(&state, &jar).await?;
 
-    let affected = sqlx::query(
-        "DELETE FROM sessions WHERE user_id = ? AND id != ?",
-    )
-    .bind(&user.id)
-    .bind(&current_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?
-    .rows_affected();
+    let affected = sqlx::query("DELETE FROM sessions WHERE user_id = ? AND id != ?")
+        .bind(&user.id)
+        .bind(&current_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .rows_affected();
 
     Ok(Json(serde_json::json!({ "ok": true, "revoked": affected })))
 }

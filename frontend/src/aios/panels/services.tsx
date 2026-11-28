@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Play, Square, RotateCcw, Terminal, Shield, ShieldOff } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { RotateCcw, Terminal } from 'lucide-react'
+import { api, createIdempotencyKey } from '@/api/client'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 interface Service {
   name: string
@@ -24,6 +27,11 @@ export default function NativeServicesPanel() {
   const [search, setSearch] = useState('')
   const [logsFor, setLogsFor] = useState<string | null>(null)
   const [logLines, setLogLines] = useState<string[]>([])
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actingService, setActingService] = useState<string | null>(null)
+  const actionInFlight = useRef(false)
+  const pendingIdempotencyKeys = useRef(new Map<string, string>())
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   async function load() {
     const r = await fetch('/api/services', { credentials: 'include' })
@@ -31,13 +39,23 @@ export default function NativeServicesPanel() {
     setLoading(false)
   }
 
-  async function act(name: string, action: string) {
-    await fetch(`/api/services/${encodeURIComponent(name)}/action`, {
-      method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    })
-    load()
+  async function act(name: string) {
+    if (actionInFlight.current) return
+    actionInFlight.current = true
+    setActionError(null)
+    setActingService(name)
+    const idempotencyKey = pendingIdempotencyKeys.current.get(name) ?? createIdempotencyKey()
+    pendingIdempotencyKeys.current.set(name, idempotencyKey)
+    try {
+      const { job } = await api.services.action(name, 'restart', idempotencyKey)
+      pendingIdempotencyKeys.current.delete(name)
+      track(job, { label: `Restart ${name}`, onSucceeded: load })
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Failed to restart service')
+    } finally {
+      actionInFlight.current = false
+      setActingService(null)
+    }
   }
 
   async function viewLogs(name: string) {
@@ -58,6 +76,17 @@ export default function NativeServicesPanel() {
 
   return (
     <NativePanelShell search={search} onSearch={setSearch} searchPlaceholder="Filter services…">
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
+      {actionError && (
+        <div role="alert" style={{
+          margin: '6px 8px', padding: '6px 8px', borderRadius: 4,
+          color: 'var(--accent-error, #ef4444)', background: 'rgba(239, 68, 68, 0.08)',
+          display: 'flex', alignItems: 'center', gap: 8, fontSize: 10,
+        }}>
+          <span style={{ flex: 1 }}>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)}>Dismiss</button>
+        </div>
+      )}
       {loading ? <LoadingState /> : filtered.length === 0 ? <EmptyState text="No services" /> :
         filtered.map(s => {
           const activeStr = s.active_state ?? s.active
@@ -73,13 +102,7 @@ export default function NativeServicesPanel() {
                   <div style={{ fontSize: 9, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{subLine}</div>
                 </div>
                 <IconBtn title="Logs" onClick={() => viewLogs(s.name)}><Terminal size={11} /></IconBtn>
-                {s.enabled
-                  ? <IconBtn title="Disable" onClick={() => act(s.name, 'disable')}><ShieldOff size={11} /></IconBtn>
-                  : <IconBtn title="Enable"  onClick={() => act(s.name, 'enable')}><Shield size={11} /></IconBtn>
-                }
-                <IconBtn title="Start"   onClick={() => act(s.name, 'start')}><Play size={11} /></IconBtn>
-                <IconBtn title="Stop"    onClick={() => act(s.name, 'stop')}><Square size={11} /></IconBtn>
-                <IconBtn title="Restart" onClick={() => act(s.name, 'restart')}><RotateCcw size={11} /></IconBtn>
+                <IconBtn title="Restart" disabled={actingService !== null} onClick={() => void act(s.name)}><RotateCcw size={11} /></IconBtn>
               </NativeRow>
               {logsFor === s.name && (
                 <div style={{ background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border-subtle)', padding: '4px 10px' }}>

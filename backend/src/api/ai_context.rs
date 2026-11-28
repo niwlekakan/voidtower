@@ -373,17 +373,209 @@ pub fn safe_project_root_from_frontend_dir(frontend_dir: &Path) -> std::path::Pa
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
 }
 
+/// Maximum bytes this project-reading helper will load. The caller truncates its
+/// own output; this bound stops an oversized file from being read into memory first.
+const MAX_PROJECT_FILE_BYTES: u64 = 1024 * 1024;
+
+/// The only trees `read_file` serves — the same trees `search_project_code`
+/// searches. Configuration, runtime state, credentials, VCS metadata, dependency
+/// trees, and build output are outside the readable surface even when they live
+/// under the project root (`backend/dev-config/bootstrap-token`,
+/// `backend/dev-data/*`, `.env`, `target/`, …).
+const READABLE_PROJECT_SOURCE_TREES: &[&str] = &["backend/src", "frontend/src"];
+
+/// Path components whose contents are never project source: runtime data, VCS
+/// metadata, dependency trees, and credential stores.
+const DENIED_PROJECT_PATH_COMPONENTS: &[&str] = &[
+    ".git",
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    "dev-config",
+    "dev-data",
+    "node_modules",
+    "target",
+];
+
+/// File extensions that carry credentials or raw database pages.
+const DENIED_PROJECT_EXTENSIONS: &[&str] = &[
+    "pem", "key", "p12", "pfx", "jks", "keystore", "kdbx", "db", "db-wal", "db-shm", "sqlite",
+    "sqlite3",
+];
+
+/// Basename markers `scripts/check-repository-hygiene.sh` treats as credential
+/// material. Kept in sync in spirit, not by machine: the repository check runs on
+/// tracked paths, this check runs at request time on the resolved path.
+const CREDENTIAL_BASENAME_MARKERS: &[&str] =
+    &["key", "token", "password", "passwd", "credential", "secret"];
+
+fn is_denied_project_basename(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "auth"
+            | ".netrc"
+            | "private_key"
+            | "private-key"
+            | "bootstrap-token"
+            | ".npmrc"
+            | ".pypirc"
+    ) {
+        return true;
+    }
+    if name.starts_with("id_rsa")
+        || name.starts_with("id_ed25519")
+        || name.starts_with("id_ecdsa")
+        || name.starts_with("id_dsa")
+        || (name.starts_with("id_") && name.contains("_sk"))
+    {
+        return true;
+    }
+    if !CREDENTIAL_BASENAME_MARKERS
+        .iter()
+        .any(|marker| name.contains(marker))
+    {
+        return false;
+    }
+    // A marked basename is denied outright, or when it carries a format that can
+    // hold a secret. Source extensions (`.rs`, `.ts`, `.tsx`) are deliberately not
+    // in that set, so `backend/src/api/secrets.rs` stays readable.
+    match name.rsplit_once('.') {
+        None => true,
+        Some((_, extension)) => matches!(
+            extension,
+            "json" | "yaml" | "yml" | "txt" | "toml" | "env" | "ini" | "conf" | "cfg"
+        ),
+    }
+}
+
+fn is_denied_project_path(path: &Path) -> bool {
+    let denied_component = path.components().any(|component| match component {
+        std::path::Component::Normal(part) => {
+            let part = part.to_string_lossy().to_ascii_lowercase();
+            DENIED_PROJECT_PATH_COMPONENTS.contains(&part.as_str())
+        }
+        _ => false,
+    });
+    if denied_component {
+        return true;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    let name = name.to_ascii_lowercase();
+    if name == ".env" || name.starts_with(".env.") {
+        return true;
+    }
+    if Path::new(&name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| DENIED_PROJECT_EXTENSIONS.contains(&extension))
+    {
+        return true;
+    }
+    is_denied_project_basename(&name)
+}
+
+/// A readable target must be a single-link regular file within the size bound.
+/// Checking this before opening matters: opening a FIFO or device node can block
+/// or consume a stream, so those types must never reach `open`.
+fn check_readable_file_metadata(metadata: &std::fs::Metadata) -> std::result::Result<(), String> {
+    if !metadata.is_file() {
+        return Err("Path is not a regular file".to_string());
+    }
+    if metadata.len() > MAX_PROJECT_FILE_BYTES {
+        return Err("File exceeds the readable size limit".to_string());
+    }
+    if has_multiple_hard_links(metadata) {
+        return Err("Path is not a readable regular file".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn has_multiple_hard_links(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn has_multiple_hard_links(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
 pub fn read_project_file(root: &Path, rel_path: &str) -> std::result::Result<String, String> {
-    // Sanitize: no path traversal outside root
-    let rel = rel_path.trim_start_matches('/');
-    if rel.contains("..") {
-        return Err("Path traversal not allowed".to_string());
+    use std::io::Read;
+
+    if rel_path.trim().is_empty() {
+        return Err("Missing file path".to_string());
     }
-    let full = root.join(rel);
-    if !full.starts_with(root) {
-        return Err("Path outside project root".to_string());
+    let rel = Path::new(rel_path);
+    if rel.is_absolute()
+        || rel.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err("Path must stay inside the project source trees".to_string());
     }
-    std::fs::read_to_string(&full).map_err(|e| format!("Read error: {e}"))
+
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|_| "Project root unavailable".to_string())?;
+    let resolved = canonical_root
+        .join(rel)
+        .canonicalize()
+        .map_err(|e| format!("Read error: {e}"))?;
+
+    // Allow-list on the fully resolved path: only the project source trees are
+    // readable, so a symlink inside a source tree cannot redirect the read to
+    // configuration, credential material, or a path outside the root.
+    let inside_source_tree = READABLE_PROJECT_SOURCE_TREES
+        .iter()
+        .filter_map(|tree| canonical_root.join(tree).canonicalize().ok())
+        .any(|tree| resolved.starts_with(&tree));
+    if !inside_source_tree {
+        return Err("Path is not available to this tool".to_string());
+    }
+    // Defence in depth: credential names, credential formats, and state
+    // directories stay refused even if one ever appears inside a source tree.
+    let resolved_relative = resolved
+        .strip_prefix(&canonical_root)
+        .map_err(|_| "Path is not available to this tool".to_string())?;
+    if is_denied_project_path(rel) || is_denied_project_path(resolved_relative) {
+        return Err("Path is not available to this tool".to_string());
+    }
+
+    // Inspect before opening so special files never reach `open`, then take
+    // metadata and content from one handle: no stat→read re-resolution.
+    let pre_open = std::fs::symlink_metadata(&resolved).map_err(|e| format!("Read error: {e}"))?;
+    check_readable_file_metadata(&pre_open)?;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Refuse a last-moment symlink swap of the final path component.
+        options.custom_flags(nix::libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(&resolved)
+        .map_err(|e| format!("Read error: {e}"))?;
+    let metadata = file.metadata().map_err(|e| format!("Read error: {e}"))?;
+    check_readable_file_metadata(&metadata)?;
+
+    let mut bytes = Vec::new();
+    file.take(MAX_PROJECT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Read error: {e}"))?;
+    if bytes.len() as u64 > MAX_PROJECT_FILE_BYTES {
+        return Err("File exceeds the readable size limit".to_string());
+    }
+    String::from_utf8(bytes).map_err(|_| "File is not valid UTF-8 text".to_string())
 }
 
 pub fn search_project_code(root: &Path, query: &str) -> std::result::Result<String, String> {

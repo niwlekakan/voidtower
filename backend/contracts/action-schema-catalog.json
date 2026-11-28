@@ -1,0 +1,332 @@
+{
+  "contract": "voidtower.action.schemas",
+  "schema_version": 1,
+  "generator_version": "1",
+  "source": "backend/src/action_registry.rs",
+  "source_sha256": "3b44b22dab9f7cc6f553549a33a703920ba334ecb6e9e7b33dec0ce4adcbac19",
+  "deprecation_policy": {
+    "active": "v1 schemas are accepted at the canonical durable boundary",
+    "deprecated": "a deprecated schema must name a replacement and optional RFC 8594 sunset date",
+    "unknown": "unknown or forged schema identities fail closed before adapter planning"
+  },
+  "actions": [
+    {
+      "action": "automation.run",
+      "input_schema_id": "automation.run.input.v1",
+      "result_schema_id": "automation.run.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "backup.check",
+      "input_schema_id": "backup.check.input.v1",
+      "result_schema_id": "backup.check.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "backup.config.create",
+      "input_schema_id": "backup.config.create.input.v1",
+      "result_schema_id": "backup.config.create.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "backup.config.delete",
+      "input_schema_id": "backup.config.delete.input.v1",
+      "result_schema_id": "backup.config.delete.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "backup.restore_test",
+      "input_schema_id": "backup.restore_test.input.v1",
+      "result_schema_id": "backup.restore_test.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "backup.run",
+      "input_schema_id": "backup.run.input.v1",
+      "result_schema_id": "backup.run.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "container.compose.apply",
+      "input_schema_id": "container.compose.apply.input.v1",
+      "result_schema_id": "container.compose.apply.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "container.remove",
+      "input_schema_id": "container.remove.input.v1",
+      "result_schema_id": "container.remove.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "container.restart",
+      "input_schema_id": "container.restart.input.v1",
+      "result_schema_id": "container.restart.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "container.start",
+      "input_schema_id": "container.start.input.v1",
+      "result_schema_id": "container.start.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "container.stop",
+      "input_schema_id": "container.stop.input.v1",
+      "result_schema_id": "container.stop.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "firewall.disable",
+      "input_schema_id": "firewall.disable.input.v1",
+      "result_schema_id": "firewall.disable.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "firewall.enable",
+      "input_schema_id": "firewall.enable.input.v1",
+      "result_schema_id": "firewall.enable.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "firewall.reload",
+      "input_schema_id": "firewall.reload.input.v1",
+      "result_schema_id": "firewall.reload.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "firewall.reset",
+      "input_schema_id": "firewall.reset.input.v1",
+      "result_schema_id": "firewall.reset.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "firewall.rule.add",
+      "input_schema_id": "firewall.rule.add.input.v1",
+      "result_schema_id": "firewall.rule.add.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "firewall.rule.delete",
+      "input_schema_id": "firewall.rule.delete.input.v1",
+      "result_schema_id": "firewall.rule.delete.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.disk.attach",
+      "input_schema_id": "proxmox.disk.attach.input.v1",
+      "result_schema_id": "proxmox.disk.attach.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.disk.initialize",
+      "input_schema_id": "proxmox.disk.initialize.input.v1",
+      "result_schema_id": "proxmox.disk.initialize.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.disk.wipe",
+      "input_schema_id": "proxmox.disk.wipe.input.v1",
+      "result_schema_id": "proxmox.disk.wipe.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.guest.reboot",
+      "input_schema_id": "proxmox.guest.reboot.input.v1",
+      "result_schema_id": "proxmox.guest.reboot.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.guest.reset",
+      "input_schema_id": "proxmox.guest.reset.input.v1",
+      "result_schema_id": "proxmox.guest.reset.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.guest.resume",
+      "input_schema_id": "proxmox.guest.resume.input.v1",
+      "result_schema_id": "proxmox.guest.resume.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.guest.shutdown",
+      "input_schema_id": "proxmox.guest.shutdown.input.v1",
+      "result_schema_id": "proxmox.guest.shutdown.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.guest.start",
+      "input_schema_id": "proxmox.guest.start.input.v1",
+      "result_schema_id": "proxmox.guest.start.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.guest.stop",
+      "input_schema_id": "proxmox.guest.stop.input.v1",
+      "result_schema_id": "proxmox.guest.stop.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.guest.suspend",
+      "input_schema_id": "proxmox.guest.suspend.input.v1",
+      "result_schema_id": "proxmox.guest.suspend.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.host.configure",
+      "input_schema_id": "proxmox.host.configure.input.v1",
+      "result_schema_id": "proxmox.host.configure.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.host.create",
+      "input_schema_id": "proxmox.host.create.input.v1",
+      "result_schema_id": "proxmox.host.create.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.host.delete",
+      "input_schema_id": "proxmox.host.delete.input.v1",
+      "result_schema_id": "proxmox.host.delete.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.host.test",
+      "input_schema_id": "proxmox.host.test.input.v1",
+      "result_schema_id": "proxmox.host.test.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.lxc.deploy",
+      "input_schema_id": "proxmox.lxc.deploy.input.v1",
+      "result_schema_id": "proxmox.lxc.deploy.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.snapshot.create",
+      "input_schema_id": "proxmox.snapshot.create.input.v1",
+      "result_schema_id": "proxmox.snapshot.create.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.snapshot.delete",
+      "input_schema_id": "proxmox.snapshot.delete.input.v1",
+      "result_schema_id": "proxmox.snapshot.delete.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.snapshot.rollback",
+      "input_schema_id": "proxmox.snapshot.rollback.input.v1",
+      "result_schema_id": "proxmox.snapshot.rollback.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.storage.delete",
+      "input_schema_id": "proxmox.storage.delete.input.v1",
+      "result_schema_id": "proxmox.storage.delete.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxmox.storage.upload",
+      "input_schema_id": "proxmox.storage.upload.input.v1",
+      "result_schema_id": "proxmox.storage.upload.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxy.nginx.reload",
+      "input_schema_id": "proxy.nginx.reload.input.v1",
+      "result_schema_id": "proxy.nginx.reload.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxy.nginx.restart",
+      "input_schema_id": "proxy.nginx.restart.input.v1",
+      "result_schema_id": "proxy.nginx.restart.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxy.nginx.start",
+      "input_schema_id": "proxy.nginx.start.input.v1",
+      "result_schema_id": "proxy.nginx.start.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxy.nginx.stop",
+      "input_schema_id": "proxy.nginx.stop.input.v1",
+      "result_schema_id": "proxy.nginx.stop.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxy.rule.create",
+      "input_schema_id": "proxy.rule.create.input.v1",
+      "result_schema_id": "proxy.rule.create.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxy.rule.delete",
+      "input_schema_id": "proxy.rule.delete.input.v1",
+      "result_schema_id": "proxy.rule.delete.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxy.rule.toggle",
+      "input_schema_id": "proxy.rule.toggle.input.v1",
+      "result_schema_id": "proxy.rule.toggle.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "proxy.rule.update",
+      "input_schema_id": "proxy.rule.update.input.v1",
+      "result_schema_id": "proxy.rule.update.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "service.restart",
+      "input_schema_id": "service.restart.input.v1",
+      "result_schema_id": "service.restart.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "update.docker.apply",
+      "input_schema_id": "update.docker.apply.input.v1",
+      "result_schema_id": "update.docker.apply.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "update.docker.check",
+      "input_schema_id": "update.docker.check.input.v1",
+      "result_schema_id": "update.docker.check.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "update.odysseus.apply",
+      "input_schema_id": "update.odysseus.apply.input.v1",
+      "result_schema_id": "update.odysseus.apply.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "update.os.apply",
+      "input_schema_id": "update.os.apply.input.v1",
+      "result_schema_id": "update.os.apply.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "update.voidtower.apply",
+      "input_schema_id": "update.voidtower.apply.input.v1",
+      "result_schema_id": "update.voidtower.apply.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "update.voidtower.check",
+      "input_schema_id": "update.voidtower.check.input.v1",
+      "result_schema_id": "update.voidtower.check.result.v1",
+      "lifecycle": "active"
+    },
+    {
+      "action": "update.voidtower.rollback",
+      "input_schema_id": "update.voidtower.rollback.input.v1",
+      "result_schema_id": "update.voidtower.rollback.result.v1",
+      "lifecycle": "active"
+    }
+  ]
+}

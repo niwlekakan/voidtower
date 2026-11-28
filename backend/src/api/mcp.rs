@@ -1,13 +1,14 @@
 use crate::{
     auth, containers,
     error::AppError,
+    operations::invocation::{self, CredentialContext},
     services,
     voidwatch::{self, ActionKind, Actor, ActorKind, Resource},
     AppState,
 };
 use axum::{
     body::Body,
-    extract::State,
+    extract::{FromRequest, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -41,13 +42,33 @@ pub(crate) mod test_support;
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JsonRpcRequest {
     #[allow(dead_code)]
     pub jsonrpc: String,
+    #[serde(deserialize_with = "deserialize_json_rpc_id")]
     pub id: Option<Value>,
     pub method: String,
-    #[serde(default)]
-    pub params: Value,
+    #[serde(default, deserialize_with = "deserialize_json_rpc_params")]
+    pub params: Option<Value>,
+}
+
+fn deserialize_json_rpc_id<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let id = Option::<Value>::deserialize(deserializer)?;
+    match id {
+        None | Some(Value::Null | Value::String(_) | Value::Number(_)) => Ok(id),
+        Some(_) => Err(serde::de::Error::custom("invalid JSON-RPC id")),
+    }
+}
+
+fn deserialize_json_rpc_params<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Serialize)]
@@ -101,13 +122,14 @@ async fn get_setting(state: &AppState, key: &str) -> String {
         .unwrap_or_default()
 }
 
-async fn check_mcp_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    // Check mcp_enabled setting
+async fn check_mcp_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<CredentialContext, StatusCode> {
     if get_setting(state, "odysseus.mcp_enabled").await != "true" {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Require a valid Bearer token
     let raw_token = headers
         .get("Authorization")
         .and_then(|v| v.to_str().ok())
@@ -115,11 +137,29 @@ async fn check_mcp_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Sta
         .map(str::trim)
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    auth::validate_api_token_any(&state.db, raw_token)
+    let identity = auth::validate_api_token_identity(&state.db, raw_token)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let scopes = auth::token_scopes(&state.db, raw_token)
+        .await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let user = auth::find_user_by_id(&state.db, &identity.user_id)
+        .await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if user
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= crate::unix_now())
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
 
-    Ok(())
+    Ok(CredentialContext::Mcp {
+        token_id: identity.token_id,
+        user_id: identity.user_id,
+        role: user.role,
+        scopes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -151,23 +191,36 @@ pub async fn sse_handler(State(state): State<AppState>, headers: HeaderMap) -> R
 pub async fn message_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<JsonRpcRequest>,
+    request: Request,
 ) -> (StatusCode, Json<JsonRpcResponse>) {
-    if let Err(status) = check_mcp_auth(&state, &headers).await {
-        let code = if status == StatusCode::UNAUTHORIZED {
-            -32001
-        } else {
-            -32003
-        };
-        let msg = if status == StatusCode::UNAUTHORIZED {
-            "Unauthorized"
-        } else {
-            "MCP is not enabled"
-        };
-        return (status, Json(err_response(req.id, code, msg)));
-    }
+    let credential = match check_mcp_auth(&state, &headers).await {
+        Ok(credential) => credential,
+        Err(status) => {
+            let code = if status == StatusCode::UNAUTHORIZED {
+                -32001
+            } else {
+                -32003
+            };
+            let msg = if status == StatusCode::UNAUTHORIZED {
+                "Unauthorized"
+            } else {
+                "MCP is not enabled"
+            };
+            return (status, Json(err_response(None, code, msg)));
+        }
+    };
 
-    let resp = dispatch(&state, req).await;
+    let Json(req) = match Json::<JsonRpcRequest>::from_request(request, &state).await {
+        Ok(request) => request,
+        Err(rejection) => {
+            return (
+                rejection.status(),
+                Json(err_response(None, -32600, "Invalid Request")),
+            )
+        }
+    };
+
+    let resp = dispatch_with_context(&state, req, credential).await;
     (StatusCode::OK, Json(resp))
 }
 
@@ -175,24 +228,57 @@ pub async fn message_handler(
 // Dispatch
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 async fn dispatch(state: &AppState, req: JsonRpcRequest) -> JsonRpcResponse {
+    dispatch_with_context(
+        state,
+        req,
+        CredentialContext::Mcp {
+            token_id: "[REDACTED]".into(),
+            user_id: "test-user".into(),
+            role: "owner".into(),
+            scopes: vec![
+                "metrics:read".into(),
+                "containers:read".into(),
+                "containers:logs".into(),
+                "services:read".into(),
+                "alerts:read".into(),
+                "files:read".into(),
+            ],
+        },
+    )
+    .await
+}
+
+async fn dispatch_with_context(
+    state: &AppState,
+    req: JsonRpcRequest,
+    credential: CredentialContext,
+) -> JsonRpcResponse {
     let id = req.id.clone();
+    if req.jsonrpc != "2.0" {
+        return err_response(id, -32600, "Invalid Request");
+    }
     match req.method.as_str() {
-        "initialize" => handle_initialize(id),
-        "tools/list" => handle_tools_list(id),
-        "tools/call" => {
-            handle_tools_call(
-                state,
-                id,
-                req.params,
-                Actor {
-                    kind: ActorKind::ApiToken,
-                },
-            )
-            .await
+        "initialize" => {
+            if !structured_params(&req.params) {
+                return err_response(id, -32602, "Invalid params");
+            }
+            handle_initialize(id)
         }
+        "tools/list" => {
+            if !structured_params(&req.params) {
+                return err_response(id, -32602, "Invalid params");
+            }
+            handle_tools_list(id)
+        }
+        "tools/call" => handle_tools_call(state, id, req.params, credential).await,
         _ => err_response(id, -32601, "Method not found"),
     }
+}
+
+fn structured_params(params: &Option<Value>) -> bool {
+    params.as_ref().is_none_or(Value::is_object)
 }
 
 // ---------------------------------------------------------------------------
@@ -214,88 +300,215 @@ fn handle_initialize(id: Option<Value>) -> JsonRpcResponse {
 // tools/list
 // ---------------------------------------------------------------------------
 
+/// Execution boundary for one built-in MCP/Studio tool.
+///
+/// The built-in surface is the only machine ingress that can both read project source and submit
+/// canonical jobs, so every served tool must declare which boundary it uses. `SynchronousRead` is
+/// the executable exception ledger for reads that stay outside the durable kernel; nothing becomes
+/// invokable by adding its name alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolClass {
+    /// Plans, evaluates policy, persists the job/approval/audit/event records, then executes.
+    DurableSubmission,
+    /// Bounded synchronous read served directly, with no job or approval record.
+    SynchronousRead,
+}
+
+/// The served built-in MCP/Studio tool surface, in catalog order, with its declared execution
+/// boundary. This list is the single admission point: the served catalog, the dispatcher, and the
+/// refusal path all resolve through `resolve_tool`.
+const MCP_TOOLS: &[(&str, ToolClass)] = &[
+    ("list_nodes", ToolClass::SynchronousRead),
+    ("get_node_metrics", ToolClass::SynchronousRead),
+    ("list_containers", ToolClass::SynchronousRead),
+    ("list_services", ToolClass::SynchronousRead),
+    ("list_alerts", ToolClass::SynchronousRead),
+    ("get_container_logs", ToolClass::SynchronousRead),
+    ("container.start", ToolClass::DurableSubmission),
+    ("container.stop", ToolClass::DurableSubmission),
+    ("container.restart", ToolClass::DurableSubmission),
+    ("list_routes", ToolClass::SynchronousRead),
+    ("read_file", ToolClass::SynchronousRead),
+    ("search_code", ToolClass::SynchronousRead),
+    ("get_template", ToolClass::SynchronousRead),
+];
+
+fn tool_class(name: &str) -> Option<ToolClass> {
+    MCP_TOOLS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, class)| *class)
+}
+
+fn mcp_action_is_callable(metadata: &action_registry::ActionMetadata) -> bool {
+    metadata
+        .ingresses
+        .contains(&action_registry::ActionIngress::Mcp)
+        && metadata
+            .ingresses
+            .contains(&action_registry::ActionIngress::Studio)
+        && metadata.ai_exposure == action_registry::AiExposure::Callable
+        && metadata.mcp_scope().is_some()
+}
+
+/// Resolves a tool name to its declared class, registry metadata, and served definition, or
+/// `None` when the name is not part of the served surface.
+///
+/// Publication and invocation share this resolver: admission requires the ledger entry, callable
+/// registry metadata, agreement between the declared class and the registry's execution boundary,
+/// **and** a tool definition. A tool therefore cannot be admitted without being publishable, and
+/// the served catalogue is a plain map over the ledger rather than a filtered subset. Any
+/// ledger/metadata/definition drift fails closed instead of silently using the wrong execution
+/// boundary or advertising a different surface from the one the dispatcher enforces.
+fn resolve_tool(
+    name: &str,
+) -> Option<(ToolClass, &'static action_registry::ActionMetadata, Value)> {
+    let class = tool_class(name)?;
+    let metadata = action_registry::action(name)?;
+    if metadata.name != name || !mcp_action_is_callable(metadata) {
+        return None;
+    }
+    match (class, metadata.execution) {
+        (ToolClass::DurableSubmission, action_registry::ActionExecution::DurableJob)
+        | (ToolClass::SynchronousRead, action_registry::ActionExecution::Direct) => {
+            tool_definition(name).map(|definition| (class, metadata, definition))
+        }
+        _ => None,
+    }
+}
+
+fn tool_definition(name: &str) -> Option<Value> {
+    match name {
+        "list_nodes" => Some(serde_json::json!({
+            "name": "list_nodes",
+            "description": "List all VoidTower nodes with health status",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        })),
+        "get_node_metrics" => Some(serde_json::json!({
+            "name": "get_node_metrics",
+            "description": "Get current CPU/RAM/disk metrics for the local node",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        })),
+        "list_containers" => Some(serde_json::json!({
+            "name": "list_containers",
+            "description": "List all Docker containers with status",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        })),
+        "list_services" => Some(serde_json::json!({
+            "name": "list_services",
+            "description": "List systemd services with active state",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        })),
+        "list_alerts" => Some(serde_json::json!({
+            "name": "list_alerts",
+            "description": "List active alerts",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        })),
+        "get_container_logs" => Some(serde_json::json!({
+            "name": "get_container_logs",
+            "description": "Get recent logs for a container",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "container_id": { "type": "string" }
+                },
+                "required": ["container_id"],
+                "additionalProperties": false
+            }
+        })),
+        "container.start" => Some(serde_json::json!({
+            "name": "container.start",
+            "description": "Start an existing canonical container resource through the durable operation boundary",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "resource_id": { "type": "string" },
+                    "request_id": { "type": "string", "description": "Stable idempotency key for this intent" }
+                },
+                "required": ["resource_id", "request_id"],
+                "additionalProperties": false
+            }
+        })),
+        "container.stop" => Some(serde_json::json!({
+            "name": "container.stop",
+            "description": "Stop an existing canonical container resource through the durable operation boundary",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "resource_id": { "type": "string" },
+                    "request_id": { "type": "string", "description": "Stable idempotency key for this intent" }
+                },
+                "required": ["resource_id", "request_id"],
+                "additionalProperties": false
+            }
+        })),
+        "container.restart" => Some(serde_json::json!({
+            "name": "container.restart",
+            "description": "Restart an existing canonical container resource through the durable operation boundary",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "resource_id": { "type": "string" },
+                    "request_id": { "type": "string", "description": "Stable idempotency key for this intent" }
+                },
+                "required": ["resource_id", "request_id"],
+                "additionalProperties": false
+            }
+        })),
+        "list_routes" => Some(serde_json::json!({
+            "name": "list_routes",
+            "description": "List all registered VoidTower API routes",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        })),
+        "read_file" => Some(serde_json::json!({
+            "name": "read_file",
+            "description": "Read a UTF-8 text file from the project source trees (backend/src or frontend/src). Paths outside those trees, credential files, special files, multi-link files, and files over 1 MiB are refused.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path relative to the project root, inside backend/src or frontend/src" }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        })),
+        "search_code" => Some(serde_json::json!({
+            "name": "search_code",
+            "description": "Search for a string/symbol across backend/src and frontend/src",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search string (grep)" }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }
+        })),
+        "get_template" => Some(serde_json::json!({
+            "name": "get_template",
+            "description": "Get a VoidTower extension template. Names: new_api_endpoint, new_tower_page, new_native_panel, new_background, new_catalog_entry, new_mcp_tool",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        })),
+        _ => None,
+    }
+}
+
+fn mcp_tools_catalog() -> Vec<Value> {
+    MCP_TOOLS
+        .iter()
+        .filter_map(|(name, _)| resolve_tool(name).map(|(_, _, definition)| definition))
+        .collect()
+}
+
 fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
-    ok_response(
-        id,
-        serde_json::json!({
-            "tools": [
-                {
-                    "name": "list_nodes",
-                    "description": "List all VoidTower nodes with health status",
-                    "inputSchema": { "type": "object", "properties": {} }
-                },
-                {
-                    "name": "get_node_metrics",
-                    "description": "Get current CPU/RAM/disk metrics for the local node",
-                    "inputSchema": { "type": "object", "properties": {} }
-                },
-                {
-                    "name": "list_containers",
-                    "description": "List all Docker containers with status",
-                    "inputSchema": { "type": "object", "properties": {} }
-                },
-                {
-                    "name": "list_services",
-                    "description": "List systemd services with active state",
-                    "inputSchema": { "type": "object", "properties": {} }
-                },
-                {
-                    "name": "list_alerts",
-                    "description": "List active alerts",
-                    "inputSchema": { "type": "object", "properties": {} }
-                },
-                {
-                    "name": "get_container_logs",
-                    "description": "Get recent logs for a container",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "container_id": { "type": "string" }
-                        },
-                        "required": ["container_id"]
-                    }
-                },
-                {
-                    "name": "list_routes",
-                    "description": "List all registered VoidTower API routes",
-                    "inputSchema": { "type": "object", "properties": {} }
-                },
-                {
-                    "name": "read_file",
-                    "description": "Read a file from the VoidTower project (path relative to repo root, e.g. backend/src/api/apps.rs)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Relative path within project root" }
-                        },
-                        "required": ["path"]
-                    }
-                },
-                {
-                    "name": "search_code",
-                    "description": "Search for a string/symbol across backend/src and frontend/src",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "query": { "type": "string", "description": "Search string (grep)" }
-                        },
-                        "required": ["query"]
-                    }
-                },
-                {
-                    "name": "get_template",
-                    "description": "Get a VoidTower extension template. Names: new_api_endpoint, new_tower_page, new_native_panel, new_background, new_catalog_entry, new_mcp_tool",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "name": { "type": "string" }
-                        },
-                        "required": ["name"]
-                    }
-                }
-            ]
-        }),
-    )
+    ok_response(id, serde_json::json!({ "tools": mcp_tools_catalog() }))
 }
 
 // ---------------------------------------------------------------------------
@@ -305,19 +518,38 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
 async fn handle_tools_call(
     state: &AppState,
     id: Option<Value>,
-    params: Value,
-    actor: Actor,
+    params: Option<Value>,
+    credential: CredentialContext,
 ) -> JsonRpcResponse {
-    let tool_name = match params.get("name").and_then(|v| v.as_str()) {
-        Some(n) => n.to_string(),
-        None => return err_response(id, -32602, "Missing tool name in params"),
-    };
-    let args = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ToolCallParams {
+        name: String,
+        #[serde(default, deserialize_with = "deserialize_json_rpc_params")]
+        arguments: Option<Value>,
+    }
 
-    let result = invoke_tool(state, actor, &tool_name, args).await;
+    let Some(params) = params else {
+        return err_response(id, -32602, "Invalid params");
+    };
+    if !params.is_object() {
+        return err_response(id, -32602, "Invalid params");
+    }
+
+    let ToolCallParams {
+        name: tool_name,
+        arguments,
+    } = match serde_json::from_value(params) {
+        Ok(params) => params,
+        Err(_) => return err_response(id, -32602, "Invalid params"),
+    };
+    let args = match arguments {
+        None => serde_json::json!({}),
+        Some(arguments) if arguments.is_object() => arguments,
+        Some(_) => return err_response(id, -32602, "Tool arguments must be an object"),
+    };
+
+    let result = invoke_tool(state, credential, &tool_name, args).await;
 
     match result {
         Ok(text) => ok_response(
@@ -329,7 +561,7 @@ async fn handle_tools_call(
         Err(e) => ok_response(
             id,
             serde_json::json!({
-                "content": [{ "type": "text", "text": format!("Error: {e}") }],
+                "content": [{ "type": "text", "text": serialized_tool_error(&e) }],
                 "isError": true
             }),
         ),
@@ -459,8 +691,14 @@ fn tool_read_file(state: &AppState, args: Value) -> std::result::Result<String, 
         .ok_or_else(|| "Missing 'path' argument".to_string())?;
     let root = super::ai_context::safe_project_root_from_frontend_dir(&state.config.frontend_dir);
     let content = super::ai_context::read_project_file(&root, path)?;
-    if content.len() > 8000 {
-        Ok(format!("{}\n…(truncated)", &content[..8000]))
+    const MAX_READ_CHARS: usize = 8000;
+    // Truncate by characters, not bytes: slicing a `String` at a fixed byte offset
+    // panics when the boundary lands inside a multi-byte character.
+    if content.chars().count() > MAX_READ_CHARS {
+        Ok(format!(
+            "{}\n…(truncated)",
+            content.chars().take(MAX_READ_CHARS).collect::<String>()
+        ))
     } else {
         Ok(content)
     }
@@ -497,6 +735,94 @@ pub fn tools_json() -> Value {
         .unwrap_or(serde_json::json!({"tools":[]}))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContainerLifecycleArgs {
+    resource_id: String,
+    request_id: String,
+}
+
+async fn tool_container_lifecycle(
+    state: &AppState,
+    credential: &CredentialContext,
+    action: &str,
+    args: Value,
+) -> Result<String, String> {
+    let args: ContainerLifecycleArgs = serde_json::from_value(args)
+        .map_err(|error| format!("Invalid {action} arguments: {error}"))?;
+    let job = invocation::submit(
+        &state.db,
+        &state.operation_adapters,
+        credential,
+        &args.resource_id,
+        action,
+        serde_json::json!({}),
+        &args.request_id,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    serde_json::to_string(&job).map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyToolArgs {}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContainerLogsArgs {
+    #[serde(rename = "container_id")]
+    _container_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PathToolArgs {
+    #[serde(rename = "path")]
+    _path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueryToolArgs {
+    #[serde(rename = "query")]
+    _query: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TemplateToolArgs {
+    #[serde(rename = "name")]
+    _name: String,
+}
+
+fn validate_tool_args<T: serde::de::DeserializeOwned>(
+    name: &str,
+    args: &Value,
+) -> Result<(), String> {
+    serde_json::from_value::<T>(args.clone())
+        .map(|_| ())
+        .map_err(|_| format!("Invalid {name} arguments"))
+}
+
+async fn redact_tool_error(state: &AppState, error: &str) -> String {
+    redact::redact_for_ai(state, error)
+        .await
+        .chars()
+        .take(4096)
+        .collect()
+}
+
+fn serialized_tool_error(error: &str) -> String {
+    const MAX_CHARS: usize = 4096;
+    const PREFIX: &str = "Error: ";
+    let available = MAX_CHARS.saturating_sub(PREFIX.chars().count());
+    format!(
+        "{PREFIX}{}",
+        error.chars().take(available).collect::<String>()
+    )
+}
+
 fn tool_action_kind(name: &str) -> ActionKind {
     match action_registry::action(name).map(|metadata| metadata.kind) {
         Some(RegistryActionKind::Read) => ActionKind::Read,
@@ -509,64 +835,567 @@ fn tool_action_kind(name: &str) -> ActionKind {
 /// session-authenticated Studio panel (`api/studio.rs`'s `mcp_invoke`).
 pub async fn invoke_tool(
     state: &AppState,
-    actor: Actor,
+    credential: CredentialContext,
     name: &str,
     args: Value,
 ) -> std::result::Result<String, String> {
-    let verdict = voidwatch::evaluate(
-        &state.db,
-        actor,
-        tool_action_kind(name),
-        name,
-        Resource {
-            resource_type: "mcp_tool",
-            resource_id: name,
-        },
-    )
-    .await;
+    match invoke_tool_unredacted(state, credential, name, args).await {
+        Ok(text) => Ok(redact::redact_for_ai(state, &text).await),
+        Err(error) => Err(redact_tool_error(state, &error).await),
+    }
+}
 
-    match verdict {
-        // MCP tool resources are always classified `"mcp_tool"` (never one of
-        // `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES`), so `AllowRequireSnapshot`
-        // isn't reachable here today — handled structurally anyway rather than assumed,
-        // same reasoning as the registry's currently read-only MCP action inventory.
-        voidwatch::Verdict::Allow | voidwatch::Verdict::AllowRequireSnapshot(_) => {}
-        voidwatch::Verdict::RequireApproval(reason) => {
-            return Err(format!("Requires approval: {reason}"))
+async fn invoke_tool_unredacted(
+    state: &AppState,
+    credential: CredentialContext,
+    name: &str,
+    args: Value,
+) -> std::result::Result<String, String> {
+    // One admission point for both ingresses: a name is invokable only when it is on the served
+    // ledger, callable in the registry, classified for the execution boundary its metadata
+    // declares, and has a served definition. Anything else — unknown, registered-but-not-exposed,
+    // or a drifted ledger entry — is refused with the same bounded message so the refusal is not a
+    // registry oracle.
+    let Some((class, metadata, _definition)) = resolve_tool(name) else {
+        return Err(format!("Unknown tool: {name}"));
+    };
+    invocation::authorize_action(metadata, &credential).map_err(|error| error.to_string())?;
+
+    if class == ToolClass::SynchronousRead {
+        let actor = match &credential {
+            CredentialContext::Mcp { .. } => Actor {
+                kind: ActorKind::ApiToken,
+            },
+            CredentialContext::Studio { .. } => Actor {
+                kind: ActorKind::User,
+            },
+            _ => return Err("The tool is not available from this ingress".to_string()),
+        };
+        let verdict = voidwatch::evaluate(
+            &state.db,
+            actor,
+            tool_action_kind(name),
+            name,
+            Resource {
+                resource_type: "mcp_tool",
+                resource_id: name,
+            },
+        )
+        .await;
+
+        match verdict {
+            // Direct MCP tools are still gated by the shared AI-context policy. Durable actions
+            // skip this synthetic mcp_tool evaluation because invocation::submit evaluates policy
+            // against the canonical resource and persists its approval outcome with the job.
+            voidwatch::Verdict::Allow | voidwatch::Verdict::AllowRequireSnapshot(_) => {}
+            voidwatch::Verdict::RequireApproval(reason) => {
+                return Err(format!("Requires approval: {reason}"))
+            }
+            voidwatch::Verdict::Deny(reason) => return Err(format!("Denied by policy: {reason}")),
         }
-        voidwatch::Verdict::Deny(reason) => return Err(format!("Denied by policy: {reason}")),
     }
 
     let result = match name {
-        "list_nodes" => tool_list_nodes(state).await,
-        "get_node_metrics" => tool_get_node_metrics(state).await,
-        "list_containers" => tool_list_containers().await,
-        "list_services" => tool_list_services().await,
-        "list_alerts" => tool_list_alerts(state).await,
-        "get_container_logs" => tool_get_container_logs(args).await,
-        "list_routes" => tool_list_routes(state),
-        "read_file" => tool_read_file(state, args),
-        "search_code" => tool_search_code(state, args),
-        "get_template" => tool_get_template(args),
+        "container.start" => tool_container_lifecycle(state, &credential, name, args).await,
+        "container.stop" => tool_container_lifecycle(state, &credential, name, args).await,
+        "container.restart" => tool_container_lifecycle(state, &credential, name, args).await,
+        "list_nodes" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_nodes(state).await
+        }
+        "get_node_metrics" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_get_node_metrics(state).await
+        }
+        "list_containers" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_containers().await
+        }
+        "list_services" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_services().await
+        }
+        "list_alerts" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_alerts(state).await
+        }
+        "get_container_logs" => {
+            validate_tool_args::<ContainerLogsArgs>(name, &args)?;
+            tool_get_container_logs(args).await
+        }
+        "list_routes" => {
+            validate_tool_args::<EmptyToolArgs>(name, &args)?;
+            tool_list_routes(state)
+        }
+        "read_file" => {
+            validate_tool_args::<PathToolArgs>(name, &args)?;
+            tool_read_file(state, args)
+        }
+        "search_code" => {
+            validate_tool_args::<QueryToolArgs>(name, &args)?;
+            tool_search_code(state, args)
+        }
+        "get_template" => {
+            validate_tool_args::<TemplateToolArgs>(name, &args)?;
+            tool_get_template(args)
+        }
         other => Err(format!("Unknown tool: {other}")),
     };
 
-    // Every tool output is a candidate AI-context leak surface (container logs,
-    // alert messages, file contents can all carry secret material) — redact
-    // here, once, so this single choke point covers both the bearer-token
-    // JSON-RPC dispatch and the session-authenticated Studio panel that also
-    // calls `invoke_tool` (see `api/studio.rs::mcp_invoke`).
-    match result {
-        Ok(text) => Ok(redact::redact_for_ai(state, &text).await),
-        Err(e) => Err(e),
-    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use sha2::Digest;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
-    /// Realistic secret shapes an AI-reachable tool output must never leak,
+    struct PlanningAdapter {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl crate::operations::adapters::OperationAdapter for PlanningAdapter {
+        fn key(&self) -> &'static str {
+            "containers"
+        }
+
+        fn actions(&self) -> &[&'static str] {
+            &["container.start", "container.stop", "container.restart"]
+        }
+
+        async fn plan(
+            &self,
+            request: crate::operations::adapters::PlanRequest,
+        ) -> Result<crate::operations::contracts::OperationPlanV1> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::operations::contracts::OperationPlanV1 {
+                schema_version: 1,
+                title: "Start container".into(),
+                risk: "mutate".into(),
+                changes: vec![],
+                preview: None,
+                external_fingerprint: "provider-state-1".into(),
+                steps: vec![crate::operations::contracts::PlannedStepV1 {
+                    kind: "execute".into(),
+                    name: format!("{} {}", request.action, request.resource.display_name),
+                    retry_class: "never".into(),
+                    recovery_class: "reconcile".into(),
+                }],
+            })
+        }
+
+        async fn external_fingerprint(
+            &self,
+            _request: &crate::operations::adapters::PlanRequest,
+        ) -> Result<String> {
+            Ok("provider-state-1".into())
+        }
+
+        async fn execute_step(
+            &self,
+            _request: crate::operations::adapters::StepRequest,
+        ) -> Result<crate::operations::adapters::StepOutcome> {
+            unreachable!()
+        }
+
+        async fn reconcile(
+            &self,
+            _request: crate::operations::adapters::StepRequest,
+        ) -> Result<crate::operations::adapters::ReconcileOutcome> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn container_lifecycle_mutations_are_explicit_typed_tools() {
+        let tools = tools_json();
+        let tool_names = tools["tools"]
+            .as_array()
+            .expect("MCP tools must be an array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        for name in ["container.start", "container.stop", "container.restart"] {
+            assert!(tool_names.contains(&name), "missing MCP tool {name}");
+            let action = action_registry::action(name).expect("registered action");
+            assert!(action
+                .ingresses
+                .contains(&action_registry::ActionIngress::Mcp));
+            assert!(action
+                .ingresses
+                .contains(&action_registry::ActionIngress::Studio));
+            assert_eq!(action.mcp_scope(), Some("containers:restart"));
+        }
+    }
+
+    #[tokio::test]
+    async fn container_lifecycle_tools_share_the_canonical_submission_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let resource = crate::operations::resources::observe(
+            &pool,
+            crate::operations::resources::ObserveResource {
+                kind: "container",
+                display_name: "web",
+                node_id: None,
+                provider: Some("docker"),
+                namespace: "mcp-test.lifecycle",
+                scope_key: "local",
+                alias: "web",
+            },
+            None,
+            "mcp-test-lifecycle",
+        )
+        .await
+        .unwrap();
+        for action in ["container.start", "container.stop", "container.restart"] {
+            crate::operations::resources::set_capability(
+                &pool,
+                &resource.id,
+                action,
+                crate::operations::contracts::CapabilityAvailability::Available,
+                None,
+                None,
+                "mcp-test-lifecycle-capability",
+            )
+            .await
+            .unwrap();
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut adapters = crate::operations::adapters::AdapterRegistry::new();
+        adapters
+            .register(Arc::new(PlanningAdapter {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        let mut state = crate::api::mcp::test_support::build(pool);
+        state.operation_adapters = Arc::new(adapters);
+        for (ingress, credential) in [
+            (
+                "studio",
+                CredentialContext::Studio {
+                    user_id: "studio-user".into(),
+                    role: "owner".into(),
+                },
+            ),
+            (
+                "mcp",
+                CredentialContext::Mcp {
+                    token_id: "token-1".into(),
+                    user_id: "mcp-user".into(),
+                    role: "owner".into(),
+                    scopes: vec!["containers:restart".into()],
+                },
+            ),
+        ] {
+            for (index, action) in ["container.start", "container.stop", "container.restart"]
+                .iter()
+                .enumerate()
+            {
+                let job: Value = serde_json::from_str(
+                    &invoke_tool(
+                        &state,
+                        credential.clone(),
+                        action,
+                        serde_json::json!({
+                            "resource_id": resource.id,
+                            "request_id": format!("{ingress}-lifecycle-{index}")
+                        }),
+                    )
+                    .await
+                    .expect("supported lifecycle action should submit"),
+                )
+                .unwrap();
+                assert_eq!(job["action"], *action);
+                assert_eq!(job["resource"]["id"], resource.id);
+                assert_eq!(job["ingress"], ingress);
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 6);
+    }
+
+    #[tokio::test]
+    async fn container_start_rejects_insufficient_scope_before_resource_lookup() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Mcp {
+            token_id: "token-1".into(),
+            user_id: "test-user".into(),
+            role: "owner".into(),
+            scopes: vec!["containers:read".into()],
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "container.start",
+            serde_json::json!({
+                "resource_id": "missing-resource",
+                "request_id": "mcp-start-denied"
+            }),
+        )
+        .await
+        .expect_err("wrong MCP scope must fail before lookup");
+        assert_eq!(error, "the API token scope does not permit this action");
+    }
+
+    #[tokio::test]
+    async fn container_start_rejects_unknown_arguments() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Studio {
+            user_id: "studio-user".into(),
+            role: "owner".into(),
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "container.start",
+            serde_json::json!({
+                "resource_id": "missing-resource",
+                "request_id": "studio-start-invalid",
+                "provider_token": "must-not-be-accepted"
+            }),
+        )
+        .await
+        .expect_err("typed tool must reject unknown fields");
+        assert!(error.starts_with("Invalid container.start arguments:"));
+    }
+
+    #[tokio::test]
+    async fn read_tools_reject_unknown_arguments() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Studio {
+            user_id: "studio-user".into(),
+            role: "owner".into(),
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "list_nodes",
+            serde_json::json!({ "unexpected": true }),
+        )
+        .await
+        .expect_err("read tools must reject unknown fields");
+        assert_eq!(error, "Invalid list_nodes arguments");
+
+        let long_unknown_tool = "x".repeat(10_000);
+        let error = invoke_tool(
+            &state,
+            CredentialContext::Studio {
+                user_id: "studio-user".into(),
+                role: "owner".into(),
+            },
+            &long_unknown_tool,
+            serde_json::json!({}),
+        )
+        .await
+        .expect_err("unknown tool errors must be bounded");
+        assert!(error.len() <= 4096);
+        assert!(!error.contains(&long_unknown_tool));
+    }
+
+    #[test]
+    fn serialized_tool_errors_remain_bounded_after_the_mcp_prefix() {
+        let rendered = serialized_tool_error(&"x".repeat(10_000));
+        assert_eq!(rendered.chars().count(), 4096);
+        assert!(rendered.starts_with("Error: "));
+    }
+
+    #[test]
+    fn direct_tool_schemas_accept_the_published_argument_names() {
+        assert!(validate_tool_args::<PathToolArgs>(
+            "read_file",
+            &serde_json::json!({ "path": "backend/src/api/mcp.rs" }),
+        )
+        .is_ok());
+        assert!(validate_tool_args::<QueryToolArgs>(
+            "search_code",
+            &serde_json::json!({ "query": "CredentialContext" }),
+        )
+        .is_ok());
+        assert!(validate_tool_args::<TemplateToolArgs>(
+            "get_template",
+            &serde_json::json!({ "name": "new_mcp_tool" }),
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn container_start_submits_a_durable_job_and_replays_idempotently() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let resource = crate::operations::resources::observe(
+            &pool,
+            crate::operations::resources::ObserveResource {
+                kind: "container",
+                display_name: "web",
+                node_id: None,
+                provider: Some("docker"),
+                namespace: "test.container",
+                scope_key: "local",
+                alias: "web",
+            },
+            None,
+            "mcp-test",
+        )
+        .await
+        .unwrap();
+        crate::operations::resources::set_capability(
+            &pool,
+            &resource.id,
+            "container.start",
+            crate::operations::contracts::CapabilityAvailability::Available,
+            None,
+            None,
+            "mcp-test-capability",
+        )
+        .await
+        .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut adapters = crate::operations::adapters::AdapterRegistry::new();
+        adapters
+            .register(Arc::new(PlanningAdapter {
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        let mut state = crate::api::mcp::test_support::build(pool.clone());
+        state.operation_adapters = Arc::new(adapters);
+        let credential = CredentialContext::Mcp {
+            token_id: "token-1".into(),
+            user_id: "test-user".into(),
+            role: "owner".into(),
+            scopes: vec!["containers:restart".into()],
+        };
+        let args = serde_json::json!({
+            "resource_id": resource.id,
+            "request_id": "mcp-start-replay-1"
+        });
+
+        let first: Value = serde_json::from_str(
+            &invoke_tool(&state, credential.clone(), "container.start", args.clone())
+                .await
+                .expect("canonical submit should create a job"),
+        )
+        .unwrap();
+        let second: Value = serde_json::from_str(
+            &invoke_tool(&state, credential, "container.start", args)
+                .await
+                .expect("same intent should replay the existing job"),
+        )
+        .unwrap();
+
+        assert_eq!(first["id"], second["id"]);
+        assert_eq!(first["action"], "container.start");
+        assert_eq!(first["ingress"], "mcp");
+        let persisted_key: String =
+            sqlx::query_scalar("SELECT idempotency_key FROM jobs WHERE id = ?")
+                .bind(first["id"].as_str().expect("job id"))
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(persisted_key, "mcp-start-replay-1");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn container_start_uses_canonical_invocation_errors() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Mcp {
+            token_id: "token-1".into(),
+            user_id: "test-user".into(),
+            role: "owner".into(),
+            scopes: vec!["containers:restart".into()],
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "container.start",
+            serde_json::json!({
+                "resource_id": "missing-resource",
+                "request_id": "mcp-start-1"
+            }),
+        )
+        .await
+        .expect_err("missing canonical resource must fail closed");
+        assert_eq!(error, "resource not found");
+    }
+
+    #[tokio::test]
+    async fn container_start_uses_canonical_invocation_for_studio() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let credential = CredentialContext::Studio {
+            user_id: "studio-user".into(),
+            role: "owner".into(),
+        };
+
+        let error = invoke_tool(
+            &state,
+            credential,
+            "container.start",
+            serde_json::json!({
+                "resource_id": "missing-resource",
+                "request_id": "studio-start-1"
+            }),
+        )
+        .await
+        .expect_err("missing canonical resource must fail closed");
+        assert_eq!(error, "resource not found");
+    }
+
+    #[tokio::test]
+    async fn mcp_rejects_an_expired_token_owner_before_dispatch() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let now = crate::unix_now();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, role, expires_at, created_at, updated_at) \
+             VALUES ('expired-user', 'expired', 'x', 'owner', ?, 0, 0)",
+        )
+        .bind(now - 1)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let raw_token = "[REDACTED]";
+        let token_hash = hex::encode(sha2::Sha256::digest(raw_token.as_bytes()));
+        sqlx::query(
+            "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at) \
+             VALUES ('expired-token', 'expired-user', 'mcp', ?, '[\\\"alerts:read\\\"]', ?, 0)",
+        )
+        .bind(token_hash)
+        .bind(now + 3600)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.mcp_enabled', 'true', ?)",
+        )
+        .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let state = crate::api::mcp::test_support::build(pool);
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", "Bearer [REDACTED]".parse().unwrap());
+        assert_eq!(
+            check_mcp_auth(&state, &headers).await,
+            Err(StatusCode::UNAUTHORIZED)
+        );
+    }
+
     /// regardless of whether they're registered VoidTower secrets.
     fn secret_corpus() -> Vec<&'static str> {
         vec![
@@ -603,7 +1432,7 @@ mod tests {
                 jsonrpc: "2.0".into(),
                 id: Some(serde_json::json!(1)),
                 method: "tools/call".into(),
-                params: serde_json::json!({ "name": "list_alerts", "arguments": {} }),
+                params: Some(serde_json::json!({ "name": "list_alerts", "arguments": {} })),
             },
         )
         .await;
@@ -643,7 +1472,7 @@ mod tests {
                 jsonrpc: "2.0".into(),
                 id: Some(serde_json::json!(1)),
                 method: "tools/call".into(),
-                params: serde_json::json!({ "name": "list_alerts", "arguments": {} }),
+                params: Some(serde_json::json!({ "name": "list_alerts", "arguments": {} })),
             },
         )
         .await;
@@ -695,5 +1524,204 @@ mod tests {
         );
         assert!(redacted.contains("Booting app v1.2.3"));
         assert!(redacted.contains("Ready to accept connections"));
+    }
+
+    /// M1-02 exit criterion: every callable built-in MCP/Studio action declares which execution
+    /// boundary it uses, so an approved machine action cannot reach the served surface without
+    /// either submitting a canonical durable job or being an explicitly declared synchronous read.
+    #[test]
+    fn mcp_tool_ledger_classifies_every_callable_action_by_execution_boundary() {
+        let catalog = mcp_tools_catalog();
+        let served: Vec<&str> = catalog
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("catalog tool name"))
+            .collect();
+        assert_eq!(
+            served.len(),
+            MCP_TOOLS.len(),
+            "served catalog and invokable ledger must be the same surface"
+        );
+
+        for (name, class) in MCP_TOOLS {
+            let name = *name;
+            assert_eq!(
+                tool_class(name),
+                Some(*class),
+                "ledger must resolve its own entry: {name}"
+            );
+            assert!(
+                served.contains(&name),
+                "ledger entry must be served in the catalog: {name}"
+            );
+            let metadata = action_registry::action(name).expect("ledger entry must be registered");
+            assert!(
+                mcp_action_is_callable(metadata),
+                "ledger entry must stay callable: {name}"
+            );
+            match class {
+                ToolClass::DurableSubmission => {
+                    assert_eq!(
+                        metadata.execution,
+                        action_registry::ActionExecution::DurableJob,
+                        "durable submission must use the canonical job boundary: {name}"
+                    );
+                    assert_eq!(
+                        metadata.kind,
+                        RegistryActionKind::Mutating,
+                        "durable submission must be a typed mutation: {name}"
+                    );
+                }
+                ToolClass::SynchronousRead => {
+                    assert_eq!(
+                        metadata.execution,
+                        action_registry::ActionExecution::Direct,
+                        "declared synchronous read must stay outside the durable kernel: {name}"
+                    );
+                    assert_eq!(
+                        metadata.kind,
+                        RegistryActionKind::Read,
+                        "declared synchronous read must be a typed read: {name}"
+                    );
+                }
+            }
+        }
+
+        // Adding a callable built-in action without declaring its execution class fails here
+        // instead of silently shipping an unclassified machine ingress.
+        for metadata in action_registry::ACTIONS.iter().filter(|metadata| {
+            metadata
+                .ingresses
+                .contains(&action_registry::ActionIngress::Mcp)
+                && metadata
+                    .ingresses
+                    .contains(&action_registry::ActionIngress::Studio)
+                && metadata.ai_exposure == action_registry::AiExposure::Callable
+                && metadata.mcp_scope().is_some()
+        }) {
+            assert!(
+                MCP_TOOLS
+                    .iter()
+                    .any(|(candidate, _)| *candidate == metadata.name),
+                "callable built-in action has no declared execution class: {}",
+                metadata.name
+            );
+        }
+
+        // Registered actions outside the built-in surface stay unclassified, so the dispatcher
+        // refuses them even when a caller knows their exact registry name.
+        for name in [
+            "container.remove",
+            "service.restart",
+            "automation.run",
+            "container.compose.apply",
+            "start",
+            "stop",
+            "restart",
+        ] {
+            assert_eq!(
+                tool_class(name),
+                None,
+                "{name} must not be invokable from the built-in surface"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_tool_catalog_is_explicitly_bound_to_callable_registry_actions() {
+        let catalog = mcp_tools_catalog();
+        let names: Vec<&str> = catalog
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("catalog tool name"))
+            .collect();
+
+        let unique_names: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(
+            unique_names.len(),
+            names.len(),
+            "MCP catalog contains duplicates"
+        );
+        assert_eq!(
+            names.len(),
+            MCP_TOOLS.len(),
+            "every MCP ledger entry must appear in the served catalog"
+        );
+
+        for (name, _) in MCP_TOOLS {
+            let name = *name;
+            let metadata = action_registry::action(name)
+                .expect("every MCP ledger entry must resolve to registry metadata");
+            assert!(
+                mcp_action_is_callable(metadata),
+                "every MCP ledger entry must resolve to a callable action: {name}"
+            );
+            assert!(
+                tool_definition(name).is_some(),
+                "every MCP ledger entry must have a tool definition: {name}"
+            );
+            assert!(
+                names.contains(&name),
+                "every MCP ledger entry must be served: {name}"
+            );
+        }
+
+        for name in &names {
+            let metadata =
+                action_registry::action(name).expect("catalog action must be registered");
+            assert!(metadata
+                .ingresses
+                .contains(&action_registry::ActionIngress::Mcp));
+            assert!(metadata
+                .ingresses
+                .contains(&action_registry::ActionIngress::Studio));
+            assert_eq!(metadata.ai_exposure, action_registry::AiExposure::Callable);
+            assert!(
+                metadata.mcp_scope().is_some(),
+                "missing MCP scope for {name}"
+            );
+        }
+
+        for metadata in action_registry::ACTIONS.iter().filter(|metadata| {
+            metadata
+                .ingresses
+                .contains(&action_registry::ActionIngress::Mcp)
+                && metadata
+                    .ingresses
+                    .contains(&action_registry::ActionIngress::Studio)
+                && metadata.ai_exposure == action_registry::AiExposure::Callable
+                && metadata.mcp_scope().is_some()
+        }) {
+            assert!(
+                names.contains(&metadata.name),
+                "callable MCP/Studio action is missing from the catalog: {}",
+                metadata.name
+            );
+        }
+    }
+
+    /// Handoff 0036 limitation 2: publication previously required `tool_definition` *outside* the
+    /// admission function, so a ledger entry without a definition was admitted by `resolve_tool`
+    /// yet silently dropped from the served catalogue. Definition lookup is now part of admission,
+    /// so "admitted" and "servable" are one predicate and the catalogue is a plain map over the
+    /// ledger rather than a filtered subset.
+    #[test]
+    fn tool_admission_requires_a_served_definition() {
+        let catalog = mcp_tools_catalog();
+        assert_eq!(
+            catalog.len(),
+            MCP_TOOLS.len(),
+            "admitted tools and served tools must be the same surface"
+        );
+        for (name, class) in MCP_TOOLS {
+            let name = *name;
+            let (resolved_class, metadata, definition) =
+                resolve_tool(name).expect("ledger entry must be admitted");
+            assert_eq!(resolved_class, *class);
+            assert_eq!(metadata.name, name);
+            assert_eq!(definition["name"].as_str(), Some(name));
+            assert!(
+                catalog.iter().any(|tool| tool == &definition),
+                "an admitted tool must publish its exact definition: {name}"
+            );
+        }
     }
 }

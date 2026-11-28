@@ -4,6 +4,10 @@ import { useMetricsStore } from '@/store/metrics'
 import MetricCard from '@/components/ui/MetricCard'
 import MetricChart from '@/components/ui/MetricChart'
 import { api } from '@/api/client'
+import type { DurableJobResponse } from '@/api/types'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import { notify } from '@/store/notifications'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -324,6 +328,7 @@ function fmtRelative(ts: number | null): string {
 function BackupHealthWidget() {
   const [configs, setConfigs] = useState<BackupConf[]>([])
   const [busy, setBusy] = useState<string | null>(null)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const load = useCallback(() => {
     fetch('/api/backups', { credentials: 'include' })
@@ -337,8 +342,13 @@ function BackupHealthWidget() {
   const runTest = async (id: string) => {
     setBusy(id)
     try {
-      await fetch(`/api/backups/${id}/restore-test`, { method: 'POST', credentials: 'include' })
-      load()
+      const response = await fetch(`/api/backups/${id}/restore-test`, { method: 'POST', credentials: 'include' })
+      const body = await response.json()
+      if (!response.ok || !body.job) throw new Error(body.error?.message ?? 'Failed to submit restore test')
+      const { job } = body as DurableJobResponse
+      track(job, { label: 'Backup restore test', onSucceeded: load })
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : 'Failed to submit restore test')
     } finally {
       setBusy(null)
     }
@@ -347,6 +357,7 @@ function BackupHealthWidget() {
   return (
     <div className="card">
       <div className="text-xs uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>Backup Health</div>
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {configs.length === 0 ? (
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No backup jobs configured.</p>
       ) : (

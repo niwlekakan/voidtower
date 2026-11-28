@@ -163,7 +163,7 @@ export function TopBarUtilities({ compact = false }: { compact?: boolean }) {
         }}
       >
         <Search size={14} />
-        <span>{compact ? 'Search' : 'Search or press Ctrl+K'}</span>
+        <span>{compact ? 'Search' : <>Search<span className="hidden md:inline"> or press Ctrl+K</span></>}</span>
       </button>
 
       <div className={compact ? 'flex items-center gap-3 flex-shrink-0' : 'flex items-center gap-3 ml-auto'}>

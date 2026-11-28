@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Tag as TagIcon } from 'lucide-react'
 import { api } from '@/api/client'
-import type { LocalVm, ProxmoxVm, ProxmoxConfig, Tag, TagMap } from '@/api/types'
+import type { LocalVm, ProxmoxVm, ProxmoxConfig, Tag, TagMap, DurableJobSummary } from '@/api/types'
 import { notify } from '@/store/notifications'
 import { useFiltersStore } from '@/store/filters'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import Button from '@/components/ui/Button'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -167,7 +169,7 @@ function LocalVmsSection({ allTags, tagMap, globalTag, onTagsChanged }: {
 
 // ── Proxmox config panel ──────────────────────────────────────────────────────
 
-function ProxmoxConfigPanel({ onSaved }: { onSaved: () => void }) {
+function ProxmoxConfigPanel({ onSaved, onJob }: { onSaved: () => void; onJob: (job: DurableJobSummary, label: string, onSucceeded?: (job: DurableJobSummary) => void | Promise<void>) => void }) {
   const [cfg, setCfg] = useState<ProxmoxConfig>({ host: '', port: 8006, token: '', node: 'pve', verify_ssl: false })
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -180,9 +182,8 @@ function ProxmoxConfigPanel({ onSaved }: { onSaved: () => void }) {
   const save = async () => {
     setSaving(true)
     try {
-      await api.vms.setProxmoxConfig(cfg)
-      notify.success('Proxmox config saved')
-      onSaved()
+      const { job } = await api.vms.setProxmoxConfig(cfg)
+      onJob(job, 'Save Proxmox configuration', onSaved)
     } catch { notify.error('Failed to save config') }
     finally { setSaving(false) }
   }
@@ -191,12 +192,12 @@ function ProxmoxConfigPanel({ onSaved }: { onSaved: () => void }) {
     setTesting(true)
     setTestResult(null)
     try {
-      const res = await api.vms.testProxmox()
-      if (res.ok) {
-        setTestResult({ ok: true, message: `Connected — nodes: ${res.nodes?.join(', ') || '?'}` })
-      } else {
-        setTestResult({ ok: false, message: res.message || 'Connection failed' })
-      }
+      const { job } = await api.vms.testProxmox()
+      setTestResult({ ok: true, message: `Connection test submitted · job ${job.id.slice(0, 8)}` })
+      onJob(job, 'Test Proxmox connection', completed => {
+        const result = completed.result as { nodes?: string[] } | null
+        setTestResult({ ok: true, message: `Connected — nodes: ${result?.nodes?.join(', ') || '?'}` })
+      })
     } catch (e: unknown) {
       setTestResult({ ok: false, message: String(e) })
     } finally { setTesting(false) }
@@ -267,8 +268,9 @@ const PX_ACTIONS: { label: string; action: string; statuses: string[] }[] = [
   { label: 'Stop',     action: 'stop',     statuses: ['running', 'paused'] },
 ]
 
-function ProxmoxVmsSection({ reload, allTags, tagMap, globalTag, onTagsChanged }: {
+function ProxmoxVmsSection({ reload, allTags, tagMap, globalTag, onTagsChanged, onJob }: {
   reload: number; allTags: Tag[]; tagMap: TagMap; globalTag: string | null; onTagsChanged: () => void
+  onJob: (job: DurableJobSummary, label: string, onSucceeded?: (job: DurableJobSummary) => void | Promise<void>) => void
 }) {
   const [vms, setVms] = useState<ProxmoxVm[]>([])
   const [loading, setLoading] = useState(true)
@@ -298,9 +300,8 @@ function ProxmoxVmsSection({ reload, allTags, tagMap, globalTag, onTagsChanged }
     const key = `${vm.vmid}-${action}`
     setBusy(key)
     try {
-      const res = await api.vms.proxmoxAction(vm.vmid, vm.kind, vm.node, action)
-      if (res.ok) { notify.success(`${action}: ${vm.name}`); setTimeout(load, 2000) }
-      else notify.error(res.message || 'Action failed')
+      const { job } = await api.vms.proxmoxAction(vm.vmid, vm.kind, vm.node, action)
+      onJob(job, `${action} ${vm.name || vm.vmid}`, load)
     } catch { notify.error('Action failed') }
     finally { setBusy(null) }
   }
@@ -382,6 +383,7 @@ function ProxmoxVmsSection({ reload, allTags, tagMap, globalTag, onTagsChanged }
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export default function VMsPage() {
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
   const [tab, setTab] = useState<'local' | 'proxmox'>('local')
   const [pxReload, setPxReload] = useState(0)
   const [allTags, setAllTags] = useState<Tag[]>([])
@@ -418,10 +420,11 @@ export default function VMsPage() {
 
       {tab === 'proxmox' && (
         <>
-          <ProxmoxConfigPanel onSaved={() => setPxReload(r => r + 1)} />
-          <ProxmoxVmsSection reload={pxReload} allTags={allTags} tagMap={tagMap} globalTag={globalTag} onTagsChanged={loadTags} />
+          <ProxmoxConfigPanel onSaved={() => setPxReload(r => r + 1)} onJob={(job, label, onSucceeded) => track(job, { label, onSucceeded })} />
+          <ProxmoxVmsSection reload={pxReload} allTags={allTags} tagMap={tagMap} globalTag={globalTag} onTagsChanged={loadTags} onJob={(job, label, onSucceeded) => track(job, { label, onSucceeded })} />
         </>
       )}
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
     </div>
   )
 }

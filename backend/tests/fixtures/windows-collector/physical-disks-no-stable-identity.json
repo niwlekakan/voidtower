@@ -1,0 +1,16 @@
+{
+  "PhysicalDisks": [
+    {
+      "DeviceId": "0",
+      "FriendlyName": "Fixture Anonymous Bridge",
+      "SerialNumber": "To be filled by O.E.M.",
+      "UniqueId": "          ",
+      "MediaType": "HDD",
+      "BusType": "SATA",
+      "Size": 250000000000,
+      "HealthStatus": "Unknown",
+      "OperationalStatus": "Unknown",
+      "PhysicalLocation": "External"
+    }
+  ]
+}

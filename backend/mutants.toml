@@ -1,0 +1,9 @@
+# cargo-mutants configuration.
+#
+# By default cargo-mutants copies the crate under test into a temporary
+# directory. Several test modules embed frontend sources with include_str!
+# (for example backend/src/operations/registry.rs reads AppRoutes.tsx), which
+# live outside backend/ and therefore cannot be found from an isolated copy.
+# Mutating in place keeps those relative paths valid. cargo-mutants restores
+# every file it changes.
+in_place = true

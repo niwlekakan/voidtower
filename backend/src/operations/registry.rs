@@ -1,0 +1,1415 @@
+//! Startup validation for the durable operation registry.
+//!
+//! The security registry remains the single action authority. This module owns the adapter-key
+//! inventory and proves that adopted compatibility routes, canonical actions, schemas, and future
+//! worker dispatch keys converge before the HTTP server starts. Concrete adapter implementations
+//! attach to these keys during the domain-adoption slices; the generic invocation route remains
+//! unmounted until that runtime registry has a real adapter.
+
+use crate::api::mcp::action_registry::{
+    self, ActionExecution, ActionIngress, ActionKind, AiExposure, ApprovalPolicy, BearerPolicy,
+    HttpMethod, RecoveryClass, RetryClass, RiskClass, RoleTier, SessionPolicy, ACTIONS, ROUTES,
+};
+use anyhow::{bail, ensure, Result};
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdapterMetadata {
+    pub key: &'static str,
+}
+
+pub const ADAPTERS: &[AdapterMetadata] = &[
+    AdapterMetadata { key: "automation" },
+    AdapterMetadata { key: "backups" },
+    AdapterMetadata { key: "containers" },
+    AdapterMetadata { key: "firewall" },
+    AdapterMetadata { key: "proxmox" },
+    AdapterMetadata { key: "proxy" },
+    AdapterMetadata { key: "services" },
+    AdapterMetadata { key: "updates" },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferredMutationException {
+    pub method: HttpMethod,
+    pub route: &'static str,
+    pub source: &'static str,
+    pub reason: &'static str,
+}
+
+/// Compatibility mutations intentionally unavailable until their canonical adapters exist.
+pub const DEFERRED_MUTATION_EXCEPTIONS: &[DeferredMutationException] = &[
+    DeferredMutationException {
+        method: HttpMethod::Get,
+        route: "/api/containers/:id/exec",
+        source: "containers::exec_ws",
+        reason: "container shell adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Get,
+        route: "/api/terminal/ws",
+        source: "terminal::ws_handler",
+        reason: "local shell adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Get,
+        route: "/api/terminal/ssh/ws",
+        source: "terminal::ssh_ws_handler",
+        reason: "SSH session adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/download",
+        source: "models::start_download",
+        reason: "model file lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/models/:filename",
+        source: "models::delete_model",
+        reason: "model file lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/load",
+        source: "models::load_model",
+        reason: "model process lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/llama-config",
+        source: "models::save_llama_config",
+        reason: "model runtime configuration adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/ollama-config",
+        source: "models::save_ollama_config",
+        reason: "model runtime configuration adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/ollama/pull",
+        source: "models::start_ollama_pull",
+        reason: "Ollama provider lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/models/ollama/create",
+        source: "models::start_ollama_create",
+        reason: "Ollama provider lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/ai/llama/unload",
+        source: "ai::llama_unload",
+        reason: "AI process lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/studio/image/generate",
+        source: "studio::image_generate",
+        reason: "AI image generation adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/studio/tts/generate",
+        source: "studio::tts_generate",
+        reason: "AI speech generation adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/studio/stt/transcribe",
+        source: "studio::stt_transcribe",
+        reason: "AI speech transcription adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/system/restart",
+        source: "system::restart",
+        reason: "system lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/files/write",
+        source: "files::write_file",
+        reason: "filesystem resource adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/files/mkdir",
+        source: "files::mkdir",
+        reason: "filesystem resource adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/files/delete",
+        source: "files::delete",
+        reason: "filesystem resource adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/files/rename",
+        source: "files::rename",
+        reason: "filesystem resource adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/plugins",
+        source: "plugins::install",
+        reason: "plugin lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Patch,
+        route: "/api/plugins/:id",
+        source: "plugins::update",
+        reason: "plugin lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/plugins/:id",
+        source: "plugins::uninstall",
+        reason: "plugin lifecycle adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/mods/fetch",
+        source: "mods::fetch_mod",
+        reason: "repository-mod adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/mods/apply",
+        source: "mods::apply_mod",
+        reason: "repository-mod adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/mods/rollback",
+        source: "mods::rollback_mod",
+        reason: "repository-mod adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/lxc/:vmid/action",
+        source: "lxc::action",
+        reason: "local LXC adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/vms/local/action",
+        source: "vms::local_action",
+        reason: "local VM adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/wireguard/peers",
+        source: "wireguard::add_peer",
+        reason: "WireGuard adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/wireguard/peers/:id",
+        source: "wireguard::delete_peer",
+        reason: "WireGuard adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/mount",
+        source: "storage::mount_device",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/umount",
+        source: "storage::umount_device",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/fstab",
+        source: "storage::add_fstab",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Delete,
+        route: "/api/storage/fstab/:idx",
+        source: "storage::remove_fstab",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/raid/create",
+        source: "storage::create_raid",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/raid/stop",
+        source: "storage::stop_raid",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/format",
+        source: "storage::format_device",
+        reason: "storage adapter",
+    },
+    DeferredMutationException {
+        method: HttpMethod::Post,
+        route: "/api/storage/paths",
+        source: "storage::set_storage_paths",
+        reason: "storage adapter",
+    },
+];
+
+/// Compatibility routes included in the approved six-domain adoption. POST routes that only plan
+/// and the ephemeral Proxmox VNC-ticket route are intentionally absent.
+const ADOPTED_ROUTES: &[(HttpMethod, &str)] = &[
+    (HttpMethod::Post, "/api/apps/:project_name/expose"),
+    (HttpMethod::Post, "/api/automation/:id/run"),
+    (HttpMethod::Post, "/api/backups"),
+    (HttpMethod::Delete, "/api/backups/:id"),
+    (HttpMethod::Post, "/api/backups/:id/check"),
+    (HttpMethod::Post, "/api/backups/:id/restore-test"),
+    (HttpMethod::Post, "/api/backups/:id/run"),
+    (HttpMethod::Post, "/api/containers/:id/action"),
+    (HttpMethod::Post, "/api/containers/:id/compose/apply"),
+    (HttpMethod::Post, "/api/firewall/action"),
+    (HttpMethod::Post, "/api/services/:name/action"),
+    (HttpMethod::Post, "/api/firewall/rules"),
+    (HttpMethod::Post, "/api/firewall/rules/delete"),
+    (HttpMethod::Post, "/api/integrations/webhooks"),
+    (HttpMethod::Post, "/api/proxy"),
+    (HttpMethod::Delete, "/api/proxy/:id"),
+    (HttpMethod::Put, "/api/proxy/:id"),
+    (HttpMethod::Post, "/api/proxy/:id/toggle"),
+    (HttpMethod::Post, "/api/proxy/ai-auto"),
+    (HttpMethod::Post, "/api/proxy/nginx/action"),
+    (HttpMethod::Post, "/api/updates/docker/:id/apply"),
+    (HttpMethod::Post, "/api/updates/docker/check"),
+    (HttpMethod::Post, "/api/updates/odysseus/apply"),
+    (HttpMethod::Post, "/api/updates/os/apply"),
+    (HttpMethod::Post, "/api/updates/voidtower/apply"),
+    (HttpMethod::Post, "/api/updates/voidtower/check"),
+    (HttpMethod::Post, "/api/updates/voidtower/rollback"),
+    (HttpMethod::Post, "/api/system/update"),
+    (HttpMethod::Get, "/api/system/update-check"),
+    (HttpMethod::Post, "/api/proxmox/:host_id/lxc/deploy"),
+    (
+        HttpMethod::Post,
+        "/api/proxmox/:host_id/nodes/:node/disks/init",
+    ),
+    (
+        HttpMethod::Post,
+        "/api/proxmox/:host_id/nodes/:node/disks/wipe",
+    ),
+    (
+        HttpMethod::Delete,
+        "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
+    ),
+    (
+        HttpMethod::Post,
+        "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
+    ),
+    (
+        HttpMethod::Post,
+        "/api/proxmox/:host_id/vms/:vmid/disk-passthrough",
+    ),
+    (HttpMethod::Post, "/api/proxmox/:host_id/vms/:vmid/reboot"),
+    (HttpMethod::Post, "/api/proxmox/:host_id/vms/:vmid/reset"),
+    (HttpMethod::Post, "/api/proxmox/:host_id/vms/:vmid/resume"),
+    (
+        HttpMethod::Post,
+        "/api/proxmox/:host_id/vms/:vmid/rollback/:snapname",
+    ),
+    (HttpMethod::Post, "/api/proxmox/:host_id/vms/:vmid/shutdown"),
+    (HttpMethod::Post, "/api/proxmox/:host_id/vms/:vmid/snapshot"),
+    (
+        HttpMethod::Delete,
+        "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",
+    ),
+    (HttpMethod::Post, "/api/proxmox/:host_id/vms/:vmid/start"),
+    (HttpMethod::Post, "/api/proxmox/:host_id/vms/:vmid/stop"),
+    (HttpMethod::Post, "/api/proxmox/:host_id/vms/:vmid/suspend"),
+    (HttpMethod::Post, "/api/proxmox/hosts"),
+    (HttpMethod::Delete, "/api/proxmox/hosts/:host_id"),
+    (HttpMethod::Post, "/api/vms/proxmox/action"),
+    (HttpMethod::Post, "/api/vms/proxmox/config"),
+    (HttpMethod::Post, "/api/vms/proxmox/test"),
+];
+
+pub fn validate() -> Result<()> {
+    validate_adapter_inventory()?;
+    validate_durable_actions()?;
+    validate_route_mappings()?;
+    Ok(())
+}
+
+fn validate_adapter_inventory() -> Result<()> {
+    let mut keys = HashSet::new();
+    for adapter in ADAPTERS {
+        ensure!(!adapter.key.is_empty(), "operation adapter key is empty");
+        ensure!(
+            keys.insert(adapter.key),
+            "duplicate operation adapter key: {}",
+            adapter.key
+        );
+        ensure!(
+            ACTIONS.iter().any(|action| {
+                action.execution == ActionExecution::DurableJob
+                    && action.adapter_key == Some(adapter.key)
+            }),
+            "operation adapter {} has no registered durable action",
+            adapter.key
+        );
+    }
+    Ok(())
+}
+
+fn validate_durable_actions() -> Result<()> {
+    let adapter_keys: HashSet<&str> = ADAPTERS.iter().map(|adapter| adapter.key).collect();
+    let mut input_schemas = HashSet::new();
+    let mut result_schemas = HashSet::new();
+
+    for action in ACTIONS
+        .iter()
+        .filter(|action| action.execution == ActionExecution::Direct)
+    {
+        ensure!(
+            action.resource_kind.is_none()
+                && action.adapter_key.is_none()
+                && action.input_schema_id.is_none()
+                && action.result_schema_id.is_none()
+                && action.concurrency.is_none()
+                && action.retry.is_none()
+                && action.recovery.is_none()
+                && action.canonical_session_role.is_none()
+                && action.canonical_bearer == BearerPolicy::Denied,
+            "direct action {} has partial durable metadata",
+            action.name
+        );
+    }
+
+    for action in ACTIONS
+        .iter()
+        .filter(|action| action.execution == ActionExecution::DurableJob)
+    {
+        let resource_kind = required(action.resource_kind, action.name, "resource kind")?;
+        let adapter_key = required(action.adapter_key, action.name, "adapter key")?;
+        let input_schema = required(action.input_schema_id, action.name, "input schema")?;
+        let result_schema = required(action.result_schema_id, action.name, "result schema")?;
+        ensure!(
+            !resource_kind.contains(char::is_whitespace),
+            "action {} has invalid resource kind",
+            action.name
+        );
+        ensure!(
+            adapter_keys.contains(adapter_key),
+            "action {} references unknown adapter {}",
+            action.name,
+            adapter_key
+        );
+        ensure!(
+            input_schema.ends_with(".input.v1"),
+            "action {} input schema is not versioned: {}",
+            action.name,
+            input_schema
+        );
+        ensure!(
+            result_schema.ends_with(".result.v1"),
+            "action {} result schema is not versioned: {}",
+            action.name,
+            result_schema
+        );
+        ensure!(
+            input_schemas.insert(input_schema),
+            "duplicate durable input schema: {}",
+            input_schema
+        );
+        ensure!(
+            result_schemas.insert(result_schema),
+            "duplicate durable result schema: {}",
+            result_schema
+        );
+        ensure!(
+            action.concurrency.is_some(),
+            "action {} has no concurrency policy",
+            action.name
+        );
+        let retry = action
+            .retry
+            .ok_or_else(|| anyhow::anyhow!("action {} has no retry metadata", action.name))?;
+        ensure!(
+            retry.max_attempts > 0,
+            "action {} permits zero attempts",
+            action.name
+        );
+        match retry.class {
+            RetryClass::Never => ensure!(
+                retry.max_attempts == 1,
+                "never-retry action {} must permit exactly one attempt",
+                action.name
+            ),
+            RetryClass::Transient => ensure!(
+                retry.max_attempts > 1,
+                "transient-retry action {} must permit multiple attempts",
+                action.name
+            ),
+        }
+        ensure!(
+            action.recovery == Some(RecoveryClass::Reconcile),
+            "action {} has no supported recovery class",
+            action.name
+        );
+        // Exercise the persisted spellings here so they cannot silently drift from the job schema.
+        ensure!(
+            !retry.class.as_str().is_empty(),
+            "action {} has an empty retry class",
+            action.name
+        );
+        ensure!(
+            !action.recovery.expect("checked above").as_str().is_empty(),
+            "action {} has an empty recovery class",
+            action.name
+        );
+        ensure!(
+            action.ingresses.contains(&ActionIngress::Http),
+            "durable action {} is not reachable from HTTP",
+            action.name
+        );
+        required_role(action.canonical_session_role, action.name)?;
+        match action.canonical_bearer {
+            BearerPolicy::Scope(scope) => {
+                ensure!(
+                    !scope.is_empty(),
+                    "durable action {} has an empty bearer scope",
+                    action.name
+                );
+                ensure!(
+                    action.ai_exposure == AiExposure::Callable,
+                    "bearer-scoped durable action {} is not AI-callable",
+                    action.name
+                );
+            }
+            BearerPolicy::Denied => ensure!(
+                action.ai_exposure == AiExposure::None,
+                "bearer-denied durable action {} is AI-exposed",
+                action.name
+            ),
+            BearerPolicy::Public | BearerPolicy::Unscoped | BearerPolicy::ActionScoped => bail!(
+                "durable action {} has unsafe bearer policy {:?}",
+                action.name,
+                action.canonical_bearer
+            ),
+        }
+
+        match action.kind {
+            ActionKind::Read => {
+                ensure!(
+                    action.risk == RiskClass::Read
+                        && action.approval == ApprovalPolicy::NotApplicable,
+                    "read-result job {} has inconsistent risk/approval metadata",
+                    action.name
+                );
+            }
+            ActionKind::Mutating => {
+                ensure!(
+                    action.risk != RiskClass::Read,
+                    "mutating job {} is classified as read",
+                    action.name
+                );
+                ensure!(
+                    (action.risk == RiskClass::Irreversible)
+                        == (action.approval == ApprovalPolicy::Always),
+                    "mutating job {} has inconsistent irreversible approval metadata",
+                    action.name
+                );
+                if matches!(
+                    action.risk,
+                    RiskClass::Destructive | RiskClass::Irreversible
+                ) {
+                    ensure!(
+                        retry.class == RetryClass::Never,
+                        "high-risk action {} cannot retry automatically",
+                        action.name
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_route_mappings() -> Result<()> {
+    let expected: HashSet<(HttpMethod, &str)> = ADOPTED_ROUTES.iter().copied().collect();
+    ensure!(
+        expected.len() == ADOPTED_ROUTES.len(),
+        "duplicate adopted route key"
+    );
+
+    let mapped: HashSet<(HttpMethod, &str)> = ROUTES
+        .iter()
+        .filter(|route| !route.canonical_actions.is_empty())
+        .map(|route| (route.method, route.path))
+        .collect();
+    ensure!(
+        mapped == expected,
+        "adopted and mapped route inventories diverge"
+    );
+
+    for route in ROUTES
+        .iter()
+        .filter(|route| !route.canonical_actions.is_empty())
+    {
+        let mut names = HashSet::new();
+        for action_name in route.canonical_actions {
+            ensure!(
+                names.insert(*action_name),
+                "route {} {} repeats action {}",
+                route.method.as_str(),
+                route.path,
+                action_name
+            );
+            let action = action_registry::action(action_name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "route {} {} maps unknown action {}",
+                    route.method.as_str(),
+                    route.path,
+                    action_name
+                )
+            })?;
+            ensure!(
+                action.execution == ActionExecution::DurableJob,
+                "route {} {} maps non-durable action {}",
+                route.method.as_str(),
+                route.path,
+                action_name
+            );
+            ensure!(
+                risk_rank(route.risk) >= risk_rank(action.risk),
+                "route {} {} understates action {} risk",
+                route.method.as_str(),
+                route.path,
+                action_name
+            );
+            if action.approval == ApprovalPolicy::Always {
+                ensure!(
+                    route.approval == ApprovalPolicy::Always,
+                    "route {} {} weakens always-approval action {}",
+                    route.method.as_str(),
+                    route.path,
+                    action_name
+                );
+            }
+            match route.session {
+                SessionPolicy::Required(route_role) => {
+                    let action_role = required_role(action.canonical_session_role, action.name)?;
+                    ensure!(
+                        role_rank(route_role) >= role_rank(action_role),
+                        "route {} {} weakens action {} session role",
+                        route.method.as_str(),
+                        route.path,
+                        action.name
+                    );
+                }
+                SessionPolicy::HandlerManaged => {
+                    ensure!(
+                        route.credential
+                            == crate::api::mcp::action_registry::CredentialPolicy::WebhookHmac
+                            && action.ingresses.contains(&ActionIngress::Webhook),
+                        "mapped handler-managed route {} {} is not bound to webhook action {}",
+                        route.method.as_str(),
+                        route.path,
+                        action.name
+                    );
+                }
+                other => bail!(
+                    "mapped route {} {} has unsupported session policy {:?}",
+                    route.method.as_str(),
+                    route.path,
+                    other
+                ),
+            }
+            ensure!(
+                bearer_at_least_as_restrictive(route.bearer, action.canonical_bearer),
+                "route {} {} weakens action {} bearer policy",
+                route.method.as_str(),
+                route.path,
+                action.name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn required<'a>(value: Option<&'a str>, action: &str, field: &str) -> Result<&'a str> {
+    match value {
+        Some(value) if !value.is_empty() => Ok(value),
+        _ => bail!("action {} has no {}", action, field),
+    }
+}
+
+fn required_role(value: Option<RoleTier>, action: &str) -> Result<RoleTier> {
+    value.ok_or_else(|| anyhow::anyhow!("action {action} has no canonical session role"))
+}
+
+const fn role_rank(role: RoleTier) -> u8 {
+    match role {
+        RoleTier::Session => 0,
+        RoleTier::Operator => 1,
+        RoleTier::Admin => 2,
+        RoleTier::Owner => 3,
+    }
+}
+
+fn bearer_at_least_as_restrictive(route: BearerPolicy, action: BearerPolicy) -> bool {
+    match (route, action) {
+        (BearerPolicy::Denied, _) => true,
+        (BearerPolicy::Scope(route), BearerPolicy::Scope(action)) => route == action,
+        _ => false,
+    }
+}
+
+const fn risk_rank(risk: RiskClass) -> u8 {
+    match risk {
+        RiskClass::Read => 0,
+        RiskClass::Mutate => 1,
+        RiskClass::Destructive => 2,
+        RiskClass::Irreversible => 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn occurrences(source: &str, needle: &str) -> usize {
+        source.match_indices(needle).count()
+    }
+
+    #[test]
+    fn operation_registry_is_complete_and_consistent() {
+        validate().expect("operation registry should be valid");
+        assert_eq!(
+            ADOPTED_ROUTES.len(),
+            50,
+            "the adopted route inventory drifted"
+        );
+    }
+
+    /// Lease recovery requeues a started step only when its retry class is not `never`, so a
+    /// dispatched mutation stays safe only while every durable mutating action is single-attempt.
+    /// The mutating constructors hardcode never/one-attempt and the explicit mutating entries pass
+    /// them literally; this pins that data property: a new retryable mutating action would be
+    /// re-dispatched after the provider call may have applied.
+    #[test]
+    fn durable_mutating_actions_never_retry_automatically() {
+        let mutating: Vec<_> = ACTIONS
+            .iter()
+            .filter(|action| action.execution == ActionExecution::DurableJob)
+            .filter(|action| action.kind == ActionKind::Mutating)
+            .collect();
+        assert!(
+            !mutating.is_empty(),
+            "the durable mutating inventory is empty"
+        );
+        for action in mutating {
+            let retry = action
+                .retry
+                .unwrap_or_else(|| panic!("mutating action {} has no retry metadata", action.name));
+            assert_eq!(
+                retry.class,
+                RetryClass::Never,
+                "mutating action {} must not retry automatically",
+                action.name
+            );
+            assert_eq!(
+                retry.max_attempts, 1,
+                "mutating action {} must permit exactly one attempt",
+                action.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_durable_action_has_explicit_canonical_access() {
+        let durable: Vec<_> = ACTIONS
+            .iter()
+            .filter(|action| action.execution == ActionExecution::DurableJob)
+            .collect();
+        assert_eq!(durable.len(), 53, "the J0 durable action inventory drifted");
+
+        for action in durable {
+            assert!(
+                action.canonical_session_role.is_some(),
+                "durable action {} has no canonical session role",
+                action.name
+            );
+            match action.canonical_bearer {
+                crate::api::mcp::action_registry::BearerPolicy::Scope(_) => assert_eq!(
+                    action.ai_exposure,
+                    crate::api::mcp::action_registry::AiExposure::Callable,
+                    "bearer-scoped durable action {} must be AI-callable",
+                    action.name
+                ),
+                crate::api::mcp::action_registry::BearerPolicy::Denied => assert_eq!(
+                    action.ai_exposure,
+                    crate::api::mcp::action_registry::AiExposure::None,
+                    "bearer-denied durable action {} must not be AI-callable",
+                    action.name
+                ),
+                other => panic!(
+                    "durable action {} has unsafe canonical bearer policy {other:?}",
+                    action.name
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn plan_only_and_ephemeral_routes_are_not_job_mapped() {
+        for (method, path) in [
+            ("POST", "/api/backups/:id/delete-plan"),
+            ("POST", "/api/containers/:id/compose/propose"),
+            ("POST", "/api/proxmox/:host_id/vms/:vmid/vncproxy"),
+        ] {
+            let route = action_registry::route(method, path).expect("route metadata");
+            assert!(route.canonical_actions.is_empty(), "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn slow_checks_are_durable_reads_without_approval() {
+        for name in [
+            "backup.check",
+            "backup.restore_test",
+            "update.docker.check",
+            "update.voidtower.check",
+        ] {
+            let action = action_registry::action(name).expect("action metadata");
+            assert_eq!(action.execution, ActionExecution::DurableJob);
+            assert_eq!(action.kind, ActionKind::Read);
+            assert_eq!(action.risk, RiskClass::Read);
+            assert_eq!(action.approval, ApprovalPolicy::NotApplicable);
+        }
+    }
+
+    #[test]
+    fn backup_actions_have_the_exact_non_http_ingress_matrix() {
+        for name in [
+            "backup.config.create",
+            "backup.config.delete",
+            "backup.run",
+            "backup.check",
+            "backup.restore_test",
+        ] {
+            let action = action_registry::action(name).unwrap();
+            assert!(action.ingresses.contains(&ActionIngress::Http), "{name}");
+            assert!(
+                action.ingresses.contains(&ActionIngress::LocalCli),
+                "{name}"
+            );
+            assert_eq!(
+                action.ingresses.contains(&ActionIngress::Scheduler),
+                name == "backup.restore_test",
+                "{name}"
+            );
+        }
+        for action in ACTIONS.iter().filter(|action| {
+            !action.name.starts_with("backup.") && action.execution == ActionExecution::DurableJob
+        }) {
+            assert_eq!(
+                action.ingresses.contains(&ActionIngress::LocalCli),
+                action.name == "automation.run",
+                "{}",
+                action.name,
+            );
+            assert!(
+                !action.ingresses.contains(&ActionIngress::Scheduler)
+                    || action.name == "automation.run"
+            );
+        }
+    }
+
+    #[test]
+    fn automation_run_has_the_canonical_non_http_ingress_matrix() {
+        let action = action_registry::action("automation.run").unwrap();
+        assert_eq!(
+            action.ingresses,
+            &[
+                ActionIngress::Http,
+                ActionIngress::Webhook,
+                ActionIngress::LocalCli,
+                ActionIngress::Scheduler,
+            ]
+        );
+        assert_eq!(action.resource_kind, Some("automation_job"));
+        assert_eq!(action.canonical_session_role, Some(RoleTier::Operator));
+    }
+
+    #[test]
+    fn container_webhook_actions_use_the_durable_submission_path() {
+        for name in ["container.start", "container.stop", "container.restart"] {
+            let action = action_registry::action(name).expect("container action metadata");
+            assert_eq!(action.execution, ActionExecution::DurableJob, "{name}");
+            let expected_ingresses = &[
+                ActionIngress::Http,
+                ActionIngress::Webhook,
+                ActionIngress::Mcp,
+                ActionIngress::Studio,
+            ][..];
+            assert_eq!(action.ingresses, expected_ingresses, "{name}");
+        }
+
+        let integrations = include_str!("../api/integrations.rs");
+        assert!(integrations.contains("operation_adoption::submit("));
+        assert!(!integrations.contains("containers::container_action("));
+        assert!(!integrations.contains("container_service::container_action("));
+
+        let adapter = include_str!("adapters/containers.rs");
+        assert_eq!(
+            occurrences(adapter, "container_service::container_action("),
+            1,
+            "the container adapter must remain the only native execution boundary"
+        );
+    }
+
+    #[test]
+    fn app_exposure_is_durable_and_open_ui_is_read_only() {
+        let apps = include_str!("../api/apps.rs");
+        let expose = apps
+            .split_once("pub async fn expose_app(")
+            .expect("expose handler")
+            .1
+            .split_once("pub async fn delete_app_volumes(")
+            .expect("handler boundary")
+            .0;
+        assert!(expose.contains("create_with_credential("));
+        assert!(!expose.contains("audit::log("));
+        assert!(!expose.contains("create_proxy_record"));
+
+        let open_ui = apps
+            .split_once("pub async fn open_ui(")
+            .expect("open-ui handler")
+            .1
+            .split_once("pub async fn update_compose(")
+            .expect("handler boundary")
+            .0;
+        for forbidden in [
+            ".execute(&state.db)",
+            "write_nginx_port_conf",
+            "reload_nginx_pub",
+            "open_firewall_port",
+            "create_proxy_record",
+        ] {
+            assert!(!open_ui.contains(forbidden), "open-ui contains {forbidden}");
+        }
+        assert!(!apps.contains("create_proxy_record"));
+        assert!(!apps.contains("write_nginx_port_conf"));
+    }
+
+    #[test]
+    fn deferred_direct_execution_inventory_is_exact() {
+        let apps = include_str!("../api/apps.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("apps production source");
+
+        for (needle, expected) in [
+            ("containers::deploy_compose(", 0),
+            ("containers::deploy_compose_cancellable(", 0),
+            ("containers::restart_compose(", 0),
+            ("containers::remove_compose(", 0),
+            ("containers::stop_compose(", 0),
+            ("containers::pull_compose(", 0),
+            ("std::fs::remove_dir_all(", 0),
+        ] {
+            assert_eq!(
+                occurrences(apps, needle),
+                expected,
+                "App Vault bypass drift: {needle}"
+            );
+        }
+        assert!(apps.contains("pub async fn update_compose("));
+
+        let models = include_str!("../api/models.rs");
+        assert_eq!(occurrences(models, "crate::containers::deploy_compose("), 0);
+        let ollama_create = models
+            .split_once("pub async fn start_ollama_create(")
+            .and_then(|(_, rest)| rest.split_once("async fn do_ollama_create"))
+            .map(|(handler, _)| handler)
+            .expect("Ollama create handler");
+        for marker in ["api/create", "do_ollama_create(", "tokio::spawn"] {
+            assert!(
+                !ollama_create.contains(marker),
+                "Ollama create bypass drift: {marker}"
+            );
+        }
+
+        let settings = include_str!("../api/settings.rs");
+        let production = settings
+            .split("#[cfg(test)]")
+            .next()
+            .expect("settings tests must follow production code");
+        for needle in [
+            "reload_nginx_pub(",
+            "open_firewall_port(",
+            "close_firewall_port(",
+            "write_ai_proxy_conf(",
+            "patch_nginx_compose_port(",
+        ] {
+            assert!(
+                !production.contains(needle),
+                "settings bypass drift: {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_mutation_exception_ledger_is_complete_and_fail_closed() {
+        assert_eq!(DEFERRED_MUTATION_EXCEPTIONS.len(), 37);
+        for exception in DEFERRED_MUTATION_EXCEPTIONS {
+            assert!(!exception.route.is_empty());
+            assert!(!exception.reason.is_empty());
+            let route = action_registry::route(exception.method.as_str(), exception.route)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing route metadata for {} {}",
+                        exception.method.as_str(),
+                        exception.route
+                    )
+                });
+            assert!(
+                route.canonical_actions.is_empty(),
+                "deferred route must not claim a canonical action: {} {}",
+                exception.method.as_str(),
+                exception.route
+            );
+            let (module, handler) = exception
+                .source
+                .split_once("::")
+                .expect("module::handler source");
+            let api_routes = include_str!("../api/mod.rs");
+            assert!(
+                api_routes.contains(exception.source),
+                "{} is not registered in the API router",
+                exception.source
+            );
+            let source = match module {
+                "files" => include_str!("../api/files.rs"),
+                "plugins" => include_str!("../api/plugins.rs"),
+                "mods" => include_str!("../api/mods.rs"),
+                "services" => include_str!("../api/services.rs"),
+                "lxc" => include_str!("../api/lxc.rs"),
+                "vms" => include_str!("../api/vms.rs"),
+                "wireguard" => include_str!("../api/wireguard.rs"),
+                "storage" => include_str!("../api/storage.rs"),
+                "system" => include_str!("../api/system.rs"),
+                "ai" => include_str!("../api/ai.rs"),
+                "containers" => include_str!("../api/containers.rs"),
+                "terminal" => include_str!("../api/terminal.rs"),
+                "models" => include_str!("../api/models.rs"),
+                "studio" => include_str!("../api/studio.rs"),
+                _ => panic!("unclassified deferred module {module}"),
+            };
+            let start = source
+                .find(&format!("pub async fn {handler}"))
+                .unwrap_or_else(|| panic!("missing deferred handler {}", exception.source));
+            let body = source[start..]
+                .split("\n}\n")
+                .next()
+                .unwrap_or(&source[start..]);
+            assert!(
+                body.contains("FeatureUnavailable"),
+                "{} must fail closed",
+                exception.source
+            );
+            for marker in [
+                "std::fs::",
+                "tokio::fs::",
+                "Command::new",
+                "handle_terminal_ws(",
+                "handle_ssh_ws(",
+                "run_checked(",
+                "reqwest::",
+                "sqlx::query(",
+                "audit::log(",
+            ] {
+                assert!(
+                    !body.contains(marker),
+                    "{} retains direct mutation marker {}",
+                    exception.source,
+                    marker
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn deferred_mutation_routes_preserve_authentication_then_fail_closed() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::{header, Request, StatusCode},
+        };
+        use tower::ServiceExt;
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let cases = [
+            ("GET", "/api/containers/fixture-container/exec", ""),
+            ("GET", "/api/terminal/ws", ""),
+            ("GET", "/api/terminal/ssh/ws?session_id=fixture", ""),
+            ("POST", "/api/models/download", "not-json"),
+            ("DELETE", "/api/models/model.gguf", ""),
+            ("POST", "/api/models/load", "not-json"),
+            (
+                "POST",
+                "/api/models/llama-config",
+                r#"{"base_url":"http://127.0.0.1:8080"}"#,
+            ),
+            (
+                "POST",
+                "/api/models/ollama-config",
+                r#"{"base_url":"http://127.0.0.1:11434"}"#,
+            ),
+            ("POST", "/api/models/ollama/pull", "not-json"),
+            (
+                "POST",
+                "/api/models/ollama/create",
+                r#"{"filename":"model.gguf"}"#,
+            ),
+            ("POST", "/api/ai/llama/unload", ""),
+            ("POST", "/api/studio/image/generate", "not-json"),
+            ("POST", "/api/studio/tts/generate", "not-json"),
+            ("POST", "/api/studio/stt/transcribe", ""),
+            ("POST", "/api/system/restart", ""),
+            ("POST", "/api/lxc/101/action", r#"{"action":"start"}"#),
+            ("POST", "/api/files/write", "not-json"),
+            ("POST", "/api/files/mkdir", "not-json"),
+            ("DELETE", "/api/files/delete?path=%2Ftmp%2Ffixture", "%"),
+            ("POST", "/api/files/rename", "not-json"),
+            ("POST", "/api/plugins", "not-json"),
+            ("PATCH", "/api/plugins/fixture", "not-json"),
+            ("DELETE", "/api/plugins/fixture", ""),
+            ("POST", "/api/mods/fetch", ""),
+            ("POST", "/api/mods/apply", ""),
+            ("POST", "/api/mods/rollback", ""),
+            ("POST", "/api/vms/local/action", "not-json"),
+            ("POST", "/api/storage/umount", "not-json"),
+            ("POST", "/api/storage/fstab", "not-json"),
+            ("DELETE", "/api/storage/fstab/0", ""),
+            ("POST", "/api/storage/raid/create", "not-json"),
+            ("POST", "/api/storage/raid/stop", "not-json"),
+            ("POST", "/api/storage/format", "not-json"),
+            ("POST", "/api/storage/paths", "not-json"),
+            (
+                "POST",
+                "/api/storage/mount",
+                r#"{"device":"/dev/sdb","mountpoint":"/mnt/x","fstype":"ext4"}"#,
+            ),
+            (
+                "POST",
+                "/api/wireguard/peers",
+                r#"{"name":"fixture","interface":"wg0"}"#,
+            ),
+            ("DELETE", "/api/wireguard/peers/fixture", ""),
+        ];
+        for (method, uri, body) in cases {
+            let unauthenticated = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(header::COOKIE, format!("vt_session={session}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            let payload: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(payload["error"]["code"], "feature_unavailable", "{uri}");
+        }
+    }
+
+    #[test]
+    fn local_host_mutation_compatibility_handlers_fail_closed() {
+        let cases = [
+            (
+                "files",
+                include_str!("../api/files.rs"),
+                ["write_file", "mkdir", "delete", "rename"].as_slice(),
+            ),
+            (
+                "plugins",
+                include_str!("../api/plugins.rs"),
+                ["install", "uninstall", "update"].as_slice(),
+            ),
+            (
+                "mods",
+                include_str!("../api/mods.rs"),
+                ["fetch_mod", "apply_mod", "rollback_mod"].as_slice(),
+            ),
+        ];
+
+        for (module, source, handlers) in cases {
+            for handler in handlers {
+                let start = source
+                    .find(&format!("pub async fn {handler}"))
+                    .unwrap_or_else(|| panic!("{module}::{handler} handler missing"));
+                let body = source[start..]
+                    .split("\n}\n")
+                    .next()
+                    .unwrap_or(&source[start..]);
+                assert!(
+                    body.contains("FeatureUnavailable"),
+                    "{module}::{handler} must fail closed until its canonical adapter exists"
+                );
+                for marker in [
+                    "std::fs::",
+                    "tokio::fs::",
+                    "reqwest::",
+                    "Command::new",
+                    "run_checked(",
+                    "sqlx::query(",
+                ] {
+                    assert!(
+                        !body.contains(marker),
+                        "{module}::{handler} retains direct mutation marker {marker}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_host_mutation_routes_fail_closed_at_real_router() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::{header, Request, StatusCode},
+        };
+        use tower::ServiceExt;
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let cases = [
+            (
+                "POST",
+                "/api/files/write",
+                r#"{"path":"/tmp/voidtower-test","content":"x"}"#,
+            ),
+            (
+                "POST",
+                "/api/plugins",
+                r#"{"url":"https://example.invalid/plugin.zip"}"#,
+            ),
+            ("POST", "/api/mods/apply", ""),
+        ];
+
+        for (method, uri, body) in cases {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(header::COOKIE, format!("vt_session={session}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            let payload: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(payload["error"]["code"], "feature_unavailable", "{uri}");
+            assert!(
+                payload["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("canonical operation")),
+                "{uri} must expose the stable adapter boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_domain_clients_follow_accepted_jobs() {
+        let clients = [
+            (
+                "Containers",
+                include_str!("../../../frontend/src/pages/Containers.tsx"),
+            ),
+            (
+                "Container detail",
+                include_str!("../../../frontend/src/pages/ContainerDetail.tsx"),
+            ),
+            (
+                "Firewall",
+                include_str!("../../../frontend/src/pages/Firewall.tsx"),
+            ),
+            (
+                "Proxies",
+                include_str!("../../../frontend/src/pages/Proxies.tsx"),
+            ),
+            (
+                "Backups",
+                include_str!("../../../frontend/src/pages/Backups.tsx"),
+            ),
+            (
+                "Dashboard",
+                include_str!("../../../frontend/src/pages/Dashboard.tsx"),
+            ),
+            (
+                "Updates",
+                include_str!("../../../frontend/src/pages/Updates.tsx"),
+            ),
+            (
+                "Settings",
+                include_str!("../../../frontend/src/pages/Settings.tsx"),
+            ),
+            (
+                "Proxmox",
+                include_str!("../../../frontend/src/pages/ProxmoxPage.tsx"),
+            ),
+            ("VMs", include_str!("../../../frontend/src/pages/VMs.tsx")),
+            (
+                "native containers",
+                include_str!("../../../frontend/src/aios/panels/containers.tsx"),
+            ),
+            (
+                "native firewall",
+                include_str!("../../../frontend/src/aios/panels/firewall.tsx"),
+            ),
+            (
+                "native proxies",
+                include_str!("../../../frontend/src/aios/panels/proxies.tsx"),
+            ),
+            (
+                "native backups",
+                include_str!("../../../frontend/src/aios/panels/backups.tsx"),
+            ),
+            (
+                "native Proxmox",
+                include_str!("../../../frontend/src/aios/panels/proxmox.tsx"),
+            ),
+            (
+                "native VMs",
+                include_str!("../../../frontend/src/aios/panels/vms.tsx"),
+            ),
+        ];
+        for (name, source) in clients {
+            assert!(
+                source.contains("useDurableJobTracker"),
+                "{name} does not track jobs"
+            );
+            assert!(
+                source.contains("DurableJobNotice"),
+                "{name} does not expose job state"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_jobs_and_approvals_surfaces_are_source_enforced() {
+        // C3-04 moved the route table and its role wrappers out of App.tsx.
+        let app = include_str!("../../../frontend/src/AppRoutes.tsx");
+        for route in [
+            "path=\"jobs\"",
+            "path=\"jobs/:id\"",
+            "path=\"approvals\"",
+            "path=\"approvals/:id\"",
+        ] {
+            assert!(
+                app.contains(route),
+                "missing shared operation route {route}"
+            );
+        }
+        assert!(app.contains("allowed={OPERATOR_ROLES}"));
+        assert!(app.contains("allowed={ADMIN_ROLES}"));
+
+        let sidebar = include_str!("../../../frontend/src/components/layout/Sidebar.tsx");
+        assert!(sidebar.contains("to: '/jobs'"));
+        assert!(sidebar.contains("roles: OPERATOR_ROLES"));
+        assert!(sidebar.contains("to: '/approvals'"));
+        assert!(sidebar.contains("roles: ADMIN_ROLES"));
+        assert!(sidebar.contains("roleAllowed(user?.role, item.roles)"));
+
+        let dock = include_str!("../../../frontend/src/aios/AiosDock.tsx");
+        assert!(dock.contains("key: 'jobs'"));
+        assert!(dock.contains("roles: OPERATOR_ROLES"));
+        assert!(dock.contains("key: 'approvals'"));
+        assert!(dock.contains("roles: ADMIN_ROLES"));
+        assert!(dock.contains("roleAllowed(role, d.roles)"));
+
+        let layout = include_str!("../../../frontend/src/aios/AiosLayout.tsx");
+        assert!(layout.contains("jobs:         NativeJobsPanel"));
+        assert!(layout.contains("approvals:    NativeApprovalsPanel"));
+        assert!(layout.contains("/^\\/(jobs|approvals)(?:\\/|$)/"));
+
+        let notice = include_str!("../../../frontend/src/components/ui/DurableJobNotice.tsx");
+        assert!(notice.contains("<Link"));
+        assert!(notice.contains("`/jobs/${encodeURIComponent(job.id)}`"));
+    }
+
+    #[test]
+    fn durable_event_delivery_and_shared_invalidations_are_source_enforced() {
+        let routes = include_str!("../api/mod.rs");
+        assert!(routes.contains(".route(\"/api/events/stream\", get(events::stream_handler))"));
+        assert!(routes.contains(
+            ".route(\"/api/integrations/events\",                  get(events::stream_handler))"
+        ));
+        assert!(routes.contains(
+            ".route(\"/api/integrations/events/legacy\",           get(integrations::legacy_event_stream))"
+        ));
+
+        let backend = include_str!("../api/events.rs");
+        for contract in [
+            "last-event-id",
+            "DELIVERY_BATCH_SIZE: i64 = 100",
+            ".event(\"stream.ready\")",
+            ".event(\"stream.gap\")",
+            ".event(\"durable_event\")",
+            ".id(envelope.sequence.to_string())",
+        ] {
+            assert!(
+                backend.contains(contract),
+                "missing durable stream contract {contract}"
+            );
+        }
+
+        let client = include_str!("../../../frontend/src/operations/durableEvents.ts");
+        assert!(client.contains("new EventSource(api.events.streamUrl(after)"));
+        assert!(client.contains("event.sequence !== lastSequence + 1"));
+
+        let hooks = include_str!("../../../frontend/src/hooks/useOperationRecords.ts");
+        assert_eq!(occurrences(hooks, "const eventPredicate ="), 4);
+        assert!(hooks.contains("event.job_id === id"));
+        assert!(hooks.contains("event.approval_id === id"));
+
+        let polling = include_str!("../../../frontend/src/hooks/useBoundedPolling.ts");
+        assert!(polling.contains("subscribeDurableEvents"));
+        assert!(polling.contains("streamReady = value !== null && transportReady"));
+    }
+}

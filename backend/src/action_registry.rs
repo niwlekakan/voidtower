@@ -67,6 +67,9 @@ pub enum BearerPolicy {
     Public,
     Unscoped,
     Scope(&'static str),
+    /// The route selects a typed action or job at runtime and enforces that action's exact bearer
+    /// policy in the handler before planning or mutation.
+    ActionScoped,
     Denied,
 }
 
@@ -102,14 +105,20 @@ pub struct RouteMetadata {
     pub risk: RiskClass,
     pub approval: ApprovalPolicy,
     pub ai_exposure: AiExposure,
+    /// Canonical durable actions reachable through this route. Most routes have zero or one;
+    /// compatibility endpoints whose request body selects an operation declare every accepted
+    /// action so registry validation can still prove the route cannot bypass the job contract.
+    pub canonical_actions: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionIngress {
+    Http,
+    LocalCli,
+    Scheduler,
     Mcp,
     Studio,
     Webhook,
-    Automation,
     Internal,
 }
 
@@ -120,6 +129,63 @@ pub enum ActionKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionExecution {
+    /// A synchronous action that has not been adopted by the durable operation kernel. This is
+    /// retained for existing read tools and out-of-scope legacy mutations during the rollout.
+    Direct,
+    DurableJob,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaLifecycle {
+    Active,
+    #[allow(dead_code)]
+    Deprecated {
+        replacement: &'static str,
+        sunset: Option<&'static str>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConcurrencyPolicy {
+    Resource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryClass {
+    Never,
+    Transient,
+}
+
+impl RetryClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Transient => "transient",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryMetadata {
+    pub class: RetryClass,
+    pub max_attempts: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryClass {
+    Reconcile,
+}
+
+impl RecoveryClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reconcile => "reconcile",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActionMetadata {
     pub name: &'static str,
     pub ingresses: &'static [ActionIngress],
@@ -127,8 +193,40 @@ pub struct ActionMetadata {
     pub risk: RiskClass,
     pub approval: ApprovalPolicy,
     pub ai_exposure: AiExposure,
+    pub execution: ActionExecution,
+    pub resource_kind: Option<&'static str>,
+    pub adapter_key: Option<&'static str>,
+    pub input_schema_id: Option<&'static str>,
+    pub result_schema_id: Option<&'static str>,
+    pub schema_lifecycle: Option<SchemaLifecycle>,
+    pub concurrency: Option<ConcurrencyPolicy>,
+    pub retry: Option<RetryMetadata>,
+    pub recovery: Option<RecoveryClass>,
+    /// Minimum current user role for the canonical HTTP plan/submit/cancel boundary. Direct
+    /// actions have no canonical access; every durable HTTP action declares one explicitly.
+    pub canonical_session_role: Option<RoleTier>,
+    /// Bearer policy applied after the generic action-scoped route selects this action.
+    pub canonical_bearer: BearerPolicy,
 }
 
+impl ActionMetadata {
+    /// Scope required by the built-in MCP read surface. Keeping this mapping explicit prevents a
+    /// newly registered direct action from becoming callable merely by setting `AiExposure::Callable`.
+    pub fn mcp_scope(self) -> Option<&'static str> {
+        match self.name {
+            "get_node_metrics" | "list_nodes" => Some("metrics:read"),
+            "list_containers" => Some("containers:read"),
+            "get_container_logs" => Some("containers:logs"),
+            "list_services" => Some("services:read"),
+            "list_alerts" => Some("alerts:read"),
+            "get_template" | "list_routes" | "read_file" | "search_code" => Some("files:read"),
+            "container.start" | "container.stop" | "container.restart" => {
+                Some("containers:restart")
+            }
+            _ => None,
+        }
+    }
+}
 macro_rules! route_metadata {
     (
         $method:ident,
@@ -149,11 +247,188 @@ macro_rules! route_metadata {
             risk: $risk,
             approval: $approval,
             ai_exposure: $ai_exposure,
+            canonical_actions: &[],
+        }
+    };
+}
+
+macro_rules! operation_route_metadata {
+    (
+        $method:ident,
+        $path:literal,
+        $session:expr,
+        $credential:expr,
+        $bearer:expr,
+        $risk:expr,
+        $approval:expr,
+        $ai_exposure:expr,
+        [$($action:literal),+ $(,)?]
+    ) => {
+        RouteMetadata {
+            method: HttpMethod::$method,
+            path: $path,
+            session: $session,
+            credential: $credential,
+            bearer: $bearer,
+            risk: $risk,
+            approval: $approval,
+            ai_exposure: $ai_exposure,
+            canonical_actions: &[$($action),+],
         }
     };
 }
 
 pub const ROUTES: &[RouteMetadata] = &[
+    route_metadata!(
+        Post,
+        "/api/resources/:id/actions/:action",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::ActionScoped,
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always,
+        AiExposure::Callable
+    ),
+    route_metadata!(
+        Post,
+        "/api/resources/:id/actions/:action/plan",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::ActionScoped,
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always,
+        AiExposure::Callable
+    ),
+    route_metadata!(
+        Post,
+        "/api/jobs/:id/cancel",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::ActionScoped,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::Callable
+    ),
+    route_metadata!(
+        Get,
+        "/api/events",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/approvals",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/approvals/:id",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/approvals/:id/approve",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/approvals/:id/reject",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/jobs",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/jobs/by-idempotency/:key",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::ActionScoped,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::Callable
+    ),
+    route_metadata!(
+        Post,
+        "/api/jobs/:id/resolve-uncertain",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/jobs/:id",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/resources",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/resources/:id",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/resources/:id/capabilities",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
     route_metadata!(
         Get,
         "/api/agents",
@@ -250,9 +525,9 @@ pub const ROUTES: &[RouteMetadata] = &[
         SessionPolicy::Required(RoleTier::Session),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder,
-        AiExposure::Callable
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
     ),
     route_metadata!(
         Get,
@@ -434,7 +709,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/apps/:project_name/expose",
         SessionPolicy::Required(RoleTier::Admin),
@@ -442,7 +717,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxy.rule.create"]
     ),
     route_metadata!(
         Get,
@@ -620,7 +896,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         SessionPolicy::Required(RoleTier::Session),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
+        RiskClass::Read,
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
@@ -737,7 +1013,7 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Get,
         "/api/automation",
-        SessionPolicy::Required(RoleTier::Session),
+        SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Scope("automation:read"),
         RiskClass::Read,
@@ -774,7 +1050,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/automation/:id/run",
         SessionPolicy::Required(RoleTier::Operator),
@@ -782,12 +1058,13 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("automation:run"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::Callable,
+        ["automation.run"]
     ),
     route_metadata!(
         Get,
         "/api/automation/:id/runs",
-        SessionPolicy::Required(RoleTier::Session),
+        SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Scope("automation:read"),
         RiskClass::Read,
@@ -804,7 +1081,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/backups",
         SessionPolicy::Required(RoleTier::Operator),
@@ -812,9 +1089,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["backup.config.create"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Delete,
         "/api/backups/:id",
         SessionPolicy::Required(RoleTier::Admin),
@@ -822,17 +1100,19 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Destructive,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["backup.config.delete"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/backups/:id/check",
         SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None,
+        ["backup.check"]
     ),
     route_metadata!(
         Post,
@@ -840,21 +1120,22 @@ pub const ROUTES: &[RouteMetadata] = &[
         SessionPolicy::Required(RoleTier::Admin),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/backups/:id/restore-test",
         SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None,
+        ["backup.restore_test"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/backups/:id/run",
         SessionPolicy::Required(RoleTier::Operator),
@@ -862,7 +1143,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("backups:run"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["backup.run"]
     ),
     route_metadata!(
         Get,
@@ -884,7 +1166,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/containers/:id/action",
         SessionPolicy::Required(RoleTier::Operator),
@@ -892,7 +1174,13 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("containers:restart"),
         RiskClass::Destructive,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        [
+            "container.start",
+            "container.stop",
+            "container.restart",
+            "container.remove",
+        ]
     ),
     route_metadata!(
         Get,
@@ -904,7 +1192,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/containers/:id/compose/apply",
         SessionPolicy::Required(RoleTier::Admin),
@@ -912,7 +1200,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["container.compose.apply"]
     ),
     route_metadata!(
         Post,
@@ -920,8 +1209,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         SessionPolicy::Required(RoleTier::Admin),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
         AiExposure::None
     ),
     route_metadata!(
@@ -1017,7 +1306,7 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Get,
         "/api/events/stream",
-        SessionPolicy::Required(RoleTier::Session),
+        SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Scope("alerts:read"),
         RiskClass::Read,
@@ -1124,7 +1413,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/firewall/action",
         SessionPolicy::Required(RoleTier::Admin),
@@ -1132,9 +1421,15 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        [
+            "firewall.enable",
+            "firewall.disable",
+            "firewall.reload",
+            "firewall.reset",
+        ]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/firewall/rules",
         SessionPolicy::Required(RoleTier::Admin),
@@ -1142,9 +1437,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["firewall.rule.add"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/firewall/rules/delete",
         SessionPolicy::Required(RoleTier::Admin),
@@ -1152,7 +1448,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["firewall.rule.delete"]
     ),
     route_metadata!(
         Get,
@@ -1177,7 +1474,17 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Get,
         "/api/integrations/events",
-        SessionPolicy::Required(RoleTier::Session),
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Scope("alerts:read"),
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/integrations/events/legacy",
+        SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Scope("alerts:read"),
         RiskClass::Read,
@@ -1264,7 +1571,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/integrations/webhooks",
         SessionPolicy::HandlerManaged,
@@ -1272,7 +1579,13 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::Callable
+        AiExposure::Callable,
+        [
+            "automation.run",
+            "container.start",
+            "container.stop",
+            "container.restart",
+        ]
     ),
     route_metadata!(
         Get,
@@ -1309,7 +1622,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         "/api/mcp",
         SessionPolicy::HandlerManaged,
         CredentialPolicy::BearerApiToken,
-        BearerPolicy::Denied,
+        // MCP authenticates the token in its handler, then applies the exact tool scope at the
+        // canonical invocation boundary. The generic bearer middleware must therefore allow the
+        // request to reach that handler rather than denying the entire protocol endpoint.
+        BearerPolicy::Unscoped,
         RiskClass::Read,
         ApprovalPolicy::RiskLadder,
         AiExposure::Context
@@ -1319,10 +1635,180 @@ pub const ROUTES: &[RouteMetadata] = &[
         "/api/mcp/message",
         SessionPolicy::HandlerManaged,
         CredentialPolicy::BearerApiToken,
-        BearerPolicy::Denied,
+        BearerPolicy::Unscoped,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
         AiExposure::Callable
+    ),
+    route_metadata!(
+        Get,
+        "/api/households",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/households",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/households/:household_id/members",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/households/:household_id/members",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/households/:household_id/members/:user_id",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/households/:household_id/grants",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/households/:household_id/grants/me",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/households/:household_id/grants",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/households/:household_id/grants/:resource_id/:user_id",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/households/:household_id/consents",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/households/:household_id/consents",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/households/:household_id/consents/:consent_id",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/households/:household_id/privacy-requests",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/households/:household_id/privacy-requests/:request_id",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/households/:household_id/privacy-requests/:request_id/cancel",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/households/:household_id/privacy-requests/:request_id/retry",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/households/:household_id/privacy-requests/:request_id/artifact",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
     ),
     route_metadata!(
         Get,
@@ -1894,7 +2380,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/lxc/deploy",
         SessionPolicy::Required(RoleTier::Admin),
@@ -1902,7 +2388,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.lxc.deploy"]
     ),
     route_metadata!(
         Get,
@@ -1924,7 +2411,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/nodes/:node/disks/init",
         SessionPolicy::Required(RoleTier::Admin),
@@ -1932,7 +2419,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.disk.initialize"]
     ),
     route_metadata!(
         Get,
@@ -1944,7 +2432,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/nodes/:node/disks/wipe",
         SessionPolicy::Required(RoleTier::Admin),
@@ -1952,9 +2440,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.disk.wipe"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Delete,
         "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
         SessionPolicy::Required(RoleTier::Admin),
@@ -1962,7 +2451,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Destructive,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.storage.delete"]
     ),
     route_metadata!(
         Get,
@@ -1974,7 +2464,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
         SessionPolicy::Required(RoleTier::Admin),
@@ -1982,7 +2472,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.storage.upload"]
     ),
     route_metadata!(
         Get,
@@ -2014,7 +2505,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/disk-passthrough",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2022,9 +2513,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.disk.attach"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/reboot",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2032,9 +2524,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.guest.reboot"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/reset",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2042,9 +2535,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.guest.reset"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/resume",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2052,9 +2546,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.guest.resume"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/rollback/:snapname",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2062,9 +2557,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.snapshot.rollback"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/shutdown",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2072,9 +2568,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.guest.shutdown"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/snapshot",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2082,9 +2579,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.snapshot.create"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Delete,
         "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2092,7 +2590,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.snapshot.delete"]
     ),
     route_metadata!(
         Get,
@@ -2104,7 +2603,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/start",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2112,9 +2611,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.guest.start"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/stop",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2122,9 +2622,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.guest.stop"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/:host_id/vms/:vmid/suspend",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2132,7 +2633,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.guest.suspend"]
     ),
     route_metadata!(
         Post,
@@ -2154,7 +2656,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxmox/hosts",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2162,15 +2664,47 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.host.create"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Delete,
         "/api/proxmox/hosts/:host_id",
         SessionPolicy::Required(RoleTier::Admin),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
         RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None,
+        ["proxmox.host.delete"]
+    ),
+    route_metadata!(
+        Get,
+        "/api/npm/hosts",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Scope("proxy:read"),
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/npm/certificates",
+        SessionPolicy::Required(RoleTier::Session),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Scope("proxy:read"),
+        RiskClass::Read,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/npm/sync",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Scope("proxy:manage"),
+        RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
@@ -2184,7 +2718,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxy",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2192,9 +2726,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("proxy:manage"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxy.rule.create"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Delete,
         "/api/proxy/:id",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2202,9 +2737,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("proxy:manage"),
         RiskClass::Destructive,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxy.rule.delete"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Put,
         "/api/proxy/:id",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2212,7 +2748,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("proxy:manage"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxy.rule.update"]
     ),
     route_metadata!(
         Get,
@@ -2224,7 +2761,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxy/:id/toggle",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2232,9 +2769,10 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("proxy:manage"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxy.rule.toggle"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxy/ai-auto",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2242,7 +2780,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("proxy:manage"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxy.rule.create"]
     ),
     route_metadata!(
         Get,
@@ -2254,7 +2793,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/proxy/nginx/action",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2262,7 +2801,13 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Scope("proxy:manage"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        [
+            "proxy.nginx.start",
+            "proxy.nginx.stop",
+            "proxy.nginx.restart",
+            "proxy.nginx.reload",
+        ]
     ),
     route_metadata!(
         Get,
@@ -2394,15 +2939,16 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/services/:name/action",
         SessionPolicy::Required(RoleTier::Operator),
         CredentialPolicy::SessionCookie,
-        BearerPolicy::Scope("services:restart"),
+        BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["service.restart"]
     ),
     route_metadata!(
         Get,
@@ -2794,7 +3340,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/system/update",
         SessionPolicy::Required(RoleTier::Admin),
@@ -2802,17 +3348,19 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["update.voidtower.apply"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Get,
         "/api/system/update-check",
         SessionPolicy::Required(RoleTier::Admin),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
         RiskClass::Read,
-        ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None,
+        ["update.voidtower.check"]
     ),
     route_metadata!(
         Get,
@@ -3094,7 +3642,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/updates/docker/:id/apply",
         SessionPolicy::Required(RoleTier::Admin),
@@ -3102,17 +3650,19 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["update.docker.apply"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/updates/docker/check",
         SessionPolicy::Required(RoleTier::Admin),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None,
+        ["update.docker.check"]
     ),
     route_metadata!(
         Get,
@@ -3124,7 +3674,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/updates/odysseus/apply",
         SessionPolicy::Required(RoleTier::Admin),
@@ -3132,7 +3682,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["update.odysseus.apply"]
     ),
     route_metadata!(
         Get,
@@ -3144,7 +3695,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/updates/os/apply",
         SessionPolicy::Required(RoleTier::Admin),
@@ -3152,7 +3703,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["update.os.apply"]
     ),
     route_metadata!(
         Get,
@@ -3164,7 +3716,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/updates/voidtower/apply",
         SessionPolicy::Required(RoleTier::Admin),
@@ -3172,19 +3724,21 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["update.voidtower.apply"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/updates/voidtower/check",
         SessionPolicy::Required(RoleTier::Admin),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None,
+        ["update.voidtower.check"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/updates/voidtower/rollback",
         SessionPolicy::Required(RoleTier::Admin),
@@ -3192,7 +3746,8 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Irreversible,
         ApprovalPolicy::Always,
-        AiExposure::None
+        AiExposure::None,
+        ["update.voidtower.rollback"]
     ),
     route_metadata!(
         Get,
@@ -3254,7 +3809,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/vms/proxmox/action",
         SessionPolicy::Required(RoleTier::Admin),
@@ -3262,7 +3817,15 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        [
+            "proxmox.guest.start",
+            "proxmox.guest.stop",
+            "proxmox.guest.shutdown",
+            "proxmox.guest.reboot",
+            "proxmox.guest.suspend",
+            "proxmox.guest.resume",
+        ]
     ),
     route_metadata!(
         Get,
@@ -3274,7 +3837,7 @@ pub const ROUTES: &[RouteMetadata] = &[
         ApprovalPolicy::RiskLadder,
         AiExposure::None
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/vms/proxmox/config",
         SessionPolicy::Required(RoleTier::Admin),
@@ -3282,17 +3845,19 @@ pub const ROUTES: &[RouteMetadata] = &[
         BearerPolicy::Denied,
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        AiExposure::None,
+        ["proxmox.host.configure"]
     ),
-    route_metadata!(
+    operation_route_metadata!(
         Post,
         "/api/vms/proxmox/test",
         SessionPolicy::Required(RoleTier::Admin),
         CredentialPolicy::SessionCookie,
         BearerPolicy::Denied,
-        RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder,
-        AiExposure::None
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None,
+        ["proxmox.host.test"]
     ),
     route_metadata!(
         Get,
@@ -3407,9 +3972,9 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Post,
         "/v1/chat/completions",
-        SessionPolicy::Public,
-        CredentialPolicy::None,
-        BearerPolicy::Public,
+        SessionPolicy::HandlerManaged,
+        CredentialPolicy::BearerApiToken,
+        BearerPolicy::Scope("models:read"),
         RiskClass::Mutate,
         ApprovalPolicy::RiskLadder,
         AiExposure::None
@@ -3417,11 +3982,301 @@ pub const ROUTES: &[RouteMetadata] = &[
     route_metadata!(
         Get,
         "/v1/models",
-        SessionPolicy::Public,
-        CredentialPolicy::None,
-        BearerPolicy::Public,
+        SessionPolicy::HandlerManaged,
+        CredentialPolicy::BearerApiToken,
+        BearerPolicy::Scope("models:read"),
         RiskClass::Read,
         ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/assets",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets/:selector",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/assets/:selector/rename",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/assets/:selector/retirement",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/classes",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/classes",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Patch,
+        "/api/cmdb/classes/:key",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/cmdb/classes/:key",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/types",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/types",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Patch,
+        "/api/cmdb/types/:key",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/cmdb/types/:key",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/locations",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/locations",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Patch,
+        "/api/cmdb/locations/:id",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/cmdb/locations/:id",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets/:selector/history",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets/:selector/observations",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/assets/:selector/relationships",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/assets/:selector/relationships",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Delete,
+        "/api/cmdb/relationships/:id",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/discoveries",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/discoveries/:id/register",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/discoveries/:id/link",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/cmdb/discoveries/:id/ignore",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Get,
+        "/api/cmdb/settings",
+        SessionPolicy::Required(RoleTier::Operator),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Patch,
+        "/api/cmdb/settings",
+        SessionPolicy::Required(RoleTier::Admin),
+        CredentialPolicy::SessionCookie,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        AiExposure::None
+    ),
+    route_metadata!(
+        Post,
+        "/api/nodes/:id/inventory",
+        SessionPolicy::HandlerManaged,
+        CredentialPolicy::NodeToken,
+        BearerPolicy::Denied,
+        RiskClass::Mutate,
+        ApprovalPolicy::NotApplicable,
         AiExposure::None
     ),
 ];
@@ -3434,6 +4289,17 @@ macro_rules! action_metadata {
             risk: $risk,
             approval: $approval,
             ai_exposure: AiExposure::Callable,
+            execution: ActionExecution::Direct,
+            resource_kind: None,
+            adapter_key: None,
+            input_schema_id: None,
+            result_schema_id: None,
+            schema_lifecycle: None,
+            concurrency: None,
+            retry: None,
+            recovery: None,
+            canonical_session_role: None,
+            canonical_bearer: BearerPolicy::Denied,
         }
     };
 }
@@ -3447,26 +4313,228 @@ macro_rules! internal_action_metadata {
             risk: $risk,
             approval: $approval,
             ai_exposure: AiExposure::None,
+            execution: ActionExecution::Direct,
+            resource_kind: None,
+            adapter_key: None,
+            input_schema_id: None,
+            result_schema_id: None,
+            schema_lifecycle: None,
+            concurrency: None,
+            retry: None,
+            recovery: None,
+            canonical_session_role: None,
+            canonical_bearer: BearerPolicy::Denied,
         }
     };
 }
 
+macro_rules! durable_action_metadata {
+    (
+        $name:literal,
+        $ingresses:expr,
+        $resource_kind:literal,
+        $adapter_key:literal,
+        $kind:expr,
+        $risk:expr,
+        $approval:expr,
+        $input_schema_id:expr,
+        $result_schema_id:expr,
+        $retry_class:expr,
+        $max_attempts:literal,
+        $recovery:expr,
+        $session_role:expr,
+        $bearer:expr,
+        $ai_exposure:expr
+    ) => {
+        ActionMetadata {
+            name: $name,
+            ingresses: $ingresses,
+            kind: $kind,
+            risk: $risk,
+            approval: $approval,
+            ai_exposure: $ai_exposure,
+            execution: ActionExecution::DurableJob,
+            resource_kind: Some($resource_kind),
+            adapter_key: Some($adapter_key),
+            input_schema_id: Some($input_schema_id),
+            result_schema_id: Some($result_schema_id),
+            schema_lifecycle: Some(SchemaLifecycle::Active),
+            concurrency: Some(ConcurrencyPolicy::Resource),
+            retry: Some(RetryMetadata {
+                class: $retry_class,
+                max_attempts: $max_attempts,
+            }),
+            recovery: Some($recovery),
+            canonical_session_role: Some($session_role),
+            canonical_bearer: $bearer,
+        }
+    };
+}
+
+macro_rules! durable_mutation {
+    ($name:literal, $resource_kind:literal, $adapter_key:literal, $risk:expr, $approval:expr) => {
+        durable_action_metadata!(
+            $name,
+            HTTP,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Mutating,
+            $risk,
+            $approval,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Never,
+            1,
+            RecoveryClass::Reconcile,
+            RoleTier::Admin,
+            BearerPolicy::Denied,
+            AiExposure::None
+        )
+    };
+}
+
+macro_rules! durable_scoped_mutation {
+    (
+        $name:literal,
+        $resource_kind:literal,
+        $adapter_key:literal,
+        $risk:expr,
+        $approval:expr,
+        $session_role:expr,
+        $scope:literal
+    ) => {
+        durable_action_metadata!(
+            $name,
+            HTTP,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Mutating,
+            $risk,
+            $approval,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Never,
+            1,
+            RecoveryClass::Reconcile,
+            $session_role,
+            BearerPolicy::Scope($scope),
+            AiExposure::Callable
+        )
+    };
+}
+
+macro_rules! durable_mcp_scoped_mutation {
+    (
+        $name:literal,
+        $resource_kind:literal,
+        $adapter_key:literal,
+        $risk:expr,
+        $approval:expr,
+        $session_role:expr,
+        $scope:literal
+    ) => {
+        durable_action_metadata!(
+            $name,
+            HTTP_WEBHOOK_MCP_STUDIO,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Mutating,
+            $risk,
+            $approval,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Never,
+            1,
+            RecoveryClass::Reconcile,
+            $session_role,
+            BearerPolicy::Scope($scope),
+            AiExposure::Callable
+        )
+    };
+}
+
+macro_rules! durable_read_job {
+    ($name:literal, $resource_kind:literal, $adapter_key:literal) => {
+        durable_action_metadata!(
+            $name,
+            HTTP,
+            $resource_kind,
+            $adapter_key,
+            ActionKind::Read,
+            RiskClass::Read,
+            ApprovalPolicy::NotApplicable,
+            concat!($name, ".input.v1"),
+            concat!($name, ".result.v1"),
+            RetryClass::Transient,
+            3,
+            RecoveryClass::Reconcile,
+            RoleTier::Admin,
+            BearerPolicy::Denied,
+            AiExposure::None
+        )
+    };
+}
+
 const MCP_AND_STUDIO: &[ActionIngress] = &[ActionIngress::Mcp, ActionIngress::Studio];
+const HTTP: &[ActionIngress] = &[ActionIngress::Http];
+
+/// Durable actions an active household `operate` grant may authorize for a grant-constrained
+/// session role (`viewer`, `member`, `guest`, `demo`).
+///
+/// This is a deliberately closed allowlist, kept next to the action registry so widening the
+/// household boundary is an explicit, reviewed edit rather than an implicit consequence of role
+/// metadata. Membership here never replaces the existing checks: the caller's role is still
+/// evaluated, the household grant is still re-checked inside `prepare`/`submit` before capability
+/// resolution and provider planning, policy still runs, and the action's approval class is
+/// unchanged. Every other durable mutation keeps requiring its declared operator/admin role.
+pub const GRANT_SCOPED_ACTIONS: &[&str] = &["automation.run"];
+
+/// True when `action` may be authorized by a household resource grant alone.
+pub fn is_grant_scoped(action: &ActionMetadata) -> bool {
+    GRANT_SCOPED_ACTIONS.contains(&action.name)
+}
+
+const HTTP_WEBHOOK_LOCAL_CLI_AND_SCHEDULER: &[ActionIngress] = &[
+    ActionIngress::Http,
+    ActionIngress::Webhook,
+    ActionIngress::LocalCli,
+    ActionIngress::Scheduler,
+];
+const HTTP_WEBHOOK_MCP_STUDIO: &[ActionIngress] = &[
+    ActionIngress::Http,
+    ActionIngress::Webhook,
+    ActionIngress::Mcp,
+    ActionIngress::Studio,
+];
+const HTTP_AND_LOCAL_CLI: &[ActionIngress] = &[ActionIngress::Http, ActionIngress::LocalCli];
+const HTTP_LOCAL_CLI_AND_SCHEDULER: &[ActionIngress] = &[
+    ActionIngress::Http,
+    ActionIngress::LocalCli,
+    ActionIngress::Scheduler,
+];
 const WEBHOOK: &[ActionIngress] = &[ActionIngress::Webhook];
-const WEBHOOK_AUTOMATION: &[ActionIngress] = &[ActionIngress::Webhook, ActionIngress::Automation];
 const INTERNAL: &[ActionIngress] = &[ActionIngress::Internal];
 
 pub const ACTIONS: &[ActionMetadata] = &[
-    // MCP tools are operationally read-only: `ActionKind::Read` makes approval inapplicable and
-    // causes `evaluate` to return before consulting risk. Their risk fields deliberately retain the
-    // previous `for_action` fallthrough (`Irreversible`) so S0-03 does not smuggle in a risk
-    // reclassification. A future risk cleanup needs its own policy authorization.
-    action_metadata!(
+    // MCP tools are read-only by default. Explicit durable exceptions carry their own action
+    // metadata, scope, approval, and canonical invocation path; no tool becomes callable merely by
+    // setting `AiExposure::Callable`.
+    durable_action_metadata!(
         "automation.run",
-        WEBHOOK_AUTOMATION,
+        HTTP_WEBHOOK_LOCAL_CLI_AND_SCHEDULER,
+        "automation_job",
+        "automation",
         ActionKind::Mutating,
         RiskClass::Mutate,
-        ApprovalPolicy::RiskLadder
+        ApprovalPolicy::RiskLadder,
+        "automation.run.input.v1",
+        "automation.run.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Scope("automation:run"),
+        AiExposure::Callable
     ),
     action_metadata!(
         "get_container_logs",
@@ -3573,6 +4641,447 @@ pub const ACTIONS: &[ActionMetadata] = &[
         RiskClass::Irreversible,
         ApprovalPolicy::Always
     ),
+    // Durable operations. These names are resource-qualified so jobs, capabilities, audit
+    // records, and events never need the compatibility route or request shape to disambiguate an
+    // action.
+    durable_mcp_scoped_mutation!(
+        "container.start",
+        "container",
+        "containers",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "containers:restart"
+    ),
+    durable_mcp_scoped_mutation!(
+        "container.stop",
+        "container",
+        "containers",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "containers:restart"
+    ),
+    durable_mcp_scoped_mutation!(
+        "container.restart",
+        "container",
+        "containers",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "containers:restart"
+    ),
+    durable_scoped_mutation!(
+        "container.remove",
+        "container",
+        "containers",
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Operator,
+        "containers:restart"
+    ),
+    durable_mutation!(
+        "container.compose.apply",
+        "container",
+        "containers",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_action_metadata!(
+        "service.restart",
+        HTTP,
+        "service",
+        "services",
+        ActionKind::Mutating,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        "service.restart.input.v1",
+        "service.restart.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Denied,
+        AiExposure::None
+    ),
+    durable_mutation!(
+        "firewall.rule.add",
+        "firewall",
+        "firewall",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "firewall.rule.delete",
+        "firewall_rule",
+        "firewall",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "firewall.enable",
+        "firewall",
+        "firewall",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "firewall.disable",
+        "firewall",
+        "firewall",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "firewall.reload",
+        "firewall",
+        "firewall",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "firewall.reset",
+        "firewall",
+        "firewall",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
+    durable_scoped_mutation!(
+        "proxy.rule.create",
+        "reverse_proxy_service",
+        "proxy",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
+    ),
+    durable_scoped_mutation!(
+        "proxy.rule.update",
+        "proxy_rule",
+        "proxy",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
+    ),
+    durable_scoped_mutation!(
+        "proxy.rule.delete",
+        "proxy_rule",
+        "proxy",
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
+    ),
+    durable_scoped_mutation!(
+        "proxy.rule.toggle",
+        "proxy_rule",
+        "proxy",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
+    ),
+    durable_scoped_mutation!(
+        "proxy.nginx.start",
+        "reverse_proxy_service",
+        "proxy",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
+    ),
+    durable_scoped_mutation!(
+        "proxy.nginx.stop",
+        "reverse_proxy_service",
+        "proxy",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
+    ),
+    durable_scoped_mutation!(
+        "proxy.nginx.restart",
+        "reverse_proxy_service",
+        "proxy",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
+    ),
+    durable_scoped_mutation!(
+        "proxy.nginx.reload",
+        "reverse_proxy_service",
+        "proxy",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "proxy:manage"
+    ),
+    durable_action_metadata!(
+        "backup.config.create",
+        HTTP_AND_LOCAL_CLI,
+        "system",
+        "backups",
+        ActionKind::Mutating,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        "backup.config.create.input.v1",
+        "backup.config.create.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Denied,
+        AiExposure::None
+    ),
+    durable_action_metadata!(
+        "backup.config.delete",
+        HTTP_AND_LOCAL_CLI,
+        "backup_config",
+        "backups",
+        ActionKind::Mutating,
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder,
+        "backup.config.delete.input.v1",
+        "backup.config.delete.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
+        RoleTier::Admin,
+        BearerPolicy::Denied,
+        AiExposure::None
+    ),
+    durable_action_metadata!(
+        "backup.run",
+        HTTP_AND_LOCAL_CLI,
+        "backup_config",
+        "backups",
+        ActionKind::Mutating,
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        "backup.run.input.v1",
+        "backup.run.result.v1",
+        RetryClass::Never,
+        1,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Scope("backups:run"),
+        AiExposure::Callable
+    ),
+    durable_action_metadata!(
+        "backup.check",
+        HTTP_AND_LOCAL_CLI,
+        "backup_config",
+        "backups",
+        ActionKind::Read,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        "backup.check.input.v1",
+        "backup.check.result.v1",
+        RetryClass::Transient,
+        3,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Denied,
+        AiExposure::None
+    ),
+    durable_action_metadata!(
+        "backup.restore_test",
+        HTTP_LOCAL_CLI_AND_SCHEDULER,
+        "backup_config",
+        "backups",
+        ActionKind::Read,
+        RiskClass::Read,
+        ApprovalPolicy::NotApplicable,
+        "backup.restore_test.input.v1",
+        "backup.restore_test.result.v1",
+        RetryClass::Transient,
+        3,
+        RecoveryClass::Reconcile,
+        RoleTier::Operator,
+        BearerPolicy::Denied,
+        AiExposure::None
+    ),
+    durable_read_job!("update.voidtower.check", "update_target", "updates"),
+    durable_mutation!(
+        "update.voidtower.apply",
+        "update_target",
+        "updates",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
+    durable_mutation!(
+        "update.voidtower.rollback",
+        "update_target",
+        "updates",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
+    durable_mutation!(
+        "update.odysseus.apply",
+        "update_target",
+        "updates",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
+    durable_read_job!("update.docker.check", "docker_engine", "updates"),
+    durable_mutation!(
+        "update.docker.apply",
+        "container_image",
+        "updates",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
+    durable_mutation!(
+        "update.os.apply",
+        "update_target",
+        "updates",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
+    durable_mutation!(
+        "proxmox.host.create",
+        "system",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.host.configure",
+        "system",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.host.delete",
+        "proxmox_host",
+        "proxmox",
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_read_job!("proxmox.host.test", "proxmox_host", "proxmox"),
+    durable_scoped_mutation!(
+        "proxmox.guest.start",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "vms:control"
+    ),
+    durable_scoped_mutation!(
+        "proxmox.guest.stop",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "vms:control"
+    ),
+    durable_scoped_mutation!(
+        "proxmox.guest.shutdown",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "vms:control"
+    ),
+    durable_scoped_mutation!(
+        "proxmox.guest.reboot",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder,
+        RoleTier::Admin,
+        "vms:control"
+    ),
+    durable_mutation!(
+        "proxmox.guest.reset",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.guest.suspend",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.guest.resume",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.snapshot.create",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.snapshot.rollback",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.snapshot.delete",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
+    durable_mutation!(
+        "proxmox.disk.attach",
+        "proxmox_guest",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.lxc.deploy",
+        "proxmox_host",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.storage.upload",
+        "proxmox_storage",
+        "proxmox",
+        RiskClass::Mutate,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.storage.delete",
+        "proxmox_storage",
+        "proxmox",
+        RiskClass::Destructive,
+        ApprovalPolicy::RiskLadder
+    ),
+    durable_mutation!(
+        "proxmox.disk.wipe",
+        "proxmox_disk",
+        "proxmox",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
+    durable_mutation!(
+        "proxmox.disk.initialize",
+        "proxmox_disk",
+        "proxmox",
+        RiskClass::Irreversible,
+        ApprovalPolicy::Always
+    ),
 ];
 
 pub fn route(method: &str, path: &str) -> Option<&'static RouteMetadata> {
@@ -3593,15 +5102,21 @@ mod tests {
     fn extract_registered_routes(src: &str) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let mut cursor = 0usize;
-        while let Some(relative) = src[cursor..].find(".route(\"") {
+        while let Some(relative) = src[cursor..].find(".route(") {
             let start = cursor + relative;
-            let path_start = start + ".route(\"".len();
+            let open = start + ".route".len();
+            let whitespace = src[open + 1..].len() - src[open + 1..].trim_start().len();
+            let path_quote = open + 1 + whitespace;
+            if !src[path_quote..].starts_with('"') {
+                cursor = open + 1;
+                continue;
+            }
+            let path_start = path_quote + 1;
             let path_len = src[path_start..]
                 .find('"')
                 .expect("unterminated route path string");
             let path = &src[path_start..path_start + path_len];
 
-            let open = start + ".route".len();
             let mut depth = 0i32;
             let mut inner_start = 0usize;
             let mut close = open;
@@ -3649,6 +5164,211 @@ mod tests {
     }
 
     #[test]
+    fn ai_chat_route_is_read_only_and_not_an_ai_mutation_ingress() {
+        let metadata = route("POST", "/api/ai/ask").expect("AI chat route must be registered");
+
+        assert_eq!(metadata.risk, RiskClass::Read);
+        assert_eq!(metadata.approval, ApprovalPolicy::NotApplicable);
+        assert_eq!(metadata.ai_exposure, AiExposure::None);
+        assert!(
+            metadata.canonical_actions.is_empty(),
+            "chat text must not select canonical mutations"
+        );
+    }
+
+    #[test]
+    fn proxmox_compatibility_matrix_is_exact_and_never_weakens_action_policy() {
+        let expected: HashSet<(&str, &str, Vec<&str>)> = HashSet::from([
+            ("POST", "/api/proxmox/hosts", vec!["proxmox.host.create"]),
+            (
+                "DELETE",
+                "/api/proxmox/hosts/:host_id",
+                vec!["proxmox.host.delete"],
+            ),
+            (
+                "POST",
+                "/api/vms/proxmox/config",
+                vec!["proxmox.host.configure"],
+            ),
+            ("POST", "/api/vms/proxmox/test", vec!["proxmox.host.test"]),
+            (
+                "POST",
+                "/api/vms/proxmox/action",
+                vec![
+                    "proxmox.guest.start",
+                    "proxmox.guest.stop",
+                    "proxmox.guest.shutdown",
+                    "proxmox.guest.reboot",
+                    "proxmox.guest.suspend",
+                    "proxmox.guest.resume",
+                ],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/start",
+                vec!["proxmox.guest.start"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/stop",
+                vec!["proxmox.guest.stop"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/shutdown",
+                vec!["proxmox.guest.shutdown"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/reboot",
+                vec!["proxmox.guest.reboot"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/reset",
+                vec!["proxmox.guest.reset"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/suspend",
+                vec!["proxmox.guest.suspend"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/resume",
+                vec!["proxmox.guest.resume"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/snapshot",
+                vec!["proxmox.snapshot.create"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/rollback/:snapname",
+                vec!["proxmox.snapshot.rollback"],
+            ),
+            (
+                "DELETE",
+                "/api/proxmox/:host_id/vms/:vmid/snapshot/:snapname",
+                vec!["proxmox.snapshot.delete"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/vms/:vmid/disk-passthrough",
+                vec!["proxmox.disk.attach"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/lxc/deploy",
+                vec!["proxmox.lxc.deploy"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
+                vec!["proxmox.storage.upload"],
+            ),
+            (
+                "DELETE",
+                "/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
+                vec!["proxmox.storage.delete"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/nodes/:node/disks/wipe",
+                vec!["proxmox.disk.wipe"],
+            ),
+            (
+                "POST",
+                "/api/proxmox/:host_id/nodes/:node/disks/init",
+                vec!["proxmox.disk.initialize"],
+            ),
+        ]);
+
+        let actual: HashSet<(&str, &str, Vec<&str>)> = ROUTES
+            .iter()
+            .filter(|route| route.path.contains("proxmox") && !route.canonical_actions.is_empty())
+            .map(|route| {
+                (
+                    route.method.as_str(),
+                    route.path,
+                    route.canonical_actions.to_vec(),
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected);
+
+        let actions: HashSet<&str> = actual
+            .iter()
+            .flat_map(|(_, _, actions)| actions.iter().copied())
+            .collect();
+        assert_eq!(
+            actions.len(),
+            20,
+            "the compatibility matrix must cover exactly 20 actions"
+        );
+
+        fn risk_rank(risk: RiskClass) -> u8 {
+            match risk {
+                RiskClass::Read => 0,
+                RiskClass::Mutate => 1,
+                RiskClass::Destructive => 2,
+                RiskClass::Irreversible => 3,
+            }
+        }
+        fn approval_rank(policy: ApprovalPolicy) -> u8 {
+            match policy {
+                ApprovalPolicy::NotApplicable => 0,
+                ApprovalPolicy::RiskLadder => 1,
+                ApprovalPolicy::Always => 2,
+            }
+        }
+
+        for route in ROUTES
+            .iter()
+            .filter(|route| route.path.contains("proxmox") && !route.canonical_actions.is_empty())
+        {
+            assert_eq!(route.session, SessionPolicy::Required(RoleTier::Admin));
+            assert_eq!(route.credential, CredentialPolicy::SessionCookie);
+            assert_eq!(route.bearer, BearerPolicy::Denied);
+            for action_name in route.canonical_actions {
+                let action = action(action_name).expect("mapped Proxmox action must be registered");
+                assert!(risk_rank(route.risk) >= risk_rank(action.risk));
+                assert!(approval_rank(route.approval) >= approval_rank(action.approval));
+            }
+        }
+    }
+
+    #[test]
+    fn standalone_vm_lifecycle_actions_have_exact_machine_scope() {
+        for name in [
+            "proxmox.guest.start",
+            "proxmox.guest.stop",
+            "proxmox.guest.reboot",
+            "proxmox.guest.shutdown",
+        ] {
+            let metadata = action(name).expect("standalone VM action must be registered");
+            assert_eq!(metadata.canonical_session_role, Some(RoleTier::Admin));
+            assert_eq!(
+                metadata.canonical_bearer,
+                BearerPolicy::Scope("vms:control")
+            );
+            assert_eq!(metadata.ai_exposure, AiExposure::Callable);
+            assert_eq!(metadata.execution, ActionExecution::DurableJob);
+        }
+
+        for name in [
+            "proxmox.guest.reset",
+            "proxmox.guest.suspend",
+            "proxmox.guest.resume",
+        ] {
+            let metadata = action(name).expect("legacy VM action must remain registered");
+            assert_eq!(metadata.canonical_bearer, BearerPolicy::Denied);
+            assert_eq!(metadata.ai_exposure, AiExposure::None);
+        }
+    }
+
+    #[test]
     fn session_policy_and_credential_kind_are_consistent() {
         for metadata in ROUTES {
             let consistent = matches!(
@@ -3675,7 +5395,7 @@ mod tests {
     }
 
     #[test]
-    fn unscoped_bearer_routes_are_limited_to_the_embed_router() {
+    fn unscoped_bearer_routes_are_limited_to_explicit_handler_managed_surfaces() {
         let unscoped: HashSet<(&str, &str)> = ROUTES
             .iter()
             .filter(|metadata| metadata.bearer == BearerPolicy::Unscoped)
@@ -3686,8 +5406,64 @@ mod tests {
             HashSet::from([
                 ("GET", "/api/apps/embed/:project_name/*path"),
                 ("GET", "/plugin-assets/:id/*path"),
+                ("GET", "/api/mcp"),
+                ("POST", "/api/mcp/message"),
             ]),
-            "only routes that bypass scope_enforce may declare unscoped bearer access"
+            "only explicitly handler-managed surfaces may declare unscoped bearer access"
+        );
+    }
+
+    #[test]
+    fn action_scoped_bearer_routes_are_limited_to_the_canonical_boundary() {
+        let action_scoped: HashSet<(&str, &str)> = ROUTES
+            .iter()
+            .filter(|metadata| metadata.bearer == BearerPolicy::ActionScoped)
+            .map(|metadata| (metadata.method.as_str(), metadata.path))
+            .collect();
+        assert_eq!(
+            action_scoped,
+            HashSet::from([
+                ("POST", "/api/resources/:id/actions/:action"),
+                ("POST", "/api/resources/:id/actions/:action/plan"),
+                ("POST", "/api/jobs/:id/cancel"),
+                ("GET", "/api/jobs/by-idempotency/:key"),
+            ]),
+            "only canonical handlers that enforce selected-action metadata may bypass static scope enforcement"
+        );
+    }
+
+    #[test]
+    fn grant_scoped_actions_are_an_explicit_bounded_allowlist() {
+        assert_eq!(GRANT_SCOPED_ACTIONS, &["automation.run"]);
+        for name in GRANT_SCOPED_ACTIONS {
+            let metadata = action(name)
+                .unwrap_or_else(|| panic!("grant-scoped action {name} must be registered"));
+            assert_eq!(metadata.execution, ActionExecution::DurableJob);
+            assert_eq!(metadata.kind, ActionKind::Mutating);
+            assert!(
+                metadata.ingresses.contains(&ActionIngress::Http),
+                "{name} must be reachable from the canonical HTTP boundary"
+            );
+            assert!(
+                matches!(
+                    metadata.canonical_session_role,
+                    Some(RoleTier::Operator | RoleTier::Admin | RoleTier::Owner)
+                ),
+                "{name} must keep an explicit operator-or-higher role before the grant path"
+            );
+            assert!(
+                !metadata.ingresses.contains(&ActionIngress::Internal),
+                "{name} must stay reachable from the canonical HTTP boundary"
+            );
+        }
+        let flagged: Vec<&str> = ACTIONS
+            .iter()
+            .filter(|metadata| is_grant_scoped(metadata))
+            .map(|metadata| metadata.name)
+            .collect();
+        assert_eq!(
+            flagged, GRANT_SCOPED_ACTIONS,
+            "the household grant boundary must stay an explicit list, not an inference"
         );
     }
 
@@ -3814,6 +5590,20 @@ mod tests {
             "dispatched MCP tools missing action metadata: {missing:?}"
         );
 
+        let missing_scopes: Vec<&str> = dispatched
+            .iter()
+            .copied()
+            .filter(|name| {
+                action(name)
+                    .and_then(|metadata| metadata.mcp_scope())
+                    .is_none()
+            })
+            .collect();
+        assert!(
+            missing_scopes.is_empty(),
+            "dispatched MCP tools missing explicit scopes: {missing_scopes:?}"
+        );
+
         let stale: Vec<&str> = ACTIONS
             .iter()
             .filter(|metadata| metadata.ingresses.contains(&ActionIngress::Mcp))
@@ -3862,10 +5652,7 @@ mod tests {
 
         let stale: Vec<&str> = ACTIONS
             .iter()
-            .filter(|metadata| {
-                metadata.ingresses.contains(&ActionIngress::Webhook)
-                    || metadata.ingresses.contains(&ActionIngress::Automation)
-            })
+            .filter(|metadata| metadata.ingresses.contains(&ActionIngress::Webhook))
             .map(|metadata| metadata.name)
             .filter(|name| !action_names.contains(name))
             .collect();
@@ -3876,12 +5663,12 @@ mod tests {
     }
 
     #[test]
-    fn mcp_handler_credentials_remain_bearer_denied() {
+    fn mcp_handler_credentials_are_explicitly_handler_managed() {
         for (method, path) in [("GET", "/api/mcp"), ("POST", "/api/mcp/message")] {
             let metadata = route(method, path)
                 .unwrap_or_else(|| panic!("missing MCP route metadata: {method} {path}"));
             assert_eq!(metadata.credential, CredentialPolicy::BearerApiToken);
-            assert_eq!(metadata.bearer, BearerPolicy::Denied);
+            assert_eq!(metadata.bearer, BearerPolicy::Unscoped);
         }
     }
 }

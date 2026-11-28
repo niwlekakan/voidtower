@@ -18,7 +18,7 @@ tower = { version = "0.4" }
 tower-http = { version = "0.5", features = ["fs", "cors", "compression-gzip", "trace", "request-id", "set-header"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "migrate", "time", "uuid", "json"] }
+sqlx = { version = "0.9.1", features = ["runtime-tokio", "tls-rustls-ring", "sqlite", "migrate", "time", "uuid", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
 argon2 = "0.5"
@@ -26,6 +26,7 @@ rand = "0.8"
 base64 = "0.22"
 hex = "0.4"
 sha2 = "0.10"
+hmac = "0.12"
 sha1 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
@@ -38,16 +39,17 @@ thiserror = "1"
 toml = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-portable-pty = "0.8"
+portable-pty = "0.9.0"
 bollard = { version = "0.16", default-features = false, features = ["time"] }
-serde_yaml = "0.9"
+noyalib = "0.0.58"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
 aes-gcm = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 totp-lite = "2"
 data-encoding = "2"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-openidconnect = "3"
+zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
+# Pin upstream 4.1.0 until a crates.io release includes the patched P-256/P-384 dependency line.
+openidconnect = { git = "https://github.com/ramosbugs/openidconnect-rs", rev = "e20ddbb01ca68356f2979bc125f5613ab45b4e7e" }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["fs", "user", "process", "signal"] }

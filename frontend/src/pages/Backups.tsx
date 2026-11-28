@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { ShieldCheck, ShieldAlert, ShieldX, Shield, Play, Search, Undo2, Trash2, Tag as TagIcon } from 'lucide-react'
 import { api } from '@/api/client'
-import type { Tag, TagMap } from '@/api/types'
+import type { DurableJobResponse, Tag, TagMap } from '@/api/types'
 import { notify } from '@/store/notifications'
 import { useFiltersStore } from '@/store/filters'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import Button from '@/components/ui/Button'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...init?.headers } })
@@ -30,6 +32,13 @@ interface BackupConfig {
   last_restore_test_at: number | null
   last_restore_test_status: string | null
   confidence: Confidence
+}
+
+type CanonicalDeletePlan = Omit<ChangePlan, 'risk'> & { risk: string }
+
+function modalPlan(plan: CanonicalDeletePlan): ChangePlan {
+  const risk = plan.risk === 'read' ? 'low' : plan.risk === 'mutate' ? 'medium' : 'high'
+  return { ...plan, risk }
 }
 
 const CONFIDENCE: Record<Confidence, { label: string; icon: typeof ShieldCheck; color: string }> = {
@@ -79,6 +88,7 @@ export default function BackupsPage() {
   const [tagMap, setTagMap] = useState<TagMap>({})
   const [popover, setPopover] = useState<string | null>(null)
   const globalTag = useFiltersStore((s) => s.globalTag)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -103,31 +113,25 @@ export default function BackupsPage() {
   const action = async (id: string, label: string, path: string) => {
     setBusy(b => ({ ...b, [id]: label }))
     try {
-      const r = await apiFetch<{ status: string; message?: string }>(path, { method: 'POST' })
-      if (r.status === 'ok' || r.status === 'success') {
-        notify.success(`${label}: ${r.status}`)
-      } else {
-        notify.error(`${label} failed${r.message ? ': ' + r.message : ''}`)
-      }
-      await load()
+      const response = await apiFetch<DurableJobResponse>(path, { method: 'POST' })
+      track(response.job, { label, onSucceeded: load })
     } catch (e: any) { notify.error(e.message ?? `${label} failed`) }
     finally { setBusy(b => { const n = { ...b }; delete n[id]; return n }) }
   }
 
   const submit = async () => {
     try {
-      await apiFetch('/api/backups', { method: 'POST', body: JSON.stringify({ ...form, retention_days: Number(form.retention_days) }) })
-      notify.success('Backup config created')
+      const response = await apiFetch<DurableJobResponse>('/api/backups', { method: 'POST', body: JSON.stringify({ ...form, retention_days: Number(form.retention_days) }) })
+      track(response.job, { label: 'Backup creation', onSucceeded: load })
       setShowAdd(false)
       setForm({ name: '', source_path: '', repo_path: '', retention_days: '30' })
-      await load()
     } catch (e: any) { notify.error(e.message ?? 'Failed to create') }
   }
 
   const del = async (id: string, name: string) => {
     try {
-      const res = await apiFetch<{ plan: ChangePlan }>(`/api/backups/${id}/delete-plan`, { method: 'POST' })
-      setDeletePlan({ plan: res.plan, id, name })
+      const res = await apiFetch<{ plan: CanonicalDeletePlan }>(`/api/backups/${id}/delete-plan`, { method: 'POST' })
+      setDeletePlan({ plan: modalPlan(res.plan), id, name })
     } catch (e: any) { notify.error(e.message ?? 'Failed to fetch plan') }
   }
 
@@ -135,10 +139,9 @@ export default function BackupsPage() {
     if (!deletePlan) return
     setDeleteConfirming(true)
     try {
-      await apiFetch(`/api/backups/${deletePlan.id}`, { method: 'DELETE' })
-      notify.success('Deleted')
+      const response = await apiFetch<DurableJobResponse>(`/api/backups/${deletePlan.id}`, { method: 'DELETE' })
+      track(response.job, { label: 'Backup removal', onSucceeded: load })
       setDeletePlan(null)
-      await load()
     } catch (e: any) { notify.error(e.message ?? 'Failed to delete') }
     finally { setDeleteConfirming(false) }
   }
@@ -163,6 +166,8 @@ export default function BackupsPage() {
           <Button size="sm" onClick={() => setShowAdd(s => !s)}>Add Backup</Button>
         </div>
       </div>
+
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
 
       {/* Confidence summary cards */}
       {configs.length > 0 && (

@@ -1,25 +1,42 @@
 use crate::{
     audit, auth,
-    containers::{self, ContainerAction},
     error::{AppError, Result},
-    services::{self, ServiceAction},
+    operations::{events::sse_frame_fits, invocation::CredentialContext},
+    services::ServiceAction,
     voidwatch, AppState,
 };
 use axum::{
-    extract::{Path, Query, State},
-    http::HeaderMap,
-    response::sse::{Event, KeepAlive, Sse},
+    body::to_bytes,
+    extract::{Extension, Path, Query, State},
+    http::{HeaderMap, HeaderValue},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
 use futures_util::StreamExt;
+use hmac::{Hmac, Mac};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
+
+async fn send_bounded_legacy_event(
+    tx: &tokio::sync::mpsc::Sender<Event>,
+    event_name: &str,
+    data: String,
+) -> bool {
+    if !sse_frame_fits(event_name, data.len(), None) {
+        return false;
+    }
+    tx.send(Event::default().event(event_name).data(data))
+        .await
+        .is_ok()
+}
 
 // ---------------------------------------------------------------------------
 // Scope definitions
@@ -28,10 +45,6 @@ use uuid::Uuid;
 pub const ALL_SCOPES: &[(&str, &str)] = &[
     ("metrics:read", "Read CPU, RAM, disk and network metrics"),
     ("services:read", "List systemd services and their state"),
-    (
-        "services:restart",
-        "Start, stop and restart systemd services",
-    ),
     ("containers:read", "List Docker containers and images"),
     (
         "containers:restart",
@@ -62,6 +75,10 @@ pub const ALL_SCOPES: &[(&str, &str)] = &[
         "List secret names and descriptions (values never returned)",
     ),
     ("vms:read", "List KVM and Proxmox virtual machines"),
+    (
+        "vms:control",
+        "Start, stop, reboot and shut down Proxmox guests",
+    ),
     ("tags:read", "List resource tags"),
 ];
 
@@ -101,7 +118,6 @@ pub const CAPABILITY_TIERS: &[(&str, &[&str])] = &[
             "containers:restart",
             "containers:logs",
             "services:read",
-            "services:restart",
             "automation:read",
             "automation:run",
         ],
@@ -126,17 +142,107 @@ pub fn sha256_hex(s: &str) -> String {
     hex::encode(h.finalize())
 }
 
-/// Byte-for-byte comparison that doesn't short-circuit on the first mismatch,
-/// so timing doesn't leak how many leading bytes matched.
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
+const WEBHOOK_SOURCE: &str = "odysseus";
+const WEBHOOK_TIMESTAMP_HEADER: &str = "X-VoidTower-Timestamp";
+const WEBHOOK_NONCE_HEADER: &str = "X-VoidTower-Nonce";
+const WEBHOOK_SIGNATURE_HEADER: &str = "X-VoidTower-Signature";
+const WEBHOOK_TIMESTAMP_SKEW_SECONDS: u64 = 300;
+const WEBHOOK_REPLAY_RETENTION_SECONDS: i64 = 900;
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn webhook_authentication_error() -> AppError {
+    AppError::WebhookAuthentication
+}
+
+fn parse_signed_webhook_headers(headers: &HeaderMap) -> Result<(i64, String, String)> {
+    let timestamp = headers
+        .get(WEBHOOK_TIMESTAMP_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or_else(webhook_authentication_error)?;
+    if timestamp.abs_diff(unix_now()) > WEBHOOK_TIMESTAMP_SKEW_SECONDS {
+        return Err(webhook_authentication_error());
     }
-    a.iter()
-        .zip(b.iter())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
+
+    let nonce = headers
+        .get(WEBHOOK_NONCE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte))
+        })
+        .map(str::to_owned)
+        .ok_or_else(webhook_authentication_error)?;
+
+    let signature = headers
+        .get(WEBHOOK_SIGNATURE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with("sha256=") && value.len() == 71)
+        .map(str::to_owned)
+        .ok_or_else(webhook_authentication_error)?;
+    let decoded =
+        hex::decode(&signature["sha256=".len()..]).map_err(|_| webhook_authentication_error())?;
+    if decoded.len() != 32 {
+        return Err(webhook_authentication_error());
+    }
+
+    Ok((timestamp, nonce, signature))
+}
+
+fn verify_signed_webhook(
+    secret: &str,
+    timestamp: i64,
+    nonce: &str,
+    signature: &str,
+    body: &[u8],
+) -> Result<()> {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|_| webhook_authentication_error())?;
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(nonce.as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    let provided =
+        hex::decode(&signature["sha256=".len()..]).map_err(|_| webhook_authentication_error())?;
+    mac.verify_slice(&provided)
+        .map_err(|_| webhook_authentication_error())
+}
+
+async fn claim_webhook_replay(
+    db: &sqlx::SqlitePool,
+    timestamp: i64,
+    nonce: &str,
+    signature: &str,
+) -> Result<()> {
+    let now = unix_now();
+    let mut transaction = db.begin().await?;
+    sqlx::query("DELETE FROM webhook_replay_receipts WHERE source_id = ? AND created_at < ?")
+        .bind(WEBHOOK_SOURCE)
+        .bind(now - WEBHOOK_REPLAY_RETENTION_SECONDS)
+        .execute(&mut *transaction)
+        .await?;
+    let inserted = sqlx::query(
+        "INSERT INTO webhook_replay_receipts (source_id, nonce, timestamp, signature, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(source_id, nonce) DO NOTHING",
+    )
+    .bind(WEBHOOK_SOURCE)
+    .bind(nonce)
+    .bind(timestamp)
+    .bind(signature)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await?;
+    if inserted.rows_affected() != 1 {
+        return Err(AppError::WebhookReplay);
+    }
+    transaction.commit().await?;
+    Ok(())
 }
 
 pub fn generate_api_token() -> String {
@@ -174,9 +280,27 @@ async fn get_setting(state: &AppState, key: &str) -> String {
         .unwrap_or_default()
 }
 
-async fn set_setting(state: &AppState, key: &str, value: &str) {
+async fn get_setting_checked(state: &AppState, key: &str) -> Result<Option<String>> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AppError::Database)
+}
+
+async fn emergency_disabled(state: &AppState) -> Result<bool> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'odysseus.emergency_disabled'",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map(|value| value.as_deref() == Some("true"))
+    .map_err(|error| AppError::Internal(error.into()))
+}
+
+async fn set_setting(state: &AppState, key: &str, value: &str) -> Result<()> {
     let now = unix_now();
-    let _ = sqlx::query(
+    sqlx::query(
         "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
@@ -184,7 +308,32 @@ async fn set_setting(state: &AppState, key: &str, value: &str) {
     .bind(value)
     .bind(now)
     .execute(&state.db)
+    .await
+    .map(|_| ())
+    .map_err(AppError::Database)
+}
+
+async fn webhook_secret_metadata(state: &AppState) -> (Option<String>, &'static str) {
+    let secret_id = get_setting(
+        state,
+        crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING,
+    )
     .await;
+    if secret_id.is_empty() {
+        return (None, "");
+    }
+    let disabled = sqlx::query_scalar::<_, bool>("SELECT disabled FROM secrets WHERE id = ?")
+        .bind(&secret_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+    let hint = match disabled {
+        Some(true) => "disabled",
+        Some(false) => "configured",
+        None => "unavailable",
+    };
+    (Some(secret_id), hint)
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +521,9 @@ pub async fn revoke_token(
     Path(token_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
+    // Hold the same lifecycle guard used by Bearer resolution across deletion and cache removal.
+    // This prevents a concurrent cache hit or miss from surviving the revoke response.
+    let _token_session_guard = state.token_session_lock.lock().await;
 
     let deleted = sqlx::query("DELETE FROM api_tokens WHERE id = ?")
         .bind(&token_id)
@@ -383,6 +535,12 @@ pub async fn revoke_token(
     if deleted == 0 {
         return Err(AppError::NotFound);
     }
+
+    state
+        .token_sessions
+        .write()
+        .await
+        .retain(|_, cached| cached.token.token_id != token_id);
 
     audit::log(
         &state.db,
@@ -418,7 +576,11 @@ pub struct SaveConfigReq {
     pub enabled: Option<bool>,
     pub mcp_enabled: Option<bool>,
     pub allowed_url: Option<String>,
+    /// Legacy plaintext credential input is recognized only to reject it after
+    /// authentication; it is never persisted or returned.
+    pub webhook_secret: Option<String>,
     pub regenerate_webhook_secret: Option<bool>,
+    pub revoke_webhook_secret: Option<bool>,
     pub emergency_disable: Option<bool>,
 }
 
@@ -447,20 +609,13 @@ pub async fn get_config(
         raw_url
     };
     let emergency_disabled = get_setting(&state, "odysseus.emergency_disabled").await == "true";
-    let secret = get_setting(&state, "odysseus.webhook_secret").await;
-    let webhook_secret_hint = if secret.len() >= 4 {
-        format!("…{}", &secret[secret.len() - 4..])
-    } else if !secret.is_empty() {
-        "****".to_string()
-    } else {
-        String::new()
-    };
+    let (_, webhook_secret_hint) = webhook_secret_metadata(&state).await;
 
     Ok(Json(OdysseusConfig {
         enabled,
         mcp_enabled,
         allowed_url,
-        webhook_secret_hint,
+        webhook_secret_hint: webhook_secret_hint.to_string(),
         emergency_disabled,
     }))
 }
@@ -472,8 +627,24 @@ pub async fn save_config(
 ) -> Result<Json<serde_json::Value>> {
     let user = require_admin(&state, &jar).await?;
 
+    if req.webhook_secret.is_some() {
+        return Err(AppError::BadRequest(
+            "plaintext webhook credentials are not accepted; regenerate the secret instead".into(),
+        ));
+    }
+    if req.regenerate_webhook_secret == Some(true) && req.revoke_webhook_secret == Some(true) {
+        return Err(AppError::BadRequest(
+            "regenerate_webhook_secret and revoke_webhook_secret cannot be combined".into(),
+        ));
+    }
+    if let Some(url) = req.allowed_url.as_deref().filter(|url| !url.is_empty()) {
+        crate::ai::egress::validate_local_endpoint(url)
+            .await
+            .map_err(AppError::BadRequest)?;
+    }
+
     if let Some(e) = req.enabled {
-        set_setting(&state, "odysseus.enabled", if e { "true" } else { "false" }).await;
+        set_setting(&state, "odysseus.enabled", if e { "true" } else { "false" }).await?;
     }
     if let Some(e) = req.mcp_enabled {
         set_setting(
@@ -481,16 +652,101 @@ pub async fn save_config(
             "odysseus.mcp_enabled",
             if e { "true" } else { "false" },
         )
-        .await;
+        .await?;
     }
     if let Some(url) = &req.allowed_url {
-        set_setting(&state, "odysseus.allowed_url", url).await;
+        set_setting(&state, "odysseus.allowed_url", url).await?;
     }
     let mut new_webhook_secret: Option<String> = None;
     if req.regenerate_webhook_secret == Some(true) {
         let secret = generate_webhook_secret();
-        set_setting(&state, "odysseus.webhook_secret", &secret).await;
+        let encrypted = crate::api::secrets::encrypt(&state.secrets_key, &secret)
+            .map_err(AppError::Internal)?;
+        let now = unix_now();
+        let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+        let current_id: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(AppError::Database)?;
+        if let Some(secret_id) = current_id {
+            let updated = sqlx::query(
+                "UPDATE secrets SET value_enc = ?, version = version + 1, disabled = 0, updated_at = ? WHERE id = ?",
+            )
+            .bind(&encrypted)
+            .bind(now)
+            .bind(&secret_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+            if updated.rows_affected() == 0 {
+                let new_id = uuid::Uuid::new_v4().to_string();
+                sqlx::query(
+                    "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+                     VALUES (?, 'odysseus-webhook', 'Odysseus inbound webhook credential', ?, ?, ?)",
+                )
+                .bind(&new_id)
+                .bind(&encrypted)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .map_err(AppError::Database)?;
+                sqlx::query("UPDATE settings SET value = ?, updated_at = ? WHERE key = ?")
+                    .bind(new_id)
+                    .bind(now)
+                    .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(AppError::Database)?;
+            }
+        } else {
+            let secret_id = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+                 VALUES (?, 'odysseus-webhook', 'Odysseus inbound webhook credential', ?, ?, ?)",
+            )
+            .bind(&secret_id)
+            .bind(&encrypted)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+            sqlx::query(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            )
+            .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+            .bind(secret_id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+        }
+        sqlx::query("DELETE FROM settings WHERE key = 'odysseus.webhook_secret'")
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+        tx.commit().await.map_err(AppError::Database)?;
         new_webhook_secret = Some(secret);
+    }
+    if req.revoke_webhook_secret == Some(true) {
+        let secret_id = get_setting_checked(
+            &state,
+            crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING,
+        )
+        .await?
+        .unwrap_or_default();
+        if !secret_id.is_empty() {
+            sqlx::query("UPDATE secrets SET disabled = 1, updated_at = ? WHERE id = ?")
+                .bind(unix_now())
+                .bind(secret_id)
+                .execute(&state.db)
+                .await
+                .map_err(AppError::Database)?;
+        }
     }
     if let Some(disable) = req.emergency_disable {
         set_setting(
@@ -498,7 +754,7 @@ pub async fn save_config(
             "odysseus.emergency_disabled",
             if disable { "true" } else { "false" },
         )
-        .await;
+        .await?;
         audit::log(
             &state.db,
             Some(&user.id),
@@ -588,19 +844,25 @@ pub async fn manifest(State(state): State<AppState>) -> Json<serde_json::Value> 
         },
         "event_stream": {
             "url": "/api/integrations/events",
-            "auth": "?token=<api_token> or Authorization header",
+            "auth": "Authorization: Bearer <api_token>",
             "required_scope": "alerts:read",
-            "events": ["metrics", "alert", "audit", "ping"]
+            "cursor": "after=<sequence> or Last-Event-ID",
+            "events": ["stream.ready", "durable_event", "stream.gap"],
+            "legacy_url": "/api/integrations/events/legacy",
+            "legacy_deprecation": {
+                "header": "Deprecation: true",
+                "successor": "/api/integrations/events",
+                "link_header": "Link: </api/integrations/events>; rel=\"successor-version\""
+            }
         },
         "webhook": {
             "url": "/api/integrations/webhooks",
-            "auth": "Authorization: Bearer <webhook_secret>",
+            "auth": "X-VoidTower-Timestamp, X-VoidTower-Nonce, X-VoidTower-Signature: sha256=<hmac>",
             "description": "POST to trigger VoidTower automations from Odysseus"
         },
         "tools": [
             { "name": "get_metrics", "description": "Current CPU, RAM, disk and network metrics", "required_scope": "metrics:read", "risk": "read-only", "destructive": false, "api": "GET /api/metrics/current", "input": {}, "output": {"cpu_usage": "f32", "ram_used": "u64", "ram_total": "u64"} },
             { "name": "list_services", "description": "List systemd services and their state", "required_scope": "services:read", "risk": "read-only", "destructive": false, "api": "GET /api/services", "input": {}, "output": {"services": "array"} },
-            { "name": "restart_service", "description": "Start, stop or restart a systemd service", "required_scope": "services:restart", "risk": "medium-risk", "destructive": false, "requires_confirmation": false, "api": "POST /api/services/:name/action", "input": {"name": "string", "action": "start|stop|restart"}, "output": {"ok": "boolean"} },
             { "name": "list_containers", "description": "List Docker containers", "required_scope": "containers:read", "risk": "read-only", "destructive": false, "api": "GET /api/containers", "input": {}, "output": {"containers": "array"} },
             { "name": "restart_container", "description": "Start, stop or restart a Docker container", "required_scope": "containers:restart", "risk": "medium-risk", "destructive": false, "requires_confirmation": false, "api": "POST /api/containers/:id/action", "input": {"id": "string", "action": "start|stop|restart"}, "output": {"ok": "boolean"} },
             { "name": "get_container_logs", "description": "Get recent logs from a container", "required_scope": "containers:logs", "risk": "read-only", "destructive": false, "api": "GET /api/containers/:id/logs", "input": {"id": "string"}, "output": {"logs": "string"} },
@@ -637,46 +899,66 @@ pub struct StreamQuery {
     pub token: Option<String>,
 }
 
-pub async fn event_stream(
+pub async fn legacy_event_stream(
     State(state): State<AppState>,
     jar: CookieJar,
-    Query(q): Query<StreamQuery>,
+    Query(_q): Query<StreamQuery>,
     headers: HeaderMap,
-) -> Result<
-    Sse<impl futures_util::Stream<Item = std::result::Result<Event, std::convert::Infallible>>>,
-> {
-    // Accept: session cookie, Authorization header, or ?token= query param (SSE can't set headers)
-    let authed = if let Some(raw) = q.token {
-        auth::validate_api_token(&state.db, &raw, "alerts:read")
-            .await
-            .is_ok()
+    token_context: Option<Extension<super::bearer_auth::AuthenticatedApiToken>>,
+) -> Result<Response> {
+    // A middleware-authenticated Bearer token carries a temporary cookie, so its extension must
+    // be checked before genuine browser-session precedence.
+    let (authed, token_backed) = if token_context.is_some() {
+        let raw = headers
+            .get("Authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .unwrap_or("");
+        (
+            auth::validate_api_token(&state.db, raw, "alerts:read")
+                .await
+                .is_ok(),
+            true,
+        )
+    } else if let Some(sid) = jar.get("vt_session").map(|c| c.value().to_string()) {
+        match auth::validate_session(&state.db, &sid).await {
+            Ok(Some(user)) => {
+                super::role_guard::require_operator(&user)?;
+                (true, false)
+            }
+            _ => (false, false),
+        }
     } else if let Some(hdr) = headers.get("Authorization") {
         let raw = hdr
             .to_str()
             .unwrap_or("")
-            .trim_start_matches("Bearer ")
+            .strip_prefix("Bearer ")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("")
             .to_string();
-        auth::validate_api_token(&state.db, &raw, "alerts:read")
-            .await
-            .is_ok()
-    } else {
-        let sid = jar.get("vt_session").map(|c| c.value().to_string());
-        if let Some(sid) = sid {
-            auth::validate_session(&state.db, &sid)
+        (
+            auth::validate_api_token(&state.db, &raw, "alerts:read")
                 .await
-                .map(|u| u.is_some())
-                .unwrap_or(false)
-        } else {
-            false
-        }
+                .is_ok(),
+            true,
+        )
+    } else {
+        (false, false)
     };
 
     if !authed {
         return Err(AppError::Unauthorized);
     }
 
+    if _q.token.is_some() {
+        return Err(AppError::BadRequest(
+            "query-string API tokens are not supported; use Authorization: Bearer".into(),
+        ));
+    }
+
     // Check emergency disable
-    if get_setting(&state, "odysseus.emergency_disabled").await == "true" {
+    if token_backed && emergency_disabled(&state).await? {
         return Err(AppError::FeatureUnavailable(
             "AI access is emergency-disabled".into(),
         ));
@@ -702,7 +984,7 @@ pub async fn event_stream(
                                 "ram_total": snap.ram_total,
                                 "timestamp": unix_now(),
                             });
-                            if tx.send(Event::default().event("metrics").data(data.to_string())).await.is_err() {
+                            if !send_bounded_legacy_event(&tx, "metrics", data.to_string()).await {
                                 break;
                             }
                             if snap.cpu_usage > 90.0 {
@@ -711,7 +993,7 @@ pub async fn event_stream(
                                     "value": snap.cpu_usage, "threshold": 90,
                                     "message": format!("CPU at {:.0}%", snap.cpu_usage),
                                 });
-                                if tx.send(Event::default().event("alert").data(alert.to_string())).await.is_err() { break; }
+                                if !send_bounded_legacy_event(&tx, "alert", alert.to_string()).await { break; }
                             }
                             let ram_pct = (snap.ram_used * 100).checked_div(snap.ram_total).unwrap_or(0);
                             if ram_pct > 90 {
@@ -720,7 +1002,7 @@ pub async fn event_stream(
                                     "value": ram_pct, "threshold": 90,
                                     "message": format!("RAM at {}%", ram_pct),
                                 });
-                                if tx.send(Event::default().event("alert").data(alert.to_string())).await.is_err() { break; }
+                                if !send_bounded_legacy_event(&tx, "alert", alert.to_string()).await { break; }
                             }
                         }
                         Err(_) => break,
@@ -743,51 +1025,81 @@ pub async fn event_stream(
                                 "type": "audit", "id": id, "action": action,
                                 "resource_type": resource_type, "outcome": outcome, "timestamp": ts,
                             });
-                            if tx.send(Event::default().event("audit").data(ev.to_string())).await.is_err() { break; }
+                            if !send_bounded_legacy_event(&tx, "audit", ev.to_string()).await { break; }
                         }
                     }
                     last_audit_ts = new_ts;
-                    let _ = tx.send(Event::default().event("ping").data(unix_now().to_string())).await;
+                    let _ = send_bounded_legacy_event(&tx, "ping", unix_now().to_string()).await;
                 }
             }
         }
     });
 
-    let stream = ReceiverStream::new(rx).map(Ok);
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    let stream = ReceiverStream::new(rx).map(Ok::<_, std::convert::Infallible>);
+    let mut response = Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    response
+        .headers_mut()
+        .insert("Deprecation", HeaderValue::from_static("true"));
+    response.headers_mut().insert(
+        "Link",
+        HeaderValue::from_static("</api/integrations/events>; rel=\"successor-version\""),
+    );
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------
 // Webhook receiver (Odysseus → VoidTower)
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookReq {
     pub automation_id: Option<String>,
-    /// Structured action: "container.restart" | "container.start" | "container.stop"
-    ///                   | "service.restart" | "service.start" | "service.stop"
+    /// Structured action: container actions use the canonical durable path; service actions are
+    /// accepted only as explicitly deferred legacy webhook inputs and fail closed.
     pub action: Option<String>,
     /// Resource ID — container ID or service name depending on action
     pub resource_id: Option<String>,
     pub dry_run: Option<bool>,
 }
 
-/// Neither `webhook()` call site below has anywhere to park a verdict short of a plain
-/// `Allow`: there's no approval-queue to hold a `RequireApproval` (P0-03 scope note), and
-/// no snapshot mechanism wired to this ingress path to satisfy `AllowRequireSnapshot` —
-/// unlike `api/proxmox.rs`'s `vm_snapshot`, nothing here can snapshot a Docker container
-/// or service before mutating it. So every non-`Allow` verdict blocks here; the safe
-/// interim behavior is to refuse rather than silently proceed as if it were `Allow`.
-///
-/// This one function is shared by both call sites specifically so that reasoning can't
-/// drift out of sync between them again — the P0-03 review's Finding 1 was exactly that
-/// drift: `run_automation_job`'s match arm was correct (`AllowRequireSnapshot` never
-/// actually occurs for its fixed `"automation_job"` resource type) but its "not reachable,
-/// treat like `Allow`" shape got copy-pasted onto `webhook()`'s structured-action match
-/// arm below, where `resource_type` is *not* fixed and does include `"container"` (a
-/// `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES` entry) — so `AllowRequireSnapshot` was
-/// reachable there and got silently treated as `Allow`, skipping the "mandatory" pre-apply
-/// snapshot Trusted mode is supposed to guarantee.
+fn validate_webhook_request(req: &WebhookReq) -> Result<()> {
+    let has_automation = req.automation_id.is_some();
+    let has_action = req.action.is_some();
+    if has_automation == has_action {
+        return Err(AppError::BadRequest(
+            "exactly one of automation_id or action is required".into(),
+        ));
+    }
+    if let Some(automation_id) = &req.automation_id {
+        if automation_id.trim().is_empty() || automation_id.chars().count() > 200 {
+            return Err(AppError::BadRequest("invalid automation_id".into()));
+        }
+        if req.resource_id.is_some() {
+            return Err(AppError::BadRequest(
+                "resource_id is only valid with action".into(),
+            ));
+        }
+    }
+    if let Some(action) = &req.action {
+        if action.chars().count() > 100 || action.trim().is_empty() {
+            return Err(AppError::BadRequest("invalid action".into()));
+        }
+        let resource_id = req
+            .resource_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty() && value.chars().count() <= 200)
+            .ok_or_else(|| AppError::BadRequest("resource_id required".into()))?;
+        let _ = resource_id;
+    }
+    Ok(())
+}
+
+/// Legacy automation and service webhook mutations cannot park a verdict for later approval
+/// or satisfy a required snapshot, so every non-`Allow` verdict blocks. Container webhook
+/// actions use the canonical durable-operation path instead and do not call this helper.
 fn verdict_block_reason(verdict: &voidwatch::Verdict) -> Option<&str> {
     match verdict {
         voidwatch::Verdict::Allow => None,
@@ -797,13 +1109,12 @@ fn verdict_block_reason(verdict: &voidwatch::Verdict) -> Option<&str> {
     }
 }
 
-/// Runs an `automation_id`-triggered job's command. Split out from `webhook()` so it
-/// can be exercised directly against a `SqlitePool` in tests.
+#[cfg(test)]
 async fn run_automation_job(
-    db: &SqlitePool,
+    db: &sqlx::SqlitePool,
     automation_id: &str,
-    job: (String, String, i64),
-    dry_run: bool,
+    _job: (String, String, i64),
+    _dry_run: bool,
 ) -> Result<()> {
     let verdict = voidwatch::evaluate(
         db,
@@ -818,162 +1129,121 @@ async fn run_automation_job(
         },
     )
     .await;
-
     if let Some(reason) = verdict_block_reason(&verdict) {
-        audit::log_sourced(
-            db,
-            None,
-            "agent",
-            "integrations.webhook.automation_trigger",
-            Some("automation_job"),
-            Some(automation_id),
-            "blocked",
-            None,
-            Some(reason),
-            Some("odysseus"),
-        )
-        .await;
         return Err(AppError::PolicyDenied(reason.to_string()));
     }
-
-    audit::log_sourced(
-        db,
-        None,
-        "agent",
-        "integrations.webhook.automation_trigger",
-        Some("automation_job"),
-        Some(automation_id),
-        "success",
-        None,
-        Some(&format!("dry_run={dry_run}")),
-        Some("odysseus"),
-    )
-    .await;
-
-    if !dry_run {
-        let (job_id, command, timeout_secs) = job;
-        let db = db.clone();
-        tokio::spawn(async move {
-            let run_id = Uuid::new_v4().to_string();
-            let started = unix_now();
-            let _ = sqlx::query(
-                "INSERT INTO automation_runs (id, job_id, started_at, status, output) VALUES (?,?,?,'running','')",
-            )
-            .bind(&run_id)
-            .bind(&job_id)
-            .bind(started)
-            .execute(&db)
-            .await;
-
-            let timeout = Duration::from_secs(timeout_secs.max(1) as u64);
-            let (status, exit_code, output) = match tokio::time::timeout(timeout, async {
-                tokio::process::Command::new("bash")
-                    .arg("-c")
-                    .arg(&command)
-                    .output()
-                    .await
-            })
-            .await
-            {
-                Ok(Ok(out)) => {
-                    let code = out.status.code().unwrap_or(-1) as i64;
-                    let status = if out.status.success() {
-                        "success"
-                    } else {
-                        "failure"
-                    };
-                    let output = String::from_utf8_lossy(&out.stdout).to_string()
-                        + &String::from_utf8_lossy(&out.stderr);
-                    (status.to_string(), Some(code), output)
-                }
-                _ => (
-                    "failure".to_string(),
-                    Some(-1),
-                    "Timeout or exec error".to_string(),
-                ),
-            };
-
-            let finished = unix_now();
-            let _ = sqlx::query(
-                "UPDATE automation_runs SET finished_at=?, status=?, exit_code=?, output=? WHERE id=?",
-            )
-            .bind(finished)
-            .bind(&status)
-            .bind(exit_code)
-            .bind(&output)
-            .bind(&run_id)
-            .execute(&db)
-            .await;
-
-            let _ = sqlx::query(
-                "UPDATE automation_jobs SET last_run_at=?, last_status=?, last_exit_code=?, updated_at=? WHERE id=?",
-            )
-            .bind(finished)
-            .bind(&status)
-            .bind(exit_code)
-            .bind(finished)
-            .bind(&job_id)
-            .execute(&db)
-            .await;
-        });
-    }
-
     Ok(())
 }
 
 pub async fn webhook(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<WebhookReq>,
-) -> Result<Json<serde_json::Value>> {
+    request: axum::extract::Request,
+) -> super::operation_adoption::CompatibilityResult<Response> {
+    let headers = request.headers().clone();
     if get_setting(&state, "odysseus.enabled").await != "true" {
-        return Err(AppError::FeatureUnavailable(
-            "Odysseus integration is not enabled".into(),
-        ));
+        return Err(
+            AppError::FeatureUnavailable("Odysseus integration is not enabled".into()).into(),
+        );
     }
     if get_setting(&state, "odysseus.emergency_disabled").await == "true" {
         return Err(AppError::FeatureUnavailable(
             "Odysseus integration is emergency-disabled".into(),
-        ));
+        )
+        .into());
     }
 
-    let expected_secret = get_setting(&state, "odysseus.webhook_secret").await;
-    if expected_secret.is_empty() {
+    let (timestamp, nonce, signature) = parse_signed_webhook_headers(&headers)?;
+    let secret_id = get_setting(
+        &state,
+        crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING,
+    )
+    .await;
+    if secret_id.is_empty() {
         return Err(AppError::FeatureUnavailable(
             "Webhook secret not configured — generate one in Settings → Integrations".into(),
-        ));
+        )
+        .into());
     }
+    let expected_secret = crate::api::secrets::resolve(
+        &state.db,
+        &state.secrets_key,
+        &secret_id,
+        crate::api::secrets::ODYSSEUS_WEBHOOK_PURPOSE,
+    )
+    .await
+    .map_err(|_| AppError::FeatureUnavailable("Webhook secret unavailable".into()))?;
 
-    let provided = headers
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .trim_start_matches("Bearer ")
-        .trim();
-
-    if !constant_time_eq(&sha256_hex(provided), &sha256_hex(&expected_secret)) {
-        return Err(AppError::Unauthorized);
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| value.eq_ignore_ascii_case("application/json"));
+    if content_type.is_none() {
+        return Err(AppError::RequestBody {
+            status: axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        }
+        .into());
     }
-
+    let body = to_bytes(request.into_body(), 64 * 1024)
+        .await
+        .map_err(|_| {
+            super::operation_adoption::CompatibilityError::from(AppError::RequestBody {
+                status: axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            })
+        })?;
+    verify_signed_webhook(&expected_secret, timestamp, &nonce, &signature, &body)?;
+    claim_webhook_replay(&state.db, timestamp, &nonce, &signature).await?;
+    let req: WebhookReq = serde_json::from_slice(&body).map_err(|_| {
+        super::operation_adoption::CompatibilityError::from(AppError::RequestBody {
+            status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        })
+    })?;
+    validate_webhook_request(&req)?;
     let dry_run = req.dry_run.unwrap_or(false);
 
-    if let Some(automation_id) = req.automation_id {
-        let job = sqlx::query_as::<_, (String, String, i64)>(
-            "SELECT id, command, timeout_secs FROM automation_jobs WHERE id = ? AND enabled = 1",
+    if let Some(ref automation_id) = req.automation_id {
+        let credential = CredentialContext::Webhook {
+            source_id: "odysseus".into(),
+        };
+        let resource =
+            super::automation::resolve_run_resource(&state, &credential, automation_id).await?;
+        let input = serde_json::json!({});
+        let idempotency_key = if headers.get("Idempotency-Key").is_some() {
+            super::operation_adoption::idempotency_key(&headers)?
+        } else {
+            format!(
+                "webhook-{}",
+                sha256_hex(&serde_json::to_string(&req).unwrap_or_default())
+            )
+        };
+        if dry_run {
+            let prepared = super::operation_adoption::prepare(
+                &state,
+                &credential,
+                &resource.id,
+                "automation.run",
+                input,
+            )
+            .await?;
+            let view = prepared.view();
+            return Ok(Json(serde_json::json!({
+                "dry_run": true,
+                "plan": view.operation,
+                "policy": view.policy,
+                "resource": view.resource,
+            }))
+            .into_response());
+        }
+        return super::operation_adoption::submit_with_key(
+            &state,
+            &credential,
+            &resource.id,
+            "automation.run",
+            input,
+            &idempotency_key,
         )
-        .bind(&automation_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or(AppError::NotFound)?;
-
-        run_automation_job(&state.db, &automation_id, job, dry_run).await?;
-
-        return Ok(Json(serde_json::json!({
-            "ok": true,
-            "dry_run": dry_run,
-            "automation_id": automation_id,
-        })));
+        .await;
     }
 
     // ── Structured resource actions ──────────────────────────────────────────
@@ -985,14 +1255,55 @@ pub async fn webhook(
         let (resource_type, action_name, container_action, service_action) = match action_str
             .as_str()
         {
-            "container.restart" => ("container", "restart", Some(ContainerAction::Restart), None),
-            "container.start" => ("container", "start", Some(ContainerAction::Start), None),
-            "container.stop" => ("container", "stop", Some(ContainerAction::Stop), None),
-            "service.restart" => ("service", "restart", None, Some(ServiceAction::Restart)),
-            "service.start" => ("service", "start", None, Some(ServiceAction::Start)),
-            "service.stop" => ("service", "stop", None, Some(ServiceAction::Stop)),
-            other => return Err(AppError::BadRequest(format!("Unknown action: {}", other))),
+            "container.restart" => ("container", "container.restart", true, None),
+            "container.start" => ("container", "container.start", true, None),
+            "container.stop" => ("container", "container.stop", true, None),
+            "service.restart" => ("service", "restart", false, Some(ServiceAction::Restart)),
+            "service.start" => ("service", "start", false, Some(ServiceAction::Start)),
+            "service.stop" => ("service", "stop", false, Some(ServiceAction::Stop)),
+            other => return Err(AppError::BadRequest(format!("Unknown action: {}", other)).into()),
         };
+
+        if container_action {
+            let credential = CredentialContext::Webhook {
+                source_id: "odysseus".into(),
+            };
+            let resource = super::containers::resolve_action_resource(
+                &state,
+                &credential,
+                &resource_id,
+                action_name,
+            )
+            .await?;
+            let input = serde_json::json!({});
+            if dry_run {
+                let prepared = super::operation_adoption::prepare(
+                    &state,
+                    &credential,
+                    &resource.id,
+                    action_name,
+                    input,
+                )
+                .await?;
+                let view = prepared.view();
+                return Ok(Json(serde_json::json!({
+                    "dry_run": true,
+                    "plan": view.operation,
+                    "policy": view.policy,
+                    "resource": view.resource,
+                }))
+                .into_response());
+            }
+            return super::operation_adoption::submit(
+                &state,
+                &credential,
+                &resource.id,
+                action_name,
+                input,
+                &headers,
+            )
+            .await;
+        }
 
         // Policy check — actor_type "automation" for webhook-sourced actions
         let verdict = voidwatch::evaluate(
@@ -1008,11 +1319,7 @@ pub async fn webhook(
             },
         )
         .await;
-        // See `verdict_block_reason`'s doc comment above — this is the call site whose
-        // resource_type (`"container"` for the restart/start/stop actions matched above)
-        // actually is snapshot-capable, so this is where Finding 1 was live: silently
-        // treating `AllowRequireSnapshot` as `Allow` let a Trusted-mode-mandated
-        // pre-apply snapshot be skipped entirely.
+        // The remaining structured branch is the explicitly deferred legacy service path.
         if let Some(reason) = verdict_block_reason(&verdict) {
             audit::log_sourced(
                 &state.db,
@@ -1027,7 +1334,17 @@ pub async fn webhook(
                 Some("odysseus"),
             )
             .await;
-            return Err(AppError::PolicyDenied(reason.to_string()));
+            return Err(AppError::PolicyDenied("Webhook action denied by policy".into()).into());
+        }
+
+        // Service actions remain unsupported until a canonical operation adapter can
+        // resolve the service resource and submit an immutable durable plan. Never
+        // execute the legacy systemd helper from this compatibility ingress path.
+        if service_action.is_some() {
+            return Err(AppError::FeatureUnavailable(
+                "service webhook actions require a canonical operation adapter".into(),
+            )
+            .into());
         }
 
         audit::log_sourced(
@@ -1044,26 +1361,16 @@ pub async fn webhook(
         )
         .await;
 
-        if !dry_run {
-            if let Some(ca) = container_action {
-                containers::container_action(&resource_id, ca)
-                    .await
-                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
-            } else if let Some(sa) = service_action {
-                services::run_service_action(&resource_id, sa)
-                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
-            }
-        }
-
         return Ok(Json(serde_json::json!({
             "ok": true,
             "dry_run": dry_run,
             "action": action_str,
             "resource_id": resource_id,
-        })));
+        }))
+        .into_response());
     }
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,28 +1390,43 @@ pub async fn sync_theme(
     let base = raw_url.trim_end_matches('/');
     let endpoint = format!("{base}/api/prefs/theme");
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let client = crate::ai::egress::client_for_local(&raw_url, std::time::Duration::from_secs(5))
+        .await
+        .map_err(|_| AppError::BadRequest("Odysseus endpoint is unavailable".into()))?;
 
     let resp = client
         .get(&endpoint)
         .send()
         .await
-        .map_err(|e| AppError::BadRequest(format!("Odysseus unreachable: {e}")))?;
+        .map_err(|_| AppError::BadRequest("Odysseus theme request failed".into()))?;
 
     if !resp.status().is_success() {
-        return Err(AppError::BadRequest(format!(
-            "Odysseus returned {}",
-            resp.status()
-        )));
+        return Err(AppError::BadRequest("Odysseus theme request failed".into()));
     }
 
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Invalid response: {e}")))?;
+    const MAX_THEME_RESPONSE_BYTES: usize = 64 * 1024;
+    if resp
+        .content_length()
+        .is_some_and(|length| length > MAX_THEME_RESPONSE_BYTES as u64)
+    {
+        return Err(AppError::BadRequest(
+            "Odysseus theme response is too large".into(),
+        ));
+    }
+    let mut stream = resp.bytes_stream();
+    let mut raw_body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk =
+            chunk.map_err(|_| AppError::BadRequest("Odysseus theme response failed".into()))?;
+        if raw_body.len().saturating_add(chunk.len()) > MAX_THEME_RESPONSE_BYTES {
+            return Err(AppError::BadRequest(
+                "Odysseus theme response is too large".into(),
+            ));
+        }
+        raw_body.extend_from_slice(&chunk);
+    }
+    let body: serde_json::Value = serde_json::from_slice(&raw_body)
+        .map_err(|_| AppError::BadRequest("Odysseus theme response is invalid".into()))?;
 
     let name = body
         .get("value")
@@ -1148,61 +1470,305 @@ pub async fn recent_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
+    use crate::api::operation_adoption::CompatibilityError;
+    use axum::http::{HeaderValue, Method, Request};
+    use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+    use tower::ServiceExt;
 
-    /// `db::run_migrations` doesn't create `policy_rules` — see the same note in
-    /// `voidwatch::tests::setup_db`.
     async fn setup_db() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS policy_rules (
-                id            TEXT PRIMARY KEY,
-                name          TEXT NOT NULL,
-                actor_type    TEXT NOT NULL DEFAULT 'api_token',
-                action        TEXT NOT NULL DEFAULT '*',
-                resource_type TEXT NOT NULL DEFAULT '*',
-                resource_tag  TEXT,
-                effect        TEXT NOT NULL DEFAULT 'deny',
-                priority      INTEGER NOT NULL DEFAULT 100,
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        // P0.2: `policy::check`'s default-deny path for non-`user` actors consults
-        // this table (see `policy.rs::check`, `db::seed_default_allowlist_if_empty`).
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
-                id            TEXT PRIMARY KEY,
-                actor_type    TEXT NOT NULL,
-                action        TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        // Needed for the P0-03 mode-ladder pre-pass (`voidwatch::mode::get_mode`) —
-        // see the identical table in `voidwatch::mode::tests::setup_db`.
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_mode_settings (
-                scope         TEXT PRIMARY KEY,
-                mode          TEXT NOT NULL DEFAULT 'observer',
-                updated_at    INTEGER NOT NULL,
-                updated_by    TEXT
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn odysseus_config_creates_metadata_only_secret_and_revoke_disables_it() {
+        let db = setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "admin").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(
+                        r#"{"webhook_secret":"plaintext-must-not-be-accepted"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_client_error());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(
+                        r#"{"regenerate_webhook_secret":true,"revoke_webhook_secret":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_client_error());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(
+                        r#"{"enabled":true,"regenerate_webhook_secret":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+        assert_eq!(response_json["ok"], true);
+        assert!(response_json["webhook_secret"].as_str().is_some());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+        assert!(response_json.get("webhook_secret").is_none());
+
+        let secret_id: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'odysseus.webhook_secret_id'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(!encrypted.is_empty());
+        assert!(!encrypted.contains("odysseus"));
+        assert!(
+            crate::api::secrets::decrypt(&[0u8; 32], &encrypted)
+                .unwrap()
+                .len()
+                >= 32
+        );
+        let legacy: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.webhook_secret'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(legacy.is_none());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(r#"{"revoke_webhook_secret":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let disabled: bool = sqlx::query_scalar("SELECT disabled FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(disabled);
+    }
+
+    #[tokio::test]
+    async fn odysseus_config_rejects_unsafe_endpoint_without_persisting() {
+        let db = setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "admin").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        for url in [
+            "http://169.254.169.254",
+            "http://user:password@127.0.0.1:11434",
+            "http://127.0.0.1:11434/?unsafe=query",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/integrations/odysseus/config")
+                        .header("content-type", "application/json")
+                        .header("cookie", format!("vt_session={session}"))
+                        .body(axum::body::Body::from(format!(
+                            r#"{{"allowed_url":"{url}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::BAD_REQUEST,
+                "{url}"
+            );
+        }
+
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.allowed_url'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(stored.is_none());
+    }
+
+    #[tokio::test]
+    async fn odysseus_config_allows_clearing_the_endpoint() {
+        let db = setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "admin").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        for url in ["http://127.0.0.1:11434", ""] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/integrations/odysseus/config")
+                        .header("content-type", "application/json")
+                        .header("cookie", format!("vt_session={session}"))
+                        .body(axum::body::Body::from(format!(
+                            r#"{{"allowed_url":"{url}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{url}");
+        }
+
+        let stored: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.allowed_url'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(stored.is_empty());
+    }
+
+    #[tokio::test]
+    async fn odysseus_theme_route_uses_validated_local_endpoint() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/api/prefs/theme",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "value": { "name": "light" } }))
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let db = setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_role_session(&db, "admin").await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/integrations/odysseus/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::from(format!(
+                        r#"{{"allowed_url":"http://{}"}}"#,
+                        address
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/integrations/odysseus/theme")
+                    .header("cookie", format!("vt_session={session}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["name"], "light");
+
+        upstream.abort();
+    }
+
+    #[tokio::test]
+    async fn service_restart_scope_and_tool_are_not_advertised() {
+        assert!(!ALL_SCOPES
+            .iter()
+            .any(|(scope, _)| *scope == "services:restart"));
+        assert!(!CAPABILITY_TIERS
+            .iter()
+            .any(|(_, scopes)| scopes.contains(&"services:restart")));
+        let db = setup_db().await;
+        let manifest = manifest(State(crate::api::mcp::test_support::build(db)))
+            .await
+            .0;
+        let tools = manifest["tools"].as_array().unwrap();
+        assert!(!tools.iter().any(|tool| tool["name"] == "restart_service"));
+    }
+
+    #[tokio::test]
+    async fn vm_control_scope_is_advertised_for_token_minting() {
+        let Json(payload) = scopes_list().await;
+        let scopes = payload["scopes"].as_array().unwrap();
+
+        assert!(scopes.iter().any(|scope| {
+            scope["name"] == "vms:control"
+                && scope["description"] == "Start, stop, reboot and shut down Proxmox guests"
+        }));
     }
 
     /// Reproduces the pre-P0-01 bypass: `automation_id`-triggered jobs ran regardless
@@ -1277,12 +1843,77 @@ mod tests {
         assert!(result.is_ok(), "an allowlisted action must still run");
     }
 
-    /// `verdict_block_reason` is what both `webhook()` call sites consult before
-    /// executing a mutation — this is the shared logic Finding 1 (P0-03 adversarial
-    /// review) found broken at one of its two call sites. Assert directly that all three
-    /// non-`Allow` variants block, `AllowRequireSnapshot` included: silently treating it
-    /// like `Allow` is exactly how a Trusted-mode "mandatory" pre-apply snapshot got
-    /// skipped last time.
+    #[tokio::test]
+    async fn service_webhook_mutation_fails_closed_until_canonical_adapter_exists() {
+        let pool = setup_db().await;
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted = crate::api::secrets::encrypt(&[0u8; 32], "fixture-secret").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+             VALUES (?, 'test-webhook', 'test webhook credential', ?, 0, 0)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES
+             ('odysseus.enabled', 'true', 0),
+             (?, ? , 0)",
+        )
+        .bind(crate::api::secrets::ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO policy_rules (id, name, actor_type, action, resource_type, resource_tag, effect, priority, enabled, created_at)
+             VALUES ('allow-service-start', 'test allow', 'automation', 'start', 'service', NULL, 'allow', 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let body = serde_json::to_vec(&WebhookReq {
+            automation_id: None,
+            action: Some("service.start".into()),
+            resource_id: Some("fixture.service".into()),
+            dry_run: Some(false),
+        })
+        .unwrap();
+        let timestamp = unix_now();
+        let nonce = "service-webhook-test";
+        let mut mac = HmacSha256::new_from_slice(b"fixture-secret").unwrap();
+        mac.update(format!("{timestamp}.{nonce}.").as_bytes());
+        mac.update(&body);
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/integrations/webhooks")
+            .header("X-VoidTower-Timestamp", timestamp.to_string())
+            .header("X-VoidTower-Nonce", nonce)
+            .header("X-VoidTower-Signature", signature)
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        let result = webhook(State(crate::api::mcp::test_support::build(pool)), request).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(CompatibilityError::Legacy(AppError::FeatureUnavailable(ref message)))
+                    if message.contains("canonical operation")
+            ),
+            "service webhook mutation must fail closed instead of executing systemctl: {result:?}"
+        );
+    }
+
+    /// Deferred legacy webhook mutations still fail closed for every non-`Allow` verdict.
     #[test]
     fn verdict_block_reason_blocks_everything_but_allow() {
         assert_eq!(verdict_block_reason(&voidwatch::Verdict::Allow), None);
@@ -1304,58 +1935,6 @@ mod tests {
             "AllowRequireSnapshot must block here (no snapshot mechanism is wired to this \
              ingress path) — treating it like Allow is the regression this test guards \
              against"
-        );
-    }
-
-    /// Reproduces the exact Finding 1 scenario end-to-end through `voidwatch::evaluate`:
-    /// Trusted mode, an allowlisted `(automation, restart, container)` tuple — precisely
-    /// the shape `webhook()`'s structured-action branch produces for `container.restart`.
-    /// `resource_type = "container"` is in `risk_class::SNAPSHOT_CAPABLE_RESOURCE_TYPES`,
-    /// so `evaluate()` must return `AllowRequireSnapshot`, and `verdict_block_reason` must
-    /// treat that as blocking rather than as `Allow` — otherwise a container gets
-    /// restarted with the mandatory pre-apply snapshot silently skipped.
-    #[tokio::test]
-    async fn structured_action_snapshot_required_verdict_blocks_instead_of_silently_allowing() {
-        let pool = setup_db().await;
-        sqlx::query(
-            "INSERT INTO voidwatch_mode_settings (scope, mode, updated_at) VALUES (?, ?, 0)",
-        )
-        .bind(crate::voidwatch::mode::GLOBAL_SCOPE)
-        .bind("trusted")
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO voidwatch_default_allowlist (id, actor_type, action, resource_type, created_at)
-             VALUES ('a1', 'automation', 'restart', 'container', 0)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let verdict = voidwatch::evaluate(
-            &pool,
-            voidwatch::Actor {
-                kind: voidwatch::ActorKind::Automation,
-            },
-            voidwatch::ActionKind::Mutating,
-            "restart",
-            voidwatch::Resource {
-                resource_type: "container",
-                resource_id: "c1",
-            },
-        )
-        .await;
-
-        assert!(
-            matches!(verdict, voidwatch::Verdict::AllowRequireSnapshot(_)),
-            "expected AllowRequireSnapshot for an allowlisted mutate-class action on a \
-             snapshot-capable resource type in Trusted mode, got {verdict:?}"
-        );
-        assert!(
-            verdict_block_reason(&verdict).is_some(),
-            "webhook()'s structured-action path has no snapshot mechanism wired up, so \
-             this verdict must block execution, not proceed as if it were Allow"
         );
     }
 }

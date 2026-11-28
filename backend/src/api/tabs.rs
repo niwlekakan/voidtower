@@ -140,13 +140,16 @@ pub async fn create(
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
-    let config_str = serde_json::to_string(&req.config).map_err(|e| AppError::Internal(e.into()))?;
+    let config_str =
+        serde_json::to_string(&req.config).map_err(|e| AppError::Internal(e.into()))?;
 
-    let next_order: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sort_order) + 1, 0) FROM custom_tabs WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(AppError::Database)?;
+    let next_order: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(sort_order) + 1, 0) FROM custom_tabs WHERE user_id = ?",
+    )
+    .bind(&user.id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(AppError::Database)?;
 
     sqlx::query(
         "INSERT INTO custom_tabs (id, user_id, title, icon, kind, config, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -199,15 +202,17 @@ pub async fn update(
         None => existing.config,
     };
 
-    sqlx::query("UPDATE custom_tabs SET title = ?, icon = ?, config = ? WHERE id = ? AND user_id = ?")
-        .bind(&title)
-        .bind(&icon)
-        .bind(&config_str)
-        .bind(&id)
-        .bind(&user.id)
-        .execute(&state.db)
-        .await
-        .map_err(AppError::Database)?;
+    sqlx::query(
+        "UPDATE custom_tabs SET title = ?, icon = ?, config = ? WHERE id = ? AND user_id = ?",
+    )
+    .bind(&title)
+    .bind(&icon)
+    .bind(&config_str)
+    .bind(&id)
+    .bind(&user.id)
+    .execute(&state.db)
+    .await
+    .map_err(AppError::Database)?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -234,7 +239,10 @@ pub async fn delete(
 }
 
 /// GET /api/tabs/export — dump the current user's custom tabs.
-pub async fn export(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Vec<ExportedTab>>> {
+pub async fn export(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<ExportedTab>>> {
     let user = require_user(&state, &jar).await?;
 
     let rows = sqlx::query_as::<_, CustomTabRow>(
@@ -267,11 +275,13 @@ pub async fn import(
     let user = require_user(&state, &jar).await?;
     let now = unix_now();
 
-    let mut next_order: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sort_order) + 1, 0) FROM custom_tabs WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(AppError::Database)?;
+    let mut next_order: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(sort_order) + 1, 0) FROM custom_tabs WHERE user_id = ?",
+    )
+    .bind(&user.id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(AppError::Database)?;
 
     let mut imported: u32 = 0;
     for tab in &req.tabs {
@@ -281,7 +291,8 @@ pub async fn import(
         }
 
         let id = uuid::Uuid::new_v4().to_string();
-        let config_str = serde_json::to_string(&tab.config).map_err(|e| AppError::Internal(e.into()))?;
+        let config_str =
+            serde_json::to_string(&tab.config).map_err(|e| AppError::Internal(e.into()))?;
 
         sqlx::query(
             "INSERT INTO custom_tabs (id, user_id, title, icon, kind, config, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -302,7 +313,9 @@ pub async fn import(
         imported += 1;
     }
 
-    Ok(Json(serde_json::json!({ "ok": true, "imported": imported })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "imported": imported }),
+    ))
 }
 
 pub async fn reorder(
@@ -429,10 +442,11 @@ mod tests {
                 .unwrap();
         }
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM custom_tabs WHERE user_id = 'u1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM custom_tabs WHERE user_id = 'u1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count, 2);
     }
 
@@ -461,10 +475,12 @@ mod tests {
                 .unwrap();
         }
 
-        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM custom_tabs WHERE user_id = 'u1' ORDER BY sort_order ASC")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM custom_tabs WHERE user_id = 'u1' ORDER BY sort_order ASC",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
 
         assert_eq!(ids, vec!["t3", "t2", "t1"]);
     }

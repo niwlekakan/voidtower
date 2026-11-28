@@ -24,7 +24,9 @@ pub async fn get_current(
     let snapshot = state.latest_metrics.read().await.clone();
     match snapshot {
         Some(s) => Ok(Json(s)),
-        None => Err(AppError::FeatureUnavailable("Metrics not yet collected".to_string())),
+        None => Err(AppError::FeatureUnavailable(
+            "Metrics not yet collected".to_string(),
+        )),
     }
 }
 

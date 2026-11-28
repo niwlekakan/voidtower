@@ -1,4 +1,4 @@
-use crate::ai::{AiCapabilities, AiProvider, AiRequest};
+use crate::ai::{egress, AiCapabilities, AiProvider, AiRequest};
 use async_trait::async_trait;
 
 const ANTHROPIC_API: &str = "https://api.anthropic.com";
@@ -14,7 +14,12 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(id: String, name: String, api_key: String, model: String) -> Self {
-        Self { id, name, api_key, model }
+        Self {
+            id,
+            name,
+            api_key,
+            model,
+        }
     }
 
     fn messages_url(&self) -> String {
@@ -24,8 +29,12 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl AiProvider for AnthropicProvider {
-    fn id(&self) -> &str { &self.id }
-    fn display_name(&self) -> &str { &self.name }
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn display_name(&self) -> &str {
+        &self.name
+    }
 
     fn capabilities(&self) -> AiCapabilities {
         AiCapabilities {
@@ -42,22 +51,20 @@ impl AiProvider for AnthropicProvider {
         let (system, messages) = split_messages(req);
         let body = build_body(&self.model, system, messages, false);
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build().map_err(|e| e.to_string())?;
+        let client = egress::client_for(ANTHROPIC_API, std::time::Duration::from_secs(120)).await?;
 
         let resp = client
             .post(self.messages_url())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("Anthropic unreachable: {e}"))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Anthropic error {status}: {text}"));
+            return Err(format!("Anthropic request failed with HTTP {status}"));
         }
         let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
         json.get("content")
@@ -73,23 +80,27 @@ impl AiProvider for AnthropicProvider {
         let (system, messages) = split_messages(req);
         let body = build_body(&self.model, system, messages, true);
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build().map_err(|e| e.to_string())?;
+        let client = egress::client_for(ANTHROPIC_API, std::time::Duration::from_secs(300)).await?;
 
-        client
+        let resp = client
             .post(self.messages_url())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
-            .send().await
-            .map_err(|e| format!("Anthropic unreachable: {e}"))
+            .send()
+            .await
+            .map_err(|e| format!("Anthropic unreachable: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "Anthropic request failed with HTTP {}",
+                resp.status()
+            ));
+        }
+        Ok(resp)
     }
 
     async fn health_check(&self) -> std::result::Result<(), String> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build().map_err(|e| e.to_string())?;
+        let client = egress::client_for(ANTHROPIC_API, std::time::Duration::from_secs(5)).await?;
 
         let body = serde_json::json!({
             "model": self.model,
@@ -102,7 +113,8 @@ impl AiProvider for AnthropicProvider {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| e.to_string())?;
 
         let status = resp.status();
@@ -116,9 +128,11 @@ impl AiProvider for AnthropicProvider {
 
 fn split_messages(req: &AiRequest) -> (Option<String>, Vec<serde_json::Value>) {
     let system = req.system_prompt.clone();
-    let messages = req.messages.iter().map(|m| {
-        serde_json::json!({ "role": m.role, "content": m.content })
-    }).collect();
+    let messages = req
+        .messages
+        .iter()
+        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+        .collect();
     (system, messages)
 }
 

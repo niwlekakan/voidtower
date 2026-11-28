@@ -1,5 +1,5 @@
 use crate::{
-    audit, auth,
+    auth,
     error::{AppError, Result},
     AppState,
 };
@@ -59,7 +59,8 @@ fn guard_path(raw: &str) -> Result<PathBuf> {
     }
     // Resolve symlinks to detect traversal, but only if the path exists
     if p.exists() {
-        let canon = p.canonicalize()
+        let canon = p
+            .canonicalize()
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         for blocked in BLOCKED_PREFIXES {
             if canon.starts_with(blocked) {
@@ -115,17 +116,20 @@ pub struct PathQuery {
     pub path: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct WriteRequest {
     pub path: String,
     pub content: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct MkdirRequest {
     pub path: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct RenameRequest {
     pub from: String,
@@ -155,16 +159,19 @@ fn modified_ts(meta: &std::fs::Metadata) -> i64 {
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
-pub async fn roots(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<RootsResponse>> {
+pub async fn roots(State(state): State<AppState>, jar: CookieJar) -> Result<Json<RootsResponse>> {
     let user = require_user(&state, &jar).await?;
     require_operator(&user)?;
 
     let mut roots = vec![
-        FsRoot { label: "Root".into(), path: "/".into() },
-        FsRoot { label: "Home".into(), path: "/root".into() },
+        FsRoot {
+            label: "Root".into(),
+            path: "/".into(),
+        },
+        FsRoot {
+            label: "Home".into(),
+            path: "/root".into(),
+        },
     ];
 
     // Add VoidTower data/config directories if they exist
@@ -173,7 +180,10 @@ pub async fn roots(
         ("VoidTower config", "/etc/voidtower"),
     ] {
         if Path::new(path).exists() {
-            roots.push(FsRoot { label: label.into(), path: path.into() });
+            roots.push(FsRoot {
+                label: label.into(),
+                path: path.into(),
+            });
         }
     }
 
@@ -234,7 +244,9 @@ pub async fn list(
     }
 
     entries.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
     Ok(Json(ListResponse {
@@ -254,9 +266,7 @@ pub async fn read_file(
 
     let path = guard_path(&q.path)?;
 
-    let meta = fs::metadata(&path)
-        .await
-        .map_err(|_| AppError::NotFound)?;
+    let meta = fs::metadata(&path).await.map_err(|_| AppError::NotFound)?;
 
     if meta.is_dir() {
         return Err(AppError::BadRequest("Path is a directory".into()));
@@ -289,123 +299,45 @@ pub async fn read_file(
 pub async fn write_file(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<WriteRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
-
-    let path = guard_path(&req.path)?;
-
-    if path.is_dir() {
-        return Err(AppError::BadRequest("Path is a directory".into()));
-    }
-
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    }
-
-    fs::write(&path, req.content.as_bytes())
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    let path_str = path.to_string_lossy();
-    audit::log(
-        &state.db, Some(&user.id), "human", "file.write",
-        Some("file"), Some(&path_str), "success", None, None,
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true, "path": path_str })))
+    Err(AppError::FeatureUnavailable(
+        "filesystem mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn mkdir(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<MkdirRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
-
-    let path = guard_path(&req.path)?;
-
-    fs::create_dir_all(&path)
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    let path_str = path.to_string_lossy();
-    audit::log(
-        &state.db, Some(&user.id), "human", "file.mkdir",
-        Some("file"), Some(&path_str), "success", None, None,
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true, "path": path_str })))
+    Err(AppError::FeatureUnavailable(
+        "filesystem mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     jar: CookieJar,
-    Query(q): Query<PathQuery>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
-
-    let path = guard_path(&q.path)?;
-
-    // Safety: refuse to delete root or blocked paths
-    if path == Path::new("/") {
-        return Err(AppError::Forbidden);
-    }
-
-    let meta = fs::metadata(&path)
-        .await
-        .map_err(|_| AppError::NotFound)?;
-
-    let path_str = path.to_string_lossy().into_owned();
-    if meta.is_dir() {
-        fs::remove_dir_all(&path)
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    } else {
-        fs::remove_file(&path)
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    }
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "file.delete",
-        Some("file"), Some(&path_str), "success", None, None,
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "filesystem mutations require a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn rename(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<RenameRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user = require_user(&state, &jar).await?;
     require_admin(&user)?;
-
-    let from = guard_path(&req.from)?;
-    let to = guard_path(&req.to)?;
-
-    let from_str = from.to_string_lossy().into_owned();
-    let to_str = to.to_string_lossy().into_owned();
-
-    fs::rename(&from, &to)
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-    audit::log(
-        &state.db, Some(&user.id), "human", "file.rename",
-        Some("file"), Some(&from_str), "success", None,
-        Some(&format!("→ {to_str}")),
-    ).await;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "filesystem mutations require a canonical operation adapter".into(),
+    ))
 }
 
 // ─── Activity ─────────────────────────────────────────────────────────────────
@@ -466,26 +398,29 @@ pub async fn activity(
         })
         .collect();
 
-    Ok(Json(ActivityResponse { path: path_str, entries }))
+    Ok(Json(ActivityResponse {
+        path: path_str,
+        entries,
+    }))
 }
 
 // ─── Raw file serve (images, PDFs, downloads) ─────────────────────────────────
 
 fn mime_for_ext(ext: &str) -> &'static str {
     match ext {
-        "png"  => "image/png",
+        "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
-        "gif"  => "image/gif",
+        "gif" => "image/gif",
         "webp" => "image/webp",
-        "svg"  => "image/svg+xml",
-        "bmp"  => "image/bmp",
-        "ico"  => "image/x-icon",
-        "pdf"  => "application/pdf",
-        "mp4"  => "video/mp4",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "pdf" => "application/pdf",
+        "mp4" => "video/mp4",
         "webm" => "video/webm",
-        "mp3"  => "audio/mpeg",
-        "wav"  => "audio/wav",
-        _      => "application/octet-stream",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        _ => "application/octet-stream",
     }
 }
 
@@ -498,14 +433,24 @@ pub async fn serve_raw(
     require_operator(&user)?;
 
     let path = guard_path(&q.path)?;
-    if path.is_dir() { return Err(AppError::BadRequest("Path is a directory".into())); }
+    if path.is_dir() {
+        return Err(AppError::BadRequest("Path is a directory".into()));
+    }
 
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     let mime = mime_for_ext(&ext);
-    let bytes = tokio::fs::read(&path).await
+    let bytes = tokio::fs::read(&path)
+        .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let disposition = if mime == "application/octet-stream" {
         format!("attachment; filename=\"{name}\"")
     } else {

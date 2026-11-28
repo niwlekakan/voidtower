@@ -41,7 +41,7 @@ function riskColor(risk: string) {
 
 const ALL_SCOPE_GROUPS: Record<string, string[]> = {
   'Metrics & Network': ['metrics:read', 'network:read'],
-  'Services': ['services:read', 'services:restart'],
+  'Services': ['services:read'],
   'Containers': ['containers:read', 'containers:restart', 'containers:logs'],
   'Apps & Storage': ['apps:read', 'apps:deploy', 'storage:read', 'files:read'],
   'Backups': ['backups:read', 'backups:run'],
@@ -598,7 +598,7 @@ function OdysseusSection() {
 
       {/* Odysseus base URL */}
       <div>
-        <label className="text-xs text-zinc-400 mb-1 block">Odysseus base URL (optional, for CORS validation)</label>
+        <label className="text-xs text-zinc-400 mb-1 block">Odysseus base URL (theme sync and legacy AI fallback)</label>
         <div className="flex gap-2">
           <input
             className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
@@ -620,18 +620,31 @@ function OdysseusSection() {
       <div>
         <div className="flex items-center justify-between mb-1">
           <label className="text-xs text-zinc-400">Webhook secret</label>
-          <button
-            className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1"
-            onClick={() => { if (confirm('Regenerate webhook secret? Existing Odysseus webhook config will need updating.')) save({ regenerate_webhook_secret: true }) }}
-          >
-            <RefreshCw size={11} /> Regenerate
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1"
+              onClick={() => { if (confirm('Regenerate webhook secret? Existing Odysseus webhook config will need updating.')) save({ regenerate_webhook_secret: true }) }}
+            >
+              <RefreshCw size={11} /> Regenerate
+            </button>
+            {cfg.webhook_secret_hint && cfg.webhook_secret_hint !== 'disabled' && (
+              <button
+                className="text-xs text-red-400 hover:text-red-300"
+                onClick={() => { if (confirm('Revoke the inbound webhook secret? Signed webhook requests will stop working until you regenerate one.')) save({ revoke_webhook_secret: true }) }}
+              >
+                Revoke
+              </button>
+            )}
+          </div>
         </div>
         <div className="bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm font-mono text-zinc-400">
           {cfg.webhook_secret_hint ? cfg.webhook_secret_hint : <span className="italic text-zinc-600">Not set — click Regenerate</span>}
         </div>
         <p className="text-xs text-zinc-500 mt-1">
-          Send as <code className="bg-zinc-800 px-1 rounded">Authorization: Bearer &lt;secret&gt;</code> when calling <code className="bg-zinc-800 px-1 rounded">POST /api/integrations/webhooks</code>
+          Send timestamp, nonce, and an HMAC-SHA256 signature over `timestamp.nonce.raw_body` as
+          `X-VoidTower-Timestamp`, `X-VoidTower-Nonce`, and `X-VoidTower-Signature` when calling
+          <code className="bg-zinc-800 px-1 rounded">POST /api/integrations/webhooks</code>. Bearer-only
+          requests are rejected; replaying a nonce returns <code className="bg-zinc-800 px-1 rounded">409 webhook_replay</code>.
         </p>
       </div>
 
@@ -662,7 +675,7 @@ function OdysseusSection() {
       <RevealModal
         token={revealSecret}
         label="Copy your webhook secret"
-        note="This secret will not be shown again. Use it as the Bearer token in the Authorization header when calling POST /api/integrations/webhooks."
+        note="This secret is shown only once. Store it in Odysseus securely; it is encrypted at rest in VoidTower."
         onClose={() => setRevealSecret(null)}
       />,
       document.body,
@@ -757,12 +770,16 @@ function SetupSection() {
     {
       key: 'sse',
       label: 'Subscribe to event stream',
-      code: `curl -H "Accept: text/event-stream" \\\n  "http://localhost:8743/api/integrations/events?token=<your-token>"`,
+      code: `curl -H "Authorization: Bearer <your-token>" \\\n  -H "Accept: text/event-stream" \\\n  http://localhost:8743/api/integrations/events`,
     },
     {
       key: 'webhook',
       label: 'Trigger automation via webhook',
-      code: `curl -X POST \\\n  -H "Authorization: Bearer <webhook-secret>" \\\n  -H "Content-Type: application/json" \\\n  -d '{"automation_id":"<id>"}' \\\n  http://localhost:8743/api/integrations/webhooks`,
+      code: `BODY='{"automation_id":"<id>"}'
+TIMESTAMP=$(date +%s)
+NONCE=$(uuidgen)
+SIGNATURE=$(printf '%s' "$TIMESTAMP.$NONCE.$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')
+curl -X POST \\\n  -H "X-VoidTower-Timestamp: $TIMESTAMP" \\\n  -H "X-VoidTower-Nonce: $NONCE" \\\n  -H "X-VoidTower-Signature: sha256=$SIGNATURE" \\\n  -H "Content-Type: application/json" \\\n  --data "$BODY" \\\n  http://localhost:8743/api/integrations/webhooks`,
     },
     {
       key: 'manifest',
@@ -781,8 +798,8 @@ function SetupSection() {
         <li>Enable the integration above.</li>
         <li>Create an API token with the scopes Odysseus needs.</li>
         <li>In Odysseus settings, add VoidTower as a tool server with the token.</li>
-        <li>Optionally configure the webhook secret so Odysseus can trigger automations.</li>
-        <li>Subscribe to the event stream for real-time alerts.</li>
+        <li>Configure the webhook secret and sign each raw request with a fresh timestamp and nonce.</li>
+        <li>Subscribe to the durable event stream for resumable operation updates.</li>
       </ol>
       <div className="space-y-3">
         {snippets.map(s => (

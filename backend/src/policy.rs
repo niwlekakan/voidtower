@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 pub struct PolicyRule {
     pub id: String,
     pub name: String,
-    /// "api_token" | "automation" | "*"
+    /// "api_token" | "automation" | "system" | "*"
     pub actor_type: String,
     /// "restart" | "stop" | "remove" | "deploy" | "run" | "*"
     pub action: String,
@@ -29,7 +29,7 @@ pub enum PolicyVerdict {
 /// Returns `Allow` if no deny rule matches (default-allow after scope check).
 /// Returns `Deny(reason)` if a matching deny rule fires.
 ///
-/// `actor_type`: "api_token" | "automation"
+/// `actor_type`: "api_token" | "automation" | "system"
 /// `action`:     "restart" | "stop" | "remove" | "deploy" | "run" | etc.
 /// `resource_type`: "container" | "service" | "app" | "backup" | "vm"
 /// `resource_id`: used to look up the resource's tags
@@ -85,13 +85,13 @@ pub async fn check(
         };
     }
 
-    // No matching rule (gap-analysis P0.2): `user` sessions are RBAC-governed, not
-    // policy_rules-governed (see `voidwatch::ActorKind`'s doc comment), so their
+    // No matching rule (gap-analysis P0.2): `user` sessions are RBAC-governed and trusted
+    // `system` actors have already passed canonical ingress/authority checks, so their
     // default-allow behavior is unchanged. `api_token` / `automation` / `ai` flip to
     // default-deny — allowed only via an explicit entry in
     // `voidwatch_default_allowlist`, seeded on upgrade by
     // `db::seed_default_allowlist_if_empty` so pre-existing usage doesn't break.
-    if actor_type == "user" {
+    if matches!(actor_type, "user" | "system") {
         return PolicyVerdict::Allow;
     }
 
@@ -128,71 +128,17 @@ fn matches_field(rule_val: &str, request_val: &str) -> bool {
 #[derive(Clone)]
 pub struct ApiTokenActor;
 
-/// Axum extractor that reads `true` when the request came via API token.
-/// Returns `false` (never fails) for normal session-cookie requests.
-pub struct MaybeTokenActor(pub bool);
-
-#[async_trait::async_trait]
-impl<S> axum::extract::FromRequestParts<S> for MaybeTokenActor
-where
-    S: Send + Sync,
-{
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> std::result::Result<Self, Self::Rejection> {
-        Ok(MaybeTokenActor(
-            parts.extensions.get::<ApiTokenActor>().is_some(),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// Mirrors `voidwatch::tests::setup_db` — `db::run_migrations` doesn't create
-    /// `policy_rules` or `voidwatch_default_allowlist` (those live in `db::init_pool`
-    /// / `db::seed_default_allowlist_if_empty`, outside the migration path tests use
-    /// elsewhere in this crate), so tests here create them directly.
     async fn setup_db() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS policy_rules (
-                id            TEXT PRIMARY KEY,
-                name          TEXT NOT NULL,
-                actor_type    TEXT NOT NULL DEFAULT 'api_token',
-                action        TEXT NOT NULL DEFAULT '*',
-                resource_type TEXT NOT NULL DEFAULT '*',
-                resource_tag  TEXT,
-                effect        TEXT NOT NULL DEFAULT 'deny',
-                priority      INTEGER NOT NULL DEFAULT 100,
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_default_allowlist (
-                id            TEXT PRIMARY KEY,
-                actor_type    TEXT NOT NULL,
-                action        TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                created_at    INTEGER NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
         pool
     }
 
@@ -265,6 +211,7 @@ mod tests {
 
         const CASES: &[(&str, bool)] = &[
             ("user", true),
+            ("system", true),
             ("api_token", false),
             ("automation", false),
             ("ai", false),

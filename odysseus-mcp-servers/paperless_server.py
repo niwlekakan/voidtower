@@ -4,7 +4,7 @@ Paperless-ngx MCP Server — search, manage, and tag documents.
 
 Setup:
   pip install mcp httpx
-  PAPERLESS_URL=http://localhost:8000 PAPERLESS_TOKEN=<token> python paperless_server.py
+  PAPERLESS_URL=http://localhost:8001 PAPERLESS_TOKEN=<token> python paperless_server.py
 
 Get a token: Paperless → Settings → API → Generate token (or use /api/token/ POST with username/password)
 """
@@ -18,7 +18,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp import types
 
-PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "http://localhost:8000").rstrip("/")
+PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "http://localhost:8001").rstrip("/")
 PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
 
 server = Server("paperless")

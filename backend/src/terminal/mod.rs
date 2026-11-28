@@ -4,9 +4,41 @@ use futures_util::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn askpass_file_is_owner_only_and_cleaned_on_early_return() {
+        let dir =
+            std::env::temp_dir().join(format!("voidtower-askpass-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let result = (|| -> Result<PathBuf> {
+            let askpass = AskpassFile::create_at(&dir, "redacted-test-fixture")?;
+            let path = askpass.path().to_path_buf();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+            anyhow::bail!("simulated SSH spawn failure")
+        })();
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[allow(dead_code)]
 pub enum ClientMessage {
     Input { data: String },
     Resize { cols: u16, rows: u16 },
@@ -23,12 +55,14 @@ pub enum ServerMessage {
     Closed,
 }
 
+#[allow(dead_code)]
 struct UserInfo {
     shell: String,
-    home:  String,
-    name:  String,
+    home: String,
+    name: String,
 }
 
+#[allow(dead_code)]
 fn detect_user_info() -> UserInfo {
     #[cfg(unix)]
     {
@@ -41,23 +75,28 @@ fn detect_user_info() -> UserInfo {
         let u = by_name.or_else(|| User::from_uid(getuid()).ok().flatten());
         if let Some(u) = u {
             let shell = u.shell.to_string_lossy().to_string();
-            let home  = u.dir.to_string_lossy().to_string();
-            let name  = u.name.clone();
+            let home = u.dir.to_string_lossy().to_string();
+            let name = u.name.clone();
             let valid = !shell.is_empty() && shell != "/sbin/nologin" && shell != "/bin/false";
             return UserInfo {
                 shell: if valid { shell } else { "/bin/bash".into() },
-                home:  if home.is_empty() { std::env::var("HOME").unwrap_or_else(|_| "/root".into()) } else { home },
+                home: if home.is_empty() {
+                    std::env::var("HOME").unwrap_or_else(|_| "/root".into())
+                } else {
+                    home
+                },
                 name,
             };
         }
     }
     UserInfo {
         shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into()),
-        home:  std::env::var("HOME").unwrap_or_else(|_| "/root".into()),
-        name:  std::env::var("USER").unwrap_or_else(|_| "root".into()),
+        home: std::env::var("HOME").unwrap_or_else(|_| "/root".into()),
+        name: std::env::var("USER").unwrap_or_else(|_| "root".into()),
     }
 }
 
+#[allow(dead_code)]
 fn default_path() -> String {
     let base = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
     match std::env::var("PATH") {
@@ -66,15 +105,74 @@ fn default_path() -> String {
     }
 }
 
+struct AskpassFile {
+    path: PathBuf,
+}
+
+impl AskpassFile {
+    #[allow(dead_code)]
+    fn create(password: &str) -> Result<Self> {
+        Self::create_at(&std::env::temp_dir(), password)
+    }
+
+    fn create_at(directory: &Path, password: &str) -> Result<Self> {
+        let path = directory.join(format!(".vt-askpass-{}.sh", uuid::Uuid::new_v4()));
+        let safe_password = password.replace('\'', "'\\''");
+        let script = format!("#!/bin/sh\nprintf '%s' '{}'\n", safe_password);
+
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o700).custom_flags(nix::libc::O_NOFOLLOW);
+        }
+        let mut file = options.open(&path)?;
+        let write_result = (|| -> std::io::Result<()> {
+            file.write_all(script.as_bytes())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error.into());
+        }
+
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for AskpassFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[allow(dead_code)]
 pub async fn handle_terminal_ws(socket: WebSocket, shell: Option<String>, _user_id: String) {
     if let Err(e) = run_terminal(socket, shell).await {
         tracing::error!("Terminal error: {e}");
     }
 }
 
+#[allow(dead_code)]
 async fn run_terminal(socket: WebSocket, shell: Option<String>) -> Result<()> {
     let pty_system = native_pty_system();
-    let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
 
     let info = detect_user_info();
 
@@ -116,25 +214,43 @@ async fn run_terminal(socket: WebSocket, shell: Option<String>) -> Result<()> {
     } else {
         let parts: Vec<&str> = user_shell.split_whitespace().collect();
         let binary = parts.first().copied().unwrap_or(user_shell.as_str());
-        let args = if parts.len() > 1 { &parts[1..] } else { &[][..] };
+        let args = if parts.len() > 1 {
+            &parts[1..]
+        } else {
+            &[][..]
+        };
         let mut c = CommandBuilder::new(binary);
-        if !args.is_empty() { c.args(args); }
+        if !args.is_empty() {
+            c.args(args);
+        }
         c
     };
 
     // setpriv does not set up a login environment — supply everything explicitly.
     // Same block runs for the non-root path where CommandBuilder clears env.
-    cmd.env("TERM",      "xterm-256color");
+    cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    cmd.env("HOME",    &info.home);
-    cmd.env("USER",    &info.name);
+    cmd.env("HOME", &info.home);
+    cmd.env("USER", &info.name);
     cmd.env("LOGNAME", &info.name);
-    cmd.env("SHELL",   &user_shell);
-    cmd.env("PATH",    default_path());
-    for key in ["LANG", "LC_ALL", "LC_CTYPE", "LANGUAGE",
-                "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-                "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY"] {
-        if let Ok(val) = std::env::var(key) { cmd.env(key, val); }
+    cmd.env("SHELL", &user_shell);
+    cmd.env("PATH", default_path());
+    for key in [
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LANGUAGE",
+        "XDG_RUNTIME_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "WAYLAND_DISPLAY",
+        "DISPLAY",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            cmd.env(key, val);
+        }
     }
     cmd.cwd(&info.home);
 
@@ -143,6 +259,7 @@ async fn run_terminal(socket: WebSocket, shell: Option<String>) -> Result<()> {
     run_pty_loop(socket, pair).await
 }
 
+#[allow(dead_code)]
 pub async fn handle_ssh_ws(
     socket: WebSocket,
     host: String,
@@ -156,6 +273,7 @@ pub async fn handle_ssh_ws(
     }
 }
 
+#[allow(dead_code)]
 async fn run_ssh(
     socket: WebSocket,
     host: String,
@@ -165,53 +283,58 @@ async fn run_ssh(
     password: Option<String>,
 ) -> Result<()> {
     let pty_system = native_pty_system();
-    let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
-
-    let askpass_path: Option<String> = if let Some(ref pw) = password {
-        let path = format!("/tmp/.vt-askpass-{}.sh", uuid::Uuid::new_v4());
-        let safe_pw = pw.replace('\'', "'\\''");
-        let script = format!("#!/bin/sh\nprintf '%s' '{}'\n", safe_pw);
-        if std::fs::write(&path, &script).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
-            }
-            Some(path)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
 
     let use_sshpass = password.is_some() && which_bin("sshpass");
+    let askpass_file = match password.as_deref() {
+        Some(pw) if !use_sshpass => Some(AskpassFile::create(pw)?),
+        _ => None,
+    };
 
     let mut cmd = if use_sshpass {
         let mut c = CommandBuilder::new("sshpass");
         c.arg("-e");
-        c.args(["ssh",
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "BatchMode=no",
-            "-p", &port.to_string(),
+        c.args([
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "BatchMode=no",
+            "-p",
+            &port.to_string(),
         ]);
-        if let Some(ref kp) = key_path { c.args(["-i", kp]); }
+        if let Some(ref kp) = key_path {
+            c.args(["-i", kp]);
+        }
         c.arg(format!("{}@{}", username, host));
         c
     } else {
         let mut c = CommandBuilder::new("ssh");
         c.args([
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-            "-p", &port.to_string(),
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-p",
+            &port.to_string(),
         ]);
-        if let Some(ref kp) = key_path { c.args(["-i", kp]); }
-        if let Some(ref ap) = askpass_path {
+        if let Some(ref kp) = key_path {
+            c.args(["-i", kp]);
+        }
+        if let Some(askpass) = askpass_file.as_ref() {
             c.args(["-o", "BatchMode=no"]);
-            c.env("SSH_ASKPASS", ap);
+            c.env("SSH_ASKPASS", askpass.path());
             c.env("SSH_ASKPASS_REQUIRE", "force");
             c.env("DISPLAY", ":0");
         }
@@ -221,22 +344,24 @@ async fn run_ssh(
 
     cmd.env("TERM", "xterm-256color");
     cmd.env("PATH", default_path());
-    if let Some(ref pw) = password {
-        cmd.env("SSHPASS", pw);
+    if use_sshpass {
+        if let Some(ref pw) = password {
+            cmd.env("SSHPASS", pw);
+        }
     }
 
     let _child = pair.slave.spawn_command(cmd)?;
 
-    let result = run_pty_loop(socket, pair).await;
-    if let Some(path) = askpass_path {
-        let _ = std::fs::remove_file(&path);
-    }
-    result
+    run_pty_loop(socket, pair).await
 }
 
+#[allow(dead_code)]
 fn which_bin(name: &str) -> bool {
-    std::process::Command::new("which").arg(name).output()
-        .map(|o| o.status.success()).unwrap_or(false)
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 // PTY↔WebSocket relay loop.
@@ -257,6 +382,7 @@ fn which_bin(name: &str) -> bool {
 // The reader uses try_send so it NEVER blocks: if the channel is momentarily full the
 // chunk is dropped (not the cascade path) rather than stalling the PTY read, which
 // would deadlock fish when its PTY output buffer fills.
+#[allow(dead_code)]
 async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<()> {
     let reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
@@ -275,8 +401,14 @@ async fn run_pty_loop(socket: WebSocket, pair: portable_pty::PtyPair) -> Result<
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => { tracing::info!("terminal: PTY EOF — process exited"); break; }
-                Err(e) => { tracing::warn!("terminal: PTY read error: {e}"); break; }
+                Ok(0) => {
+                    tracing::info!("terminal: PTY EOF — process exited");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("terminal: PTY read error: {e}");
+                    break;
+                }
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
                     if output_tx.try_send(data).is_err() {

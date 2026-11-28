@@ -49,10 +49,7 @@ pub struct ChangePasswordRequest {
     pub username: Option<String>,
 }
 
-pub async fn list(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> Result<Json<UsersResponse>> {
+pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<UsersResponse>> {
     let caller = require_user(&state, &jar).await?;
     require_admin(&caller)?;
 
@@ -83,7 +80,10 @@ pub async fn create(
             "Username ≥3 chars, password ≥8 chars".to_string(),
         ));
     }
-    if !matches!(req.role.as_str(), "admin" | "operator" | "viewer" | "guest" | "demo" | "member") {
+    if !matches!(
+        req.role.as_str(),
+        "admin" | "operator" | "viewer" | "guest" | "demo" | "member"
+    ) {
         return Err(AppError::BadRequest("Invalid role".to_string()));
     }
 
@@ -94,29 +94,45 @@ pub async fn create(
     let expires_at = if req.role == "guest" {
         match req.expires_at {
             Some(exp) if exp > now => Some(exp),
-            _ => return Err(AppError::BadRequest(
-                "Guest accounts require an expires_at timestamp in the future".to_string(),
-            )),
+            _ => {
+                return Err(AppError::BadRequest(
+                    "Guest accounts require an expires_at timestamp in the future".to_string(),
+                ))
+            }
         }
     } else {
         None
     };
 
-    let user = auth::create_user_ext(&state.db, &req.username, &req.password, &req.role, true, expires_at)
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("UNIQUE") {
-                AppError::BadRequest("Username already taken".to_string())
-            } else {
-                AppError::Internal(e)
-            }
-        })?;
+    let user = auth::create_user_ext(
+        &state.db,
+        &req.username,
+        &req.password,
+        &req.role,
+        true,
+        expires_at,
+    )
+    .await
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            AppError::BadRequest("Username already taken".to_string())
+        } else {
+            AppError::Internal(e)
+        }
+    })?;
 
     audit::log(
-        &state.db, Some(&caller.id), "human", "users.create",
-        Some("user"), Some(&user.id), "success", None,
+        &state.db,
+        Some(&caller.id),
+        "human",
+        "users.create",
+        Some("user"),
+        Some(&user.id),
+        "success",
+        None,
         Some(&format!("username={},role={}", req.username, req.role)),
-    ).await;
+    )
+    .await;
 
     let public: auth::PublicUser = user.into();
     Ok(Json(serde_json::json!({ "user": public })))
@@ -131,7 +147,9 @@ pub async fn delete_user(
     require_admin(&caller)?;
 
     if caller.id == user_id {
-        return Err(AppError::BadRequest("Cannot delete your own account".to_string()));
+        return Err(AppError::BadRequest(
+            "Cannot delete your own account".to_string(),
+        ));
     }
 
     let target = sqlx::query_as::<_, auth::User>(
@@ -156,10 +174,17 @@ pub async fn delete_user(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::log(
-        &state.db, Some(&caller.id), "human", "users.delete",
-        Some("user"), Some(&user_id), "success", None,
+        &state.db,
+        Some(&caller.id),
+        "human",
+        "users.delete",
+        Some("user"),
+        Some(&user_id),
+        "success",
+        None,
         Some(&format!("deleted username={}", target.username)),
-    ).await;
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -195,9 +220,17 @@ pub async fn change_my_password(
         })?;
 
     audit::log(
-        &state.db, Some(&user.id), "human", "users.change_password",
-        Some("user"), Some(&user.id), "success", None, None,
-    ).await;
+        &state.db,
+        Some(&user.id),
+        "human",
+        "users.change_password",
+        Some("user"),
+        Some(&user.id),
+        "success",
+        None,
+        None,
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

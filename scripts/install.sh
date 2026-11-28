@@ -76,7 +76,10 @@ YES_MODE=false
 PULL_MODEL=false
 SKIP_MODEL_PULL=false
 AI_PROVIDER="ollama"
-INSTALL_MODE="install"  # install | uninstall | reset | repair | update
+INSTALL_MODE="install"  # install | uninstall | reset | repair | update | rollback
+# Emergency override for --rollback. It is bound to the documented flag only:
+# reading it from the environment would let `sudo -E` enable it unintentionally.
+VT_ROLLBACK_ALLOW_INCOMPATIBLE_STATE=false
 AI_MODEL=""
 ODYSSEUS_PORT="${ODYSSEUS_PORT:-7000}"
 ODYSSEUS_BIND="${ODYSSEUS_BIND:-0.0.0.0}"
@@ -122,7 +125,8 @@ Integrated stack:
   --no-webhooks          Skip webhook configuration
   --no-toolpacks         Skip toolpack installation
   --offline              No network calls (use local pkg manager only)
-  --dry-run              Print what would be done, make no changes
+  --dry-run              Print what would be done and change nothing (with --rollback:
+                         verify and report only)
   --help                 Show this help
 
 Maintenance:
@@ -130,6 +134,11 @@ Maintenance:
   --reset                Wipe VoidTower state (data/config), keep binary & service
   --repair               Re-install binary + service unit, fix permissions
   --update               Download & apply latest VoidTower binary
+  --rollback             Restore the retained previous binary after a failed upgrade
+  --allow-incompatible-state
+                         Let --rollback proceed when the retained binary cannot read the
+                         current agent state or cannot be probed (emergency recovery only;
+                         valid only with --rollback)
 EOF
   exit 0
 }
@@ -167,11 +176,26 @@ while [[ $# -gt 0 ]]; do
     --reset)            INSTALL_MODE="reset" ;;
     --repair)           INSTALL_MODE="repair" ;;
     --update)           INSTALL_MODE="update" ;;
+    --rollback)         INSTALL_MODE="rollback" ;;
+    --allow-incompatible-state) VT_ROLLBACK_ALLOW_INCOMPATIBLE_STATE=true ;;
     --help|-h)     usage ;;
     *) die "Unknown option: $1" ;;
   esac
   shift
 done
+
+# Release tags are published without their conventional leading `v`; accept
+# either spelling at the public CLI seam, then use the canonical form below.
+VT_VERSION="${VT_VERSION#v}"
+[[ -n "$VT_VERSION" && "$VT_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || \
+  die "Invalid version: $VT_VERSION"
+
+# The override exists only for the rollback of a binary whose state contract is
+# already known to be incompatible. Accepting it in any other mode would widen a
+# destructive maintenance run without the operator naming rollback.
+if [[ "$VT_ROLLBACK_ALLOW_INCOMPATIBLE_STATE" == true && "$INSTALL_MODE" != "rollback" ]]; then
+  die "--allow-incompatible-state is only valid with --rollback"
+fi
 
 [[ "$WITH_VOIDWATCH" == true && "$NO_MCP" != true ]] && WITH_MCP=true
 
@@ -184,7 +208,12 @@ _dry_run_check() {
 }
 
 # ─── Root check ───────────────────────────────────────────────────────────────
-[[ $EUID -eq 0 ]] || die "This installer must be run as root. Try: sudo bash install.sh"
+# The precondition is enforced in main() so the installer's own functions can be
+# exercised without root by scripts/test_agent_rollback.py. main() itself runs
+# only when this file is executed, which is decided by the BASH_SOURCE guard at
+# the end of the file — never by an inherited environment variable. Every real
+# entry point (direct execution, `bash install.sh`, `curl | bash`) still runs
+# through main() and still refuses to install unprivileged.
 
 # ─── OS detection ────────────────────────────────────────────────────────────
 detect_os() {
@@ -223,7 +252,11 @@ detect_os() {
       ;;
   esac
 
-  command -v systemctl &>/dev/null && systemctl --version &>/dev/null 2>&1 && HAVE_SYSTEMD=true || true
+  if command -v systemctl &>/dev/null \
+      && systemctl --version &>/dev/null 2>&1 \
+      && systemctl show --property=Version &>/dev/null 2>&1; then
+    HAVE_SYSTEMD=true
+  fi
   command -v docker &>/dev/null && HAVE_DOCKER=true || true
   ( command -v docker-compose &>/dev/null || docker compose version &>/dev/null 2>&1 ) && HAVE_COMPOSE=true || true
 
@@ -235,14 +268,14 @@ detect_arch() {
   case "$(uname -m)" in
     x86_64)  ARCH="x86_64" ;;
     aarch64) ARCH="aarch64" ;;
-    armv7l)  ARCH="armv7" ;;
-    *) die "Unsupported architecture: $(uname -m)" ;;
+    *) die "Unsupported release architecture: $(uname -m); supported releases: x86_64 and aarch64" ;;
   esac
   info "Architecture: $ARCH"
 }
 
 # ─── Dependency install ───────────────────────────────────────────────────────
 install_deps() {
+  [[ "$OFFLINE" == true ]] && { warn "Offline mode: skipping dependency installation"; return 0; }
   local pkgs="curl tar ca-certificates unzip git"
   info "Installing base dependencies…"
   case "$PKG_MGR" in
@@ -351,6 +384,32 @@ install_docker() {
 }
 
 # ─── Binary download ──────────────────────────────────────────────────────────
+validate_tar_archive() {
+  local archive="$1" label="$2" listing verbose member
+  listing=$(mktemp)
+  verbose=$(mktemp)
+  tar -tzf "$archive" > "$listing" || {
+    rm -f "$listing" "$verbose"
+    die "${label} listing failed"
+  }
+  while IFS= read -r member; do
+    case "$member" in
+      /*|..|../*|*/../*|*/..) rm -f "$listing" "$verbose"; die "${label} contains an unsafe path" ;;
+    esac
+  done < "$listing"
+  tar -tvzf "$archive" > "$verbose" || {
+    rm -f "$listing" "$verbose"
+    die "${label} inspection failed"
+  }
+  while IFS= read -r member; do
+    case "${member:0:1}" in
+      -|d) ;;
+      *) rm -f "$listing" "$verbose"; die "${label} contains a non-regular member" ;;
+    esac
+  done < "$verbose"
+  rm -f "$listing" "$verbose"
+}
+
 download_binary() {
   [[ "$OFFLINE" == true ]] && { warn "Offline mode: skipping binary download"; return 1; }
 
@@ -372,10 +431,35 @@ download_binary() {
     die "Download failed. Check https://github.com/${REPO}/releases"
   }
 
-  tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
+  local checksums="$tmp_dir/SHA256SUMS"
+  if ! curl -fsSL "https://github.com/${REPO}/releases/download/v${VT_VERSION}/SHA256SUMS" -o "$checksums"; then
+    rm -rf "$tmp_dir"
+    die "Release checksum manifest is unavailable; refusing to install an unverified release"
+  fi
+  local expected_checksum actual_checksum
+  local checksum_count
+  checksum_count=$(awk -v name="$archive" '$2 == name {count++} END {print count + 0}' "$checksums")
+  [[ "$checksum_count" -eq 1 ]] || die "Release checksum manifest must contain exactly one entry for ${archive}"
+  expected_checksum=$(awk -v name="$archive" '$2 == name {print tolower($1); exit}' "$checksums")
+  [[ "$expected_checksum" =~ ^[0-9a-fA-F]{64}$ ]] || die "Release checksum is missing for ${archive}"
+  actual_checksum=$(sha256sum "$tmp_dir/$archive" | awk '{print $1}')
+  [[ "$actual_checksum" == "$expected_checksum" ]] || die "Release checksum mismatch for ${archive}"
+
+  validate_tar_archive "$tmp_dir/$archive" "Release archive"
+  tar --no-same-owner --no-same-permissions -xzf "$tmp_dir/$archive" -C "$tmp_dir"
+  [[ -f "$tmp_dir/${BINARY_NAME}" && ! -L "$tmp_dir/${BINARY_NAME}" ]] || die "Release binary is missing or unsafe"
   install -m 755 "$tmp_dir/${BINARY_NAME}" "${VT_INSTALL_DIR}/${BINARY_NAME}"
+  if [[ -d "$tmp_dir/frontend" ]]; then
+    rm -rf "${VT_INSTALL_DIR}/frontend"
+    cp -r "$tmp_dir/frontend" "${VT_INSTALL_DIR}/frontend"
+  fi
+  if [[ -f "$tmp_dir/packaging/systemd/voidtower-agent.service" ]]; then
+    mkdir -p "${VT_INSTALL_DIR}/packaging/systemd"
+    install -m 644 "$tmp_dir/packaging/systemd/voidtower-agent.service" \
+      "${VT_INSTALL_DIR}/packaging/systemd/voidtower-agent.service"
+  fi
   rm -rf "$tmp_dir"
-  success "Binary installed to ${VT_INSTALL_DIR}/${BINARY_NAME}"
+  success "Release installed to ${VT_INSTALL_DIR}"
 }
 
 # ─── Build from source ────────────────────────────────────────────────────────
@@ -383,6 +467,7 @@ build_from_source() {
   info "No pre-built binary available. Attempting build from source…"
 
   if ! command -v cargo >/dev/null 2>&1; then
+    [[ "$OFFLINE" == true ]] && die "Offline mode: cargo is required for source builds"
     info "Rust not found — installing via rustup (this takes 2–5 min, no output is normal)…"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --default-toolchain stable
@@ -395,6 +480,7 @@ build_from_source() {
   fi
 
   if ! command -v npm >/dev/null 2>&1; then
+    [[ "$OFFLINE" == true ]] && die "Offline mode: npm is required for source builds"
     info "Node.js not found — installing…"
     case "$PKG_MGR" in
       apt)
@@ -419,19 +505,31 @@ build_from_source() {
   # When piped via curl | bash, BASH_SOURCE[0] is empty so SRC resolves to the
   # current directory which has no source tree — clone the repo instead.
   if [[ ! -d "$SRC/frontend" || ! -d "$SRC/backend" ]]; then
+    [[ "$OFFLINE" == true ]] && die "Offline mode: local source tree required"
     info "Downloading VoidTower source…"
     SRC=$(mktemp -d -p /var/tmp 2>/dev/null || mktemp -d)
     local _tarball="$SRC/source.tar.gz"
     curl -fsSL --max-time 120 -o "$_tarball" \
       "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" 2>&1
-    tar -xz --strip-components=1 -C "$SRC" -f "$_tarball"
+    validate_tar_archive "$_tarball" "Source archive"
+    tar --no-same-owner --no-same-permissions -xz --strip-components=1 -C "$SRC" -f "$_tarball"
     rm -f "$_tarball"
     success "Source downloaded"
   fi
 
+  if [[ "$OFFLINE" == true && "$VT_VERSION" != "latest" ]] \
+      && ! git -C "$SRC" describe --tags --exact-match "v${VT_VERSION}" >/dev/null 2>&1; then
+    die "Offline requested version requires local checkout at tag v${VT_VERSION}"
+  fi
+
   info "Building frontend…"
-  (cd "$SRC/frontend" && npm ci && npm run build) \
+  if [[ "$OFFLINE" == true ]]; then
+    (cd "$SRC/frontend" && npm ci --offline && npm run build) \
+      || die "Frontend offline build failed"
+  else
+    (cd "$SRC/frontend" && npm ci && npm run build) \
     || die "Frontend build failed"
+  fi
   success "Frontend built"
 
   info "Building backend (this can take 10–15 min on first build)…"
@@ -447,9 +545,15 @@ build_from_source() {
   local CARGO_BUILD_TARGET="" RUSTFLAGS=""
   if [[ "$_use_musl" == "true" ]]; then
     info "Building musl static binary (x86_64-unknown-linux-musl)…"
-    rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
+    if [[ "$OFFLINE" == true ]]; then
+      rustup target list --installed 2>/dev/null | grep -qx 'x86_64-unknown-linux-musl' \
+        || die "Offline musl build requires installed x86_64-unknown-linux-musl target"
+    else
+      rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
+    fi
     # musl-gcc is required to link any C deps (e.g. libsqlite3 bundled build)
     if ! command -v musl-gcc >/dev/null 2>&1; then
+      [[ "$OFFLINE" == true ]] && die "Offline musl build requires installed musl-gcc"
       case "$PKG_MGR" in
         apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq musl-tools ;;
         apk)    apk add --no-cache musl-dev ;;
@@ -462,11 +566,11 @@ build_from_source() {
   fi
 
   if [[ -n "$CARGO_BUILD_TARGET" ]]; then
-    (cd "$SRC/backend" && TMPDIR=/var/tmp RUSTFLAGS="$RUSTFLAGS" cargo build --release --target "$CARGO_BUILD_TARGET" 2>&1) \
+    (cd "$SRC/backend" && TMPDIR=/var/tmp RUSTFLAGS="$RUSTFLAGS" CARGO_NET_OFFLINE="$OFFLINE" cargo build --release --target "$CARGO_BUILD_TARGET" 2>&1) \
       || die "Backend build failed"
     local bin="$SRC/backend/target/${CARGO_BUILD_TARGET}/release/${BINARY_NAME}"
   else
-    (cd "$SRC/backend" && TMPDIR=/var/tmp cargo build --release 2>&1) \
+    (cd "$SRC/backend" && TMPDIR=/var/tmp CARGO_NET_OFFLINE="$OFFLINE" cargo build --release 2>&1) \
       || die "Backend build failed (exit $?)"
     local bin="$SRC/backend/target/release/${BINARY_NAME}"
   fi
@@ -478,9 +582,16 @@ build_from_source() {
   success "Binary installed"
 
   [[ -d "$SRC/frontend/dist" ]] || die "Frontend dist not found at $SRC/frontend/dist"
+  rm -rf "${VT_INSTALL_DIR}/frontend"
   cp -r "$SRC/frontend/dist" "${VT_INSTALL_DIR}/frontend" \
     || die "Failed to copy frontend dist"
   success "Frontend assets installed"
+
+  if [[ -f "$SRC/packaging/systemd/voidtower-agent.service" ]]; then
+    mkdir -p "${VT_INSTALL_DIR}/packaging/systemd"
+    install -m 644 "$SRC/packaging/systemd/voidtower-agent.service" \
+      "${VT_INSTALL_DIR}/packaging/systemd/voidtower-agent.service"
+  fi
 
   git -C "$SRC" rev-parse HEAD 2>/dev/null > "${VT_INSTALL_DIR}/.commit" || true
   success "Built and installed from source"
@@ -496,6 +607,8 @@ install_catalog() {
   src_catalog=$(dirname "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo ".")")/../app-vault/apps
   if [[ -d "$src_catalog" ]]; then
     cp "$src_catalog/"*.yml "$catalog_dir/" 2>/dev/null || true
+  elif [[ "$OFFLINE" == true ]]; then
+    warn "Offline mode: skipping remote app catalog"
   else
     # Download catalog tarball from GitHub (works for binary installs).
     # Two-step: download to file first, then extract — avoids SIGPIPE from
@@ -504,8 +617,10 @@ install_catalog() {
     local _cat_tarball="$tmp_cat/catalog.tar.gz"
     if curl -fsSL -o "$_cat_tarball" \
         "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" 2>/dev/null; then
-      tar -xz -C "$catalog_dir" --strip-components=3 --wildcards \
-        "*/app-vault/apps/*.yml" -f "$_cat_tarball" 2>/dev/null || true
+      validate_tar_archive "$_cat_tarball" "Catalog archive"
+      tar --no-same-owner --no-same-permissions -xz -C "$catalog_dir" --strip-components=3 --wildcards \
+        "*/app-vault/apps/*.yml" -f "$_cat_tarball" 2>/dev/null \
+        || die "Catalog archive extraction failed"
     fi
     rm -rf "$tmp_cat"
   fi
@@ -518,13 +633,14 @@ install_catalog() {
 # ─── System setup ────────────────────────────────────────────────────────────
 setup_system() {
   info "Creating directories and system user…"
-  mkdir -p "$VT_INSTALL_DIR" "$VT_DATA_DIR" "$VT_CONFIG_DIR"
+  mkdir -p "$VT_INSTALL_DIR" "$VT_DATA_DIR" "$VT_CONFIG_DIR" "${VT_DATA_DIR}/agent"
   if ! id "$VT_USER" &>/dev/null; then
     useradd --system --no-create-home --shell /usr/sbin/nologin \
       --home-dir "$VT_DATA_DIR" "$VT_USER"
   fi
   chown -R "${VT_USER}:${VT_GROUP}" "$VT_DATA_DIR" "$VT_CONFIG_DIR"
   chmod 750 "$VT_DATA_DIR" "$VT_CONFIG_DIR"
+  chmod 700 "${VT_DATA_DIR}/agent"
 
   # Shared Docker network for inter-app routing (nginx-proxy, DNS, AI layer)
   if [[ "$HAVE_DOCKER" == true ]]; then
@@ -672,9 +788,211 @@ Type=oneshot
 ExecStart=/opt/voidtower/configure-voidwatch.sh
 EOF
 
+  install_agent_service
+
   systemctl daemon-reload || die "systemctl daemon-reload failed"
   systemctl enable voidtower.service || die "Failed to enable voidtower.service"
-  success "voidtower.service installed and enabled"
+  systemctl enable voidtower-agent.service || die "Failed to enable voidtower-agent.service"
+  success "voidtower.service and voidtower-agent.service installed and enabled"
+}
+
+# The agent is enabled during installation but starts only after enrollment has
+# created a valid state file. This keeps a fresh controller install healthy
+# while preserving the same unit for managed Linux nodes.
+install_agent_service() {
+  mkdir -p "${VT_DATA_DIR}/agent"
+  chown "${VT_USER}:${VT_GROUP}" "${VT_DATA_DIR}/agent"
+  chmod 700 "${VT_DATA_DIR}/agent"
+
+  info "Installing voidtower-agent.service…"
+  cat > "${SYSTEMD_DIR}/voidtower-agent.service" <<EOF
+[Unit]
+Description=VoidTower managed Linux agent
+Documentation=https://github.com/elwla/voidtower/blob/dev/docs/agent/linux-agent-service.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=${VT_DATA_DIR}/agent/state.json
+
+[Service]
+Type=simple
+User=${VT_USER}
+Group=${VT_GROUP}
+ExecStart=${VT_INSTALL_DIR}/${BINARY_NAME} --agent --agent-state=${VT_DATA_DIR}/agent/state.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=voidtower-agent
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=${VT_DATA_DIR}/agent
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+agent_service_stop() {
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && systemctl stop voidtower-agent.service 2>/dev/null || true
+}
+
+agent_service_start_if_enrolled() {
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] || return 0
+  [[ -f "${VT_DATA_DIR}/agent/state.json" ]] || return 0
+  info "Starting VoidTower agent…"
+  systemctl restart voidtower-agent.service
+  systemctl is-active --quiet voidtower-agent.service && success "VoidTower agent running" || \
+    warn "VoidTower agent did not start cleanly — check: journalctl -u voidtower-agent -e"
+}
+
+# ─── Agent binary retention and rollback ─────────────────────────────────────
+# An upgrade overwrites ${VT_INSTALL_DIR}/${BINARY_NAME}, so a failed upgrade is
+# only recoverable if the artifact it replaced was retained first. The retained
+# copy and its SHA-256 manifest live beside the installed binary. The manifest is
+# parsed field by field and never sourced, so a tampered file cannot execute code.
+previous_binary_path() { printf '%s/%s.previous\n' "$VT_INSTALL_DIR" "$BINARY_NAME"; }
+previous_binary_manifest_path() { printf '%s/%s.previous.manifest\n' "$VT_INSTALL_DIR" "$BINARY_NAME"; }
+
+previous_binary_manifest_value() {
+  local manifest="$1" key="$2" value
+  [[ -f "$manifest" && ! -L "$manifest" ]] || return 1
+  value=$(sed -n "s/^${key}=//p" -- "$manifest" 2>/dev/null | head -1) || true
+  printf '%s' "$value"
+  return 0
+}
+
+# Copy the installed binary next to itself before an upgrade replaces it.
+# Returns 0 when there is nothing to retain (fresh install) or when the artifact
+# and its digest were written. Never mutates the installed binary.
+retain_previous_binary() {
+  local installed="${VT_INSTALL_DIR}/${BINARY_NAME}"
+  local previous manifest digest size version
+
+  previous="$(previous_binary_path)"
+  manifest="$(previous_binary_manifest_path)"
+
+  [[ -e "$installed" || -L "$installed" ]] || return 0
+  if [[ -L "$installed" || ! -f "$installed" ]]; then
+    warn "Cannot retain ${installed}: it must be a regular file, not a symlink"
+    return 1
+  fi
+  if [[ ! -x "$installed" ]]; then
+    warn "Cannot retain ${installed}: it is not executable"
+    return 1
+  fi
+
+  digest=$(sha256sum -- "$installed" 2>/dev/null | awk '{print $1}') || true
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { warn "Cannot retain ${installed}: no SHA-256 digest"; return 1; }
+  size=$(stat -c %s -- "$installed" 2>/dev/null) || true
+  [[ "$size" =~ ^[0-9]+$ ]] || { warn "Cannot retain ${installed}: unknown size"; return 1; }
+  version=$("$installed" --version 2>/dev/null | head -1 | tr -cd '[:print:]' | cut -c1-120 || true)
+
+  cp -- "$installed" "${previous}.tmp" || { warn "Cannot retain ${installed}"; return 1; }
+  chmod 0755 "${previous}.tmp" || { rm -f -- "${previous}.tmp"; return 1; }
+  sync
+  mv -f -- "${previous}.tmp" "$previous" || { rm -f -- "${previous}.tmp"; return 1; }
+
+  ( umask 077
+    printf '%s\n' \
+      "schema=1" \
+      "binary_sha256=${digest}" \
+      "binary_size=${size}" \
+      "binary_version=${version:-unknown}" \
+      "retained_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${manifest}.tmp" ) \
+    || { rm -f -- "${manifest}.tmp"; return 1; }
+  chmod 0600 "${manifest}.tmp" || { rm -f -- "${manifest}.tmp"; return 1; }
+  sync
+  mv -f -- "${manifest}.tmp" "$manifest" || { rm -f -- "${manifest}.tmp"; return 1; }
+
+  success "Retained ${version:-unknown} as $(basename "$previous")"
+  return 0
+}
+
+verify_previous_binary() {
+  local previous manifest expected actual schema size actual_size
+
+  previous="$(previous_binary_path)"
+  manifest="$(previous_binary_manifest_path)"
+  [[ -f "$previous" && ! -L "$previous" ]] || return 1
+  [[ -f "$manifest" && ! -L "$manifest" ]] || return 1
+  schema=$(previous_binary_manifest_value "$manifest" schema) || return 1
+  [[ "$schema" == "1" ]] || return 1
+  expected=$(previous_binary_manifest_value "$manifest" binary_sha256) || return 1
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || return 1
+  size=$(previous_binary_manifest_value "$manifest" binary_size) || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] || return 1
+  actual_size=$(stat -c %s -- "$previous" 2>/dev/null) || return 1
+  [[ "$actual_size" == "$size" ]] || return 1
+  actual=$(sha256sum -- "$previous" 2>/dev/null | awk '{print $1}') || true
+  [[ "$actual" == "$expected" ]] || return 1
+  return 0
+}
+
+# Resolve an install prefix only when the operator's spelling is already the
+# canonical absolute path. `-d`/`-L` alone are not enough: bash resolves a
+# trailing slash before either test, so "<prefix>/" would hide a symlinked
+# prefix, and a relative prefix makes the ancestor walk below never terminate.
+# A prefix reached through a symlink, `.`, `..`, or a redundant separator
+# resolves elsewhere, so it is refused rather than applied to a directory that
+# the ownership and writability checks never inspected.
+_canonical_restore_prefix() {
+  local path="$1" resolved
+  [[ -n "$path" && "$path" == /* ]] || return 1
+  resolved=$(realpath -e -- "$path" 2>/dev/null) || return 1
+  [[ "$resolved" == "$path" ]] || return 1
+  printf '%s' "$resolved"
+}
+
+# A restore target must not be replaceable by another user. The install directory
+# and every ancestor up to / must be a real directory and must not be group or
+# world writable; a sticky ancestor (for example /tmp) is allowed because only an
+# entry's owner can remove it there. Ownership must be ours, root, or an unmapped
+# uid: inside a user namespace (bubblewrap, containers) host root is reported as
+# 65534 because it has no mapping, and no principal in that namespace can replace
+# the entry. The path must be absolute and canonical, so the walk always
+# terminates at /.
+_verify_restore_prefix() {
+  local path="$1" mode owner
+  [[ -n "$path" && "$path" == /* ]] || return 1
+  while :; do
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    mode=$(stat -c %a -- "$path" 2>/dev/null) || return 1
+    owner=$(stat -c %u -- "$path" 2>/dev/null) || return 1
+    [[ "$mode" =~ ^[0-7]{3,4}$ && "$owner" =~ ^[0-9]+$ ]] || return 1
+    (( owner == 0 || owner == EUID || owner == 65534 )) || return 1
+    if (( (0${mode} & 0022) != 0 )) && (( (0${mode} & 01000) == 0 )); then
+      return 1
+    fi
+    [[ "$path" == "/" ]] && break
+    path=$(dirname -- "$path")
+  done
+  return 0
+}
+
+# Put the binary that was in place before a failed restore back, so a failed
+# rollback leaves a working install rather than an empty or unusable path.
+_rollback_restore_rejected() {
+  local installed="$1" rejected="$2" failed
+  [[ -n "$rejected" && -e "$rejected" ]] || return 1
+  [[ -e "$installed" ]] && {
+    failed="${installed}.failed-$(date -u +%Y%m%dT%H%M%S%NZ)-$$"
+    mv -f -- "$installed" "$failed" 2>/dev/null || true
+  }
+  mv -f -- "$rejected" "$installed" || return 1
+  return 0
 }
 
 # ─── GPU / hardware detection ────────────────────────────────────────────────
@@ -793,6 +1111,7 @@ download_llama_cpp() {
 }
 
 download_model() {
+  [[ "$OFFLINE" == true ]] && { warn "Offline mode: skipping model download"; return 1; }
   local MODELS_DIR="${VT_DATA_DIR}/models"
   mkdir -p "$MODELS_DIR"
   info "Downloading ${MODEL_NAME} (${MODEL_SIZE})…"
@@ -874,6 +1193,7 @@ pull_ollama_model() {
   local model="$1"
   [[ -z "$model" ]] && return 0
   [[ "$SKIP_MODEL_PULL" == true ]] && { info "Model pull skipped (--skip-model-pull)"; return 0; }
+  [[ "$OFFLINE" == true ]] && { warn "Offline mode: skipping Ollama model pull"; return 1; }
 
   info "Pulling Ollama model: ${model}…"
   if ollama pull "$model"; then
@@ -922,8 +1242,12 @@ install_odysseus() {
     local current_branch
     current_branch=$(git -C "$ODYSSEUS_INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     if [[ "$current_branch" == "$ODYSSEUS_BRANCH" ]]; then
-      info "Odysseus (${ODYSSEUS_BRANCH}) already installed — pulling latest"
-      git -C "$ODYSSEUS_INSTALL_DIR" pull --quiet 2>/dev/null || true
+      if [[ "$OFFLINE" == true ]]; then
+        info "Offline mode: reusing local Odysseus checkout"
+      else
+        info "Odysseus (${ODYSSEUS_BRANCH}) already installed — pulling latest"
+        git -C "$ODYSSEUS_INSTALL_DIR" pull --quiet 2>/dev/null || true
+      fi
       needs_clone=false
     else
       warn "Odysseus at ${ODYSSEUS_INSTALL_DIR} is on branch '${current_branch}', need '${ODYSSEUS_BRANCH}' — replacing"
@@ -950,26 +1274,31 @@ install_odysseus() {
   mkdir -p "$ODYSSEUS_DATA_DIR" "$ODYSSEUS_CONFIG_DIR"
   chown -R "${ODYSSEUS_USER}:${ODYSSEUS_USER}" "$ODYSSEUS_INSTALL_DIR" "$ODYSSEUS_DATA_DIR" "$ODYSSEUS_CONFIG_DIR"
 
-  # Ensure pip is available (deferred from install_deps to avoid pulling gcc on Ubuntu)
-  if ! python3 -m pip --version >/dev/null 2>&1; then
-    info "Installing python3-pip…"
-    case "$PKG_MGR" in
-      apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip ;;
-      dnf|yum) $PKG_MGR install -y -q python3-pip ;;
-      pacman) pacman -S --noconfirm --needed python-pip ;;
-      apk)    apk add --no-cache py3-pip ;;
-      zypper) zypper --non-interactive install -q python3-pip ;;
-    esac
-  fi
+  if [[ "$OFFLINE" == true ]]; then
+    [[ -x "${ODYSSEUS_INSTALL_DIR}/venv/bin/python" ]] \
+      || die "Offline mode: Odysseus virtual environment is required"
+  else
+    # Ensure pip is available (deferred from install_deps to avoid pulling gcc on Ubuntu)
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+      info "Installing python3-pip…"
+      case "$PKG_MGR" in
+        apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip ;;
+        dnf|yum) $PKG_MGR install -y -q python3-pip ;;
+        pacman) pacman -S --noconfirm --needed python-pip ;;
+        apk)    apk add --no-cache py3-pip ;;
+        zypper) zypper --non-interactive install -q python3-pip ;;
+      esac
+    fi
 
-  # Python venv
-  info "Setting up Python virtual environment…"
-  TMPDIR=/var/tmp python3 -m venv "${ODYSSEUS_INSTALL_DIR}/venv" \
-    || die "Failed to create Python venv at ${ODYSSEUS_INSTALL_DIR}/venv"
-  TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip \
-    || die "Failed to upgrade pip in Odysseus venv"
-  TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt" \
-    || die "Failed to install Odysseus Python dependencies"
+    # Python venv
+    info "Setting up Python virtual environment…"
+    TMPDIR=/var/tmp python3 -m venv "${ODYSSEUS_INSTALL_DIR}/venv" \
+      || die "Failed to create Python venv at ${ODYSSEUS_INSTALL_DIR}/venv"
+    TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip \
+      || die "Failed to upgrade pip in Odysseus venv"
+    TMPDIR=/var/tmp "${ODYSSEUS_INSTALL_DIR}/venv/bin/pip" install --quiet -r "${ODYSSEUS_INSTALL_DIR}/requirements.txt" \
+      || die "Failed to install Odysseus Python dependencies"
+  fi
 
   # Create .env if missing — track whether we wrote it fresh this run
   local env_file="${ODYSSEUS_INSTALL_DIR}/.env"
@@ -1072,9 +1401,11 @@ EOF
     success "odysseus.service installed and enabled"
 
     # Pre-cache the Playwright MCP package so Odysseus doesn't warn on first start
-    if command -v npx &>/dev/null; then
+    if command -v npx &>/dev/null && [[ "$OFFLINE" != true ]]; then
       info "Pre-caching Playwright MCP (optional, suppresses startup warning)…"
       npx -y @playwright/mcp@latest --version &>/dev/null || true
+    elif [[ "$OFFLINE" == true ]]; then
+      info "Offline mode: skipping Playwright MCP pre-cache"
     fi
   else
     warn "systemd not available — start Odysseus manually:"
@@ -1355,6 +1686,7 @@ _write_domain_cfg() {
 
 _install_avahi() {
   command -v avahi-daemon &>/dev/null && return
+  [[ "$OFFLINE" == true ]] && { warn "Offline mode: avahi is not installed; skipping mDNS"; return 1; }
   local pkg
   case "$PKG_MGR" in
     apt)    pkg="avahi-daemon libnss-mdns" ;;
@@ -1651,7 +1983,7 @@ cmd_uninstall() {
   step "Uninstall VoidTower"
 
   if [[ "$HAVE_SYSTEMD" == true ]]; then
-    for unit in voidtower odysseus voidtower-llama; do
+    for unit in voidtower voidtower-agent odysseus voidtower-llama; do
       systemctl stop    "${unit}.service" 2>/dev/null || true
       systemctl disable "${unit}.service" 2>/dev/null || true
     done
@@ -1664,6 +1996,7 @@ cmd_uninstall() {
 
   # Service unit files
   rm -f "${SYSTEMD_DIR}/voidtower.service" \
+        "${SYSTEMD_DIR}/voidtower-agent.service" \
         "${SYSTEMD_DIR}/odysseus.service" \
         "${SYSTEMD_DIR}/voidtower-llama.service" \
         "${SYSTEMD_DIR}/voidwatch-configure.service" \
@@ -1762,7 +2095,10 @@ cmd_uninstall() {
 # ─── Reset ────────────────────────────────────────────────────────────────────
 cmd_reset() {
   step "Reset VoidTower State"
-  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+  if [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]]; then
+    systemctl stop voidtower-agent.service 2>/dev/null || true
+    systemctl stop voidtower.service 2>/dev/null || true
+  fi
 
   local ans wipe_db=false wipe_envs=false wipe_secrets=false wipe_token=false wipe_apps=false
 
@@ -1789,7 +2125,7 @@ cmd_reset() {
   $wipe_token   && rm -f  "${VT_CONFIG_DIR}/bootstrap-token"          && success "Removed bootstrap token" || true
   $wipe_apps    && rm -rf "${VT_DATA_DIR}/apps"                       && success "Wiped deployed apps"   || true
 
-  if [[ "$HAVE_SYSTEMD" == true ]]; then
+  if [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]]; then
     systemctl start voidtower.service 2>/dev/null \
       && success "VoidTower restarted" \
       || warn "Failed to restart — check: journalctl -u voidtower -e"
@@ -1798,6 +2134,9 @@ cmd_reset() {
     until [[ -f "${VT_CONFIG_DIR}/bootstrap-token" || $_t -ge 15 ]]; do
       sleep 1; ((_t++)) || true
     done
+    systemctl start voidtower-agent.service 2>/dev/null \
+      && success "VoidTower agent restarted" \
+      || warn "Failed to restart agent — check: journalctl -u voidtower-agent -e"
   fi
   show_token
 }
@@ -1826,7 +2165,9 @@ install_path_symlink() {
 # ─── Repair ───────────────────────────────────────────────────────────────────
 cmd_repair() {
   step "Repair VoidTower"
-  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+  agent_service_stop
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+  retain_previous_binary || warn "No rollback artifact was retained; a failed repair cannot be rolled back"
 
   if ! download_binary 2>/dev/null; then
     warn "Pre-built binary not found, building from source"
@@ -1843,13 +2184,14 @@ cmd_repair() {
   [[ -f "${VT_CONFIG_DIR}/secrets.key"     ]] && chmod 600 "${VT_CONFIG_DIR}/secrets.key"
   [[ -f "${VT_CONFIG_DIR}/bootstrap-token" ]] && chmod 600 "${VT_CONFIG_DIR}/bootstrap-token"
 
-  [[ "$HAVE_SYSTEMD" == true ]] && {
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && {
     systemctl daemon-reload
     systemctl restart voidtower.service
     sleep 2
     systemctl is-active --quiet voidtower.service \
       && success "VoidTower running" \
       || warn "VoidTower did not start — check: journalctl -u voidtower -e"
+    agent_service_start_if_enrolled
   }
   success "Repair complete."
 }
@@ -1862,8 +2204,9 @@ cmd_update() {
   [[ -x "${VT_INSTALL_DIR}/${BINARY_NAME}" ]] && \
     current_ver=$("${VT_INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
   info "Current: ${current_ver:-unknown}  →  Target: ${VT_VERSION}"
-
-  [[ "$HAVE_SYSTEMD" == true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+  agent_service_stop
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+  retain_previous_binary || warn "No rollback artifact was retained; a failed update cannot be rolled back"
 
   if ! download_binary 2>/dev/null; then
     warn "Pre-built binary not found, building from source"
@@ -1871,21 +2214,123 @@ cmd_update() {
   fi
 
   install_catalog
+  install_service
   install_path_symlink
 
-  [[ "$HAVE_SYSTEMD" == true ]] && {
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && {
     systemctl daemon-reload
     systemctl restart voidtower.service
     sleep 2
     systemctl is-active --quiet voidtower.service \
       && success "VoidTower running" \
       || warn "VoidTower did not start — check: journalctl -u voidtower -e"
+    agent_service_start_if_enrolled
   }
 
   local new_ver=""
   [[ -x "${VT_INSTALL_DIR}/${BINARY_NAME}" ]] && \
     new_ver=$("${VT_INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
   success "Updated: ${current_ver:-?} → ${new_ver:-?}"
+}
+
+# ─── Rollback ─────────────────────────────────────────────────────────────────
+# Restores the retained previous binary and refuses whenever the artifact it
+# would restore cannot be verified or cannot read the state left on disk.
+cmd_rollback() {
+  step "Roll back VoidTower"
+
+  local installed="${VT_INSTALL_DIR}/${BINARY_NAME}"
+  local previous manifest expected rejected restored_version retained_version dir_mode canonical_prefix
+  previous="$(previous_binary_path)"
+  manifest="$(previous_binary_manifest_path)"
+
+  # The restore target is resolved exactly; any other spelling (relative,
+  # trailing slash, `.`/`..`, symlinked component) is refused before a single
+  # ownership or writability check runs.
+  canonical_prefix=$(_canonical_restore_prefix "$VT_INSTALL_DIR") || \
+    die "Install directory ${VT_INSTALL_DIR} is not a canonical absolute path (a relative path, trailing slash, '.', '..', a missing directory, or a symlinked component is refused); refusing to restore a binary from it"
+  dir_mode=$(stat -c %a -- "$canonical_prefix" 2>/dev/null) || true
+  [[ "$dir_mode" =~ ^[0-7]{3,4}$ ]] || die "Cannot determine permissions of ${VT_INSTALL_DIR}"
+  if (( (0${dir_mode} & 0022) != 0 )); then
+    die "Install directory ${VT_INSTALL_DIR} is group or world writable; refusing to restore a binary from it"
+  fi
+  _verify_restore_prefix "$canonical_prefix" || \
+    die "Install prefix ${VT_INSTALL_DIR} is not owned by the current user (or root) or has a non-sticky group/world-writable ancestor; refusing to restore a binary from it"
+
+  verify_previous_binary || \
+    die "No retained ${BINARY_NAME}.previous with a matching SHA-256 digest; nothing to roll back to"
+  expected=$(previous_binary_manifest_value "$manifest" binary_sha256) || true
+  # The manifest is untrusted input: strip anything a terminal would interpret and
+  # bound the length before it is printed.
+  retained_version=$(previous_binary_manifest_value "$manifest" binary_version | tr -cd 'A-Za-z0-9 ._+-' | cut -c1-120)
+  info "Retained artifact verified: ${retained_version:-unknown}"
+
+  local state_file="${VT_DATA_DIR}/agent/state.json"
+  if [[ -e "$state_file" || -L "$state_file" ]]; then
+    if "$previous" agent check-state --help >/dev/null 2>&1; then
+      if "$previous" agent check-state --state-path "$state_file" >/dev/null 2>&1; then
+        success "Retained binary reads the current agent state"
+      elif [[ "$VT_ROLLBACK_ALLOW_INCOMPATIBLE_STATE" == true ]]; then
+        warn "Retained binary cannot read ${state_file}; continuing because the incompatible-state override (--allow-incompatible-state) is set"
+      else
+        die "The retained binary cannot read ${state_file}; re-enroll instead of rolling back, or pass --allow-incompatible-state"
+      fi
+    elif [[ "$VT_ROLLBACK_ALLOW_INCOMPATIBLE_STATE" == true ]]; then
+      warn "Retained binary failed 'agent check-state --help'; continuing because the incompatible-state override (--allow-incompatible-state) is set"
+    else
+      die "Cannot verify state compatibility: the retained binary failed 'agent check-state --help' (it predates that subcommand, cannot execute, or is broken); re-enroll instead of rolling back, or pass --allow-incompatible-state"
+    fi
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    info "[DRY-RUN] Would restore $(basename "$previous") over ${installed} and keep the replaced binary beside it"
+    return 0
+  fi
+
+  agent_service_stop
+  [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]] && { systemctl stop voidtower.service 2>/dev/null || true; }
+
+  rejected="${installed}.replaced-$(date -u +%Y%m%dT%H%M%S%NZ)-$$"
+  if [[ -e "$installed" || -L "$installed" ]]; then
+    mv -f -- "$installed" "$rejected" || die "Failed to move the installed binary aside; nothing changed"
+  fi
+  if ! mv -f -- "$previous" "$installed"; then
+    [[ -e "$rejected" ]] && mv -f -- "$rejected" "$installed" || true
+    die "Failed to install the retained binary; the previous install was restored"
+  fi
+  if ! chmod 0755 -- "$installed"; then
+    if _rollback_restore_rejected "$installed" "$rejected"; then
+      die "Restored binary could not be made executable; the pre-rollback binary was restored"
+    fi
+    die "Restored binary could not be made executable and no pre-rollback binary was available to restore"
+  fi
+  sync
+
+  local restored_digest
+  restored_digest=$(sha256sum -- "$installed" 2>/dev/null | awk '{print $1}') || true
+  if [[ "$restored_digest" != "$expected" ]]; then
+    rm -f -- "$manifest"
+    if _rollback_restore_rejected "$installed" "$rejected"; then
+      die "Restored binary does not match the retained digest; the pre-rollback binary was restored"
+    fi
+    die "Restored binary does not match the retained digest and no pre-rollback binary was available to restore"
+  fi
+  rm -f -- "$manifest"
+  [[ -e "$rejected" ]] && info "Rejected binary kept at ${rejected}"
+
+  restored_version=$("$installed" --version 2>/dev/null | head -1 || true)
+  success "Rolled back to ${restored_version:-the retained binary}"
+
+  if [[ "$HAVE_SYSTEMD" == true && "$SKIP_SYSTEMD" != true ]]; then
+    systemctl daemon-reload || warn "systemctl daemon-reload failed"
+    systemctl restart voidtower.service || warn "VoidTower service restart failed — check: journalctl -u voidtower -e"
+    sleep 2
+    systemctl is-active --quiet voidtower.service && success "VoidTower running" || \
+      warn "VoidTower did not start — check: journalctl -u voidtower -e"
+    agent_service_start_if_enrolled
+  else
+    info "Restart the services yourself: systemctl daemon-reload && systemctl restart voidtower.service voidtower-agent.service"
+  fi
 }
 
 # ─── Selective wipe (used by prompt_reinstall) ────────────────────────────────
@@ -1952,6 +2397,8 @@ prompt_reinstall() {
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
+  [[ $EUID -eq 0 ]] || die "This installer must be run as root. Try: sudo bash install.sh"
+
   # Ensure we have a valid working directory — the caller's cwd may not exist
   # (e.g. curl|bash started from a deleted directory), which corrupts subprocesses.
   cd / 2>/dev/null || true
@@ -1983,6 +2430,7 @@ main() {
     reset)     cmd_reset;     exit 0 ;;
     repair)    cmd_repair;    exit 0 ;;
     update)    cmd_update;    exit 0 ;;
+    rollback)  cmd_rollback;  exit 0 ;;
   esac
 
   if [[ "$DRY_RUN" == true ]]; then
@@ -2039,6 +2487,11 @@ main() {
     systemctl is-active --quiet voidtower.service && success "VoidTower running" || \
       warn "VoidTower did not start cleanly — check: journalctl -u voidtower -e"
 
+    if [[ ! -f "${VT_DATA_DIR}/agent/state.json" ]]; then
+      info "Agent service enabled; enroll a node before starting voidtower-agent.service"
+    fi
+    agent_service_start_if_enrolled
+
     if [[ "$WITH_ODYSSEUS" == true ]]; then
       info "Starting Odysseus…"
       systemctl restart odysseus.service
@@ -2058,4 +2511,10 @@ main() {
   print_summary
 }
 
-main "$@"
+# Run only when this file is executed. A sourced file has a BASH_SOURCE entry
+# that differs from $0, while `curl | bash` (and `bash < install.sh`) starts with
+# an empty BASH_SOURCE — both must still run main(). An inherited environment
+# variable must never be able to turn a real installer run into a silent no-op.
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

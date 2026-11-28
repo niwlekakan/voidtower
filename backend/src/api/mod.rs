@@ -38,12 +38,15 @@ async fn security_headers(req: Request, next: Next) -> Response {
     res
 }
 
+pub mod actions;
 pub mod agents;
 pub mod ai;
 pub mod ai_ask;
 pub mod ai_context;
 pub mod ai_providers;
 pub mod alerts;
+pub mod approvals;
+#[allow(dead_code)]
 pub mod apps;
 pub mod audit;
 pub mod auth;
@@ -51,16 +54,24 @@ pub mod automation;
 pub mod backups;
 pub mod bearer_auth;
 pub mod capabilities;
+pub mod cmdb;
 pub mod containers;
 pub mod demo_guard;
 pub mod diagnostics;
 pub mod disaster;
+#[cfg(test)]
+mod event_stream_tests;
 pub mod events;
 pub mod files;
 pub mod firewall;
+#[cfg(test)]
+mod household_tests;
+pub mod households;
 pub mod integrations;
+pub mod jobs;
 pub mod lxc;
 pub mod mcp;
+#[allow(dead_code)]
 pub mod members;
 pub mod metrics;
 pub mod models;
@@ -68,10 +79,18 @@ pub mod mods;
 pub mod nav_config;
 pub mod network;
 pub mod node_enroll;
+pub mod npm;
+mod operation_adoption;
+#[cfg(test)]
+mod operation_workflows_tests;
 pub mod plugins;
 pub mod policy;
+pub mod privacy;
+#[cfg(test)]
+mod privacy_tests;
 pub mod proxmox;
 pub mod proxy;
+pub mod resources;
 mod role_guard;
 pub mod secrets;
 pub mod security;
@@ -88,6 +107,7 @@ pub mod timeline;
 pub mod totp;
 pub mod updates;
 pub mod users;
+pub mod version;
 pub mod vms;
 pub mod webhooks;
 pub mod wireguard;
@@ -143,7 +163,23 @@ pub fn router(state: AppState) -> Router {
         .route("/api/metrics/current", get(metrics::get_current))
         .route("/api/metrics/ws", get(metrics::ws_handler))
         // Infrastructure event stream (SSE)
+        .route("/api/events", get(events::history_handler))
         .route("/api/events/stream", get(events::stream_handler))
+        // Shared operational contracts
+        .route("/api/resources", get(resources::list))
+        .route("/api/resources/:id", get(resources::get))
+        .route("/api/resources/:id/capabilities", get(resources::capabilities))
+        .route("/api/resources/:id/actions/:action/plan", post(actions::plan).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
+        .route("/api/resources/:id/actions/:action", post(actions::submit).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
+        .route("/api/jobs", get(jobs::list))
+        .route("/api/jobs/by-idempotency/:key", get(jobs::get_by_idempotency))
+        .route("/api/jobs/:id", get(jobs::get))
+        .route("/api/jobs/:id/cancel", post(jobs::cancel))
+        .route("/api/jobs/:id/resolve-uncertain", post(jobs::resolve_uncertain).layer(axum::extract::DefaultBodyLimit::max(16 * 1024)))
+        .route("/api/approvals", get(approvals::list))
+        .route("/api/approvals/:id", get(approvals::get))
+        .route("/api/approvals/:id/approve", post(approvals::approve))
+        .route("/api/approvals/:id/reject", post(approvals::reject))
         // Services
         .route("/api/services", get(services::list))
         .route("/api/services/:name", get(services::get))
@@ -229,7 +265,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/studio/gallery",                      get(studio::gallery_list))
         .route("/api/studio/gallery/:kind/:filename",      delete(studio::gallery_delete))
         .route("/api/studio/mcp/tools",                    get(studio::mcp_tools))
-        .route("/api/studio/mcp/invoke",                   post(studio::mcp_invoke))
+        .route("/api/studio/mcp/invoke",                   post(studio::mcp_invoke).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         // Models
         .route("/api/models",              get(models::list_models))
         .route("/api/models/download",     post(models::start_download))
@@ -244,9 +280,22 @@ pub fn router(state: AppState) -> Router {
         .route("/api/models/ollama/create",     post(models::start_ollama_create))
         .route("/api/models/ollama/create/:id", get(models::get_ollama_create_status))
         .route("/api/models/:filename",       delete(models::delete_model))
-        // OpenAI-compatible proxy — no auth, Odysseus-facing
-        .route("/v1/models",             get(models::openai_list_models))
-        .route("/v1/chat/completions",   post(models::openai_chat_completions))
+        // OpenAI-compatible proxy — authenticated Odysseus/model-client surface
+        .route(
+            "/v1/models",
+            get(models::openai_list_models)
+                .layer(axum::middleware::from_fn_with_state(state.clone(), models::require_model_auth)),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(models::openai_chat_completions)
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+                .layer(axum::middleware::from_fn_with_state(state.clone(), models::require_model_auth)),
+        )
+        // NPM (nginx-proxy-manager) read-only adapter
+        .route("/api/npm/hosts", get(npm::hosts))
+        .route("/api/npm/certificates", get(npm::certificates))
+        .route("/api/npm/sync", post(npm::sync))
         // Proxy manager
         .route("/api/proxy", get(proxy::list).post(proxy::create))
         .route("/api/proxy/nginx-setup", get(proxy::nginx_setup_status))
@@ -317,12 +366,33 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wireguard", get(wireguard::list))
         .route("/api/wireguard/peers", post(wireguard::add_peer))
         .route("/api/wireguard/peers/:id", delete(wireguard::delete_peer))
+        // Canonical CMDB asset API
+        .route("/api/cmdb/assets", get(cmdb::assets::list).post(cmdb::assets::create).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/assets/:selector", get(cmdb::assets::get))
+        .route("/api/cmdb/assets/:selector/rename", post(cmdb::assets::rename).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/assets/:selector/retirement", post(cmdb::assets::retirement).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/assets/:selector/history", get(cmdb::records::history))
+        .route("/api/cmdb/assets/:selector/observations", get(cmdb::records::observations))
+        .route("/api/cmdb/assets/:selector/relationships", get(cmdb::relationships::list).post(cmdb::relationships::create).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/relationships/:id", delete(cmdb::relationships::end))
+        .route("/api/cmdb/classes", get(cmdb::catalogs::list_classes).post(cmdb::catalogs::create_class).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/classes/:key", patch(cmdb::catalogs::update_class).delete(cmdb::catalogs::delete_class).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/types", get(cmdb::catalogs::list_types).post(cmdb::catalogs::create_type).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/types/:key", patch(cmdb::catalogs::update_type).delete(cmdb::catalogs::delete_type).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/locations", get(cmdb::locations::list).post(cmdb::locations::create).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/locations/:id", patch(cmdb::locations::update).delete(cmdb::locations::delete).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/discoveries", get(cmdb::discoveries::list))
+        .route("/api/cmdb/discoveries/:id/register", post(cmdb::discoveries::register).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/discoveries/:id/link", post(cmdb::discoveries::link).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/discoveries/:id/ignore", post(cmdb::discoveries::ignore).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
+        .route("/api/cmdb/settings", get(cmdb::settings::get).patch(cmdb::settings::update).layer(axum::extract::DefaultBodyLimit::max(cmdb::support::MAX_BODY_BYTES)))
         // Fleet node enrollment (phones/tablets/pis joining over WireGuard)
         .route("/api/nodes/pairing-code", post(node_enroll::create_pairing_code))
-        .route("/api/nodes/enroll",       post(node_enroll::enroll))
+        .route("/api/nodes/enroll",       post(node_enroll::enroll).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         .route("/api/nodes",              get(node_enroll::list))
         .route("/api/nodes/:id",          delete(node_enroll::delete_node))
-        .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat))
+        .route("/api/nodes/:id/heartbeat", post(node_enroll::heartbeat).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)).layer(axum::middleware::from_fn_with_state(state.clone(), node_enroll::authenticate_node_request)))
+        .route("/api/nodes/:id/inventory", post(cmdb::inventory::upload).layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024 + 1)).layer(axum::middleware::from_fn_with_state(state.clone(), node_enroll::authenticate_node_request)))
         // Self-hosting hub: per-member app access / storage / custom-deploy
         .route("/api/members", get(members::list_members))
         .route("/api/members/me/access", get(members::get_my_access))
@@ -333,6 +403,20 @@ pub fn router(state: AppState) -> Router {
         .route("/api/members/:user_id/storage", post(members::set_quota))
         .route("/api/members/:user_id/drives", post(members::add_drive))
         .route("/api/members/drives/:drive_id", delete(members::remove_drive))
+        // Household identity and explicit resource grants
+        .route("/api/households", get(households::list).post(households::create))
+        .route("/api/households/:household_id/members", get(households::list_members).post(households::add_member))
+        .route("/api/households/:household_id/members/:user_id", delete(households::revoke_member))
+        .route("/api/households/:household_id/grants", get(households::list_grants).post(households::grant_resource))
+        .route("/api/households/:household_id/grants/me", get(households::my_grants))
+        .route("/api/households/:household_id/grants/:resource_id/:user_id", delete(households::revoke_grant))
+        .route("/api/households/:household_id/consents", get(privacy::list_consents).post(privacy::create_consent).layer(axum::extract::DefaultBodyLimit::max(privacy::MAX_BODY_BYTES)))
+        .route("/api/households/:household_id/consents/:consent_id", delete(privacy::withdraw_consent))
+        .route("/api/households/:household_id/privacy-requests", post(privacy::create_privacy_request).layer(axum::extract::DefaultBodyLimit::max(privacy::MAX_BODY_BYTES)))
+        .route("/api/households/:household_id/privacy-requests/:request_id", get(privacy::get_privacy_request))
+        .route("/api/households/:household_id/privacy-requests/:request_id/cancel", post(privacy::cancel_privacy_request))
+        .route("/api/households/:household_id/privacy-requests/:request_id/retry", post(privacy::retry_privacy_request))
+        .route("/api/households/:household_id/privacy-requests/:request_id/artifact", get(privacy::get_privacy_artifact))
         .route("/api/settings/public",  get(settings::get_public))
         .route("/api/settings/ai-url", get(settings::get_ai_url).post(settings::set_ai_url))
         .route("/api/settings/general", get(settings::get_general).post(settings::set_general))
@@ -373,7 +457,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/integrations/odysseus/config",         get(integrations::get_config).post(integrations::save_config))
         .route("/api/integrations/odysseus/manifest",       get(integrations::manifest))
         .route("/api/integrations/odysseus/theme",          get(integrations::sync_theme))
-        .route("/api/integrations/events",                  get(integrations::event_stream))
+        .route("/api/integrations/events",                  get(events::stream_handler))
+        .route("/api/integrations/events/legacy",           get(integrations::legacy_event_stream))
         .route("/api/integrations/webhooks",                post(integrations::webhook))
         .route("/api/integrations/actions",                 get(integrations::recent_actions))
         .route("/api/system/version",       get(system::version))
@@ -417,7 +502,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/proxmox/:host_id/nodes/:node/storage/:storage/content",
             get(proxmox::list_storage_content)
                 .post(proxmox::upload_storage_content)
-                .delete(proxmox::delete_storage_content))
+                .delete(proxmox::delete_storage_content)
+                .layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/api/proxmox/:host_id/nodes/:node/disks",             get(proxmox::list_node_disks))
         .route("/api/proxmox/:host_id/nodes/:node/disks/smart",       get(proxmox::disk_smart))
         .route("/api/proxmox/:host_id/nodes/:node/disks/wipe",        post(proxmox::wipe_disk))
@@ -431,7 +517,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mods/rollback",     post(mods::rollback_mod))
         // MCP (Model Context Protocol) server
         .route("/api/mcp",         get(mcp::sse_handler))
-        .route("/api/mcp/message", post(mcp::message_handler))
+        .route("/api/mcp/message", post(mcp::message_handler).layer(axum::extract::DefaultBodyLimit::max(64 * 1024)))
         // Disaster Recovery
         .route("/api/disaster/export-config",          post(disaster::export_config))
         .route("/api/disaster/import-config",          post(disaster::import_config))
@@ -467,4 +553,5 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(main_router)
         .merge(embed_router)
+        .layer(middleware::from_fn(version::negotiate))
 }

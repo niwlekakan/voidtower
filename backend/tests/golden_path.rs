@@ -24,15 +24,14 @@ fn golden_path_job_runs_on_pull_request_and_push_to_main() {
         workspace.as_deref().map(Path::new),
     );
     let content = std::fs::read_to_string(&ci_yml_path).expect("read ci.yml");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&content).expect("parse ci.yml");
+    let doc: noyalib::Value = noyalib::from_str(&content).expect("parse ci.yml");
     let mapping = doc.as_mapping().expect("ci.yml top level is a mapping");
 
-    // YAML 1.1 parsers may resolve a bare `on:` key to boolean true.
+    // Noyalib follows YAML 1.2, so a bare `on:` remains a string key.
     let on = mapping
         .iter()
         .find_map(|(key, value)| {
-            let is_on_key = matches!(key, serde_yaml::Value::String(s) if s == "on")
-                || matches!(key, serde_yaml::Value::Bool(true));
+            let is_on_key = key == "on";
             is_on_key.then_some(value)
         })
         .expect("workflow has an `on:` trigger block");
@@ -40,20 +39,22 @@ fn golden_path_job_runs_on_pull_request_and_push_to_main() {
         let branches = on
             .get(trigger)
             .and_then(|value| value.get("branches"))
-            .and_then(serde_yaml::Value::as_sequence)
+            .and_then(noyalib::Value::as_sequence)
             .unwrap_or_else(|| panic!("{trigger} trigger missing branches"));
         assert!(
-            branches.iter().any(|branch| branch.as_str() == Some("main")),
+            branches
+                .iter()
+                .any(|branch| branch.as_str() == Some("main")),
             "{trigger} trigger must include main"
         );
     }
 
     let jobs = doc
         .get("jobs")
-        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(noyalib::Value::as_mapping)
         .expect("workflow has a jobs mapping");
     let golden_path_job = jobs
-        .get(serde_yaml::Value::String("golden-path".into()))
+        .get("golden-path")
         .expect("a `golden-path` job exists in ci.yml");
 
     assert!(
@@ -63,11 +64,11 @@ fn golden_path_job_runs_on_pull_request_and_push_to_main() {
 
     let steps = golden_path_job
         .get("steps")
-        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(noyalib::Value::as_sequence)
         .expect("golden-path job has steps");
     let run_commands = steps
         .iter()
-        .filter_map(|step| step.get("run").and_then(serde_yaml::Value::as_str))
+        .filter_map(|step| step.get("run").and_then(noyalib::Value::as_str))
         .collect::<Vec<_>>()
         .join("\n");
 

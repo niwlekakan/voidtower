@@ -4,7 +4,11 @@ use crate::{
     AppState,
 };
 use axum::{
+    body::Body,
     extract::{Path, State},
+    http::header,
+    middleware::Next,
+    response::{IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -77,6 +81,52 @@ async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> 
     Ok(user)
 }
 
+/// Authenticate the OpenAI-compatible model proxy before its handler can
+/// consume a request body or contact the local inference server.
+///
+/// The outer bearer middleware validates API tokens and inserts
+/// `AuthenticatedApiToken`; route metadata then enforces the `models:read`
+/// scope. This handler-managed boundary additionally admits a valid session
+/// cookie for the web client and rejects credential-free or invalid requests.
+pub async fn require_model_auth(
+    State(state): State<AppState>,
+    req: axum::http::Request<Body>,
+    next: Next,
+) -> Response {
+    if req
+        .extensions()
+        .get::<crate::api::bearer_auth::AuthenticatedApiToken>()
+        .is_some()
+    {
+        return next.run(req).await;
+    }
+
+    let session_id = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(';').find_map(|cookie| {
+                cookie
+                    .trim()
+                    .strip_prefix("vt_session=")
+                    .filter(|session| !session.is_empty())
+            })
+        });
+    if let Some(session_id) = session_id {
+        if auth::validate_session(&state.db, session_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return next.run(req).await;
+        }
+    }
+
+    AppError::Unauthorized.into_response()
+}
+
 async fn models_dir(state: &AppState) -> std::path::PathBuf {
     let setting =
         sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key = 'models_dir'")
@@ -87,9 +137,7 @@ async fn models_dir(state: &AppState) -> std::path::PathBuf {
             .map(|(v,)| v);
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
     let default = std::path::PathBuf::from(home).join(".local/share/voidtower/models");
-    let dir = setting.map(std::path::PathBuf::from).unwrap_or(default);
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+    setting.map(std::path::PathBuf::from).unwrap_or(default)
 }
 
 /// Query the running llama.cpp server for its loaded model.
@@ -235,6 +283,7 @@ pub async fn list_models(
     Ok(Json(models))
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct DownloadReq {
     pub url: String,
@@ -244,68 +293,14 @@ pub struct DownloadReq {
 pub async fn start_download(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<DownloadReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    if !req.url.starts_with("http") {
-        return Err(AppError::BadRequest("URL must start with http".into()));
-    }
-
-    let filename = req.filename.filter(|f| !f.is_empty()).unwrap_or_else(|| {
-        req.url
-            .split('/')
-            .next_back()
-            .unwrap_or("model.gguf")
-            .split('?')
-            .next()
-            .unwrap_or("model.gguf")
-            .to_string()
-    });
-
-    if filename.contains('/') || filename.contains("..") {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
-
-    let id = uuid::Uuid::new_v4().to_string();
-    let dir = models_dir(&state).await;
-
-    {
-        let mut map = downloads().lock().unwrap();
-        map.insert(
-            id.clone(),
-            DownloadState {
-                id: id.clone(),
-                filename: filename.clone(),
-                total_bytes: None,
-                downloaded_bytes: 0,
-                status: "downloading".into(),
-                error: None,
-            },
-        );
-    }
-
-    let id2 = id.clone();
-    let url = req.url.clone();
-    tokio::spawn(async move {
-        let result = download_file(&id2, &url, &dir, &filename).await;
-        let mut map = downloads().lock().unwrap();
-        if let Some(entry) = map.get_mut(&id2) {
-            match result {
-                Ok(_) => {
-                    entry.status = "done".into();
-                }
-                Err(e) => {
-                    entry.status = "error".into();
-                    entry.error = Some(e);
-                }
-            }
-        }
-    });
-
-    Ok(Json(serde_json::json!({ "id": id })))
+    Err(AppError::FeatureUnavailable(
+        "Model downloads require a canonical operation adapter".into(),
+    ))
 }
 
+#[allow(dead_code)]
 async fn download_file(
     id: &str,
     url: &str,
@@ -413,21 +408,12 @@ pub async fn download_status(
 pub async fn delete_model(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path(filename): Path<String>,
+    Path(_filename): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    if filename.contains('/') || filename.contains("..") {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
-    let dir = models_dir(&state).await;
-    let path = dir.join(&filename);
-    if !path.exists() {
-        return Err(AppError::NotFound);
-    }
-    tokio::fs::remove_file(&path)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "Model deletion requires a canonical operation adapter".into(),
+    ))
 }
 
 pub async fn get_active(
@@ -439,94 +425,19 @@ pub async fn get_active(
     Ok(Json(serde_json::json!({ "filename": active })))
 }
 
-#[derive(Deserialize)]
-pub struct LoadReq {
-    pub filename: String,
-}
-
-fn llama_entrypoint_with_exec(server_args: &str) -> String {
-    [
-        "if [ -n \"$$MODEL_PATH\" ]; then",
-        "  MODEL=\"$$MODEL_PATH\"",
-        "else",
-        "  MODEL=\"$$(find /models -name '*.gguf' 2>/dev/null | head -1)\"",
-        "fi",
-        "while [ -z \"$$MODEL\" ]; do",
-        "  echo \"[llama.cpp] No .gguf found -- retrying in 15s...\"",
-        "  sleep 15",
-        "  MODEL=\"$$(find /models -name '*.gguf' 2>/dev/null | head -1)\"",
-        "done",
-        "echo \"[llama.cpp] Loading: $$MODEL\"",
-        &format!("exec /app/llama-server --model \"$$MODEL\" {}", server_args),
-    ]
-    .join("\n")
-}
-
-fn llama_entrypoint_script() -> String {
-    llama_entrypoint_with_exec(
-        "--host 0.0.0.0 --port 8080 --n-gpu-layers 999 --ctx-size 8192 --batch-size 512 --threads 4 --cont-batching --parallel 1",
-    )
-}
-
-async fn switch_llama_model(state: &AppState, filename: &str) -> Result<()> {
-    let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
-        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::BadRequest("llama.cpp is not deployed".into()))?;
-
-    let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content =
-        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
-
-    if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
-        for svc in services.values_mut() {
-            if let Some(env) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
-                env.retain(|e| !matches!(e.as_str(), Some(s) if s.starts_with("MODEL_PATH=")));
-                env.push(serde_json::Value::String(format!(
-                    "MODEL_PATH=/models/{}",
-                    filename
-                )));
-            }
-            if let Some(ep) = svc.get_mut("entrypoint").and_then(|e| e.as_array_mut()) {
-                if ep.len() >= 3 {
-                    ep[2] = serde_json::Value::String(llama_entrypoint_script());
-                }
-            }
-        }
-    }
-
-    let new_content = serde_yaml::to_string(&val).map_err(|e| AppError::Internal(e.into()))?;
-    std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
-
-    crate::containers::deploy_compose(&project_name, &compose_path)
-        .await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-
-    Ok(())
-}
-
 pub async fn load_model(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<LoadReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    if req.filename.contains('/') || req.filename.contains("..") {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
-    switch_llama_model(&state, &req.filename).await?;
-    Ok(Json(
-        serde_json::json!({ "ok": true, "model": req.filename }),
+    Err(AppError::FeatureUnavailable(
+        "Model loading requires a canonical operation adapter".into(),
     ))
 }
 
 // ─── Ollama pull ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct OllamaPullReq {
     pub model: String,
@@ -535,59 +446,14 @@ pub struct OllamaPullReq {
 pub async fn start_ollama_pull(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<OllamaPullReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    // Allow letters, digits, colons (tags), hyphens, dots, underscores, slashes (registry)
-    if req.model.is_empty()
-        || !req
-            .model
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, ':' | '-' | '.' | '_' | '/'))
-    {
-        return Err(AppError::BadRequest("Invalid model name".into()));
-    }
-
-    let id = uuid::Uuid::new_v4().to_string();
-    {
-        let mut map = ollama_pulls().lock().unwrap();
-        map.insert(
-            id.clone(),
-            OllamaPullState {
-                id: id.clone(),
-                model: req.model.clone(),
-                status: "pulling".into(),
-                current_layer: Some("Connecting to Ollama…".into()),
-                total_bytes: None,
-                pulled_bytes: None,
-                error: None,
-            },
-        );
-    }
-
-    let id2 = id.clone();
-    let model = req.model.clone();
-    tokio::spawn(async move {
-        let result = do_ollama_pull(&id2, &model).await;
-        let mut map = ollama_pulls().lock().unwrap();
-        if let Some(entry) = map.get_mut(&id2) {
-            match result {
-                Ok(_) => {
-                    entry.status = "done".into();
-                    entry.current_layer = Some("Complete".into());
-                }
-                Err(e) => {
-                    entry.status = "error".into();
-                    entry.error = Some(e);
-                }
-            }
-        }
-    });
-
-    Ok(Json(serde_json::json!({ "id": id })))
+    Err(AppError::FeatureUnavailable(
+        "Ollama model pulls require a canonical operation adapter".into(),
+    ))
 }
 
+#[allow(dead_code)]
 async fn do_ollama_pull(id: &str, model: &str) -> std::result::Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(7200))
@@ -668,6 +534,7 @@ fn ollama_creates() -> &'static Mutex<HashMap<String, OllamaPullState>> {
     OLLAMA_CREATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[allow(dead_code)]
 fn gguf_to_ollama_name(filename: &str) -> String {
     filename
         .trim_end_matches(".gguf")
@@ -676,6 +543,7 @@ fn gguf_to_ollama_name(filename: &str) -> String {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct OllamaCreateReq {
     pub filename: String,
 }
@@ -683,65 +551,14 @@ pub struct OllamaCreateReq {
 pub async fn start_ollama_create(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<OllamaCreateReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    if req.filename.contains('/') || req.filename.contains("..") || !req.filename.ends_with(".gguf")
-    {
-        return Err(AppError::BadRequest("Invalid filename".into()));
-    }
-
-    // Verify the file exists
-    let dir = models_dir(&state).await;
-    if !dir.join(&req.filename).exists() {
-        return Err(AppError::NotFound);
-    }
-
-    let model_name = gguf_to_ollama_name(&req.filename);
-    let id = uuid::Uuid::new_v4().to_string();
-
-    {
-        let mut map = ollama_creates().lock().unwrap();
-        map.insert(
-            id.clone(),
-            OllamaPullState {
-                id: id.clone(),
-                model: model_name.clone(),
-                status: "pulling".into(),
-                current_layer: Some("Sending to Ollama…".into()),
-                total_bytes: None,
-                pulled_bytes: None,
-                error: None,
-            },
-        );
-    }
-
-    let id2 = id.clone();
-    let filename = req.filename.clone();
-    let model_name_spawn = model_name.clone();
-    tokio::spawn(async move {
-        let result = do_ollama_create(&id2, &filename, &model_name_spawn).await;
-        let mut map = ollama_creates().lock().unwrap();
-        if let Some(entry) = map.get_mut(&id2) {
-            match result {
-                Ok(_) => {
-                    entry.status = "done".into();
-                    entry.current_layer = Some("Complete".into());
-                }
-                Err(e) => {
-                    entry.status = "error".into();
-                    entry.error = Some(e);
-                }
-            }
-        }
-    });
-
-    Ok(Json(
-        serde_json::json!({ "id": id, "model_name": model_name }),
+    Err(AppError::FeatureUnavailable(
+        "Ollama model creation requires a canonical operation adapter".into(),
     ))
 }
 
+#[allow(dead_code)]
 async fn do_ollama_create(
     id: &str,
     filename: &str,
@@ -944,7 +761,7 @@ pub async fn get_ollama_config(
     let content =
         std::fs::read_to_string(&compose_path_str).map_err(|e| AppError::Internal(e.into()))?;
     let val: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
+        noyalib::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
 
     let keep_alive_secs = val["services"]
         .as_object()
@@ -968,46 +785,11 @@ pub async fn get_ollama_config(
 pub async fn save_ollama_config(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(cfg): Json<OllamaConfig>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
-        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'ollama' LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::BadRequest("Ollama is not deployed".into()))?;
-
-    let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content =
-        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
-
-    if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
-        for svc in services.values_mut() {
-            if let Some(env) = svc.get_mut("environment").and_then(|e| e.as_array_mut()) {
-                env.retain(
-                    |e| !matches!(e.as_str(), Some(s) if s.starts_with("OLLAMA_KEEP_ALIVE=")),
-                );
-                env.push(serde_json::Value::String(format!(
-                    "OLLAMA_KEEP_ALIVE={}",
-                    cfg.keep_alive_secs
-                )));
-            }
-        }
-    }
-
-    let new_content = serde_yaml::to_string(&val).map_err(|e| AppError::Internal(e.into()))?;
-    std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
-
-    crate::containers::deploy_compose(&project_name, &compose_path)
-        .await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "Saving Ollama configuration requires a canonical operation adapter".into(),
+    ))
 }
 
 // ─── llama.cpp config ─────────────────────────────────────────────────────────
@@ -1109,31 +891,6 @@ fn parse_llama_exec_args(line: &str) -> LlamaConfig {
     cfg
 }
 
-fn build_llama_exec_line(cfg: &LlamaConfig) -> String {
-    let mut parts = vec![
-        "--host 0.0.0.0".to_string(),
-        "--port 8080".to_string(),
-        format!("--n-gpu-layers {}", cfg.n_gpu_layers),
-        format!("--ctx-size {}", cfg.ctx_size),
-        format!("--batch-size {}", cfg.batch_size),
-        format!("--threads {}", cfg.threads),
-        format!("--parallel {}", cfg.parallel),
-    ];
-    if cfg.cont_batching {
-        parts.push("--cont-batching".to_string());
-    }
-    if cfg.flash_attn {
-        parts.push("--flash-attn".to_string());
-    }
-    if cfg.cache_type_k != "f16" {
-        parts.push(format!("--cache-type-k {}", cfg.cache_type_k));
-    }
-    if cfg.cache_type_v != "f16" {
-        parts.push(format!("--cache-type-v {}", cfg.cache_type_v));
-    }
-    parts.join(" ")
-}
-
 pub async fn get_llama_config(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1154,7 +911,7 @@ pub async fn get_llama_config(
     let content =
         std::fs::read_to_string(&compose_path_str).map_err(|e| AppError::Internal(e.into()))?;
     let val: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
+        noyalib::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
 
     let exec_line = val["services"]
         .as_object()
@@ -1175,44 +932,12 @@ pub async fn get_llama_config(
 pub async fn save_llama_config(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(cfg): Json<LlamaConfig>,
+    _body: Body,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    let (project_name, compose_path_str) = sqlx::query_as::<_, (String, String)>(
-        "SELECT project_name, compose_path FROM deployed_apps WHERE app_id = 'llama-cpp' LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::BadRequest("llama.cpp is not deployed".into()))?;
-
-    let compose_path = std::path::PathBuf::from(&compose_path_str);
-    let content =
-        std::fs::read_to_string(&compose_path).map_err(|e| AppError::Internal(e.into()))?;
-    let mut val: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| AppError::Internal(e.into()))?;
-
-    let new_script = llama_entrypoint_with_exec(&build_llama_exec_line(&cfg));
-
-    if let Some(services) = val.get_mut("services").and_then(|s| s.as_object_mut()) {
-        for svc in services.values_mut() {
-            if let Some(ep) = svc.get_mut("entrypoint").and_then(|e| e.as_array_mut()) {
-                if ep.len() >= 3 {
-                    ep[2] = serde_json::Value::String(new_script.clone());
-                }
-            }
-        }
-    }
-
-    let new_content = serde_yaml::to_string(&val).map_err(|e| AppError::Internal(e.into()))?;
-    std::fs::write(&compose_path, new_content).map_err(|e| AppError::Internal(e.into()))?;
-
-    crate::containers::deploy_compose(&project_name, &compose_path)
-        .await
-        .map_err(|e| AppError::FeatureUnavailable(e.to_string()))?;
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Err(AppError::FeatureUnavailable(
+        "Saving llama.cpp configuration requires a canonical operation adapter".into(),
+    ))
 }
 
 // ─── OpenAI-compatible proxy ──────────────────────────────────────────────────
@@ -1247,45 +972,11 @@ pub async fn openai_list_models(State(state): State<AppState>) -> Result<Json<se
     Ok(Json(serde_json::json!({ "object": "list", "data": data })))
 }
 
-/// POST /v1/chat/completions — auto-switches the loaded model if needed, then streams through to llama.cpp.
+/// POST /v1/chat/completions — forwards inference to the currently served llama.cpp model.
 pub async fn openai_chat_completions(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(req_body): Json<serde_json::Value>,
 ) -> Result<axum::response::Response> {
-    if let Some(requested) = req_body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        if get_active_model_from_server().await.as_deref() != Some(requested) {
-            let dir = models_dir(&state).await;
-            let gguf = format!("{}.gguf", requested);
-            if dir.join(&gguf).exists() {
-                switch_llama_model(&state, &gguf).await?;
-                let poll = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(2))
-                    .build()
-                    .map_err(|e| AppError::Internal(e.into()))?;
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if poll
-                        .get("http://127.0.0.1:8090/v1/models")
-                        .send()
-                        .await
-                        .map(|r| r.status().is_success())
-                        .unwrap_or(false)
-                    {
-                        break;
-                    }
-                    if std::time::Instant::now() > deadline {
-                        return Err(AppError::BadRequest("Model switch timed out".into()));
-                    }
-                }
-            }
-        }
-    }
-
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()
@@ -1309,4 +1000,365 @@ pub async fn openai_chat_completions(
             .insert(axum::http::header::CONTENT_TYPE, ct);
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{openai_list_models, Json, State};
+    use axum::{
+        body::{to_bytes, Body},
+        extract::ConnectInfo,
+        http::{header, Request, StatusCode},
+    };
+    use serde_json::json;
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    async fn json_body(response: axum::response::Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn openai_model_listing_does_not_create_configured_directory() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let models_dir = std::env::temp_dir().join(format!(
+            "voidtower-models-read-only-{}",
+            uuid::Uuid::new_v4()
+        ));
+        assert!(!models_dir.exists());
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('models_dir', ?, 0)")
+            .bind(models_dir.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let state = crate::api::mcp::test_support::build(pool);
+        let Json(payload) = openai_list_models(State(state)).await.unwrap();
+
+        assert_eq!(payload["object"], "list");
+        assert_eq!(payload["data"], serde_json::json!([]));
+        assert!(!models_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn start_ollama_create_rejects_unauthenticated_malformed_input_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/ollama/create")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn start_ollama_create_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/ollama/create")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Ollama model creation requires a canonical operation adapter"
+        );
+    }
+
+    #[test]
+    fn start_ollama_create_handler_has_no_direct_mutation_path() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn start_ollama_create(")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn do_ollama_create").next())
+            .expect("start-ollama-create handler");
+
+        for marker in [
+            "reqwest::",
+            "sqlx::query",
+            "std::fs::",
+            "tokio::spawn",
+            "do_ollama_create(",
+            "audit::log(",
+        ] {
+            assert!(
+                !handler.contains(marker),
+                "start-ollama-create marker: {marker}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn load_model_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/load")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(json!({ "filename": "model.gguf" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn load_model_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/load")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from(json!({ "filename": "model.gguf" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Model loading requires a canonical operation adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_llama_config_rejects_unauthenticated_call_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/llama-config")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn save_llama_config_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/llama-config")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Saving llama.cpp configuration requires a canonical operation adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_ollama_config_rejects_unauthenticated_malformed_input_before_feature_boundary() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/ollama-config")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(response).await["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn save_ollama_config_fails_closed_after_authentication() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/ollama-config")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "Saving Ollama configuration requires a canonical operation adapter"
+        );
+    }
+
+    #[test]
+    fn save_ollama_config_handler_has_no_direct_mutation_path() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn save_ollama_config(")
+            .nth(1)
+            .and_then(|rest| rest.split("// ─── llama.cpp config").next())
+            .expect("save-ollama-config handler");
+
+        for marker in [
+            "sqlx::query",
+            "std::fs::",
+            "containers::",
+            "deploy_compose(",
+            "audit::log(",
+        ] {
+            assert!(
+                !handler.contains(marker),
+                "save-ollama-config handler marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_model_handler_has_no_direct_mutation_path() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn load_model(")
+            .nth(1)
+            .and_then(|rest| rest.split("// ─── Ollama pull").next())
+            .expect("load-model handler");
+
+        for marker in [
+            "switch_llama_model(",
+            "sqlx::query(",
+            "std::fs::",
+            "containers::",
+            "audit::log(",
+        ] {
+            assert!(
+                !handler.contains(marker),
+                "load-model handler marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn save_llama_config_handler_has_no_direct_mutation_path() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn save_llama_config(")
+            .nth(1)
+            .and_then(|rest| rest.split("// ─── OpenAI-compatible proxy").next())
+            .expect("save-llama-config handler");
+
+        for marker in [
+            "sqlx::query",
+            "std::fs::",
+            "containers::",
+            "deploy_compose(",
+            "audit::log(",
+        ] {
+            assert!(
+                !handler.contains(marker),
+                "save-llama-config handler marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn openai_chat_handler_does_not_switch_models_or_mutate_host_state() {
+        let source = include_str!("models.rs");
+        let handler = source
+            .split("pub async fn openai_chat_completions(")
+            .nth(1)
+            .and_then(|rest| rest.split("#[cfg(test)]").next())
+            .expect("OpenAI chat handler");
+
+        for marker in [
+            "switch_llama_model(",
+            "sqlx::query",
+            "std::fs::",
+            "containers::",
+            "tokio::spawn",
+            "audit::log(",
+        ] {
+            assert!(
+                !handler.contains(marker),
+                "OpenAI chat handler marker: {marker}"
+            );
+        }
+    }
 }

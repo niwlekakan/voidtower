@@ -15,11 +15,25 @@ use anyhow::{bail, Context, Result};
 use reqwest::{Client, Method, RequestBuilder, Response};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
+    ffi::{CString, OsString},
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::Duration,
 };
+
+#[cfg(unix)]
+use nix::{
+    fcntl::{open, openat, OFlag},
+    sys::stat::{fstat, SFlag},
+};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 const VAULTWARDEN_PORT: u16 = 8085;
 
@@ -61,20 +75,237 @@ fn run_checked(program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn voidtower_bin() -> Result<PathBuf> {
-    let example = std::env::current_exe().context("resolve golden-path executable")?;
-    let debug_dir = example
-        .parent()
-        .and_then(Path::parent)
-        .context("derive Cargo target directory")?;
-    let path = debug_dir.join("voidtower");
-    if !path.is_file() {
-        bail!(
-            "VoidTower binary is missing at {}; run `cargo build --bin voidtower` first",
-            path.display()
-        );
+struct PackagedBinary {
+    path: PathBuf,
+    #[cfg(unix)]
+    _identity_fds: Vec<OwnedFd>,
+}
+
+impl PackagedBinary {
+    #[cfg(test)]
+    fn path(&self) -> &Path {
+        &self.path
     }
-    Ok(path)
+}
+
+#[cfg(unix)]
+fn descriptor_command(
+    binary: &PackagedBinary,
+    args: &[&str],
+    overrides: &[(&str, &str)],
+) -> Command {
+    let mut command = Command::new("/bin/true");
+    let mut argv = vec![binary.path.as_os_str().as_bytes().to_vec()];
+    argv.extend(args.iter().map(|argument| argument.as_bytes().to_vec()));
+    let argv = argv
+        .into_iter()
+        .map(|argument| CString::new(argument).expect("golden-path argument has no NUL"))
+        .collect::<Vec<_>>();
+    let mut environment = std::env::vars_os().collect::<BTreeMap<OsString, OsString>>();
+    for (key, value) in overrides {
+        environment.insert(OsString::from(key), OsString::from(value));
+    }
+    let environment = environment
+        .into_iter()
+        .map(|(key, value)| {
+            let mut entry = key.as_os_str().as_bytes().to_vec();
+            entry.push(b'=');
+            entry.extend(value.as_os_str().as_bytes());
+            CString::new(entry).expect("golden-path environment has no NUL")
+        })
+        .collect::<Vec<_>>();
+    let argv_ptrs = argv
+        .iter()
+        .map(|argument| argument.as_ptr() as usize)
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let environment_ptrs = environment
+        .iter()
+        .map(|entry| entry.as_ptr() as usize)
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let binary_fd = binary
+        ._identity_fds
+        .last()
+        .expect("selected binary descriptor is retained")
+        .as_raw_fd();
+    unsafe {
+        command.pre_exec(move || {
+            // Keep the CString storage alive until exec without allocating after fork.
+            let _ = (&argv, &environment);
+            let result = nix::libc::syscall(
+                nix::libc::SYS_execveat,
+                binary_fd,
+                c"".as_ptr(),
+                argv_ptrs.as_ptr() as *const *const nix::libc::c_char,
+                environment_ptrs.as_ptr() as *const *const nix::libc::c_char,
+                nix::libc::AT_EMPTY_PATH,
+            );
+            if result == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                unreachable!("execveat returned after successful execution")
+            }
+        });
+    }
+    command
+}
+
+#[cfg(not(unix))]
+fn descriptor_command(
+    binary: &PackagedBinary,
+    args: &[&str],
+    overrides: &[(&str, &str)],
+) -> Command {
+    let mut command = Command::new(&binary.path);
+    command.args(args).envs(overrides.iter().copied());
+    command
+}
+
+#[cfg(unix)]
+fn open_executable(path: &Path, label: &str) -> Result<PackagedBinary> {
+    let mut components = path.components();
+    if !matches!(components.next(), Some(std::path::Component::RootDir)) {
+        bail!("{label} must be an absolute path");
+    }
+    let mut path_components: Vec<_> = components.collect();
+    let std::path::Component::Normal(binary_name) = path_components
+        .pop()
+        .context("executable path has no final component")?
+    else {
+        bail!("{label} must name a regular executable");
+    };
+
+    let directory_flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW;
+    let root_fd = open("/", directory_flags, nix::sys::stat::Mode::empty())
+        .context("open filesystem root without following links")?;
+    let mut identity_fds = vec![unsafe { OwnedFd::from_raw_fd(root_fd) }];
+    for component in path_components {
+        let std::path::Component::Normal(name) = component else {
+            bail!("packaged binary path contains an unsafe parent component");
+        };
+        let parent_fd = identity_fds
+            .last()
+            .context("packaged binary parent descriptor is missing")?;
+        let next_fd = openat(
+            parent_fd.as_raw_fd(),
+            name,
+            directory_flags,
+            nix::sys::stat::Mode::empty(),
+        )
+        .with_context(|| {
+            format!("open packaged binary directory {name:?} without following links")
+        })?;
+        identity_fds.push(unsafe { OwnedFd::from_raw_fd(next_fd) });
+    }
+
+    let parent_fd = identity_fds
+        .last()
+        .context("packaged binary directory descriptor is missing")?;
+    let binary_fd = openat(
+        parent_fd.as_raw_fd(),
+        binary_name,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW,
+        nix::sys::stat::Mode::empty(),
+    )
+    .with_context(|| format!("open {label} without following links"))?;
+    let binary_fd = unsafe { OwnedFd::from_raw_fd(binary_fd) };
+    let binary_stat = fstat(binary_fd.as_raw_fd()).context("inspect packaged binary identity")?;
+    let binary_type = SFlag::from_bits_truncate(binary_stat.st_mode);
+    if !binary_type.contains(SFlag::S_IFREG) || binary_stat.st_mode & 0o111 == 0 {
+        bail!("{label} is not a regular executable");
+    }
+    let descriptor_path = PathBuf::from(format!("/proc/self/fd/{}", binary_fd.as_raw_fd()));
+    identity_fds.push(binary_fd);
+    Ok(PackagedBinary {
+        path: descriptor_path,
+        _identity_fds: identity_fds,
+    })
+}
+
+#[cfg(unix)]
+fn packaged_binary_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("Cargo manifest directory must have a repository parent")
+        .join("release-package")
+        .join("extracted")
+        .join("voidtower")
+}
+
+#[cfg(unix)]
+fn packaged_binary_is_present(path: &Path) -> Result<bool> {
+    let mut current = PathBuf::from("/");
+    for component in path.components().skip(1) {
+        let std::path::Component::Normal(name) = component else {
+            bail!("packaged binary path contains an unsafe component");
+        };
+        current.push(name);
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error).with_context(|| format!("inspect {current:?}")),
+        };
+        if metadata.file_type().is_symlink() {
+            bail!("packaged binary path contains a symlink: {current:?}");
+        }
+        if current != path && !metadata.is_dir() {
+            bail!("packaged binary parent is not a directory: {current:?}");
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn open_packaged_binary_at(path: &Path) -> Result<PackagedBinary> {
+    open_executable(path, "packaged VoidTower binary")
+}
+
+#[cfg(unix)]
+fn resolve_voidtower_binary(
+    packaged_path: &Path,
+    debug_path: &Path,
+    require_packaged: bool,
+) -> Result<PackagedBinary> {
+    if packaged_binary_is_present(packaged_path)? {
+        return open_packaged_binary_at(packaged_path).with_context(|| {
+            format!(
+                "packaged VoidTower binary is present but missing or unsafe at {}",
+                packaged_path.display()
+            )
+        });
+    }
+    if require_packaged {
+        bail!("packaged VoidTower binary is required but missing");
+    }
+    open_executable(debug_path, "debug VoidTower binary").with_context(|| {
+        format!(
+            "open debug VoidTower binary at {}; run `cargo build --bin voidtower` first",
+            debug_path.display()
+        )
+    })
+}
+
+fn voidtower_bin() -> Result<PackagedBinary> {
+    let require_packaged = std::env::var("VOIDTOWER_REQUIRE_PACKAGED").as_deref() == Ok("1");
+
+    #[cfg(unix)]
+    {
+        let packaged_path = packaged_binary_path();
+        let example = std::env::current_exe().context("resolve golden-path executable")?;
+        let debug_dir = example
+            .parent()
+            .and_then(Path::parent)
+            .context("derive Cargo target directory")?;
+        resolve_voidtower_binary(
+            &packaged_path,
+            &debug_dir.join("voidtower"),
+            require_packaged,
+        )
+    }
+
+    #[cfg(not(unix))]
+    bail!("secure VoidTower binary resolution is unavailable on this platform");
 }
 
 fn catalog_dir() -> PathBuf {
@@ -130,10 +361,16 @@ async fn docker_inspect(container: &str, template: &str) -> Result<Option<String
     if !output.status.success() {
         return Ok(None);
     }
-    Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
 }
 
-async fn wait_for_container_status(container: &str, expected: &str, timeout: Duration) -> Result<()> {
+async fn wait_for_container_status(
+    container: &str,
+    expected: &str,
+    timeout: Duration,
+) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let status = docker_inspect(container, "{{.State.Status}}").await?;
@@ -179,6 +416,7 @@ struct TestServer {
     base_url: String,
     session_cookie: String,
     data_dir: PathBuf,
+    _binary: PackagedBinary,
 }
 
 impl TestServer {
@@ -193,10 +431,9 @@ impl TestServer {
             std::env::var("RESTIC_PASSWORD").unwrap_or_else(|_| unique_name("restic"));
         let binary = voidtower_bin()?;
 
-        let status = Command::new(&binary)
-            .env("VOIDTOWER_DATA_DIR", &data_dir)
-            .env("VOIDTOWER_CONFIG_DIR", &config_dir)
-            .args([
+        let mut create_user = descriptor_command(
+            &binary,
+            &[
                 "user",
                 "create",
                 "--username",
@@ -205,7 +442,16 @@ impl TestServer {
                 &password,
                 "--role",
                 "admin",
-            ])
+            ],
+            &[
+                ("VOIDTOWER_DATA_DIR", data_dir.to_str().expect("data path")),
+                (
+                    "VOIDTOWER_CONFIG_DIR",
+                    config_dir.to_str().expect("config path"),
+                ),
+            ],
+        );
+        let status = create_user
             .stdout(Stdio::null())
             .status()
             .context("create golden-path admin")?;
@@ -214,15 +460,30 @@ impl TestServer {
         }
 
         let port = free_port()?;
-        let child = Command::new(&binary)
-            .env("VOIDTOWER_DATA_DIR", &data_dir)
-            .env("VOIDTOWER_HOST_DATA_DIR", &data_dir)
-            .env("VOIDTOWER_CONFIG_DIR", &config_dir)
-            .env("VOIDTOWER_CATALOG_DIR", catalog_dir())
-            .env("VOIDTOWER_BIND", "127.0.0.1")
-            .env("VOIDTOWER_PORT", port.to_string())
-            .env("RESTIC_PASSWORD", restic_password)
-            .env("RUST_LOG", "warn")
+        let mut server_command = descriptor_command(
+            &binary,
+            &[],
+            &[
+                ("VOIDTOWER_DATA_DIR", data_dir.to_str().expect("data path")),
+                (
+                    "VOIDTOWER_HOST_DATA_DIR",
+                    data_dir.to_str().expect("host data path"),
+                ),
+                (
+                    "VOIDTOWER_CONFIG_DIR",
+                    config_dir.to_str().expect("config path"),
+                ),
+                (
+                    "VOIDTOWER_CATALOG_DIR",
+                    catalog_dir().to_str().expect("catalog path"),
+                ),
+                ("VOIDTOWER_BIND", "127.0.0.1"),
+                ("VOIDTOWER_PORT", &port.to_string()),
+                ("RESTIC_PASSWORD", &restic_password),
+                ("RUST_LOG", "warn"),
+            ],
+        );
+        let child = server_command
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
@@ -252,7 +513,14 @@ impl TestServer {
             .context("login response omitted vt_session")?
             .to_string();
 
-        Ok(Self { child, client, base_url, session_cookie, data_dir })
+        Ok(Self {
+            child,
+            client,
+            base_url,
+            session_cookie,
+            data_dir,
+            _binary: binary,
+        })
     }
 
     fn url(&self, path: &str) -> String {
@@ -270,7 +538,10 @@ impl TestServer {
     }
 
     fn compose_path(&self, project: &str) -> PathBuf {
-        self.data_dir.join("apps").join(project).join("docker-compose.yml")
+        self.data_dir
+            .join("apps")
+            .join(project)
+            .join("docker-compose.yml")
     }
 }
 
@@ -352,7 +623,12 @@ async fn deploy_vaultwarden(server: &TestServer) -> Result<VaultwardenDeployment
         bail!("Vaultwarden named volume was not created");
     }
 
-    Ok(VaultwardenDeployment { project, container, volume, _cleanup: cleanup })
+    Ok(VaultwardenDeployment {
+        project,
+        container,
+        volume,
+        _cleanup: cleanup,
+    })
 }
 
 async fn wait_for_docker_health_if_configured(container: &str, timeout: Duration) -> Result<()> {
@@ -388,7 +664,10 @@ async fn app_vault_teardown_removes_containers_and_optionally_volumes(
     let deployment = deploy_vaultwarden(server).await?;
 
     let response = server
-        .request(Method::POST, &format!("/api/apps/{}/stop", deployment.project))
+        .request(
+            Method::POST,
+            &format!("/api/apps/{}/stop", deployment.project),
+        )
         .send()
         .await
         .context("send App Vault stop request")?;
@@ -399,7 +678,10 @@ async fn app_vault_teardown_removes_containers_and_optionally_volumes(
     }
 
     let response = server
-        .request(Method::POST, &format!("/api/apps/{}/purge", deployment.project))
+        .request(
+            Method::POST,
+            &format!("/api/apps/{}/purge", deployment.project),
+        )
         .send()
         .await
         .context("send App Vault purge request")?;
@@ -430,8 +712,13 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send backup creation request")?;
-    let created: Value = expect_success(response, "backup creation").await?.json().await?;
-    let id = created["id"].as_str().context("backup creation omitted id")?;
+    let created: Value = expect_success(response, "backup creation")
+        .await?
+        .json()
+        .await?;
+    let id = created["id"]
+        .as_str()
+        .context("backup creation omitted id")?;
 
     let response = server
         .request(Method::POST, &format!("/api/backups/{id}/run"))
@@ -448,7 +735,10 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send restic check request")?;
-    let check: Value = expect_success(response, "restic check").await?.json().await?;
+    let check: Value = expect_success(response, "restic check")
+        .await?
+        .json()
+        .await?;
     if check["status"] != "ok" {
         bail!("restic check did not succeed: {check}");
     }
@@ -458,7 +748,10 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send restore-test request")?;
-    let restore: Value = expect_success(response, "restore-test").await?.json().await?;
+    let restore: Value = expect_success(response, "restore-test")
+        .await?
+        .json()
+        .await?;
     if restore["status"] != "ok" {
         bail!("restore-test did not succeed: {restore}");
     }
@@ -468,7 +761,10 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .send()
         .await
         .context("send backup list request")?;
-    let list: Value = expect_success(response, "backup list").await?.json().await?;
+    let list: Value = expect_success(response, "backup list")
+        .await?
+        .json()
+        .await?;
     let config = list["configs"]
         .as_array()
         .context("backup list omitted configs")?
@@ -482,6 +778,45 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         || config["confidence"] != "high"
     {
         bail!("backup confidence fields are incomplete: {config}");
+    }
+
+    let response = server
+        .request(Method::DELETE, &format!("/api/backups/{id}"))
+        .send()
+        .await
+        .context("send backup configuration deletion request")?;
+    expect_success(response, "backup configuration deletion").await?;
+
+    let response = server
+        .request(Method::GET, "/api/backups")
+        .send()
+        .await
+        .context("list backups after configuration deletion")?;
+    let list: Value = expect_success(response, "backup list after deletion")
+        .await?
+        .json()
+        .await?;
+    if list["configs"]
+        .as_array()
+        .context("backup list omitted configs")?
+        .iter()
+        .any(|config| config["id"].as_str() == Some(id))
+    {
+        bail!("deleted backup configuration remained visible");
+    }
+
+    let snapshots = Command::new("restic")
+        .args(["-r"])
+        .arg(&repo_path)
+        .args(["snapshots", "--json"])
+        .output()
+        .context("inspect restic repository after config deletion")?;
+    if !snapshots.status.success()
+        || serde_json::from_slice::<Vec<Value>>(&snapshots.stdout)
+            .map(|values| values.is_empty())
+            .unwrap_or(true)
+    {
+        bail!("deleting backup configuration removed or damaged repository data");
     }
 
     Ok(())
@@ -556,4 +891,125 @@ async fn container_action(
         .with_context(|| format!("send container {action_name} request"))?;
     expect_success(response, &format!("container {action_name}")).await?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod binary_selection_tests {
+    use super::*;
+    use std::{
+        fs,
+        os::unix::fs::{symlink, PermissionsExt},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temporary_root() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock is after the Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("voidtower-golden-selection-{nonce}"));
+        fs::create_dir_all(&root).expect("create binary-selection fixture root");
+        root
+    }
+
+    fn executable_working_root() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock is after the Unix epoch")
+            .as_nanos();
+        let root = std::env::current_dir()
+            .expect("read test working directory")
+            .join(format!(".voidtower-golden-selection-{nonce}"));
+        fs::create_dir_all(&root).expect("create executable fixture root");
+        root
+    }
+
+    fn executable(path: &Path) {
+        fs::write(path, b"fixture binary").expect("write executable fixture");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("make executable fixture executable");
+    }
+
+    #[test]
+    fn missing_package_uses_only_the_descriptor_bound_debug_fallback() {
+        let root = temporary_root();
+        let packaged = root.join("release-package/extracted/voidtower");
+        let debug = root.join("target/debug/voidtower");
+        fs::create_dir_all(packaged.parent().expect("packaged parent")).expect("packaged dirs");
+        fs::create_dir_all(debug.parent().expect("debug parent")).expect("debug dirs");
+        executable(&debug);
+
+        let selected = resolve_voidtower_binary(&packaged, &debug, false).expect("debug fallback");
+        assert!(selected.path().starts_with("/proc/self/fd/"));
+        assert_eq!(
+            fs::read(selected.path()).expect("read retained debug descriptor"),
+            b"fixture binary"
+        );
+        fs::remove_dir_all(root).expect("remove binary-selection fixture");
+    }
+
+    #[test]
+    fn present_unsafe_package_fails_closed_instead_of_using_debug_fallback() {
+        let root = temporary_root();
+        let packaged_parent = root.join("release-package/extracted");
+        let packaged = packaged_parent.join("voidtower");
+        let debug = root.join("target/debug/voidtower");
+        fs::create_dir_all(&packaged_parent).expect("packaged dirs");
+        fs::create_dir_all(debug.parent().expect("debug parent")).expect("debug dirs");
+        executable(&debug);
+        let outside = root.join("outside");
+        executable(&outside);
+        symlink(&outside, &packaged).expect("unsafe packaged symlink");
+
+        let error = resolve_voidtower_binary(&packaged, &debug, false)
+            .err()
+            .expect("unsafe package");
+        assert!(error.to_string().contains("symlink"));
+        fs::remove_dir_all(root).expect("remove binary-selection fixture");
+    }
+
+    #[test]
+    fn required_package_does_not_fall_back_when_missing() {
+        let root = temporary_root();
+        let packaged = root.join("release-package/extracted/voidtower");
+        let debug = root.join("target/debug/voidtower");
+        fs::create_dir_all(packaged.parent().expect("packaged parent")).expect("packaged dirs");
+        fs::create_dir_all(debug.parent().expect("debug parent")).expect("debug dirs");
+        executable(&debug);
+
+        let error = resolve_voidtower_binary(&packaged, &debug, true)
+            .err()
+            .expect("required package");
+        assert!(error.to_string().contains("required but missing"));
+        fs::remove_dir_all(root).expect("remove binary-selection fixture");
+    }
+
+    #[test]
+    fn selected_packaged_binary_executes_by_descriptor_after_path_replacement() {
+        let root = executable_working_root();
+        let packaged_parent = root.join("release-package/extracted");
+        let packaged = packaged_parent.join("voidtower");
+        let debug = root.join("target/debug/voidtower");
+        fs::create_dir_all(&packaged_parent).expect("packaged dirs");
+        fs::create_dir_all(debug.parent().expect("debug parent")).expect("debug dirs");
+        fs::copy("/bin/true", &packaged).expect("packaged executable");
+        fs::set_permissions(&packaged, fs::Permissions::from_mode(0o700))
+            .expect("package executable");
+        fs::copy("/bin/false", &debug).expect("debug executable");
+        fs::set_permissions(&debug, fs::Permissions::from_mode(0o700)).expect("debug executable");
+
+        let selected = resolve_voidtower_binary(&packaged, &debug, true).expect("packaged binary");
+        fs::rename(&packaged, packaged.with_extension("replaced"))
+            .expect("move original package path");
+        fs::copy("/bin/false", &packaged).expect("replacement executable");
+        fs::set_permissions(&packaged, fs::Permissions::from_mode(0o700))
+            .expect("replacement executable");
+        let mut command = descriptor_command(&selected, &[], &[]);
+        let output = command
+            .output()
+            .expect("execute descriptor-selected package");
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty());
+        fs::remove_dir_all(root).expect("remove binary-selection fixture");
+    }
 }

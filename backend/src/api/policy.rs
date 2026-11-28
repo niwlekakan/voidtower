@@ -20,9 +20,14 @@ fn unix_now() -> i64 {
 }
 
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
+    let sid = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
     let user = auth::validate_session(&state.db, &sid)
-        .await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
     if !matches!(user.role.as_str(), "owner" | "admin") {
         return Err(AppError::Forbidden);
     }
@@ -68,10 +73,14 @@ pub async fn create_rule(
     require_admin(&state, &jar).await?;
 
     if !matches!(req.effect.as_str(), "allow" | "deny") {
-        return Err(AppError::BadRequest("effect must be 'allow' or 'deny'".into()));
+        return Err(AppError::BadRequest(
+            "effect must be 'allow' or 'deny'".into(),
+        ));
     }
     if !matches!(req.actor_type.as_str(), "api_token" | "automation" | "*") {
-        return Err(AppError::BadRequest("actor_type must be 'api_token', 'automation', or '*'".into()));
+        return Err(AppError::BadRequest(
+            "actor_type must be 'api_token', 'automation', or '*'".into(),
+        ));
     }
 
     let id = Uuid::new_v4().to_string();
@@ -136,21 +145,31 @@ pub async fn update_rule(
 
     let existing = existing.ok_or(AppError::NotFound)?;
 
-    let name         = req.name.unwrap_or(existing.name);
-    let actor_type   = req.actor_type.unwrap_or(existing.actor_type);
-    let action       = req.action.unwrap_or(existing.action);
+    let name = req.name.unwrap_or(existing.name);
+    let actor_type = req.actor_type.unwrap_or(existing.actor_type);
+    let action = req.action.unwrap_or(existing.action);
     let resource_type = req.resource_type.unwrap_or(existing.resource_type);
     let resource_tag = req.resource_tag.unwrap_or(existing.resource_tag);
-    let effect       = req.effect.unwrap_or(existing.effect);
-    let priority     = req.priority.unwrap_or(existing.priority);
-    let enabled      = req.enabled.map(|b| b as i64).unwrap_or(existing.enabled as i64);
+    let effect = req.effect.unwrap_or(existing.effect);
+    let priority = req.priority.unwrap_or(existing.priority);
+    let enabled = req
+        .enabled
+        .map(|b| b as i64)
+        .unwrap_or(existing.enabled as i64);
 
     sqlx::query(
         "UPDATE policy_rules SET name=?,actor_type=?,action=?,resource_type=?,resource_tag=?,
          effect=?,priority=?,enabled=? WHERE id=?",
     )
-    .bind(&name).bind(&actor_type).bind(&action).bind(&resource_type)
-    .bind(&resource_tag).bind(&effect).bind(priority).bind(enabled).bind(&id)
+    .bind(&name)
+    .bind(&actor_type)
+    .bind(&action)
+    .bind(&resource_type)
+    .bind(&resource_tag)
+    .bind(&effect)
+    .bind(priority)
+    .bind(enabled)
+    .bind(&id)
     .execute(&state.db)
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
@@ -182,7 +201,9 @@ pub async fn delete_rule(
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .rows_affected();
-    if rows == 0 { return Err(AppError::NotFound); }
+    if rows == 0 {
+        return Err(AppError::NotFound);
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -208,9 +229,22 @@ pub async fn check_policy(
     Json(req): Json<CheckReq>,
 ) -> Result<Json<CheckResult>> {
     require_admin(&state, &jar).await?;
-    let verdict = policy::check(&state.db, &req.actor_type, &req.action, &req.resource_type, &req.resource_id).await;
+    let verdict = policy::check(
+        &state.db,
+        &req.actor_type,
+        &req.action,
+        &req.resource_type,
+        &req.resource_id,
+    )
+    .await;
     Ok(Json(match verdict {
-        policy::PolicyVerdict::Allow => CheckResult { verdict: "allow".into(), reason: None },
-        policy::PolicyVerdict::Deny(reason) => CheckResult { verdict: "deny".into(), reason: Some(reason) },
+        policy::PolicyVerdict::Allow => CheckResult {
+            verdict: "allow".into(),
+            reason: None,
+        },
+        policy::PolicyVerdict::Deny(reason) => CheckResult {
+            verdict: "deny".into(),
+            reason: Some(reason),
+        },
     }))
 }

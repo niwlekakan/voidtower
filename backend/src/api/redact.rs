@@ -4,9 +4,10 @@
 //! ingress points don't each reimplement redaction (see P0.5 in gap-analysis.md).
 //!
 //! Two layers, applied in order:
-//! 1. `redact_known_values` — exact-match redaction of every value currently stored
-//!    in the `secrets` table (decrypted). This is the primary defense: it catches a
-//!    registered VoidTower secret verbatim, regardless of surrounding context.
+//! 1. `redact_known_values` — exact-match redaction of every usable value currently
+//!    stored in the `secrets` table (resolved through the secret manager). This is
+//!    the primary defense: it catches a registered VoidTower secret verbatim,
+//!    regardless of surrounding context.
 //! 2. `redact_patterns` — conservative heuristic redaction of secret-*shaped*
 //!    substrings (keyword=value pairs, PEM private-key blocks, AWS access keys,
 //!    Bearer tokens) that aren't registered VoidTower secrets at all — e.g. a
@@ -16,14 +17,20 @@
 //!    (hashes, UUIDs) is left alone.
 
 use crate::AppState;
+use sqlx::SqlitePool;
 
 const REDACTED: &str = "[REDACTED]";
 const REDACTED_PEM: &str = "[REDACTED PEM BLOCK]";
+pub(crate) const REDACTION_UNAVAILABLE: &str = "[REDACTION_UNAVAILABLE]";
 
-/// Secret values shorter than this are skipped during known-value redaction — a
-/// short value (e.g. a placeholder "x" someone stored) would otherwise blow away
-/// unrelated short substrings throughout the response.
-const MIN_KNOWN_VALUE_LEN: usize = 6;
+/// The known-value set is complete when the store query succeeds and every
+/// usable record was resolved. Export callers use the strict variant below,
+/// which also treats unusable records as incomplete.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct KnownSecretValues {
+    pub(crate) values: Vec<String>,
+    pub(crate) complete: bool,
+}
 
 const SECRET_KEYWORDS: &[&str] = &[
     "password",
@@ -48,28 +55,73 @@ const SECRET_KEYWORDS: &[&str] = &[
     "credential",
 ];
 
-/// Fetch and decrypt every stored secret's value, for use as a known-value
-/// redaction set. Decryption failures are skipped rather than surfaced — redaction
-/// must never fail (or panic) the response it's protecting.
-pub async fn known_secret_values(state: &AppState) -> Vec<String> {
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT value_enc FROM secrets")
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default();
+/// Fetch and resolve every stored usable secret value for the shared
+/// AI/provider redaction set. Expected unusable records are skipped; database
+/// failures still mark the set incomplete so callers can fail closed.
+pub(crate) async fn known_secret_values(state: &AppState) -> KnownSecretValues {
+    known_secret_values_from(&state.db, &state.secrets_key).await
+}
 
-    rows.into_iter()
-        .filter_map(|(enc,)| crate::api::secrets::decrypt(&state.secrets_key, &enc).ok())
-        .collect()
+/// Resolve every stored usable secret value for a non-AppState consumer.
+pub(crate) async fn known_secret_values_from(db: &SqlitePool, key: &[u8; 32]) -> KnownSecretValues {
+    collect_known_secret_values(db, key, false).await
+}
+
+/// Fetch and resolve every canonical secret for configuration export. Any
+/// unusable record makes the inventory incomplete because the export may contain
+/// stale plaintext copies that cannot be safely checked.
+pub(crate) async fn known_secret_values_for_export(state: &AppState) -> KnownSecretValues {
+    known_secret_values_for_export_from(&state.db, &state.secrets_key).await
+}
+
+/// Non-AppState form of the strict export inventory.
+pub(crate) async fn known_secret_values_for_export_from(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> KnownSecretValues {
+    collect_known_secret_values(db, key, true).await
+}
+
+async fn collect_known_secret_values(
+    db: &SqlitePool,
+    key: &[u8; 32],
+    fail_on_unusable: bool,
+) -> KnownSecretValues {
+    let secret_ids: Vec<String> = match sqlx::query_scalar("SELECT id FROM secrets ORDER BY id")
+        .fetch_all(db)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(_) => return KnownSecretValues::default(),
+    };
+
+    let mut values = Vec::new();
+    for secret_id in secret_ids {
+        match crate::api::secrets::resolve(db, key, &secret_id, "redaction").await {
+            Ok(value) if !value.is_empty() => values.push(value),
+            Ok(_) if fail_on_unusable => return KnownSecretValues::default(),
+            Ok(_) => {}
+            Err(crate::api::secrets::ResolveError::Database) => {
+                return KnownSecretValues::default();
+            }
+            Err(_) if fail_on_unusable => return KnownSecretValues::default(),
+            Err(_) => {}
+        }
+    }
+    KnownSecretValues {
+        values,
+        complete: true,
+    }
 }
 
 /// Replace every verbatim occurrence of a known secret value with `[REDACTED]`.
 pub fn redact_known_values(text: &str, known_values: &[String]) -> String {
     let mut out = text.to_string();
     for value in known_values {
-        if value.len() < MIN_KNOWN_VALUE_LEN {
+        if value.is_empty() {
             continue;
         }
-        if out.contains(value.as_str()) {
+        if value.len() >= 6 && out.contains(value.as_str()) {
             out = out.replace(value.as_str(), REDACTED);
         }
     }
@@ -81,11 +133,25 @@ pub fn redact(text: &str, known_values: &[String]) -> String {
     redact_patterns(&redact_known_values(text, known_values))
 }
 
+/// Export redaction includes exact canonical values regardless of length.
+pub fn redact_export(text: &str, known_values: &[String]) -> String {
+    let mut out = text.to_string();
+    for value in known_values {
+        if !value.is_empty() && out.contains(value.as_str()) {
+            out = out.replace(value.as_str(), REDACTED);
+        }
+    }
+    redact_patterns(&out)
+}
+
 /// Convenience wrapper for call sites that only have `state` and the raw text —
 /// looks up the current known-secret-value set and applies the full pipeline.
 pub async fn redact_for_ai(state: &AppState, text: &str) -> String {
     let known = known_secret_values(state).await;
-    redact(text, &known)
+    if !known.complete {
+        return REDACTION_UNAVAILABLE.to_string();
+    }
+    redact(text, &known.values)
 }
 
 /// Heuristic redaction of secret-shaped substrings (see module docs).
@@ -302,9 +368,8 @@ mod tests {
     fn redacts_pem_private_key_block() {
         let open = ["-----BEGIN TEST ", "PRIVATE KEY-----"].concat();
         let close = ["-----END TEST ", "PRIVATE KEY-----"].concat();
-        let text = format!(
-            "before\n{open}\nMIIBogIBAAKCAQEA...\nmore-fake-key-bytes\n{close}\nafter"
-        );
+        let text =
+            format!("before\n{open}\nMIIBogIBAAKCAQEA...\nmore-fake-key-bytes\n{close}\nafter");
         let out = redact_patterns(&text);
         assert!(!out.contains("MIIBogIBAAKCAQEA"));
         assert!(out.contains(REDACTED_PEM));
@@ -360,8 +425,19 @@ mod tests {
         assert_eq!(out, text);
     }
 
+    #[test]
+    fn redact_export_redacts_short_canonical_secrets() {
+        let known = vec!["ab".to_string()];
+        let text = "the value ab appears here and there, ab, ab";
+        let out = redact_export(text, &known);
+        assert_eq!(
+            out,
+            "the value [REDACTED] appears here and there, [REDACTED], [REDACTED]"
+        );
+    }
+
     #[tokio::test]
-    async fn known_secret_values_decrypts_stored_secrets() {
+    async fn known_secret_values_uses_resolver_and_skips_unusable_secrets() {
         let pool = crate::api::mcp::test_support::setup_db().await;
 
         let key: [u8; 32] = [9u8; 32];
@@ -374,16 +450,104 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        let disabled_value = crate::api::secrets::encrypt(&key, "disabled-secret-value").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, disabled, created_at, updated_at) VALUES ('s2', 'disabled', NULL, ?, 1, 0, 0)",
+        )
+        .bind(disabled_value)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) VALUES ('s3', 'corrupt', NULL, 'not-ciphertext', 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
-        let mut state = crate::api::mcp::test_support::build(pool);
+        let mut state = crate::api::mcp::test_support::build(pool.clone());
         // Overwrite the key so it matches what we encrypted with above.
         state.secrets_key = std::sync::Arc::new(key);
 
         let values = known_secret_values(&state).await;
-        assert_eq!(values, vec![secret_value.to_string()]);
+        assert_eq!(values.values, vec![secret_value.to_string()]);
+        assert!(values.complete);
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = 's1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_some());
+
+        let missing = crate::api::secrets::resolve(
+            &state.db,
+            &state.secrets_key,
+            "missing-secret",
+            "redaction",
+        )
+        .await;
+        assert_eq!(missing, Err(crate::api::secrets::ResolveError::Missing));
 
         let text = format!("container env: DB_PASSWORD={secret_value}");
         let redacted = redact_for_ai(&state, &text).await;
+        assert!(!redacted.contains(secret_value));
+        assert!(!redacted.contains("disabled-secret-value"));
+    }
+
+    /// Values above the storage bound are invalid secret records and must not
+    /// cross the resolver boundary into provider or redaction consumers.
+    #[tokio::test]
+    async fn known_secret_values_skips_oversized_secret_records() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let key: [u8; 32] = [9u8; 32];
+        let oversized = "x".repeat(crate::api::secrets::MAX_SECRET_VALUE_BYTES + 1);
+        let enc = crate::api::secrets::encrypt(&key, &oversized).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) VALUES ('s1', 'oversized', NULL, ?, 0, 0)",
+        )
+        .bind(enc)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut state = crate::api::mcp::test_support::build(pool);
+        state.secrets_key = std::sync::Arc::new(key);
+
+        let result = known_secret_values(&state).await;
+        assert!(result.values.is_empty());
+        assert!(result.complete);
+    }
+
+    #[tokio::test]
+    async fn known_secret_values_keeps_value_when_last_use_recording_fails() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let key: [u8; 32] = [9u8; 32];
+        let secret_value = "super-secret-last-use-failure-value";
+        let enc = crate::api::secrets::encrypt(&key, secret_value).unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) VALUES ('s1', 'test', NULL, ?, 0, 0)",
+        )
+        .bind(enc)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_secret_last_used_redaction \
+             BEFORE UPDATE OF last_used_at ON secrets \
+             WHEN NEW.id = OLD.id \
+             BEGIN SELECT RAISE(ABORT, 'fixture last-use failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut state = crate::api::mcp::test_support::build(pool);
+        state.secrets_key = std::sync::Arc::new(key);
+
+        let values = known_secret_values(&state).await;
+        assert_eq!(values.values, vec![secret_value.to_string()]);
+        assert!(values.complete);
+        let redacted = redact_for_ai(&state, &format!("opaque output: {secret_value}")).await;
         assert!(!redacted.contains(secret_value));
     }
 }

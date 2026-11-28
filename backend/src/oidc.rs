@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Result};
 use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreResponseType},
-    reqwest::async_http_client,
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
-    OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
+    reqwest, AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
+    EndpointMaybeSet, EndpointNotSet, EndpointSet, IssuerUrl, Nonce, OAuth2TokenResponse,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -25,7 +25,10 @@ pub struct OidcSettings {
 }
 
 #[allow(clippy::type_complexity)]
-pub async fn load_settings(db: &SqlitePool, secrets_key: &[u8; 32]) -> Result<Option<OidcSettings>> {
+pub async fn load_settings(
+    db: &SqlitePool,
+    secrets_key: &[u8; 32],
+) -> Result<Option<OidcSettings>> {
     let row: Option<(
         bool,
         Option<String>,
@@ -69,12 +72,14 @@ pub async fn load_settings(db: &SqlitePool, secrets_key: &[u8; 32]) -> Result<Op
             _ => return Ok(None),
         };
 
-    let enc: Option<String> = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
-        .bind(&secret_id)
-        .fetch_optional(db)
-        .await?;
-    let Some(enc) = enc else { return Ok(None) };
-    let client_secret = crate::api::secrets::decrypt(secrets_key, &enc)?;
+    let client_secret =
+        match crate::api::secrets::resolve(db, secrets_key, &secret_id, "oidc_client").await {
+            Ok(value) => value,
+            Err(crate::api::secrets::ResolveError::Database) => {
+                return Err(anyhow!("OIDC client secret unavailable"));
+            }
+            Err(_) => return Ok(None),
+        };
 
     Ok(Some(OidcSettings {
         issuer_url,
@@ -89,10 +94,27 @@ pub async fn load_settings(db: &SqlitePool, secrets_key: &[u8; 32]) -> Result<Op
     }))
 }
 
-pub async fn build_client(settings: &OidcSettings) -> Result<CoreClient> {
-    let issuer =
-        IssuerUrl::new(settings.issuer_url.clone()).map_err(|e| anyhow!("invalid issuer_url: {e}"))?;
-    let metadata = CoreProviderMetadata::discover_async(issuer, async_http_client)
+type ConfiguredOidcClient = CoreClient<
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointMaybeSet,
+    EndpointMaybeSet,
+>;
+
+fn oidc_http_client() -> Result<reqwest::Client> {
+    reqwest::ClientBuilder::new()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| anyhow!("OIDC HTTP client initialization failed: {e}"))
+}
+
+pub async fn build_client(settings: &OidcSettings) -> Result<ConfiguredOidcClient> {
+    let issuer = IssuerUrl::new(settings.issuer_url.clone())
+        .map_err(|e| anyhow!("invalid issuer_url: {e}"))?;
+    let http_client = oidc_http_client()?;
+    let metadata = CoreProviderMetadata::discover_async(issuer, &http_client)
         .await
         .map_err(|e| anyhow!("OIDC discovery failed: {e}"))?;
 
@@ -112,11 +134,16 @@ pub async fn build_client(settings: &OidcSettings) -> Result<CoreClient> {
 /// Separately exposes the userinfo endpoint URL discovered for a client's issuer,
 /// since `CoreClient` doesn't expose it directly after construction.
 pub async fn discover_userinfo_endpoint(issuer_url: &str) -> Result<Option<String>> {
-    let issuer = IssuerUrl::new(issuer_url.to_string()).map_err(|e| anyhow!("invalid issuer_url: {e}"))?;
-    let metadata = CoreProviderMetadata::discover_async(issuer, async_http_client)
+    let issuer =
+        IssuerUrl::new(issuer_url.to_string()).map_err(|e| anyhow!("invalid issuer_url: {e}"))?;
+    let http_client = oidc_http_client()?;
+    let metadata = CoreProviderMetadata::discover_async(issuer, &http_client)
         .await
         .map_err(|e| anyhow!("OIDC discovery failed: {e}"))?;
-    Ok(metadata.userinfo_endpoint().as_ref().map(|u| u.url().to_string()))
+    Ok(metadata
+        .userinfo_endpoint()
+        .as_ref()
+        .map(|u| u.url().to_string()))
 }
 
 pub struct AuthFlowStart {
@@ -146,7 +173,7 @@ impl FlowState {
     }
 }
 
-pub fn start_authorization(client: &CoreClient, scopes: &[String]) -> AuthFlowStart {
+pub fn start_authorization(client: &ConfiguredOidcClient, scopes: &[String]) -> AuthFlowStart {
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
     let mut req = client
@@ -183,15 +210,18 @@ pub struct OidcIdentity {
 }
 
 pub async fn exchange_and_verify(
-    client: &CoreClient,
+    client: &ConfiguredOidcClient,
     code: String,
     pkce_verifier: String,
     expected_nonce: &str,
 ) -> Result<OidcIdentity> {
-    let token_response = client
+    let http_client = oidc_http_client()?;
+    let token_request = client
         .exchange_code(AuthorizationCode::new(code))
+        .map_err(|e| anyhow!("OIDC token endpoint unavailable: {e}"))?;
+    let token_response = token_request
         .set_pkce_verifier(PkceCodeVerifier::new(pkce_verifier))
-        .request_async(async_http_client)
+        .request_async(&http_client)
         .await
         .map_err(|e| anyhow!("token exchange failed: {e}"))?;
 
@@ -222,16 +252,22 @@ pub async fn fetch_role_claim_values(
     claim: &str,
 ) -> Vec<String> {
     let client = reqwest::Client::new();
-    let Ok(resp) = client.get(userinfo_url).bearer_auth(access_token).send().await else {
+    let Ok(resp) = client
+        .get(userinfo_url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+    else {
         return Vec::new();
     };
     let Ok(body) = resp.json::<serde_json::Value>().await else {
         return Vec::new();
     };
     match body.get(claim) {
-        Some(serde_json::Value::Array(arr)) => {
-            arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-        }
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         Some(serde_json::Value::String(s)) => vec![s.clone()],
         _ => Vec::new(),
     }
@@ -240,7 +276,11 @@ pub async fn fetch_role_claim_values(
 /// Maps a set of Authentik group names to a VoidTower role using the admin-configured
 /// role_map, preferring the most-privileged matching role when a user belongs to
 /// multiple mapped groups.
-pub fn map_role(groups: &[String], role_map: &HashMap<String, String>, default_role: &str) -> String {
+pub fn map_role(
+    groups: &[String],
+    role_map: &HashMap<String, String>,
+    default_role: &str,
+) -> String {
     const PRIORITY: [&str; 4] = ["owner", "admin", "operator", "viewer"];
     let matched: HashSet<&str> = groups
         .iter()
@@ -252,4 +292,75 @@ pub fn map_role(groups: &[String], role_map: &HashMap<String, String>, default_r
         .find(|role| matched.contains(*role))
         .map(|role| role.to_string())
         .unwrap_or_else(|| default_role.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn setup_db() -> SqlitePool {
+        let path =
+            std::env::temp_dir().join(format!("voidtower-oidc-secret-{}.db", uuid::Uuid::new_v4()));
+        crate::db::init_pool(&path).await.unwrap()
+    }
+
+    async fn insert_oidc_config(db: &SqlitePool, secret_id: &str) {
+        sqlx::query(
+            "INSERT INTO oidc_config (id, enabled, issuer_url, client_id, client_secret_id, redirect_url) \
+             VALUES ('default', 1, 'https://issuer.example.test', 'client', ?, 'https://tower.example.test/callback')",
+        )
+        .bind(secret_id)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn oidc_settings_resolve_through_secret_manager_and_record_last_use() {
+        let db = setup_db().await;
+        let key = [7_u8; 32];
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted = crate::api::secrets::encrypt(&key, "oidc-client-secret").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, 'oidc-client', ?, 1, 1)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&db)
+        .await
+        .unwrap();
+        insert_oidc_config(&db, &secret_id).await;
+
+        let settings = load_settings(&db, &key).await.unwrap().unwrap();
+
+        assert_eq!(settings.client_secret, "oidc-client-secret");
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_some());
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn disabled_oidc_secret_fails_closed_without_returning_client_secret() {
+        let db = setup_db().await;
+        let key = [7_u8; 32];
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted = crate::api::secrets::encrypt(&key, "disabled-oidc-secret").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, disabled, created_at, updated_at) VALUES (?, 'disabled-oidc-client', ?, 1, 1, 1)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&db)
+        .await
+        .unwrap();
+        insert_oidc_config(&db, &secret_id).await;
+
+        assert!(load_settings(&db, &key).await.unwrap().is_none());
+        db.close().await;
+    }
 }

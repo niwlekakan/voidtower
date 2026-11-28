@@ -282,3 +282,65 @@ sudo bash scripts/install.sh --repair
 ```
 
 This re-downloads the binary, reinstalls the systemd service unit, fixes file ownership and permissions under `/opt/voidtower`, `/var/lib/voidtower`, and `/etc/voidtower`, then restarts the service. No data or config is changed.
+
+---
+
+## Database upgrades, pre-migration snapshots, and plaintext residue
+
+VoidTower upgrades older databases automatically on first start. Two behaviors affect what is left on disk.
+
+**Pre-migration snapshots.** When an untracked (pre-numbered-migration) database is adopted, the controller writes a full copy of the pre-migration file named `voidtower.db.pre-migration-v1-<timestamp>.bak` next to the database, then immediately restricts it to mode `0600` (it is created with the process umask and tightened straight after creation). Because it is the *pre-migration* file, it can still contain credential plaintext that the upgrade later encrypts or deletes, and it is also your only rollback point for that upgrade. Keep it until the new version has run correctly, then delete the single snapshot you no longer need:
+
+```bash
+ls -l /var/lib/voidtower/voidtower.db.pre-migration-v1-*.bak
+sudo rm -f /var/lib/voidtower/voidtower.db.pre-migration-v1-<timestamp>.bak
+```
+
+Delete one named file rather than the whole glob, so you do not remove a rollback point you still want. Deleting a file is not a secure erase: on SSDs, copy-on-write filesystems, storage snapshots, and the Docker overlay used by the documented deployment, the old blocks may survive the unlink. If that matters for your threat model, keep the database on encrypted storage and treat the snapshot as sensitive for as long as it exists.
+
+**Plaintext residue rebuild.** Deleting a row does not erase its bytes from the SQLite file. After the legacy credential migrations run, the controller rebuilds the database file once (`VACUUM` plus a truncating WAL checkpoint) so deleted credential values are gone from both the file and the write-ahead log. The rebuild:
+
+- runs once per database, recorded in the `db.legacy_plaintext_residue_scrub` settings key;
+- runs while holding the migration lock, so a second controller starting at the same moment waits for it;
+- needs free space roughly equal to the database file and lengthens first start in proportion to database size;
+- only affects deleted rows — a value still stored in a live column is copied as-is;
+- writes the marker only after the checkpoint reports a complete rewrite. If it cannot finish — another process holds a read snapshot, the disk is full, and so on — the controller logs `plaintext residue rebuild deferred to the next startup`, leaves the marker unset, and retries on the next start.
+
+There is no separate status field for the rebuild. To check whether it is still pending, look for the marker key; an empty result means the next start will retry:
+
+```bash
+sqlite3 /var/lib/voidtower/voidtower.db \
+  "SELECT value FROM settings WHERE key = 'db.legacy_plaintext_residue_scrub'"
+```
+
+To check a database and log for provider plaintext rather than trusting the marker, run the read-only
+scanner. The unit sends both output streams to the journal, so export the log to a file first (for a
+Docker install use `docker logs voidtower > /tmp/voidtower.log 2>&1` instead). It reports a finding
+kind, file name, pattern name, and — where one applies — a byte offset without printing the matched
+value. It exits `0` only for a clean scan, `1` when findings exist, and `2` when no clean result can
+be claimed (a missing, unreadable, non-regular or oversized input, a database with no readable
+`settings(key, value)` table, a single match beyond the bounded carry, or a `--db`/`--log` that was
+not both named):
+
+```bash
+journalctl -u voidtower --no-pager -o cat > /tmp/voidtower.log
+python3 scripts/g5_plaintext_scan.py \
+  --db /var/lib/voidtower/voidtower.db \
+  --log /tmp/voidtower.log \
+  --json
+```
+
+Byte patterns cover only values with a discoverable shape: OpenAI and Google keys, Slack tokens and
+incoming-webhook URLs, Discord webhook URLs, Proxmox API tokens in the `user@realm!tokenid=uuid`
+form, PEM private keys, and `Bearer` values. The ntfy topic URL and the Odysseus webhook secret have
+no such shape. The live-row check reports them while their settings row exists, but a deleted copy is
+covered only by the rebuild above — if either was deleted after the rebuild ran, a clean scan does
+not prove it is gone. Every report lists those two classes under `coverage_limits` for that reason.
+
+Findings of kind `snapshot` refer to a retained `*.pre-migration-v1-*.bak` file. Those are the
+pre-migration database, so they can still hold values the upgrade later encrypted or deleted; decide
+their retention explicitly rather than deleting them blindly. A pre-migration copy renamed outside
+that pattern is not classified, so name it explicitly with an additional `--db` when you keep one.
+The one-time rebuild does not cover plaintext deleted *after* it has run, and `secure_delete` is off,
+so a finding of kind `residue` in a live database means a pattern-shaped plaintext value was deleted
+after the rebuild — treat it as a real exposure.

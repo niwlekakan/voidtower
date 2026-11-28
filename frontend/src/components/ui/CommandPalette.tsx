@@ -3,13 +3,17 @@ import { useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Terminal, ClipboardList, Settings, LogOut,
-  Network, Shield,
+  Network, Shield, Boxes, Users,
 } from 'lucide-react'
 import { useCmdPaletteStore } from '@/store/cmdpalette'
 import { useAuthStore } from '@/store/auth'
 import { api } from '@/api/client'
+import type { Role } from '@/api/types'
+import { OPERATOR_ROLES, roleAllowed } from '@/auth/roles'
 
-const NAV_COMMANDS = [
+// `roles` mirrors the server-side gate for the destination route; a command is
+// only offered when the signed-in role could actually use the page.
+const NAV_COMMANDS: { id: string; label: string; icon: React.ElementType; to: string; roles?: readonly Role[] }[] = [
   { id: 'dashboard',  label: 'Go to Dashboard',  icon: LayoutDashboard, to: '/dashboard'  },
   { id: 'services',   label: 'Go to Services',    icon: Server,          to: '/services'   },
   { id: 'containers', label: 'Go to Containers',  icon: Container,       to: '/containers' },
@@ -17,9 +21,11 @@ const NAV_COMMANDS = [
   { id: 'alerts',     label: 'Go to Alerts',      icon: Bell,            to: '/alerts'     },
   { id: 'backups',    label: 'Go to Backups',      icon: HardDrive,      to: '/backups'    },
   { id: 'storage',    label: 'Go to Storage',      icon: HardDrive,      to: '/storage'    },
+  { id: 'inventory',  label: 'Go to Inventory',    icon: Boxes,          to: '/inventory',  roles: OPERATOR_ROLES },
   { id: 'network',    label: 'Go to Network',      icon: Network,        to: '/network'    },
   { id: 'security',   label: 'Go to Security',     icon: Shield,         to: '/security'   },
   { id: 'terminal',   label: 'Open Terminal',      icon: Terminal,       to: '/terminal'   },
+  { id: 'households', label: 'Go to Households',   icon: Users,          to: '/households' },
   { id: 'audit',      label: 'Go to Audit Log',    icon: ClipboardList,  to: '/audit'      },
   { id: 'settings',   label: 'Go to Settings',     icon: Settings,       to: '/settings'   },
 ]
@@ -28,8 +34,11 @@ export default function CommandPalette() {
   const { open, setOpen, query, setQuery } = useCmdPaletteStore()
   const navigate = useNavigate()
   const logout = useAuthStore((s) => s.logout)
+  const role = useAuthStore((s) => s.user?.role)
 
   if (!open) return null
+
+  const commands = NAV_COMMANDS.filter((command) => !command.roles || roleAllowed(role, command.roles))
 
   const run = (to?: string, action?: () => void) => {
     setOpen(false)
@@ -71,7 +80,7 @@ export default function CommandPalette() {
               No results.
             </Command.Empty>
             <Command.Group heading="Navigate" className="px-2">
-              {NAV_COMMANDS.map(({ id, label, icon: Icon, to }) => (
+              {commands.map(({ id, label, icon: Icon, to }) => (
                 <Command.Item
                   key={id}
                   value={label}

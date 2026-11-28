@@ -125,6 +125,44 @@ Copy `.env.example` to `.env` before starting. Key variables:
 | `PUID` / `PGID` | File ownership for Odysseus data mounts (match your host user) |
 | `VOIDTOWER_IMAGE` | Pin a specific VoidTower image tag (e.g. `ghcr.io/niwlekakan/voidtower:aio-v1.2.3`). Leave unset to use `aio-latest`. |
 
+### Durable operation runtime
+
+VoidTower validates and starts its durable operation workers before serving API requests. Invalid
+values fail startup; setting the worker count to zero is not supported. Bare-metal installations
+can set the defaults in `/etc/voidtower/config.toml`:
+
+```toml
+[operations]
+worker_count = 2
+lease_seconds = 30
+idle_poll_millis = 500
+reconciliation_poll_seconds = 30
+error_backoff_max_seconds = 5
+shutdown_timeout_seconds = 60
+```
+
+Each setting also has an environment override:
+`VOIDTOWER_OPERATIONS_WORKER_COUNT`, `VOIDTOWER_OPERATIONS_LEASE_SECONDS`,
+`VOIDTOWER_OPERATIONS_IDLE_POLL_MILLIS`,
+`VOIDTOWER_OPERATIONS_RECONCILIATION_POLL_SECONDS`,
+`VOIDTOWER_OPERATIONS_ERROR_BACKOFF_MAX_SECONDS`, and
+`VOIDTOWER_OPERATIONS_SHUTDOWN_TIMEOUT_SECONDS`.
+
+The adopted Containers, Firewall, Proxy, Updates, Backups, and Proxmox mutation routes return
+`202` with the v1 job envelope `{ "schema_version": 1, "resource_id": "...", "action": "...", "job": ... }`.
+Acceptance is not completion: follow `GET /api/jobs/:id` until the durable job reaches a conclusive
+state. Canonical submissions and the adopted service compatibility route require an explicit
+`Idempotency-Key`; other legacy compatibility routes may generate a request-scoped key for older
+clients. See the [API reference](docs/api.md#durable-operations)
+for planning, approvals, cancellation, replay, errors, and the explicitly synchronous exceptions.
+
+Owner, admin, and operator sessions can inspect the newest durable records in the shared Jobs
+workflow in Tower or Void Mode; owner and admin sessions can review and decide the exact immutable
+records in Approvals. These views use cursor-resumable durable SSE as an invalidation channel and
+retain bounded, visibility-aware HTTP polling whenever the stream is not proven ready and gap-free.
+Cancellation remains limited to queued/running jobs, and no UI action retries or resubmits
+automatically.
+
 ---
 
 ## Voidwatch — AI ops integration
@@ -192,7 +230,7 @@ automation:read  timeline:read  network:read  storage:read
 diagnostics:read  proxy:read  tags:read
 ```
 
-Add for action permissions: `services:restart  containers:restart  apps:restart  automation:run`
+Add for action permissions: `containers:restart  apps:restart  automation:run`
 
 For the full scope reference, token creation, secret restrictions, and security notes see [docs/api-tokens.md](docs/api-tokens.md). For the standalone MCP server (use with Claude Desktop or any MCP host), see [docs/integrations/mcp-server.md](docs/integrations/mcp-server.md).
 
@@ -271,12 +309,31 @@ Companion containers (Odysseus, SearXNG, etc.) are updated from the same page un
 ```bash
 sudo bash scripts/install.sh --update            # latest release
 sudo bash scripts/install.sh --update --version v1.2.3
+sudo bash scripts/install.sh --rollback          # restore the retained previous binary
 ```
+
+`--update` and `--repair` retain the binary they replace as
+`${VT_INSTALL_DIR}/voidtower.previous` with an owner-only SHA-256 manifest.
+`--rollback` restores it only when the digest still matches and the retained
+binary can read the current agent state; see
+[`docs/agent/linux-agent-service.md`](docs/agent/linux-agent-service.md).
 
 ### TrueNAS
 
 - **Option A:** TrueNAS shows an update banner when a newer image is available — click **Update** in **Apps → voidtower**.
 - **Option B:** `docker pull ghcr.io/niwlekakan/voidtower:aio-latest && docker compose ... up -d`
+
+### Database migrations
+
+VoidTower applies ordered, checksum-verified SQLite migrations at startup. The first
+startup of a database created before numbered migrations writes a protected backup
+next to the database as `voidtower.db.pre-migration-v1-<timestamp>.bak` before making
+any schema changes. On Unix, that backup is mode `0600`.
+
+Migration, schema, or integrity failures stop startup and report the affected schema
+object without printing row contents. Legacy normalization is transactional, so a
+failed adoption leaves the original database unchanged; keep the generated backup
+until the upgraded instance has been verified.
 
 ---
 
@@ -390,7 +447,7 @@ sudo voidtower user list                    # bare metal
 | Area | What you get |
 |---|---|
 | **Dashboard** | Customizable widgets — clock, weather, CPU/RAM/disk charts, container summary, alert count. Nine toggleable widgets with drag-to-reorder sections, config persisted per-browser. |
-| **Services** | Manage systemd units — start, stop, restart, enable/disable, view logs. Resource tag filtering. |
+| **Services** | List systemd units, view logs, and submit restart through the canonical durable operation boundary. Start, stop, and enable/disable remain fail-closed. Resource tag filtering. |
 | **Containers** | Docker container list, start/stop/restart, log viewer, per-container exec shell, compose file editor with staged diff before apply. Resource tag filtering. |
 | **App Vault** | 50+ one-click app deployments (Gitea, Nextcloud, Jellyfin, Grafana, Pi-hole, n8n, Ollama, Open WebUI, OpenHands, Home Assistant, Odysseus, and more). Pre-deploy modal shows compose config, env var overrides, and auto-generated secrets before launch. Deploy to Proxmox LXC directly from the catalog. |
 | **AI Discover** | Ask the configured LLM to recommend self-hosted apps; results include Docker image names and direct deploy buttons for catalog matches. |
@@ -460,7 +517,7 @@ All endpoints require a valid `vt_session` cookie except `/api/auth/*`, `/api/st
 |---|---|
 | `owner` | Everything, including deleting other admins |
 | `admin` | Create/delete users (not owner), all actions |
-| `operator` | Start/stop services, deploy apps, write files, terminal |
+| `operator` | Restart services through the canonical durable boundary, deploy apps, write files, terminal |
 | `viewer` | Read-only access to all pages |
 
 ---

@@ -1,0 +1,52 @@
+{
+  "PhysicalDisks": [
+    {
+      "DeviceId": "0",
+      "FriendlyName": "Fixture SATA HDD",
+      "SerialNumber": "FIXTURE-HDD-0001",
+      "UniqueId": "2000FIXTUREHDD0001",
+      "MediaType": "HDD",
+      "BusType": "SATA",
+      "Size": 100000000000,
+      "HealthStatus": "Healthy",
+      "OperationalStatus": "OK",
+      "PhysicalLocation": "Integrated : Adapter 0 : Port 0"
+    },
+    {
+      "DeviceId": "1",
+      "FriendlyName": "Fixture NVMe SSD",
+      "SerialNumber": "FIXTURE-NVME-0001",
+      "UniqueId": "{eui.fixture0000000001}",
+      "MediaType": "SSD",
+      "BusType": "NVMe",
+      "Size": 500000000000,
+      "HealthStatus": "Healthy",
+      "OperationalStatus": "OK",
+      "PhysicalLocation": "Integrated : Adapter 1 : Port 0"
+    },
+    {
+      "DeviceId": "2",
+      "FriendlyName": "Fixture USB Enclosure",
+      "SerialNumber": "FIXTURE-USB-0001",
+      "UniqueId": "FIXTUREUSBBRIDGE0001",
+      "MediaType": "HDD",
+      "BusType": "USB",
+      "Size": 2000000000000,
+      "HealthStatus": "Warning",
+      "OperationalStatus": ["Degraded"],
+      "PhysicalLocation": "External"
+    },
+    {
+      "DeviceId": "3",
+      "FriendlyName": "Fixture Virtual Disk",
+      "SerialNumber": "",
+      "UniqueId": "{fixture-virtual-0001}",
+      "MediaType": "Unspecified",
+      "BusType": "Virtual",
+      "Size": 400000000000,
+      "HealthStatus": "Healthy",
+      "OperationalStatus": "OK",
+      "PhysicalLocation": "Virtual"
+    }
+  ]
+}

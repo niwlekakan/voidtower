@@ -47,7 +47,7 @@ export default function NativeIntegrationsPanel() {
     setModal(false); loadTokens()
   }
   async function patchOdy(patch: Partial<OdyConfig>) {
-    await fetch('/api/integrations/odysseus/config', { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) })
+    await fetch('/api/integrations/odysseus/config', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) })
     clearOdysseusConfigCache()
     loadOdy()
   }

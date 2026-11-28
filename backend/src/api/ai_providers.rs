@@ -4,9 +4,13 @@ use crate::{
     error::{AppError, Result},
     AppState,
 };
-use axum::{extract::{Path, State}, Json};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
+use sqlx::{Sqlite, Transaction};
 
 // ── List ─────────────────────────────────────────────────────────────────────
 
@@ -33,9 +37,9 @@ pub struct CreateProviderReq {
     pub name: String,
     pub enabled: Option<bool>,
     pub base_url: Option<String>,
-    /// Settings key that holds the API key value.
+    /// Canonical `secrets.id`; never a settings key.
     pub api_key_ref: Option<String>,
-    /// If provided, the actual key value is stored in `settings` under `api_key_ref`.
+    /// If provided, encrypt immediately into the referenced/new secret.
     pub api_key_value: Option<String>,
     pub model: Option<String>,
     pub priority: Option<i64>,
@@ -48,21 +52,29 @@ pub async fn create(
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
     validate_kind(&req.kind)?;
+    validate_provider_fields(
+        &req.kind,
+        &req.name,
+        req.base_url.as_deref(),
+        req.model.as_deref(),
+        req.priority.unwrap_or(50),
+    )?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
     let enabled = req.enabled.unwrap_or(true);
     let priority = req.priority.unwrap_or(50);
-
-    // Persist the API key in settings if provided
-    if let (Some(key_ref), Some(key_val)) = (&req.api_key_ref, &req.api_key_value) {
-        sqlx::query("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)")
-            .bind(key_ref)
-            .bind(key_val)
-            .execute(&state.db)
-            .await
-            .map_err(AppError::Database)?;
-    }
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+    let secret_id = persist_secret_reference(
+        &mut tx,
+        &state.secrets_key,
+        &id,
+        &req.name,
+        req.api_key_ref.as_deref(),
+        req.api_key_value.as_deref(),
+        now,
+    )
+    .await?;
 
     sqlx::query(
         "INSERT INTO ai_providers(id, kind, name, enabled, base_url, api_key_ref, model, \
@@ -73,14 +85,15 @@ pub async fn create(
     .bind(&req.name)
     .bind(enabled)
     .bind(&req.base_url)
-    .bind(&req.api_key_ref)
+    .bind(&secret_id)
     .bind(&req.model)
     .bind(priority)
     .bind(now)
     .bind(now)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(AppError::Database)?;
+    tx.commit().await.map_err(AppError::Database)?;
 
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
@@ -98,6 +111,15 @@ pub struct UpdateProviderReq {
     pub priority: Option<i64>,
 }
 
+type ProviderRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    Option<String>,
+);
+
 pub async fn update(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -105,53 +127,97 @@ pub async fn update(
     Json(req): Json<UpdateProviderReq>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-
-    // Verify exists
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_providers WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(AppError::Database)?;
-    if count == 0 { return Err(AppError::NotFound); }
-
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
+    let current: Option<ProviderRow> = sqlx::query_as(
+        "SELECT kind, name, base_url, model, priority, api_key_ref FROM ai_providers WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+    let (
+        current_kind,
+        current_name,
+        current_base_url,
+        current_model,
+        current_priority,
+        current_ref,
+    ) = current.ok_or(AppError::NotFound)?;
+    validate_provider_fields(
+        &current_kind,
+        req.name.as_deref().unwrap_or(&current_name),
+        req.base_url.as_deref().or(current_base_url.as_deref()),
+        req.model.as_deref().or(current_model.as_deref()),
+        req.priority.unwrap_or(current_priority),
+    )?;
     let now = unix_now();
 
     if let Some(name) = &req.name {
         sqlx::query("UPDATE ai_providers SET name=?, updated_at=? WHERE id=?")
-            .bind(name).bind(now).bind(&id)
-            .execute(&state.db).await.map_err(AppError::Database)?;
+            .bind(name)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(enabled) = req.enabled {
         sqlx::query("UPDATE ai_providers SET enabled=?, updated_at=? WHERE id=?")
-            .bind(enabled).bind(now).bind(&id)
-            .execute(&state.db).await.map_err(AppError::Database)?;
+            .bind(enabled)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(base_url) = &req.base_url {
         sqlx::query("UPDATE ai_providers SET base_url=?, updated_at=? WHERE id=?")
-            .bind(base_url).bind(now).bind(&id)
-            .execute(&state.db).await.map_err(AppError::Database)?;
+            .bind(base_url)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(model) = &req.model {
         sqlx::query("UPDATE ai_providers SET model=?, updated_at=? WHERE id=?")
-            .bind(model).bind(now).bind(&id)
-            .execute(&state.db).await.map_err(AppError::Database)?;
+            .bind(model)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
     if let Some(priority) = req.priority {
         sqlx::query("UPDATE ai_providers SET priority=?, updated_at=? WHERE id=?")
-            .bind(priority).bind(now).bind(&id)
-            .execute(&state.db).await.map_err(AppError::Database)?;
+            .bind(priority)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
-    if let Some(key_ref) = &req.api_key_ref {
+    if req.api_key_ref.is_some() || req.api_key_value.is_some() {
+        let secret_id = persist_secret_reference(
+            &mut tx,
+            &state.secrets_key,
+            &id,
+            req.name.as_deref().unwrap_or("AI provider"),
+            req.api_key_ref.as_deref().or(current_ref.as_deref()),
+            req.api_key_value.as_deref(),
+            now,
+        )
+        .await?;
         sqlx::query("UPDATE ai_providers SET api_key_ref=?, updated_at=? WHERE id=?")
-            .bind(key_ref).bind(now).bind(&id)
-            .execute(&state.db).await.map_err(AppError::Database)?;
-        if let Some(key_val) = &req.api_key_value {
-            sqlx::query("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)")
-                .bind(key_ref).bind(key_val)
-                .execute(&state.db).await.map_err(AppError::Database)?;
-        }
+            .bind(&secret_id)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
     }
 
+    tx.commit().await.map_err(AppError::Database)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -169,7 +235,9 @@ pub async fn delete(
         .await
         .map_err(AppError::Database)?
         .rows_affected();
-    if rows == 0 { return Err(AppError::NotFound); }
+    if rows == 0 {
+        return Err(AppError::NotFound);
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -188,27 +256,187 @@ pub async fn health(
     Path(id): Path<String>,
 ) -> Result<Json<HealthResult>> {
     require_admin(&state, &jar).await?;
-    let orchestrator = crate::ai::AiOrchestrator::new(state.db.clone());
+    let orchestrator = crate::ai::AiOrchestrator::new(state.db.clone(), state.secrets_key.clone());
     match orchestrator.health_check(&id).await {
-        Ok(()) => Ok(Json(HealthResult { id, ok: true, error: None })),
-        Err(e) => Ok(Json(HealthResult { id, ok: false, error: Some(e) })),
+        Ok(()) => Ok(Json(HealthResult {
+            id,
+            ok: true,
+            error: None,
+        })),
+        Err(e) => Ok(Json(HealthResult {
+            id,
+            ok: false,
+            error: Some(redact_health_error(&e)),
+        })),
     }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+async fn persist_secret_reference(
+    tx: &mut Transaction<'_, Sqlite>,
+    secrets_key: &[u8; 32],
+    provider_id: &str,
+    provider_name: &str,
+    requested_ref: Option<&str>,
+    value: Option<&str>,
+    now: i64,
+) -> Result<Option<String>> {
+    if let Some(value) = value {
+        if value.is_empty() {
+            return Err(AppError::BadRequest("api key value required".into()));
+        }
+        if value.len() > crate::api::secrets::MAX_SECRET_VALUE_BYTES {
+            return Err(AppError::BadRequest(
+                "api key value exceeds size limit".into(),
+            ));
+        }
+    }
+
+    let secret_id = match (requested_ref, value) {
+        (Some(secret_id), Some(value)) => {
+            validate_secret_id(secret_id)?;
+            let usable: Option<bool> =
+                sqlx::query_scalar("SELECT disabled FROM secrets WHERE id=?")
+                    .bind(secret_id)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(AppError::Database)?;
+            if usable != Some(false) {
+                return Err(AppError::BadRequest("api key secret unavailable".into()));
+            }
+            let encrypted =
+                crate::api::secrets::encrypt(secrets_key, value).map_err(AppError::Internal)?;
+            let changed = sqlx::query(
+                "UPDATE secrets SET value_enc=?, version=version+1, updated_at=? WHERE id=?",
+            )
+            .bind(encrypted)
+            .bind(now)
+            .bind(secret_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(AppError::Database)?
+            .rows_affected();
+            if changed == 0 {
+                return Err(AppError::BadRequest("api key secret not found".into()));
+            }
+            Some(secret_id.to_string())
+        }
+        (Some(secret_id), None) => {
+            validate_secret_id(secret_id)?;
+            let usable: Option<bool> =
+                sqlx::query_scalar("SELECT disabled = 0 FROM secrets WHERE id=?")
+                    .bind(secret_id)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(AppError::Database)?;
+            if usable != Some(true) {
+                return Err(AppError::BadRequest("api key secret unavailable".into()));
+            }
+            Some(secret_id.to_string())
+        }
+        (None, Some(value)) => {
+            let secret_id = uuid::Uuid::new_v4().to_string();
+            let encrypted =
+                crate::api::secrets::encrypt(secrets_key, value).map_err(AppError::Internal)?;
+            let name = format!("ai-provider-{provider_id}");
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&secret_id)
+            .bind(name)
+            .bind(format!("Encrypted credential for {provider_name}"))
+            .bind(encrypted)
+            .bind(now)
+            .bind(now)
+            .execute(&mut **tx)
+            .await
+            .map_err(AppError::Database)?;
+            Some(secret_id)
+        }
+        (None, None) => None,
+    };
+    Ok(secret_id)
+}
+
+fn validate_secret_id(secret_id: &str) -> Result<()> {
+    uuid::Uuid::parse_str(secret_id)
+        .map(|_| ())
+        .map_err(|_| AppError::BadRequest("api key reference must be a secret id".into()))
+}
+
 async fn require_admin(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let sid = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
-    let user = auth::validate_session(&state.db, &sid).await.map_err(AppError::Internal)?.ok_or(AppError::Unauthorized)?;
-    if !matches!(user.role.as_str(), "owner" | "admin") { return Err(AppError::Forbidden); }
+    let sid = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
+    let user = auth::validate_session(&state.db, &sid)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::Unauthorized)?;
+    if !matches!(user.role.as_str(), "owner" | "admin") {
+        return Err(AppError::Forbidden);
+    }
     Ok(user)
 }
 
+fn validate_provider_fields(
+    kind: &str,
+    name: &str,
+    base_url: Option<&str>,
+    model: Option<&str>,
+    priority: i64,
+) -> Result<()> {
+    if name.trim().is_empty() || name.len() > 200 {
+        return Err(AppError::BadRequest("provider name is invalid".into()));
+    }
+    if priority < 0 {
+        return Err(AppError::BadRequest(
+            "provider priority must be non-negative".into(),
+        ));
+    }
+    if let Some(value) = model {
+        if value.trim().is_empty() || value.len() > 200 {
+            return Err(AppError::BadRequest("provider model is invalid".into()));
+        }
+    }
+    if let Some(raw) = base_url {
+        if raw.len() > 500 {
+            return Err(AppError::BadRequest("provider base URL is too long".into()));
+        }
+        let url = reqwest::Url::parse(raw)
+            .map_err(|_| AppError::BadRequest("provider base URL is invalid".into()))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(AppError::BadRequest(
+                "provider base URL must be an HTTP(S) URL without credentials".into(),
+            ));
+        }
+        let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+        if kind != "local"
+            && (host.eq_ignore_ascii_case("localhost")
+                || host.ends_with(".localhost")
+                || host.parse::<std::net::IpAddr>().is_ok())
+        {
+            return Err(AppError::BadRequest(
+                "provider base URL cannot target a local or private address".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+fn redact_health_error(_error: &str) -> String {
+    "provider health check failed".into()
+}
 fn validate_kind(kind: &str) -> Result<()> {
     match kind {
         "odysseus" | "openai" | "anthropic" | "local" => Ok(()),
         _ => Err(AppError::BadRequest(format!(
-            "Unknown provider kind '{}'. Valid: odysseus, openai, anthropic, local", kind
+            "Unknown provider kind '{}'. Valid: odysseus, openai, anthropic, local",
+            kind
         ))),
     }
 }
@@ -218,4 +446,319 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    #[test]
+    fn provider_validation_rejects_unsafe_endpoint_and_invalid_metadata() {
+        assert!(super::validate_provider_fields("openai", " ", None, None, 1).is_err());
+        assert!(super::validate_provider_fields(
+            "openai",
+            "provider",
+            Some("file:///etc/passwd"),
+            None,
+            1
+        )
+        .is_err());
+        assert!(super::validate_provider_fields(
+            "openai",
+            "provider",
+            Some("http://127.0.0.1:8080"),
+            None,
+            1
+        )
+        .is_err());
+        assert!(super::validate_provider_fields(
+            "local",
+            "provider",
+            Some("http://127.0.0.1:11434"),
+            Some("model"),
+            0
+        )
+        .is_ok());
+        assert!(super::validate_provider_fields(
+            "openai",
+            "provider",
+            Some("https://api.example.test"),
+            Some("model"),
+            0
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn provider_health_failure_is_redacted() {
+        assert_eq!(
+            super::redact_health_error("database password at http://10.0.0.1"),
+            "provider health check failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_encrypts_api_key_and_returns_only_secret_reference() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(db.clone());
+        let session = crate::api::mcp::test_support::user_with_session(&db).await;
+        let secret_value = "fixture-value";
+        let app = crate::api::router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/ai/providers")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "kind": "openai",
+                            "name": "Encrypted test provider",
+                            "enabled": true,
+                            "api_key_value": secret_value,
+                            "priority": 1
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let provider_id = payload["id"].as_str().unwrap().to_owned();
+        let (secret_id, value_enc): (String, String) = sqlx::query_as(
+            "SELECT api_key_ref, (SELECT value_enc FROM secrets WHERE id = api_key_ref) \
+             FROM ai_providers WHERE id = ?",
+        )
+        .bind(provider_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        assert!(uuid::Uuid::parse_str(&secret_id).is_ok());
+        assert_ne!(value_enc, secret_value);
+        assert_eq!(
+            crate::api::secrets::decrypt(&state.secrets_key, &value_enc).unwrap(),
+            secret_value
+        );
+        let plaintext: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE value = ?")
+                .bind(secret_value)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(plaintext.is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_rejects_disabled_secret_reference_without_mutation() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(db.clone());
+        let session = crate::api::mcp::test_support::user_with_session(&db).await;
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted =
+            crate::api::secrets::encrypt(&state.secrets_key, "fixture-disabled-value").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, disabled, created_at, updated_at) \
+             VALUES (?, 'disabled-ai-key', ?, 1, 1, 1)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let response = crate::api::router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/ai/providers")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "kind": "openai",
+                            "name": "Disabled secret provider",
+                            "api_key_ref": secret_id,
+                            "priority": 1
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ai_providers")
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(
+            sqlx::query_scalar::<_, bool>("SELECT disabled FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_rotates_secret_transactionally_and_list_is_metadata_only() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(db.clone());
+        let session = crate::api::mcp::test_support::user_with_session(&db).await;
+        let app = crate::api::router(state.clone());
+
+        let create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/ai/providers")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "kind": "openai",
+                            "name": "Rotating provider",
+                            "api_key_value": "fixture-initial-value",
+                            "priority": 1
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let create_body = axum::body::to_bytes(create.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let provider_id: String = serde_json::from_slice::<serde_json::Value>(&create_body)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let initial_ref: String =
+            sqlx::query_scalar("SELECT api_key_ref FROM ai_providers WHERE id = ?")
+                .bind(&provider_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        let update = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/ai/providers/{provider_id}"))
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "api_key_value": "fixture-rotated-value" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(update.status(), StatusCode::OK);
+
+        let (rotated_ref, version, value_enc): (String, i64, String) = sqlx::query_as(
+            "SELECT api_key_ref, (SELECT version FROM secrets WHERE id = api_key_ref), \
+             (SELECT value_enc FROM secrets WHERE id = api_key_ref) \
+             FROM ai_providers WHERE id = ?",
+        )
+        .bind(&provider_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(rotated_ref, initial_ref);
+        assert_eq!(version, 1);
+        assert_eq!(
+            crate::api::secrets::decrypt(&state.secrets_key, &value_enc).unwrap(),
+            "fixture-rotated-value"
+        );
+
+        sqlx::query(
+            "CREATE TRIGGER fail_provider_ref_update \
+             BEFORE UPDATE OF api_key_ref ON ai_providers \
+             WHEN NEW.id = OLD.id \
+             BEGIN SELECT RAISE(ABORT, 'fixture provider update failure'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let failed_update = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/ai/providers/{provider_id}"))
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "api_key_value": "fixture-failed-value" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(failed_update.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT value_enc FROM secrets WHERE id = ?")
+                .bind(&initial_ref)
+                .fetch_one(&db)
+                .await
+                .map(|value| crate::api::secrets::decrypt(&state.secrets_key, &value).unwrap())
+                .unwrap(),
+            "fixture-rotated-value"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT version FROM secrets WHERE id = ?")
+                .bind(&initial_ref)
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            1
+        );
+
+        sqlx::query("DROP TRIGGER fail_provider_ref_update")
+            .execute(&db)
+            .await
+            .unwrap();
+        let list = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/ai/providers")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let list_body = axum::body::to_bytes(list.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list_text = String::from_utf8(list_body.to_vec()).unwrap();
+        assert!(list_text.contains(&initial_ref));
+        assert!(!list_text.contains("api_key_value"));
+        assert!(!list_text.contains("fixture-initial-value"));
+        assert!(!list_text.contains("fixture-rotated-value"));
+        assert!(!list_text.contains("fixture-failed-value"));
+    }
 }

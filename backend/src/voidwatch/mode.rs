@@ -162,18 +162,6 @@ mod tests {
             .await
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        crate::voidwatch::tests::create_policy_tables(&pool).await;
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS voidwatch_mode_settings (
-                scope         TEXT PRIMARY KEY,
-                mode          TEXT NOT NULL DEFAULT 'observer',
-                updated_at    INTEGER NOT NULL,
-                updated_by    TEXT
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
         pool
     }
 

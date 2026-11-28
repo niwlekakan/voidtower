@@ -1,81 +1,10 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { BrowserRouter } from 'react-router-dom'
 import { ThemeProvider } from '@/theme/ThemeProvider'
 import { useAuthStore } from '@/store/auth'
-import { api, isTauri } from '@/api/client'
-import AppLayout from '@/components/layout/AppLayout'
-import AiosLayout from '@/aios/AiosLayout'
-import { useThemeStore } from '@/store/theme'
-import LoginPage from '@/pages/Login'
-import BootstrapPage from '@/pages/Bootstrap'
-import HomePage from '@/pages/Home'
-import DashboardPage from '@/pages/Dashboard'
-import ServicesPage from '@/pages/Services'
-import ContainersPage from '@/pages/Containers'
-import ContainerDetailPage from '@/pages/ContainerDetail'
-import AppVaultPage from '@/pages/AppVault'
-import AlertsPage from '@/pages/Alerts'
-import BackupsPage from '@/pages/Backups'
-import StoragePage from '@/pages/Storage'
-import NetworkPage from '@/pages/Network'
-import TerminalPage from '@/pages/Terminal'
-import AuditPage from '@/pages/Audit'
-import AIPage from '@/pages/AI'
-import FilesPage from '@/pages/Files'
-import ProxiesPage from '@/pages/Proxies'
-import SecurityPage from '@/pages/Security'
-import SettingsPage from '@/pages/Settings'
-import AutomationPage from '@/pages/Automation'
-import FirewallPage from '@/pages/Firewall'
-import TimelinePage from '@/pages/Timeline'
-import SecretsPage from '@/pages/Secrets'
-import CapabilitiesPage from '@/pages/Capabilities'
-import DiagnosticsPage from '@/pages/Diagnostics'
-import WireGuardPage from '@/pages/WireGuard'
-import VMsPage from '@/pages/VMs'
-import LxcPage from '@/pages/LxcPage'
-import ProxmoxPage from '@/pages/ProxmoxPage'
-import TagsPage from '@/pages/Tags'
-import CustomizationPage from '@/pages/Customization'
-import ModelsPage from '@/pages/Models'
-import StudioPage from '@/pages/Studio'
-import UpdatesPage from '@/pages/Updates'
-import IntegrationsPage from '@/pages/Integrations'
-import AiProvidersPage from '@/pages/AiProviders'
-import PolicyPage from '@/pages/Policy'
-import ModsPage from '@/pages/Mods'
-import PluginsPage from '@/pages/Plugins'
-import PluginPage from '@/pages/PluginPage'
-import CustomTabView from '@/pages/CustomTabView'
-import NotFoundPage from '@/pages/NotFound'
+import { api } from '@/api/client'
+import AppRoutes from '@/AppRoutes'
 import { useNavConfigStore } from '@/store/navConfig'
-
-function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { status } = useAuthStore()
-  if (status === 'idle' || status === 'loading') return null
-  if (status === 'unauthenticated') return <Navigate to="/login" replace />
-  return <>{children}</>
-}
-
-/// A `member` never sees infra pages (VMs, proxies, backups, nodes, Settings,
-/// etc.) regardless of client — only the simplified Home view and their own
-/// app launcher. Every other role is completely unaffected.
-const MEMBER_ALLOWED_PATHS = ['/', '/apps']
-
-function MemberGate({ children }: { children: React.ReactNode }) {
-  const user = useAuthStore((s) => s.user)
-  const location = useLocation()
-  if (user?.role === 'member' && !MEMBER_ALLOWED_PATHS.includes(location.pathname)) {
-    return <Navigate to="/" replace />
-  }
-  return <>{children}</>
-}
-
-function AuthedShell() {
-  const uiMode = useThemeStore((s) => s.uiMode)
-  if (uiMode === 'void') return <AiosLayout />
-  return <AppLayout />
-}
 
 function applyBranding(data: { instance_name?: string; custom_css?: string; instance_logo?: string }) {
   if (data.instance_name) document.title = data.instance_name
@@ -108,7 +37,7 @@ function applyBranding(data: { instance_name?: string; custom_css?: string; inst
 }
 
 export default function App() {
-  const { setUser, setStatus, user } = useAuthStore()
+  const { setUser, setStatus } = useAuthStore()
 
   useEffect(() => {
     setStatus('loading')
@@ -138,52 +67,7 @@ export default function App() {
   return (
     <ThemeProvider>
       <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/bootstrap" element={<BootstrapPage />} />
-          <Route path="/" element={<RequireAuth><MemberGate><AuthedShell /></MemberGate></RequireAuth>}>
-            <Route index element={(isTauri() || user?.role === 'member') ? <HomePage /> : <Navigate to="/dashboard" replace />} />
-            <Route path="dashboard" element={<DashboardPage />} />
-            <Route path="services"   element={<ServicesPage />} />
-            <Route path="containers"     element={<ContainersPage />} />
-            <Route path="containers/:id" element={<ContainerDetailPage />} />
-            <Route path="apps"       element={<AppVaultPage />} />
-            <Route path="alerts"     element={<AlertsPage />} />
-            <Route path="backups"    element={<BackupsPage />} />
-            <Route path="storage"    element={<StoragePage />} />
-            <Route path="network"    element={<NetworkPage />} />
-            <Route path="ai"         element={<AIPage />} />
-            <Route path="models"     element={<ModelsPage />} />
-            <Route path="studio"     element={<StudioPage />} />
-            <Route path="updates"        element={<UpdatesPage />} />
-            <Route path="mods"           element={<ModsPage />} />
-            <Route path="plugins"        element={<PluginsPage />} />
-            <Route path="plugins/:id"    element={<PluginPage />} />
-            <Route path="tabs/:id"       element={<CustomTabView />} />
-            <Route path="integrations"   element={<IntegrationsPage />} />
-            <Route path="ai-providers"   element={<AiProvidersPage />} />
-            <Route path="files"      element={<FilesPage />} />
-            <Route path="proxies"    element={<ProxiesPage />} />
-            <Route path="security"   element={<SecurityPage />} />
-            <Route path="policy"     element={<PolicyPage />} />
-            <Route path="terminal"   element={<TerminalPage />} />
-            <Route path="audit" element={<AuditPage />} />
-            <Route path="automation"      element={<AutomationPage />} />
-            <Route path="firewall"        element={<FirewallPage />} />
-            <Route path="timeline"       element={<TimelinePage />} />
-            <Route path="secrets"        element={<SecretsPage />} />
-            <Route path="capabilities"  element={<CapabilitiesPage />} />
-            <Route path="diagnostics"   element={<DiagnosticsPage />} />
-            <Route path="wireguard"     element={<WireGuardPage />} />
-            <Route path="vms"           element={<VMsPage />} />
-            <Route path="lxc"           element={<LxcPage />} />
-            <Route path="proxmox"       element={<ProxmoxPage />} />
-            <Route path="tags"          element={<TagsPage />} />
-            <Route path="customization" element={<CustomizationPage />} />
-            <Route path="settings/*" element={<SettingsPage />} />
-            <Route path="*" element={<NotFoundPage />} />
-          </Route>
-        </Routes>
+        <AppRoutes />
       </BrowserRouter>
     </ThemeProvider>
   )

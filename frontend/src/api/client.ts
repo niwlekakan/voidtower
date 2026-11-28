@@ -1,13 +1,41 @@
 /// <reference types="vite/client" />
 import type { ApiError } from './types'
+import { useAuthStore } from '@/store/auth'
+import { API_V1_ENVELOPE_CONTRACT } from './generatedApiContract'
+import {
+  parseApprovalListEnvelope,
+  parseApprovalReadEnvelope,
+  parseApiErrorEnvelope,
+  parseEventHistoryEnvelope,
+  parseJobListEnvelope,
+  parseJobReadEnvelope,
+  parseJobSuccessEnvelope,
+  parsePlanSuccessEnvelope,
+  parseResourceCapabilitiesEnvelope,
+  parseResourceListEnvelope,
+  parseResourceReadEnvelope,
+  parseVersionNegotiationErrorEnvelope,
+} from './envelopeClient'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
+const API_VERSION_HEADER = 'x-voidtower-api-version'
+const MAX_CANONICAL_TARGET_LENGTH = 256
+const MAX_PAGE_LIMIT = 500
+
+export function createIdempotencyKey(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
 
 export class ApiClientError extends Error {
   constructor(
     message: string,
     public readonly code: string,
     public readonly status: number,
+    public readonly supportedVersions: string[] | null = null,
   ) {
     super(message)
     this.name = 'ApiClientError'
@@ -38,20 +66,46 @@ function resolveFetch(): Promise<typeof fetch> {
   return tauriFetchPromise
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, parse?: (value: unknown) => T): Promise<T> {
+  const requestSessionEpoch = useAuthStore.getState().sessionEpoch
   const doFetch = await resolveFetch()
   const res = await doFetch(`${BASE}${path}`, {
     ...init,
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      [API_VERSION_HEADER]: API_V1_ENVELOPE_CONTRACT.api_version,
       ...init?.headers,
     },
   })
 
   if (!res.ok) {
+    if (res.status === 401 && useAuthStore.getState().sessionEpoch === requestSessionEpoch) {
+      useAuthStore.getState().logout()
+    }
     let body: ApiError | null = null
     try { body = await res.json() } catch { /* ignore */ }
+    if (body && typeof body.error === 'object' && body.error !== null) {
+      if (body.error.code === 'unsupported_api_version') {
+        try {
+          const error = parseVersionNegotiationErrorEnvelope(body)
+          throw new ApiClientError(error.error.message, error.error.code, res.status, error.error.supported_versions)
+        } catch (error) {
+          if (error instanceof ApiClientError) throw error
+        }
+      }
+      try {
+        const error = parseApiErrorEnvelope(body)
+        throw new ApiClientError(error.error.message, error.error.code, res.status)
+      } catch {
+        const errorBody = body.error as Record<string, unknown>
+        const code = typeof errorBody.code === 'string' ? errorBody.code.slice(0, 128) : 'invalid_api_error'
+        const message = typeof errorBody.message === 'string'
+          ? errorBody.message.slice(0, 1024)
+          : 'The API returned an invalid error envelope.'
+        throw new ApiClientError(message, code, res.status)
+      }
+    }
     throw new ApiClientError(
       body?.error?.message ?? res.statusText,
       body?.error?.code ?? 'unknown',
@@ -60,7 +114,41 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
+  const body = await res.json()
+  return parse ? parse(body) : body as T
+}
+
+function requestJob(path: string, init?: RequestInit): Promise<import('./types').DurableJobResponse> {
+  return request<import('./types').DurableJobResponse>(path, init, parseJobSuccessEnvelope)
+}
+
+type DurablePlanOrJobResponse =
+  | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
+  | import('./types').DurableJobResponse
+
+function parsePlanOrJobResponse(value: unknown): DurablePlanOrJobResponse {
+  if (typeof value === 'object' && value !== null && (value as Record<string, unknown>).dry_run === true) {
+    return value as DurablePlanOrJobResponse
+  }
+  return parseJobSuccessEnvelope<import('./types').DurableJob>(value)
+}
+
+function validateCanonicalTarget(value: string): void {
+  if (typeof value !== 'string' || value.length === 0 || value === '.' || value === '..' || value.trim().length === 0 || value.length > MAX_CANONICAL_TARGET_LENGTH) {
+    throw new ApiClientError('Invalid canonical action target.', 'invalid_action_target', 400)
+  }
+}
+
+function validatePageLimit(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_LIMIT) {
+    throw new ApiClientError('Invalid page limit.', 'invalid_pagination', 400)
+  }
+}
+
+function validateEventCursor(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ApiClientError('Invalid event cursor.', 'invalid_pagination', 400)
+  }
 }
 
 function proxyOptsBody(opts: import('./types').ProxyOptions) {
@@ -68,7 +156,7 @@ function proxyOptsBody(opts: import('./types').ProxyOptions) {
     custom_headers: opts.customHeaders ?? [],
     rate_limit_rpm: opts.rateLimitRpm ?? null,
     basic_auth_user: opts.basicAuthUser ?? null,
-    basic_auth_password: opts.basicAuthPassword ?? null,
+    basic_auth_secret_id: opts.basicAuthSecretId ?? null,
     websocket_extended: opts.websocketExtended ?? false,
     cache_static: opts.cacheStatic ?? false,
   }
@@ -119,12 +207,53 @@ export const api = {
     },
   },
 
+  events: {
+    history: (after = 0, limit = 100) => {
+      validateEventCursor(after)
+      validatePageLimit(limit)
+      return request<import('./types').DurableEventHistoryResponse>(
+        `/api/events?after=${encodeURIComponent(String(after))}&limit=${encodeURIComponent(String(limit))}`,
+        undefined,
+        value => parseEventHistoryEnvelope(value, after),
+      )
+    },
+    streamUrl: (after?: number) => {
+      if (after !== undefined) validateEventCursor(after)
+      const query = after === undefined ? '' : `?after=${encodeURIComponent(String(after))}`
+      return `${BASE}/api/events/stream${query}`
+    },
+  },
+
+  resources: {
+    list: (limit = 100) => {
+      validatePageLimit(limit)
+      return request<import('./types').DurableResourceListResponse>(
+        `/api/resources?limit=${encodeURIComponent(String(limit))}`,
+        undefined,
+        parseResourceListEnvelope,
+      )
+    },
+    get: (id: string) =>
+      request<import('./types').DurableResourceReadResponse>(
+        `/api/resources/${encodeURIComponent(id)}`,
+        undefined,
+        parseResourceReadEnvelope,
+      ),
+    capabilities: (id: string) =>
+      request<import('./types').DurableResourceCapabilitiesResponse>(
+        `/api/resources/${encodeURIComponent(id)}/capabilities`,
+        undefined,
+        parseResourceCapabilitiesEnvelope,
+      ),
+  },
+
   services: {
     list:   () => request<import('./types').ServicesResponse>('/api/services'),
     get:    (name: string) => request<import('./types').ServiceInfo>(`/api/services/${name}`),
-    action: (name: string, action: import('./types').ServiceAction) =>
-      request<{ ok: boolean }>(`/api/services/${name}/action`, {
+    action: (name: string, action: import('./types').ServiceAction, idempotencyKey = createIdempotencyKey()) =>
+      requestJob(`/api/services/${encodeURIComponent(name)}/action`, {
         method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
         body: JSON.stringify({ action }),
       }),
     logs:   (name: string) =>
@@ -141,7 +270,7 @@ export const api = {
   containers: {
     list: () => request<import('./types').ContainersResponse>('/api/containers'),
     action: (id: string, action: import('./types').ContainerAction) =>
-      request<{ ok: boolean }>(`/api/containers/${id}/action`, {
+      requestJob(`/api/containers/${id}/action`, {
         method: 'POST',
         body: JSON.stringify({ action }),
       }),
@@ -156,13 +285,13 @@ export const api = {
     images: () => request<{ images: import('./types').ImageInfo[] }>('/api/containers/images'),
     getCompose: (id: string) =>
       request<{ compose_path: string; content: string; diff?: string }>(`/api/containers/${id}/compose`),
-    proposeCompose: (id: string, content: string) =>
-      request<{ ok: boolean; diff: string; services: string[] }>(`/api/containers/${id}/compose/propose`, {
-        method: 'POST', body: JSON.stringify({ content }),
+    previewCompose: (id: string, path: string, content: string) =>
+      request<{ added: number; removed: number; current_lines: number; proposed_lines: number }>(`/api/containers/${id}/compose/propose`, {
+        method: 'POST', body: JSON.stringify({ path, content }),
       }),
-    applyCompose: (id: string, content: string) =>
-      request<{ ok: boolean }>(`/api/containers/${id}/compose/apply`, {
-        method: 'POST', body: JSON.stringify({ content }),
+    applyCompose: (id: string, path: string, content: string) =>
+      requestJob(`/api/containers/${id}/compose/apply`, {
+        method: 'POST', body: JSON.stringify({ path, content }),
       }),
   },
 
@@ -192,7 +321,7 @@ export const api = {
     remove:   (p: string) => request<{ ok: boolean }>(`/api/apps/${p}`,          { method: 'DELETE' }),
     logs:    (p: string) => request<{ lines: string[] }>(`/api/apps/${p}/logs`),
     status:  (p: string) => request<{ containers: import('./types').ComposeContainer[] }>(`/api/apps/${p}/status`),
-    getCompose:    (p: string) => request<{ compose_path: string; content: string }>(`/api/apps/${p}/compose`),
+    getCompose:    (p: string) => request<{ content: string }>(`/api/apps/${p}/compose`),
     updateCompose: (p: string, content: string) =>
       request<{ ok: boolean }>(`/api/apps/${p}/compose`, { method: 'POST', body: JSON.stringify({ content }) }),
     deployCustom: (body: {
@@ -203,13 +332,17 @@ export const api = {
         method: 'POST', body: JSON.stringify(body),
       }),
     openUi: (projectName: string, primaryPort: number) =>
-      request<{ url: string; embed_url: string | null; proxy_created: boolean }>('/api/apps/open-ui', {
+      request<{ url: string; embed_url: string | null; proxy_created: false; proxy_available: boolean }>('/api/apps/open-ui', {
         method: 'POST',
         body: JSON.stringify({ project_name: projectName, primary_port: primaryPort }),
       }),
+    expose: (projectName: string, body: { domain: string; ssl?: boolean; allow_embed?: boolean }) =>
+      requestJob(`/api/apps/${projectName}/expose`, {
+        method: 'POST', body: JSON.stringify(body),
+      }),
     detectExternal: () =>
       request<import('./types').ExternalStack[]>('/api/apps/detect-external'),
-    adoptApp: (body: { project_name: string; app_name: string; compose_path?: string; primary_port?: number }) =>
+    adoptApp: (body: { project_name: string; app_name: string; primary_port?: number }) =>
       request<{ ok: boolean }>('/api/apps/adopt', { method: 'POST', body: JSON.stringify(body) }),
     convertApp: (projectName: string) =>
       request<{ ok: boolean }>(`/api/apps/${projectName}/convert`, { method: 'POST' }),
@@ -233,19 +366,19 @@ export const api = {
     list: () =>
       request<{ proxies: import('./types').ProxyConfig[]; nginx_available: boolean; nginx_backend: 'docker' | 'system' | 'none'; sites_dir: string }>('/api/proxy'),
     create: (domain: string, upstream: string, ssl: boolean, allow_embed = false, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
-      request<{ ok: boolean; id: string; nginx: string }>('/api/proxy', {
+      requestJob('/api/proxy', {
         method: 'POST',
         body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, ...proxyOptsBody(opts) }),
       }),
     delete: (id: string) =>
-      request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, { method: 'DELETE' }),
+      requestJob(`/api/proxy/${id}`, { method: 'DELETE' }),
     update: (id: string, domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
-      request<{ ok: boolean; nginx: string }>(`/api/proxy/${id}`, {
+      requestJob(`/api/proxy/${id}`, {
         method: 'PUT',
         body: JSON.stringify({ domain, upstream, ssl, allow_embed, sso_protect, ...proxyOptsBody(opts) }),
       }),
     toggle: (id: string) =>
-      request<{ ok: boolean; enabled: boolean; nginx: string }>(`/api/proxy/${id}/toggle`, { method: 'POST' }),
+      requestJob(`/api/proxy/${id}/toggle`, { method: 'POST' }),
     health: (id: string) =>
       request<{ status: 'up' | 'down'; latency_ms: number; checked_at: number }>(`/api/proxy/${id}/health`),
     plan: (domain: string, upstream: string, ssl: boolean, allow_embed: boolean, sso_protect = false, opts: import('./types').ProxyOptions = {}) =>
@@ -304,7 +437,7 @@ export const api = {
 
   members: {
     list: () => request<{ members: import('./types').MemberListEntry[] }>('/api/members'),
-    myAccess: () => request<import('./types').MemberAccessSummary>('/api/members/me/access'),
+    myAccess: () => request<import('./types').MemberSelfAccessSummary>('/api/members/me/access'),
     myNodes: () => request<{ nodes: import('./types').MemberNodeOption[] }>('/api/members/me/nodes'),
     access: (userId: string) => request<import('./types').MemberAccessSummary>(`/api/members/${userId}/access`),
     grantAccess: (userId: string, appId: string) =>
@@ -489,16 +622,16 @@ export const api = {
       }),
     getProxmoxConfig: () => request<import('./types').ProxmoxConfig | null>('/api/vms/proxmox/config'),
     setProxmoxConfig: (cfg: import('./types').ProxmoxConfig) =>
-      request<{ ok: boolean }>('/api/vms/proxmox/config', {
+      requestJob('/api/vms/proxmox/config', {
         method: 'POST', body: JSON.stringify(cfg),
       }),
     listProxmox: () => request<import('./types').ProxmoxVmsResponse>('/api/vms/proxmox/vms'),
     proxmoxAction: (vmid: number, kind: string, node: string, action: string) =>
-      request<{ ok: boolean; message?: string }>('/api/vms/proxmox/action', {
+      requestJob('/api/vms/proxmox/action', {
         method: 'POST', body: JSON.stringify({ vmid, kind, node, action }),
       }),
     testProxmox: () =>
-      request<{ ok: boolean; nodes?: string[]; message?: string }>('/api/vms/proxmox/test', { method: 'POST' }),
+      requestJob('/api/vms/proxmox/test', { method: 'POST' }),
   },
 
   mods: {
@@ -523,13 +656,13 @@ export const api = {
     getOdysseusConfig: () => request<import('./types').OdysseusConfig>('/api/integrations/odysseus/config'),
     saveOdysseusConfig: (cfg: {
       enabled?: boolean; mcp_enabled?: boolean; allowed_url?: string;
-      regenerate_webhook_secret?: boolean; emergency_disable?: boolean;
+      regenerate_webhook_secret?: boolean; revoke_webhook_secret?: boolean; emergency_disable?: boolean;
     }) => request<{ ok: boolean; webhook_secret?: string }>('/api/integrations/odysseus/config', { method: 'POST', body: JSON.stringify(cfg) }),
     manifest: () => request<import('./types').OdysseusManifest>('/api/integrations/odysseus/manifest'),
     recentActions: () => request<{ actions: import('./types').AuditAction[] }>('/api/integrations/actions'),
-    eventsUrl: (token?: string) => {
+    eventsUrl: () => {
       const base = (import.meta.env.VITE_API_BASE ?? '')
-      return token ? `${base}/api/integrations/events?token=${encodeURIComponent(token)}` : `${base}/api/integrations/events`
+      return `${base}/api/integrations/events`
     },
   },
 
@@ -548,32 +681,32 @@ export const api = {
   proxmox: {
     listHosts:  () => request<import('./types').ProxmoxHost[]>('/api/proxmox/hosts'),
     addHost:    (data: import('./types').AddHostRequest) =>
-      request<{ ok: boolean }>('/api/proxmox/hosts', { method: 'POST', body: JSON.stringify(data) }),
+      requestJob('/api/proxmox/hosts', { method: 'POST', body: JSON.stringify(data) }),
     deleteHost: (id: string) =>
-      request<{ ok: boolean }>(`/api/proxmox/hosts/${id}`, { method: 'DELETE' }),
+      requestJob(`/api/proxmox/hosts/${id}`, { method: 'DELETE' }),
     getNodes:   (hostId: string) => request<import('./types').PveNode[]>(`/api/proxmox/${hostId}/nodes`),
     getVms:     (hostId: string) => request<import('./types').PveVm[]>(`/api/proxmox/${hostId}/vms`),
     getStorage: (hostId: string) => request<import('./types').PveStorage[]>(`/api/proxmox/${hostId}/storage`),
     getTasks:   (hostId: string) => request<import('./types').PveTask[]>(`/api/proxmox/${hostId}/tasks`),
-    vmAction:     (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot' | 'reset' | 'suspend' | 'resume') =>
-      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
+    vmAction:     (hostId: string, vmid: number, action: 'start' | 'stop' | 'shutdown' | 'reboot' | 'reset' | 'suspend' | 'resume') =>
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST' }),
     vmActionPlan: (hostId: string, vmid: number, action: 'start' | 'stop' | 'reboot' | 'reset' | 'suspend') =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/${action}`, { method: 'POST', body: JSON.stringify({ dry_run: true }) }),
     getSnapshots: (hostId: string, vmid: number, kind: 'qemu' | 'lxc') =>
       request<import('./types').PveSnapshot[]>(`/api/proxmox/${hostId}/vms/${vmid}/snapshots?kind=${kind}`),
     createSnapshot: (hostId: string, vmid: number, name: string, desc: string) =>
-      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc }) }),
     createSnapshotPlan: (hostId: string, vmid: number, name: string, desc: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/snapshot`, { method: 'POST', body: JSON.stringify({ name, description: desc, dry_run: true }) }),
     deleteSnapshot: (hostId: string, vmid: number, snapname: string) =>
-      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE' }),
     deleteSnapshotPlan: (hostId: string, vmid: number, snapname: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/snapshot/${snapname}`, { method: 'DELETE', body: JSON.stringify({ dry_run: true }) }),
     rollbackSnapshot: (hostId: string, vmid: number, snapname: string) =>
-      request<{ ok: boolean; task: string }>(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST' }),
     rollbackSnapshotPlan: (hostId: string, vmid: number, snapname: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/rollback/${snapname}`, { method: 'POST', body: JSON.stringify({ dry_run: true }) }),
@@ -586,7 +719,7 @@ export const api = {
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus, dry_run: true }) }),
     diskPassthrough: (hostId: string, vmid: number, diskPath: string, bus: string) =>
-      request<{ ok: boolean }>(`/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus }) }),
+      requestJob(`/api/proxmox/${hostId}/vms/${vmid}/disk-passthrough`, { method: 'POST', body: JSON.stringify({ disk_path: diskPath, bus }) }),
 
     // Storage content browser
     getStorageContent: (hostId: string, node: string, storage: string) =>
@@ -596,7 +729,7 @@ export const api = {
         `/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content?volid=${encodeURIComponent(volid)}`,
         { method: 'DELETE', body: JSON.stringify({ dry_run: true }) }),
     deleteStorageContent: (hostId: string, node: string, storage: string, volid: string) =>
-      request<{ ok: boolean; task: string }>(
+      requestJob(
         `/api/proxmox/${hostId}/nodes/${node}/storage/${storage}/content?volid=${encodeURIComponent(volid)}`,
         { method: 'DELETE', body: JSON.stringify({ dry_run: false }) }),
 
@@ -609,13 +742,13 @@ export const api = {
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/nodes/${node}/disks/wipe`, { method: 'POST', body: JSON.stringify({ disk, dry_run: true }) }),
     wipeDisk: (hostId: string, node: string, disk: string) =>
-      request<{ ok: boolean; task: string }>(
+      requestJob(
         `/api/proxmox/${hostId}/nodes/${node}/disks/wipe`, { method: 'POST', body: JSON.stringify({ disk }) }),
     initDiskPlan: (hostId: string, node: string, disk: string, fstype: string, name: string, raidlevel?: string) =>
       request<{ dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }>(
         `/api/proxmox/${hostId}/nodes/${node}/disks/init`, { method: 'POST', body: JSON.stringify({ disk, fstype, name, raidlevel, dry_run: true }) }),
     initDisk: (hostId: string, node: string, disk: string, fstype: string, name: string, raidlevel?: string) =>
-      request<{ ok: boolean; task: string }>(
+      requestJob(
         `/api/proxmox/${hostId}/nodes/${node}/disks/init`, { method: 'POST', body: JSON.stringify({ disk, fstype, name, raidlevel }) }),
   },
 
@@ -623,7 +756,7 @@ export const api = {
     deployToLxc: (hostId: string, req: {
       node: string; hostname: string; ostemplate: string; compose_yaml: string;
       cores?: number; memory?: number; storage?: string; disk_gb?: number;
-    }) => request<{ vmid: string; hostname: string; node: string; bootstrap_script: string }>(
+    }) => requestJob(
       `/api/proxmox/${hostId}/lxc/deploy`, { method: 'POST', body: JSON.stringify(req) }),
   },
 
@@ -700,25 +833,266 @@ export const api = {
   },
 
   updates: {
+    infoVt: () =>
+      request<import('./types').VoidTowerUpdateInfo>('/api/updates/voidtower'),
+    checkVt: () =>
+      requestJob('/api/updates/voidtower/check', { method: 'POST' }),
     applyVt: (dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
-        | { ok: boolean; backup_tag?: string }
-      >('/api/updates/voidtower/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+        | import('./types').DurableJobResponse
+      >('/api/updates/voidtower/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }, parsePlanOrJobResponse),
     rollbackVt: (tag: string, dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
-        | { ok: boolean; rolling_back_to?: string }
-      >('/api/updates/voidtower/rollback', { method: 'POST', body: JSON.stringify({ tag, dry_run: dryRun }) }),
+        | import('./types').DurableJobResponse
+      >('/api/updates/voidtower/rollback', { method: 'POST', body: JSON.stringify({ tag, dry_run: dryRun }) }, parsePlanOrJobResponse),
+    infoOdysseus: () =>
+      request<import('./types').OdysseusUpdateInfo>('/api/updates/odysseus'),
+    applyOdysseus: () =>
+      requestJob('/api/updates/odysseus/apply', { method: 'POST' }),
+    infoDocker: () =>
+      request<import('./types').DockerUpdateRow[]>('/api/updates/docker'),
+    checkDocker: () =>
+      requestJob('/api/updates/docker/check', { method: 'POST' }),
     dockerApply: (id: string, dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
-        | { ok: boolean; output: string; image: string }
-      >(`/api/updates/docker/${id}/apply`, { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+        | import('./types').DurableJobResponse
+      >(`/api/updates/docker/${id}/apply`, { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }, parsePlanOrJobResponse),
+    infoOs: () =>
+      request<import('./types').OsUpdateInfo>('/api/updates/os'),
     applyOs: (dryRun: boolean) =>
       request<
         | { dry_run: true; plan: import('../components/ui/ChangePlanModal').ChangePlan }
-        | { ok: boolean; dry_run: boolean; output: string }
-      >('/api/updates/os/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }),
+        | import('./types').DurableJobResponse
+      >('/api/updates/os/apply', { method: 'POST', body: JSON.stringify({ dry_run: dryRun }) }, parsePlanOrJobResponse),
   },
+
+  operationJobs: {
+    list: (limit = 50) =>
+      request<import('./types').DurableJobListResponse>(
+        `/api/jobs?limit=${encodeURIComponent(limit)}`,
+        undefined,
+        parseJobListEnvelope<import('./types').DurableJob>,
+      ),
+    get: (id: string) =>
+      request<import('./types').DurableJobResponse>(`/api/jobs/${encodeURIComponent(id)}`, undefined, parseJobReadEnvelope),
+    getByIdempotency: (key: string) =>
+      (() => {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(key)) {
+          return Promise.reject(new ApiClientError('Invalid idempotency key.', 'invalid_idempotency_key', 400))
+        }
+        return request<import('./types').DurableJobResponse>(
+          `/api/jobs/by-idempotency/${encodeURIComponent(key)}`,
+          undefined,
+          parseJobReadEnvelope,
+        )
+      })(),
+    cancel: (id: string) =>
+      requestJob(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  },
+
+  canonicalActions: {
+    plan: async (resourceId: string, action: string, input: unknown = {}) => {
+      validateCanonicalTarget(resourceId)
+      validateCanonicalTarget(action)
+      return request(`/api/resources/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(action)}/plan`, {
+        method: 'POST',
+        body: JSON.stringify({ input }),
+      }, parsePlanSuccessEnvelope)
+    },
+    submit: async (resourceId: string, action: string, input: unknown, idempotencyKey: string) => {
+      validateCanonicalTarget(resourceId)
+      validateCanonicalTarget(action)
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(idempotencyKey)) {
+        throw new ApiClientError('Invalid idempotency key.', 'invalid_idempotency_key', 400)
+      }
+      return request(`/api/resources/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(action)}`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ input }),
+      }, parseJobSuccessEnvelope)
+    },
+  },
+
+  approvals: {
+    list: (params: { status?: import('./types').DurableApprovalStatus; limit?: number } = {}) => {
+      const query = new URLSearchParams()
+      if (params.status) query.set('status', params.status)
+      query.set('limit', String(params.limit ?? 50))
+      return request<import('./types').DurableApprovalListResponse>(
+        `/api/approvals?${query}`,
+        undefined,
+        parseApprovalListEnvelope<import('./types').DurableApproval>,
+      )
+    },
+    get: (id: string) =>
+      request<import('./types').DurableApprovalResponse>(
+        `/api/approvals/${encodeURIComponent(id)}`,
+        undefined,
+        parseApprovalReadEnvelope<import('./types').DurableApproval>,
+      ),
+    approve: (id: string, comment?: string) =>
+      requestJob(`/api/approvals/${encodeURIComponent(id)}/approve`, {
+        method: 'POST', body: JSON.stringify({ comment: comment?.trim() || null }),
+      }),
+    reject: (id: string, comment?: string) =>
+      requestJob(`/api/approvals/${encodeURIComponent(id)}/reject`, {
+        method: 'POST', body: JSON.stringify({ comment: comment?.trim() || null }),
+      }),
+  },
+
+  systemUpdate: {
+    version: () => request<import('./types').SystemVersionInfo>('/api/system/version'),
+    check: () => requestJob('/api/system/update-check'),
+    apply: () => requestJob('/api/system/update', { method: 'POST' }),
+  },
+
+  /**
+   * Canonical CMDB read surface. Both calls are reads guarded by
+   * `Access::Read` (operator and above) on the server; this client deliberately
+   * exposes no discovery resolution mutation.
+   */
+  cmdb: {
+    assets: (limit = 200, offset = 0) =>
+      request<import('./types').CmdbAssetList>(
+        `/api/cmdb/assets?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`,
+      ),
+    discoveries: (limit = 200, offset = 0) =>
+      request<import('./types').CmdbDiscoveryList>(
+        `/api/cmdb/discoveries?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`,
+      ),
+  },
+
+  /**
+   * Household membership, resource grants, and consent.
+   *
+   * Every call is a session-cookie route: there is no bearer or AI surface here. Grant reads and
+   * mutations are limited to a global owner/admin or an active household owner/admin; a member
+   * discovers the resources it may use through the grant-filtered `resources.list` read instead of
+   * the grant table. Consent creation is additionally scoped to an active subject membership.
+   */
+  households: {
+    list: () => request<HouseholdMembershipList>('/api/households'),
+    create: (name: string) =>
+      request<{ household: Household }>('/api/households', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      }),
+    members: (householdId: string) =>
+      request<HouseholdMembershipList>(
+        `/api/households/${encodeURIComponent(householdId)}/members`,
+      ),
+    addMember: (householdId: string, member: { user_id: string; role: string }) =>
+      request<{ household_id: string; user_id: string; role: string; granted_by: string }>(
+        `/api/households/${encodeURIComponent(householdId)}/members`,
+        { method: 'POST', body: JSON.stringify(member) },
+      ),
+    revokeMember: (householdId: string, userId: string) =>
+      request<{ revoked: boolean; user_id: string }>(
+        `/api/households/${encodeURIComponent(householdId)}/members/${encodeURIComponent(userId)}`,
+        { method: 'DELETE' },
+      ),
+    grants: (householdId: string) =>
+      request<{ grants: HouseholdGrant[] }>(
+        `/api/households/${encodeURIComponent(householdId)}/grants`,
+      ),
+    /** The caller's own active grants; the manager-only grant table is not readable by a member. */
+    myGrants: (householdId: string) =>
+      request<{ grants: HouseholdGrant[] }>(
+        `/api/households/${encodeURIComponent(householdId)}/grants/me`,
+      ),
+    grant: (
+      householdId: string,
+      grant: { user_id: string; resource_id: string; permission: string },
+    ) =>
+      request<{ household_id: string; resource_id: string; user_id: string; permission: string }>(
+        `/api/households/${encodeURIComponent(householdId)}/grants`,
+        { method: 'POST', body: JSON.stringify(grant) },
+      ),
+    revokeGrant: (householdId: string, resourceId: string, userId: string) =>
+      request<{ revoked: boolean }>(
+        `/api/households/${encodeURIComponent(householdId)}/grants/${encodeURIComponent(resourceId)}/${encodeURIComponent(userId)}`,
+        { method: 'DELETE' },
+      ),
+    consents: (householdId: string) =>
+      request<HouseholdConsentList>(
+        `/api/households/${encodeURIComponent(householdId)}/consents`,
+      ),
+    createConsent: (
+      householdId: string,
+      consent: { user_id: string; purpose: string; domain: string; destination?: string },
+    ) =>
+      request<{ schema_version: number; consent: HouseholdConsent }>(
+        `/api/households/${encodeURIComponent(householdId)}/consents`,
+        { method: 'POST', body: JSON.stringify(consent) },
+      ),
+    withdrawConsent: (householdId: string, consentId: string) =>
+      request<{ schema_version: number; withdrawn: boolean; consent_id: string }>(
+        `/api/households/${encodeURIComponent(householdId)}/consents/${encodeURIComponent(consentId)}`,
+        { method: 'DELETE' },
+      ),
+  },
+}
+
+export interface Household {
+  id: string
+  name: string
+  created_by: string
+  created_at: number
+  updated_at: number
+}
+
+export interface HouseholdMembership {
+  household_id: string
+  user_id: string
+  role: string
+  status: string
+  expires_at: number | null
+  revoked_at: number | null
+  created_at: number
+  updated_at: number
+}
+
+export interface HouseholdMembershipList {
+  memberships: HouseholdMembership[]
+}
+
+export interface HouseholdGrant {
+  household_id: string
+  resource_id: string
+  user_id: string
+  permission: string
+  granted_by: string
+  expires_at: number | null
+  revoked_at: number | null
+  created_at: number
+  updated_at: number
+}
+
+export interface HouseholdConsent {
+  id: string
+  schema_version: number
+  household_id: string
+  user_id: string
+  purpose: string
+  domain: string
+  resource_id: string | null
+  destination: string
+  ai_cloud_export: boolean
+  status: string
+  expires_at: number | null
+  retention_until: number | null
+  withdrawn_at: number | null
+  created_by: string
+  created_at: number
+  updated_at: number
+}
+
+export interface HouseholdConsentList {
+  schema_version: number
+  consents: HouseholdConsent[]
+  next_cursor: string | null
+  has_more: boolean
 }

@@ -7,6 +7,8 @@ import { notify } from '@/store/notifications'
 import type { ProxyConfig, ProxyCustomHeader, ProxyOptions } from '@/api/types'
 import Button from '@/components/ui/Button'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 function fmt(ts: number) {
   return new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -26,7 +28,7 @@ interface ProxyAdvancedState {
   headers: ProxyCustomHeader[]
   rateLimitRpm: string
   basicAuthUser: string
-  basicAuthPassword: string
+  basicAuthSecretId: string
   websocketExtended: boolean
   cacheStatic: boolean
 }
@@ -36,14 +38,14 @@ function advancedStateToOptions(s: ProxyAdvancedState): ProxyOptions {
     customHeaders: s.headers,
     rateLimitRpm: s.rateLimitRpm.trim() ? Number(s.rateLimitRpm) : null,
     basicAuthUser: s.basicAuthUser.trim() || null,
-    basicAuthPassword: s.basicAuthPassword.trim() || null,
+    basicAuthSecretId: s.basicAuthSecretId.trim() || null,
     websocketExtended: s.websocketExtended,
     cacheStatic: s.cacheStatic,
   }
 }
 
 const emptyAdvanced: ProxyAdvancedState = {
-  headers: [], rateLimitRpm: '', basicAuthUser: '', basicAuthPassword: '',
+  headers: [], rateLimitRpm: '', basicAuthUser: '', basicAuthSecretId: '',
   websocketExtended: false, cacheStatic: false,
 }
 
@@ -133,8 +135,8 @@ function ProxyAdvancedFields({ state, onChange, basicAuthExisting, onPreset }: P
           <input value={state.basicAuthUser} onChange={e => set('basicAuthUser', e.target.value)}
             placeholder="username (blank = disabled)" className="w-full px-2 py-1.5 rounded text-xs outline-none"
             style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
-          <input type="password" value={state.basicAuthPassword} onChange={e => set('basicAuthPassword', e.target.value)}
-            placeholder={basicAuthExisting ? 'leave blank to keep current password' : 'password'}
+          <input value={state.basicAuthSecretId} onChange={e => set('basicAuthSecretId', e.target.value)}
+            placeholder={basicAuthExisting ? 'leave blank to keep current secret' : 'Secrets vault UUID'}
             className="w-full px-2 py-1.5 rounded text-xs outline-none"
             style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
         </div>
@@ -250,6 +252,7 @@ function NginxBackendCard({ available, nginxBackend, onInstalled }: {
   const [logPath, setLogPath] = useState('')
   const [loadingLogs, setLoadingLogs] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const fetchSetup = useCallback(async () => {
     setLoadingSetup(true)
@@ -283,18 +286,25 @@ function NginxBackendCard({ available, nginxBackend, onInstalled }: {
     setActionLoading(action)
     if (action !== 'test') setTestOutput(null)
     try {
-      const r = await fetch('/api/proxy/nginx/action', {
+      const response = await fetch('/api/proxy/nginx/action', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
-      }).then(r => r.json())
+      })
+      const r = await response.json()
 
       if (action === 'test') {
         setTestOutput(r.output ?? (r.ok ? 'Test passed' : 'Test failed'))
       } else {
-        notify[r.ok ? 'success' : 'error'](r.message ?? (r.ok ? `nginx ${action} succeeded` : `nginx ${action} failed`))
-        await fetchStatus()
+        if (!response.ok || !r.job) throw new Error(r.error?.message ?? `Failed to submit nginx ${action}`)
+        track(r.job, {
+          label: `nginx ${action}`,
+          onSucceeded: async () => {
+            await Promise.all([fetchStatus(), fetchSetup()])
+            onInstalled()
+          },
+        })
       }
     } catch {
       notify.error(`Failed to ${action} nginx`)
@@ -333,6 +343,9 @@ function NginxBackendCard({ available, nginxBackend, onInstalled }: {
 
   return (
     <div className="rounded overflow-hidden" style={{ border: `1px solid ${borderColor}`, background: 'var(--bg-elevated)' }}>
+      <div className="px-4 pt-3">
+        <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
+      </div>
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-3">
           {available && !needsSetup
@@ -473,7 +486,7 @@ function NginxBackendCard({ available, nginxBackend, onInstalled }: {
               <button key={a}
                 className="px-3 py-1.5 rounded text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
                 style={{ background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}
-                disabled={actionLoading !== null}
+                disabled={actionLoading !== null || tracking}
                 onClick={() => handleAction(a)}>
                 {actionLoading === a ? '…' : a.charAt(0).toUpperCase() + a.slice(1)}
               </button>
@@ -484,7 +497,7 @@ function NginxBackendCard({ available, nginxBackend, onInstalled }: {
                 background: 'var(--bg-base)', border: '1px solid var(--border-subtle)',
                 color: nginxStatus?.active ? 'var(--accent-danger)' : 'var(--accent-success)',
               }}
-              disabled={actionLoading !== null}
+              disabled={actionLoading !== null || tracking}
               onClick={() => handleAction(nginxStatus?.active ? 'stop' : 'start')}>
               {actionLoading === 'stop' || actionLoading === 'start'
                 ? '…'
@@ -568,6 +581,7 @@ export default function ProxiesPage() {
   const [pendingPlan, setPendingPlan] = useState<ChangePlan | null>(null)
   const [pendingAction, setPendingAction] = useState<(() => Promise<void>) | null>(null)
   const [executing, setExecuting] = useState(false)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const applyPreset = (preset: ProxyPreset, target: 'create' | 'edit') => {
     const setAdv = target === 'create' ? setAdvanced : setEditAdvanced
@@ -634,12 +648,11 @@ export default function ProxiesPage() {
       const res = await api.proxy.plan(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect, opts)
       setPendingPlan(res.plan)
       setPendingAction(() => async () => {
-        const r = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect, opts)
-        notify.success(`Proxy created — ${r.nginx}`)
+        const { job } = await api.proxy.create(domain.trim(), upstream.trim(), ssl, allowEmbed, ssoProtect, opts)
+        track(job, { label: 'Proxy creation', onSucceeded: refresh })
         setDomain(''); setUpstream('http://localhost:'); setSsl(false); setAllowEmbed(true); setSsoProtect(false)
         setAdvanced(emptyAdvanced)
         setShowForm(false)
-        refresh()
       })
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Failed to plan proxy')
@@ -650,10 +663,9 @@ export default function ProxiesPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      const r = await api.proxy.delete(id)
-      notify.success(`Removed — ${r.nginx}`)
+      const { job } = await api.proxy.delete(id)
+      track(job, { label: 'Proxy removal', onSucceeded: refresh })
       setConfirmDeleteId(null)
-      refresh()
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Failed to remove')
     }
@@ -670,7 +682,7 @@ export default function ProxiesPage() {
       headers: p.custom_headers ? JSON.parse(p.custom_headers) : [],
       rateLimitRpm: p.rate_limit_rpm ? String(p.rate_limit_rpm) : '',
       basicAuthUser: p.basic_auth_user ?? '',
-      basicAuthPassword: '',
+      basicAuthSecretId: '',
       websocketExtended: p.websocket_extended,
       cacheStatic: p.cache_static,
     })
@@ -687,10 +699,9 @@ export default function ProxiesPage() {
       const res = await api.proxy.planUpdate(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect, opts)
       setPendingPlan(res.plan)
       setPendingAction(() => async () => {
-        const r = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect, opts)
-        notify.success(`Updated — ${r.nginx}`)
+        const { job } = await api.proxy.update(id, editDomain.trim(), editUpstream.trim(), editSsl, editAllowEmbed, editSsoProtect, opts)
+        track(job, { label: 'Proxy update', onSucceeded: refresh })
         setEditingId(null)
-        refresh()
       })
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Failed to plan proxy update')
@@ -702,9 +713,11 @@ export default function ProxiesPage() {
   const handleToggle = async (p: ProxyConfig) => {
     setToggling(p.id)
     try {
-      const r = await api.proxy.toggle(p.id)
-      notify.success(r.enabled ? 'Proxy enabled' : 'Proxy disabled')
-      refresh()
+      const { job } = await api.proxy.toggle(p.id)
+      track(job, {
+        label: `Proxy ${p.enabled ? 'disable' : 'enable'}`,
+        onSucceeded: refresh,
+      })
     } catch (err) {
       notify.error(err instanceof ApiClientError ? err.message : 'Toggle failed')
     } finally {
@@ -715,6 +728,7 @@ export default function ProxiesPage() {
   return (
     <div className="space-y-5">
       <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Reverse Proxies</h1>
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
 
       {/* Proxy backend selection */}
       <div className="space-y-2">

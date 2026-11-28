@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
 import { ToggleLeft, ToggleRight, Trash2, Pencil, Plus } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import type { DurableJobResponse } from '@/api/types'
+import { notify } from '@/store/notifications'
 
 interface Proxy { id: string; name?: string; domain: string; upstream: string; ssl: boolean; enabled: boolean; allow_embed?: boolean }
 
@@ -12,27 +16,40 @@ export default function NativeProxiesPanel() {
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState<Modal | null>(null)
   const [form, setForm] = useState(empty)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   async function load() {
     const r = await fetch('/api/proxy', { credentials: 'include' })
     if (r.ok) { const d = await r.json(); setProxies(d.proxies ?? d ?? []) }
     setLoading(false)
   }
+  async function submitJob(path: string, init: RequestInit, label: string): Promise<boolean> {
+    try {
+      const response = await fetch(path, { ...init, credentials: 'include' })
+      const body = await response.json()
+      if (!response.ok || !body.job) throw new Error(body.error?.message ?? 'Submission failed')
+      const { job } = body as DurableJobResponse
+      track(job, { label, onSucceeded: load })
+      return true
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : `${label} failed`)
+      return false
+    }
+  }
   async function toggle(id: string) {
-    await fetch(`/api/proxy/${id}/toggle`, { method: 'POST', credentials: 'include' })
-    load()
+    await submitJob(`/api/proxy/${id}/toggle`, { method: 'POST' }, 'Toggle proxy')
   }
   async function remove(id: string) {
-    await fetch(`/api/proxy/${id}`, { method: 'DELETE', credentials: 'include' })
-    load()
+    await submitJob(`/api/proxy/${id}`, { method: 'DELETE' }, 'Delete proxy')
   }
   async function submit() {
+    const init = { method: modal?.type === 'edit' ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }
     if (modal?.type === 'edit') {
-      await fetch(`/api/proxy/${modal.proxy.id}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+      if (!await submitJob(`/api/proxy/${modal.proxy.id}`, init, 'Update proxy')) return
     } else {
-      await fetch('/api/proxy', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+      if (!await submitJob('/api/proxy', init, 'Create proxy')) return
     }
-    setModal(null); load()
+    setModal(null)
   }
 
   useEffect(() => { load() }, [])
@@ -47,6 +64,7 @@ export default function NativeProxiesPanel() {
     <NativePanelShell actions={
       <IconBtn title="New proxy" onClick={() => { setForm(empty); setModal({ type: 'new' }) }}><Plus size={12} /></IconBtn>
     }>
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {loading ? <LoadingState /> : proxies.length === 0 ? <EmptyState text="No proxies" /> :
         proxies.map(p => (
           <NativeRow key={p.id}>

@@ -18,3 +18,8 @@
 
 # CI itself
 /.github/workflows/         @niwlekakan
+/.github/dependabot.yml     @niwlekakan
+/scripts/release_gate.py    @niwlekakan
+/scripts/validate_release_evidence.py @niwlekakan
+/docs/automated-development-workflow.md @niwlekakan
+/docs/release-gates.md      @niwlekakan

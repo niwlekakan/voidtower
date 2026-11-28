@@ -6,7 +6,7 @@ interface AppEmbedUrl {
   iframeSrc: string | null
   embedUrl: string | null
   loading: boolean
-  proxyCreated: boolean
+  proxyAvailable: boolean
 }
 
 /**
@@ -24,7 +24,7 @@ export function useAppEmbedUrl(
   const [iframeSrc, setIframeSrc] = useState<string | null>(null)
   const [embedUrl, setEmbedUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [proxyCreated, setProxyCreated] = useState(false)
+  const [proxyAvailable, setProxyAvailable] = useState(false)
 
   const seqRef = useRef(0)
   useEffect(() => {
@@ -32,7 +32,7 @@ export function useAppEmbedUrl(
       setIframeSrc(null)
       setEmbedUrl(null)
       setLoading(false)
-      setProxyCreated(false)
+      setProxyAvailable(false)
       return
     }
 
@@ -40,7 +40,7 @@ export function useAppEmbedUrl(
     setIframeSrc(null)
     setEmbedUrl(null)
     setLoading(true)
-    setProxyCreated(false)
+    setProxyAvailable(false)
 
     const path = def?.links?.web_ui ?? def?.web_path ?? '/'
     const uiPort = def?.web_port ?? primaryPort
@@ -52,7 +52,7 @@ export function useAppEmbedUrl(
       if (seq !== seqRef.current) return
       const lanUrl = r.embed_url ? r.embed_url + fullPath : null
       setEmbedUrl(lanUrl)
-      setProxyCreated(!!r.proxy_created)
+      setProxyAvailable(r.proxy_available)
       setIframeSrc(lanUrl ?? backendProxy)
       setLoading(false)
     }).catch(() => {
@@ -62,5 +62,5 @@ export function useAppEmbedUrl(
     })
   }, [projectName, def, primaryPort])
 
-  return { iframeSrc, embedUrl, loading, proxyCreated }
+  return { iframeSrc, embedUrl, loading, proxyAvailable }
 }

@@ -132,7 +132,8 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 /// Background task: periodically marks agents `offline` if they haven't sent a
 /// status update within `OFFLINE_TIMEOUT_SECS`, broadcasting the change.
 pub async fn run_heartbeat_loop(state: AppState) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
     loop {
         interval.tick().await;
         let cutoff = unix_now() - OFFLINE_TIMEOUT_SECS;
@@ -149,11 +150,13 @@ pub async fn run_heartbeat_loop(state: AppState) {
 
         for (id, name) in stale {
             let now = unix_now();
-            let _ = sqlx::query("UPDATE agent_status SET state = 'offline', updated_at = ? WHERE agent_id = ?")
-                .bind(now)
-                .bind(&id)
-                .execute(&state.db)
-                .await;
+            let _ = sqlx::query(
+                "UPDATE agent_status SET state = 'offline', updated_at = ? WHERE agent_id = ?",
+            )
+            .bind(now)
+            .bind(&id)
+            .execute(&state.db)
+            .await;
 
             let _ = state.agents_tx.send(AgentStatusUpdate {
                 agent_id: id,
@@ -169,7 +172,10 @@ pub async fn run_heartbeat_loop(state: AppState) {
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
 
-pub async fn list(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Vec<AgentWithStatus>>> {
+pub async fn list(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<AgentWithStatus>>> {
     require_user(&state, &jar).await?;
 
     let agents = sqlx::query_as::<_, AgentWithStatus>(
@@ -261,15 +267,17 @@ pub async fn update(
     let color = req.color.or(existing.2);
     let enabled = req.enabled.unwrap_or(existing.3);
 
-    sqlx::query("UPDATE agent_registry SET name = ?, icon = ?, color = ?, enabled = ? WHERE id = ?")
-        .bind(&name)
-        .bind(&icon)
-        .bind(&color)
-        .bind(enabled)
-        .bind(&id)
-        .execute(&state.db)
-        .await
-        .map_err(AppError::Database)?;
+    sqlx::query(
+        "UPDATE agent_registry SET name = ?, icon = ?, color = ?, enabled = ? WHERE id = ?",
+    )
+    .bind(&name)
+    .bind(&icon)
+    .bind(&color)
+    .bind(enabled)
+    .bind(&id)
+    .execute(&state.db)
+    .await
+    .map_err(AppError::Database)?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -295,7 +303,10 @@ pub async fn delete(
 }
 
 /// GET /api/agents/export — admin-only dump of the agent registry (no runtime status).
-pub async fn export(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Vec<ExportedAgent>>> {
+pub async fn export(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Vec<ExportedAgent>>> {
     require_admin(&state, &jar).await?;
 
     let agents = sqlx::query_as::<_, ExportedAgent>(
@@ -324,11 +335,12 @@ pub async fn import(
             return Err(AppError::BadRequest("Agent name is required".to_string()));
         }
 
-        let existing_id: Option<String> = sqlx::query_scalar("SELECT id FROM agent_registry WHERE name = ?")
-            .bind(&agent.name)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(AppError::Database)?;
+        let existing_id: Option<String> =
+            sqlx::query_scalar("SELECT id FROM agent_registry WHERE name = ?")
+                .bind(&agent.name)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(AppError::Database)?;
 
         let _id = match existing_id {
             Some(id) => {
@@ -371,7 +383,9 @@ pub async fn import(
         imported += 1;
     }
 
-    Ok(Json(serde_json::json!({ "ok": true, "imported": imported })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "imported": imported }),
+    ))
 }
 
 pub async fn get_status(
@@ -513,11 +527,13 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO agent_status (agent_id, state, updated_at) VALUES ('a1', 'offline', ?)")
-            .bind(now)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_status (agent_id, state, updated_at) VALUES ('a1', 'offline', ?)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let agents = sqlx::query_as::<_, AgentWithStatus>(
             r#"SELECT
@@ -561,10 +577,11 @@ mod tests {
             .unwrap();
         }
 
-        let final_state: String = sqlx::query_scalar("SELECT state FROM agent_status WHERE agent_id = 'a1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let final_state: String =
+            sqlx::query_scalar("SELECT state FROM agent_status WHERE agent_id = 'a1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(final_state, "working");
     }
 
@@ -610,12 +627,14 @@ mod tests {
                 .execute(&pool2)
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO agent_status (agent_id, state, updated_at) VALUES (?, 'offline', ?)")
-                .bind(&id)
-                .bind(now)
-                .execute(&pool2)
-                .await
-                .unwrap();
+            sqlx::query(
+                "INSERT INTO agent_status (agent_id, state, updated_at) VALUES (?, 'offline', ?)",
+            )
+            .bind(&id)
+            .bind(now)
+            .execute(&pool2)
+            .await
+            .unwrap();
         }
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_registry")

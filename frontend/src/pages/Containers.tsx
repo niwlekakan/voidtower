@@ -10,6 +10,8 @@ import LogViewer from '@/components/ui/LogViewer'
 import { TagPill, TagPopover } from '@/components/ui/TagPill'
 import SendToOdysseus from '@/components/ui/SendToOdysseus'
 import ChangePlanModal, { type ChangePlan } from '@/components/ui/ChangePlanModal'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
 
 function stateColor(state: string): string {
   switch (state.toLowerCase()) {
@@ -54,6 +56,7 @@ export default function ContainersPage() {
   const [filterTag, setFilterTag] = useState<string | null>(null)
   const [popover, setPopover] = useState<string | null>(null)
   const globalTag = useFiltersStore((s) => s.globalTag)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -107,9 +110,8 @@ export default function ContainersPage() {
     }
     setActionLoading(`${container.id}-${action}`)
     try {
-      await api.containers.action(container.id, action)
-      notify.success(`${action} sent to ${container.name}`)
-      await load()
+      const { job } = await api.containers.action(container.id, action)
+      track(job, { label: `${container.name} ${action}`, onSucceeded: load })
     } catch (e: unknown) {
       notify.error(e instanceof Error ? e.message : 'Action failed')
     } finally {
@@ -121,10 +123,9 @@ export default function ContainersPage() {
     if (!removePlan) return
     setRemoveConfirming(true)
     try {
-      await api.containers.action(removePlan.containerId, 'remove')
-      notify.success('Container removed')
+      const { job } = await api.containers.action(removePlan.containerId, 'remove')
+      track(job, { label: 'Container removal', onSucceeded: load })
       setRemovePlan(null)
-      await load()
     } catch (e: unknown) {
       notify.error(e instanceof Error ? e.message : 'Remove failed')
     } finally {
@@ -159,6 +160,7 @@ export default function ContainersPage() {
 
   return (
     <div className="space-y-4">
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {removePlan && (
         <ChangePlanModal
           plan={removePlan.plan}

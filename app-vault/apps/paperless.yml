@@ -9,7 +9,7 @@ compose:
       image: ghcr.io/paperless-ngx/paperless-ngx:latest
       restart: unless-stopped
       ports:
-        - "8000:8000"
+        - "8001:8000"
       volumes:
         - paperless_data:/usr/src/paperless/data
         - paperless_media:/usr/src/paperless/media

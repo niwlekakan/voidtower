@@ -4,7 +4,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Container, Package, Bell,
   HardDrive, Network, Terminal, ClipboardList, Settings,
-  ChevronLeft, ChevronDown, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2, LayoutPanelTop, Home,
+  ChevronLeft, ChevronDown, LogOut, Shield, Lock, BrainCircuit, FolderOpen, Globe, X, KeyRound, History, Flame, Zap, Wifi, Monitor, Tag, ArrowUpCircle, PlugZap, Puzzle, Palette, Blocks, Box, Wand2, LayoutPanelTop, Home, ListChecks, ShieldCheck, Boxes, Users,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthStore } from '@/store/auth'
@@ -13,6 +13,8 @@ import { useNavConfigStore, resolvedNavItems, resolvedNavGroups } from '@/store/
 import { useSidebarPrefsStore, type SidebarAnimationStyle } from '@/store/sidebarPrefs'
 import { ICON_REGISTRY } from '@/components/ui/iconRegistry'
 import { TopBarUtilities } from './TopBar'
+import type { Role } from '@/api/types'
+import { ADMIN_ROLES, OPERATOR_ROLES, roleAllowed } from '@/auth/roles'
 
 export const MAIN_SCROLL_ID = 'vt-main-scroll'
 
@@ -21,6 +23,7 @@ interface NavItem {
   icon: React.ElementType
   label: string
   requires?: string  // capability id — item hidden when capability is absent
+  roles?: readonly Role[]
 }
 
 interface NavGroup {
@@ -44,6 +47,8 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/containers', icon: Container, label: 'Containers'                     },
       { to: '/vms',        icon: Monitor,   label: 'VMs',       requires: 'kvm'     },
       { to: '/lxc',        icon: Box,       label: 'LXC',       requires: 'pct'     },
+      // CMDB reads are `Access::Read` on the server, which requires an operator role.
+      { to: '/inventory',  icon: Boxes,     label: 'Inventory', roles: OPERATOR_ROLES },
       { to: '/proxmox',    icon: Server,    label: 'Proxmox'                        },
       { to: '/apps',       icon: Package,   label: 'App Vault'                      },
     ],
@@ -79,12 +84,15 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/security', icon: Lock,          label: 'Security'  },
       { to: '/policy',   icon: Shield,        label: 'Policy'    },
       { to: '/secrets',  icon: KeyRound,      label: 'Secrets'   },
+      { to: '/households', icon: Users,       label: 'Households' },
       { to: '/audit',    icon: ClipboardList, label: 'Audit Log' },
     ],
   },
   {
     label: 'Ops',
     items: [
+      { to: '/jobs',       icon: ListChecks,  label: 'Jobs',      roles: OPERATOR_ROLES },
+      { to: '/approvals',  icon: ShieldCheck, label: 'Approvals', roles: ADMIN_ROLES },
       { to: '/automation', icon: Zap,      label: 'Automation' },
       { to: '/terminal',   icon: Terminal, label: 'Terminal'   },
       { to: '/tags',       icon: Tag,      label: 'Tags'       },
@@ -406,6 +414,7 @@ export default function Sidebar() {
         .filter((item): item is NavItem => {
           if (!item) return false
           if (item.requires && available !== null && !available.has(item.requires)) return false
+          if (item.roles && !roleAllowed(user?.role, item.roles)) return false
           const cfg = navMap[item.to.replace(/^\//, '')]
           if (cfg && !cfg.visible) return false
           return true
@@ -434,6 +443,7 @@ export default function Sidebar() {
       items: [
         { to: '/', icon: Home, label: 'Home' },
         { to: '/apps', icon: Package, label: 'My Apps' },
+        { to: '/households', icon: Users, label: 'Households' },
       ],
     },
   ]

@@ -203,7 +203,7 @@ schemes. nginx-proxy owns `<hostname>.conf`; VoidTower owns `voidtower-*.conf`.
 | ollama           | 11434                 | 11434             | Ollama model API                               |
 | open-webui       | 3003                  | 8080              | LLM chat interface                             |
 | outline          | 3004                  | 3000              | Knowledge base                                 |
-| paperless        | 8000                  | 8000              | Document management                            |
+| paperless        | 8001                  | 8000              | Document management                            |
 | pihole           | 5353/tcp+udp          | 53                | DNS; mapped away from 53 for systemd-resolved  |
 |                  | 8180                  | 80                | Pi-hole admin UI (direct)                      |
 | portainer        | 9000                  | 9000              | Docker management UI                           |
@@ -216,7 +216,8 @@ schemes. nginx-proxy owns `<hostname>.conf`; VoidTower owns `voidtower-*.conf`.
 | uptime-kuma      | 3006                  | 3001              | Uptime monitoring                              |
 | vaultwarden      | 8085                  | 80                | Bitwarden-compatible password manager          |
 | vikunja          | 3456                  | 3456              | Task management                                |
-| VoidTower        | 8743                  | 8743              | VoidTower management UI and API                |
+| VoidTower        | 8000 (loopback)      | 80                | Generic startup verifier only                   |
+|                  | 8743 (loopback)      | 80                | Strict readiness/API proxy; public UI uses 80/443 |
 | wireguard-easy   | 51820/udp             | 51820/udp         | WireGuard VPN                                  |
 |                  | 51821/tcp             | 51821/tcp         | WireGuard Easy web UI                          |
 | youkidex         | 8888                  | 6080              | Android emulator noVNC                         |
@@ -224,6 +225,19 @@ schemes. nginx-proxy owns `<hostname>.conf`; VoidTower owns `voidtower-*.conf`.
 Pi-hole and AdGuard both avoid port 53 to prevent conflicts with
 `systemd-resolved`. On a dedicated server without systemd-resolved, change
 5353/5354 back to 53.
+
+VoidTower's root Compose stack reserves loopback port 8000 for generic local
+startup verification and uses loopback port 8743 for the strict
+`/api/health` boundary. The Paperless App Vault manifest therefore maps its
+container port 8000 to host port 8001. Redeploy an existing Paperless app after
+updating the manifest; its named data volumes are unchanged, but direct access
+moves from `http://<host-ip>:8000` to `http://<host-ip>:8001`.
+
+After upgrading from the previous Paperless mapping, run
+`PYTHONDONTWRITEBYTECODE=1 python3 scripts/compose_preflight.py` before starting
+the root stack. The check is read-only and fails if a legacy container still
+publishes host port 8000 to container port 8000; it never stops or recreates a
+container automatically.
 
 ---
 
@@ -446,7 +460,7 @@ port from section 4:
 ```
 http://<host-ip>:8096   # Jellyfin
 http://<host-ip>:3002   # Gitea
-http://<host-ip>:8000   # Paperless
+http://<host-ip>:8001   # Paperless
 ```
 
 The `VIRTUAL_HOST` and `VIRTUAL_PORT` env vars in each app YAML are harmless

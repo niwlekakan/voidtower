@@ -27,11 +27,15 @@ Pass the token as a Bearer header:
 Authorization: Bearer vt_<your_token>
 ```
 
-For the SSE event stream (`/api/integrations/events`), which can't set headers, pass it as a query parameter instead:
+The durable SSE stream (`/api/integrations/events`, an alias of `/api/events/stream`) accepts bearer
+credentials only in the `Authorization` header. Query-string tokens are rejected and must never be
+placed in URLs, browser history, proxy logs, or referrers. Native browser `EventSource` cannot set
+custom headers, so use the authenticated frontend stream client or another header-capable HTTP/SSE
+client for token-backed connections.
 
-```
-GET /api/integrations/events?token=vt_<your_token>
-```
+The default connection is live-only. Add `after=0` for complete retained replay or resume with
+`Last-Event-ID`. Tokens require `alerts:read`. The deprecated transient metrics/audit feed is at
+`/api/integrations/events/legacy` during migration.
 
 ---
 
@@ -63,7 +67,6 @@ GET /api/integrations/events?token=vt_<your_token>
 
 | Scope | What it allows |
 |---|---|
-| `services:restart` | Start, stop, and restart systemd services |
 | `containers:restart` | Start, stop, and restart Docker containers |
 | `apps:deploy` | Deploy applications from the App Vault catalog |
 | `apps:restart` | Restart deployed App Vault applications |
@@ -71,6 +74,7 @@ GET /api/integrations/events?token=vt_<your_token>
 | `alerts:ack` | Acknowledge or resolve alerts |
 | `automation:run` | Trigger an automation job |
 | `proxy:manage` | Add, toggle, and reload nginx proxy rules |
+| `vms:control` | Start, stop, reboot, and shut down Proxmox guests through canonical durable actions |
 
 ---
 
@@ -90,7 +94,7 @@ diagnostics:read  proxy:read  tags:read
 Add to the baseline above:
 
 ```
-services:restart  containers:restart  apps:restart  backups:run  automation:run
+containers:restart  apps:restart  backups:run  automation:run  vms:control
 ```
 
 ### Read-only monitoring script
@@ -120,7 +124,7 @@ ignored.
 |---|---|
 | `read` | Every read-only scope listed above |
 | `deploy` | `apps:read`, `apps:deploy`, `apps:restart` |
-| `exec` | `containers:read`, `containers:restart`, `containers:logs`, `services:read`, `services:restart`, `automation:read`, `automation:run` |
+| `exec` | `containers:read`, `containers:restart`, `containers:logs`, `services:read`, `automation:read`, `automation:run` |
 | `admin-never` | None — this tier mints a token that structurally cannot reach any admin/owner-gated route, regardless of the minting user's own role |
 
 This is an API-only capability for now — the Settings → Integrations UI
@@ -144,7 +148,9 @@ Tokens without a secret restriction (the default) can list all secrets if they h
 
 ## Revoking a token
 
-Go to **Settings → Integrations → API Tokens** and click **Revoke** next to the token. The revocation is immediate — the token hash is deleted from the database. All active requests using that token will fail on the next call.
+Go to **Settings → Integrations → API Tokens** and click **Revoke** next to the token. The revocation is immediate: the token hash is deleted from the database and any in-memory compatibility session for that token is invalidated before the response completes. The next request using the revoked Bearer value returns `401 Unauthorized`; active requests that already passed authentication are not interrupted.
+
+Token expiry is checked independently from the temporary compatibility session lifetime. A cached token cannot remain usable after its own `expires_at`; the next request after expiry returns `401 Unauthorized` and does not expose the token value or database details.
 
 ---
 
@@ -153,5 +159,7 @@ Go to **Settings → Integrations → API Tokens** and click **Revoke** next to 
 - Tokens are stored as SHA-256 hashes — VoidTower cannot recover the plaintext value after creation
 - Token usage is tracked (`last_used_at` timestamp updated on each authenticated request)
 - All token creation and revocation events appear in the audit timeline
-- The SSE stream checks the emergency-disable flag — if Odysseus integration is emergency-disabled, `alerts:read` tokens cannot connect to `/api/integrations/events`
+- Durable and legacy SSE routes check the emergency-disable flag — when Odysseus is
+  emergency-disabled, `alerts:read` tokens cannot connect through either public durable URL or the
+  legacy integrations URL. Owner/admin/operator browser sessions retain local recovery access.
 - Scopes are enforced by a single middleware for every route a Bearer token can reach (not per-handler) — a route with no listed scope requirement is closed to tokens by default, not implicitly open

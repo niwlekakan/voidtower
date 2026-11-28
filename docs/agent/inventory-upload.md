@@ -1,0 +1,97 @@
+# Linux inventory upload and reconciliation
+
+The enrolled agent inventory contract is `POST /api/nodes/:node_id/inventory`.
+
+The request body is the versioned `InventorySnapshotV1` JSON produced by the
+Linux collector. The node must be approved and agent-capable, and the bearer
+token is hashed and matched to the path `node_id`; tokens from another node,
+revoked nodes, and missing credentials are rejected before ingestion.
+
+The Linux collector's physical-disk fields are mapped for reconciliation before
+upload: `SIZE` is `attributes.capacity_bytes`, `TRAN` is
+`attributes.protocol`, `ROTA` is `attributes.rotation`, and bounded serial/WWN
+values remain both attributes and identity evidence. The collector does not
+emit a `size_bytes` alias. A successful collector result has already passed the
+shared snapshot validation; malformed UUID or non-positive collection-time
+inputs never reach this route. Collector physical-disk capacity also fails
+closed before upload when `SIZE` is missing, null, zero, negative, or not a
+JSON integer; a manually supplied invalid `capacity_bytes` is rejected by
+reconciliation as `400 bad_request` without persistence.
+
+The node must already have one canonical CMDB host resource whose
+`resources.node_id` equals the path node ID. The upload endpoint never accepts
+a caller-selected `resources.id`; it derives the source host resource from the
+trusted node binding.
+
+The bearer credential is verified before the endpoint parses JSON or applies
+the 4 MiB application body limit. Missing or invalid credentials therefore
+return `401 unauthorized`; authenticated bodies over 4 MiB return
+`413 payload_too_large`.
+
+Snapshots are replay-safe. Reposting the same `snapshot_id` with identical
+content returns the completed result with `replayed: true` and does not create
+a second snapshot. Reusing an ID for different content returns a bounded
+conflict response; an identical upload whose first ingestion is still in
+progress also returns a bounded processing conflict. The route validates the
+schema version, UUID snapshot ID, bounded text fields, positive collection time,
+host/entity keys, identity fields, entity count, and duplicate keys before
+resolving the canonical host. Invalid schema, control characters, oversized
+bodies (over 4 MiB), and unknown schema versions are rejected without CMDB
+mutation.
+
+A successful upload response is the source-owned `InventoryUploadEnvelopeV1`
+with `schema_version: 1` and a nested `InventorySnapshotResultV1`; clients require
+all six result fields and treat malformed JSON, an unsupported response schema, or
+missing fields as a failed upload eligible for bounded retry. The nested response
+`snapshot_id` must match the uploaded request after trimming the contract's allowed
+surrounding whitespace; an acknowledgement for another snapshot is rejected so a
+pending snapshot remains eligible for retry. The controller returns the canonical
+trimmed ID:
+
+```json
+{
+  "schema_version": 1,
+  "result": {
+    "snapshot_id": "uuid",
+    "replayed": false,
+    "linked": 1,
+    "registered": 0,
+    "review_required": 0,
+    "missing": 0
+  }
+}
+```
+
+Reconciliation persists the snapshot and observations transactionally. Strong
+identity evidence is linked deterministically; weak or ambiguous evidence is
+retained for review. A valid host-only snapshot with zero entities is recorded
+successfully but is non-converging: its response always reports `missing: 0`,
+and it cannot mark an existing observation or asset missing. This protects the
+CMDB from treating an empty or host-only collection as authoritative absence.
+Only a successful non-empty snapshot may converge omitted observations to
+`missing`. Administrator-owned CMDB fields (name, description, notes,
+lifecycle, condition, location, and ownership) are not overwritten by
+discovery evidence. Durable audit and event records carry the same correlation
+ID and identify the node actor; events are signals, not authoritative CMDB
+state.
+
+Operational qualification is not established by the router tests. C3-03 still
+owns supervised upload scheduling, bounded backoff, service installation,
+outage/restart recovery, upgrade, and rollback. Runtime Linux collection and
+controller outage tests remain required before release claims.
+
+Enrollment lifecycle safety
+
+An owner or administrator creates a short-lived pairing code, and the agent
+submits it to `POST /api/nodes/enroll`. The controller claims the code
+atomically before creating the node, so concurrent submissions result in one
+successful enrollment and one `401 unauthorized`; a code is never valid for a
+second node. Explicit `provision_wireguard: true` remains a bounded
+`503 feature_unavailable` and does not consume the code while the canonical
+WireGuard action adapter is unavailable.
+
+Successful enrollment audit details are stored as structured JSON containing
+only the bounded display name and device type. This avoids treating commas,
+equals signs, or other user-provided characters as audit record delimiters.
+Internal controller/database failures use bounded generic error envelopes and
+do not return SQL, provider diagnostics, or credential material.

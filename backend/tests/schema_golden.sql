@@ -109,6 +109,181 @@ CREATE TABLE backup_configs (
             created_at      INTEGER NOT NULL
         , last_check_at INTEGER, last_check_status TEXT, last_restore_test_at INTEGER, last_restore_test_status TEXT, restore_test_schedule TEXT)
 ;
+CREATE TABLE cmdb_asset_identities (
+    id               TEXT PRIMARY KEY,
+    resource_id      TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    identity_kind    TEXT NOT NULL,
+    normalized_value TEXT NOT NULL,
+    confidence       TEXT NOT NULL CHECK (confidence IN ('strong', 'weak')),
+    source           TEXT NOT NULL,
+    first_seen_at    INTEGER NOT NULL,
+    last_seen_at     INTEGER NOT NULL,
+    UNIQUE (resource_id, identity_kind, normalized_value, source)
+)
+;
+CREATE TABLE cmdb_assets (
+    resource_id      TEXT PRIMARY KEY REFERENCES resources(id) ON DELETE CASCADE,
+    asset_id         TEXT NOT NULL UNIQUE,
+    class_key        TEXT NOT NULL,
+    type_key         TEXT NOT NULL,
+    subtype          TEXT,
+    friendly_name    TEXT,
+    description      TEXT,
+    manufacturer     TEXT,
+    model            TEXT,
+    serial_number    TEXT,
+    part_number      TEXT,
+    lifecycle_status TEXT NOT NULL DEFAULT 'unknown' CHECK (lifecycle_status IN (
+                         'unknown', 'new', 'inventory', 'testing', 'available', 'reserved',
+                         'deployed', 'maintenance', 'degraded', 'quarantine', 'wipe_pending',
+                         'wiping', 'wiped', 'retired', 'disposed', 'lost'
+                     )),
+    discovery_status TEXT NOT NULL DEFAULT 'manual' CHECK (discovery_status IN (
+                         'online', 'offline', 'missing', 'manual', 'unmanaged', 'ignored', 'stale'
+                     )),
+    condition_status TEXT NOT NULL DEFAULT 'unknown' CHECK (condition_status IN (
+                         'unknown', 'new', 'good', 'fair', 'poor', 'damaged', 'failed'
+                     )),
+    location_id      TEXT REFERENCES cmdb_locations(id) ON DELETE SET NULL,
+    first_seen_at    INTEGER,
+    last_seen_at     INTEGER,
+    metadata_json    TEXT NOT NULL DEFAULT '{}',
+    notes            TEXT NOT NULL DEFAULT '',
+    revision         INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    FOREIGN KEY (class_key, type_key) REFERENCES cmdb_types(class_key, key) ON DELETE RESTRICT
+)
+;
+CREATE TABLE cmdb_classes (
+    key         TEXT PRIMARY KEY,
+    label       TEXT NOT NULL,
+    description TEXT,
+    is_builtin  INTEGER NOT NULL DEFAULT 0 CHECK (is_builtin IN (0, 1)),
+    enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+)
+;
+CREATE TABLE cmdb_discovery_decisions (
+    id             TEXT PRIMARY KEY,
+    observation_id TEXT NOT NULL REFERENCES cmdb_observations(id) ON DELETE CASCADE,
+    fingerprint    TEXT NOT NULL,
+    decision       TEXT NOT NULL CHECK (decision IN ('registered', 'linked', 'ignored')),
+    decided_by     TEXT,
+    notes          TEXT,
+    decided_at     INTEGER NOT NULL,
+    UNIQUE (observation_id, fingerprint)
+)
+;
+CREATE TABLE cmdb_identifier_counters (
+    scope_key  TEXT PRIMARY KEY,
+    next_number INTEGER NOT NULL CHECK (next_number > 0),
+    updated_at INTEGER NOT NULL
+)
+;
+CREATE TABLE cmdb_identifier_settings (
+    id               TEXT PRIMARY KEY CHECK (id = 'default'),
+    prefix           TEXT NOT NULL,
+    template         TEXT NOT NULL,
+    separator        TEXT NOT NULL,
+    number_width     INTEGER NOT NULL CHECK (number_width BETWEEN 1 AND 12),
+    starting_number  INTEGER NOT NULL CHECK (starting_number > 0),
+    counter_scope    TEXT NOT NULL CHECK (counter_scope IN ('global', 'class', 'type', 'class_type')),
+    letter_case      TEXT NOT NULL CHECK (letter_case IN ('preserve', 'lower', 'upper')),
+    discovery_policy TEXT NOT NULL CHECK (discovery_policy IN ('off', 'review_first', 'trusted_providers', 'automatic')),
+    updated_at       INTEGER NOT NULL
+)
+;
+CREATE TABLE cmdb_inventory_snapshots (
+    id                 TEXT PRIMARY KEY,
+    source_resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE RESTRICT,
+    node_id            TEXT,
+    snapshot_id        TEXT NOT NULL,
+    schema_version     INTEGER NOT NULL CHECK (schema_version > 0),
+    collector_version  TEXT NOT NULL,
+    platform           TEXT NOT NULL,
+    collected_at       INTEGER NOT NULL,
+    received_at        INTEGER NOT NULL,
+    state              TEXT NOT NULL CHECK (state IN ('processing', 'completed')),
+    fingerprint        TEXT NOT NULL,
+    result_json        TEXT,
+    UNIQUE (source_resource_id, snapshot_id)
+)
+;
+CREATE TABLE cmdb_locations (
+    id          TEXT PRIMARY KEY,
+    parent_id   TEXT REFERENCES cmdb_locations(id) ON DELETE RESTRICT,
+    name        TEXT NOT NULL,
+    description TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    CHECK (parent_id IS NULL OR parent_id != id),
+    UNIQUE (parent_id, name)
+)
+;
+CREATE TABLE cmdb_observations (
+    id                   TEXT PRIMARY KEY,
+    resource_id          TEXT REFERENCES resources(id) ON DELETE SET NULL,
+    source_resource_id   TEXT NOT NULL REFERENCES resources(id) ON DELETE RESTRICT,
+    snapshot_row_id      TEXT NOT NULL REFERENCES cmdb_inventory_snapshots(id) ON DELETE RESTRICT,
+    provider             TEXT NOT NULL,
+    scope_key            TEXT NOT NULL,
+    entity_key           TEXT NOT NULL,
+    entity_type          TEXT NOT NULL,
+    schema_version       INTEGER NOT NULL CHECK (schema_version > 0),
+    identity_json        TEXT NOT NULL,
+    attributes_json      TEXT NOT NULL,
+    runtime_json         TEXT NOT NULL,
+    health_json          TEXT NOT NULL,
+    provider_observed_at INTEGER,
+    received_at          INTEGER NOT NULL,
+    first_seen_at        INTEGER NOT NULL,
+    last_seen_at         INTEGER NOT NULL,
+    state                TEXT NOT NULL CHECK (state IN (
+                             'online', 'offline', 'missing', 'ignored', 'stale', 'review'
+                         )),
+    fingerprint          TEXT NOT NULL,
+    UNIQUE (provider, source_resource_id, scope_key, entity_key)
+)
+;
+CREATE TABLE cmdb_relationship_types (
+    key           TEXT PRIMARY KEY,
+    label         TEXT NOT NULL,
+    inverse_label TEXT NOT NULL,
+    is_builtin    INTEGER NOT NULL DEFAULT 0 CHECK (is_builtin IN (0, 1)),
+    enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+)
+;
+CREATE TABLE cmdb_relationships (
+    id                      TEXT PRIMARY KEY,
+    source_resource_id      TEXT NOT NULL REFERENCES resources(id) ON DELETE RESTRICT,
+    destination_resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE RESTRICT,
+    type_key                TEXT NOT NULL REFERENCES cmdb_relationship_types(key) ON DELETE RESTRICT,
+    started_at              INTEGER NOT NULL,
+    ended_at                INTEGER,
+    active                  INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    metadata_json           TEXT NOT NULL DEFAULT '{}',
+    created_at              INTEGER NOT NULL,
+    updated_at              INTEGER NOT NULL,
+    CHECK (source_resource_id != destination_resource_id),
+    CHECK ((active = 1 AND ended_at IS NULL) OR (active = 0 AND ended_at IS NOT NULL))
+)
+;
+CREATE TABLE cmdb_types (
+    key         TEXT PRIMARY KEY,
+    class_key   TEXT NOT NULL REFERENCES cmdb_classes(key) ON DELETE RESTRICT,
+    label       TEXT NOT NULL,
+    description TEXT,
+    is_builtin  INTEGER NOT NULL DEFAULT 0 CHECK (is_builtin IN (0, 1)),
+    enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE (class_key, key)
+)
+;
 CREATE TABLE custom_tabs (
             id          TEXT PRIMARY KEY,
             user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -128,7 +303,7 @@ CREATE TABLE deployed_apps (
             status      TEXT NOT NULL DEFAULT 'running',
             deployed_at INTEGER NOT NULL,
             compose_path TEXT NOT NULL
-        , primary_port INTEGER, origin TEXT NOT NULL DEFAULT 'voidtower', owner_user_id TEXT, storage_root TEXT, target_node_id TEXT)
+        , primary_port INTEGER, origin TEXT NOT NULL DEFAULT 'voidtower', owner_user_id TEXT, storage_root TEXT, target_node_id TEXT, url TEXT, hostname TEXT, kind TEXT NOT NULL DEFAULT 'docker', hidden INTEGER NOT NULL DEFAULT 0)
 ;
 CREATE TABLE local_sessions (
             id         TEXT PRIMARY KEY,
@@ -279,7 +454,8 @@ CREATE TABLE secrets (
             created_at  INTEGER NOT NULL,
             updated_at  INTEGER NOT NULL,
             last_used_at INTEGER
-        , version INTEGER NOT NULL DEFAULT 0)
+        , version INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0
+    CHECK (disabled IN (0, 1)))
 ;
 CREATE TABLE sessions (
             id          TEXT PRIMARY KEY,
@@ -305,7 +481,7 @@ CREATE TABLE ssh_sessions (
             key_path   TEXT,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
             last_used  INTEGER
-        , password_enc TEXT)
+        , password_enc TEXT, password_secret_id TEXT)
 ;
 CREATE TABLE status_checks (
             id          TEXT PRIMARY KEY,
@@ -387,4 +563,264 @@ CREATE TABLE wireguard_peers (
             allocated_ip TEXT NOT NULL,
             created_at  INTEGER NOT NULL
         )
+;
+CREATE TABLE approvals (
+    id                  TEXT PRIMARY KEY,
+    job_id              TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE RESTRICT,
+    requirement         TEXT NOT NULL,
+    reason              TEXT NOT NULL,
+    status              TEXT NOT NULL CHECK (status IN (
+                            'pending', 'approved', 'rejected', 'expired', 'stale'
+                        )),
+    expires_at          INTEGER NOT NULL,
+    request_digest      TEXT NOT NULL,
+    plan_digest         TEXT NOT NULL,
+    resource_revision   INTEGER NOT NULL CHECK (resource_revision >= 0),
+    external_fingerprint TEXT NOT NULL,
+    decided_by          TEXT,
+    decision_comment    TEXT,
+    requested_at        INTEGER NOT NULL,
+    decided_at          INTEGER,
+    updated_at          INTEGER NOT NULL
+)
+;
+CREATE TABLE events (
+    sequence        INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id        TEXT NOT NULL UNIQUE,
+    schema_version  INTEGER NOT NULL DEFAULT 1 CHECK (schema_version > 0),
+    event_type      TEXT NOT NULL,
+    occurred_at     INTEGER NOT NULL,
+    actor_type      TEXT,
+    actor_id        TEXT,
+    actor_source    TEXT,
+    resource_id     TEXT REFERENCES resources(id) ON DELETE RESTRICT,
+    job_id          TEXT REFERENCES jobs(id) ON DELETE RESTRICT,
+    approval_id     TEXT REFERENCES approvals(id) ON DELETE RESTRICT,
+    correlation_id  TEXT NOT NULL,
+    causation_id    TEXT,
+    payload_json    TEXT NOT NULL
+)
+;
+CREATE TABLE job_attempts (
+    id              TEXT PRIMARY KEY,
+    job_id          TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    step_id         TEXT NOT NULL REFERENCES job_steps(id) ON DELETE CASCADE,
+    attempt_number  INTEGER NOT NULL CHECK (attempt_number > 0),
+    worker_id       TEXT NOT NULL,
+    lease_expires_at INTEGER NOT NULL,
+    started_at      INTEGER NOT NULL,
+    finished_at     INTEGER,
+    outcome         TEXT,
+    diagnostic_json TEXT,
+    UNIQUE (step_id, attempt_number)
+)
+;
+CREATE TABLE job_steps (
+    id                  TEXT PRIMARY KEY,
+    job_id              TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    position            INTEGER NOT NULL CHECK (position >= 0),
+    kind                TEXT NOT NULL,
+    name                TEXT NOT NULL,
+    state               TEXT NOT NULL CHECK (state IN (
+                            'pending', 'running', 'succeeded', 'failed',
+                            'cancelled', 'needs_attention'
+                        )),
+    retry_class         TEXT NOT NULL,
+    recovery_class      TEXT NOT NULL,
+    progress_current    INTEGER NOT NULL DEFAULT 0 CHECK (progress_current >= 0),
+    progress_total      INTEGER NOT NULL DEFAULT 0 CHECK (progress_total >= 0),
+    external_operation_id TEXT,
+    result_json         TEXT,
+    error_code          TEXT,
+    error_message       TEXT,
+    started_at          INTEGER,
+    finished_at         INTEGER,
+    updated_at          INTEGER NOT NULL,
+    UNIQUE (job_id, position)
+)
+;
+CREATE TABLE jobs (
+    id                  TEXT PRIMARY KEY,
+    action              TEXT NOT NULL,
+    resource_id         TEXT NOT NULL REFERENCES resources(id) ON DELETE RESTRICT,
+    resource_revision   INTEGER NOT NULL CHECK (resource_revision >= 0),
+    actor_type          TEXT NOT NULL,
+    actor_id            TEXT,
+    actor_source        TEXT,
+    ingress             TEXT NOT NULL,
+    input_json          TEXT NOT NULL,
+    request_digest      TEXT NOT NULL,
+    plan_json           TEXT NOT NULL,
+    plan_digest         TEXT NOT NULL,
+    external_fingerprint TEXT NOT NULL,
+    state               TEXT NOT NULL CHECK (state IN (
+                            'awaiting_approval', 'queued', 'running', 'succeeded',
+                            'failed', 'cancelled', 'needs_attention', 'rejected', 'expired'
+                        )),
+    progress_current    INTEGER NOT NULL DEFAULT 0 CHECK (progress_current >= 0),
+    progress_total      INTEGER NOT NULL DEFAULT 0 CHECK (progress_total >= 0),
+    progress_message    TEXT,
+    idempotency_scope   TEXT NOT NULL,
+    idempotency_key     TEXT NOT NULL,
+    concurrency_key     TEXT NOT NULL,
+    retry_class         TEXT NOT NULL,
+    recovery_class      TEXT NOT NULL,
+    cancel_requested    INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+    lease_owner         TEXT,
+    lease_expires_at    INTEGER,
+    result_json         TEXT,
+    error_code          TEXT,
+    error_message       TEXT,
+    submitted_at        INTEGER NOT NULL,
+    queued_at           INTEGER,
+    started_at          INTEGER,
+    finished_at         INTEGER,
+    updated_at          INTEGER NOT NULL,
+    UNIQUE (idempotency_scope, idempotency_key)
+)
+;
+CREATE TABLE resource_aliases (
+    resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    namespace   TEXT NOT NULL,
+    scope_key   TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    PRIMARY KEY (resource_id, namespace, scope_key, value),
+    UNIQUE (namespace, scope_key, value)
+)
+;
+CREATE TABLE resource_capabilities (
+    resource_id  TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    action       TEXT NOT NULL,
+    availability TEXT NOT NULL
+                 CHECK (availability IN ('available', 'unavailable', 'unknown')),
+    reason_code  TEXT,
+    detail       TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 1 CHECK (schema_version > 0),
+    observed_at  INTEGER NOT NULL,
+    PRIMARY KEY (resource_id, action)
+)
+;
+CREATE TABLE resources (
+    id              TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    node_id         TEXT,
+    provider        TEXT,
+    lifecycle_state TEXT NOT NULL DEFAULT 'active'
+                    CHECK (lifecycle_state IN ('active', 'unavailable', 'retired')),
+    revision        INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+)
+;
+CREATE TABLE webhook_replay_receipts (
+    source_id   TEXT NOT NULL,
+    nonce       TEXT NOT NULL,
+    timestamp   INTEGER NOT NULL,
+    signature   TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (source_id, nonce)
+)
+;
+CREATE TABLE household_memberships (
+    household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role         TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'guest', 'device')),
+    status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+    expires_at   INTEGER,
+    revoked_at   INTEGER,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (household_id, user_id)
+)
+;
+CREATE TABLE households (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK (length(name) BETWEEN 1 AND 128)
+)
+;
+CREATE TABLE resource_grants (
+    household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    resource_id  TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission   TEXT NOT NULL CHECK (permission IN ('read', 'operate', 'admin')),
+    granted_by   TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    expires_at   INTEGER,
+    revoked_at   INTEGER,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (household_id, resource_id, user_id),
+    CHECK (expires_at IS NULL OR expires_at > created_at)
+)
+;
+CREATE TABLE household_consents (
+    id               TEXT PRIMARY KEY,
+    schema_version   INTEGER NOT NULL DEFAULT 1 CHECK (schema_version = 1),
+    household_id     TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose          TEXT NOT NULL CHECK (purpose IN ('privacy_export', 'ai_assistance', 'cloud_export', 'support')),
+    domain           TEXT NOT NULL CHECK (domain IN ('identity', 'inventory', 'telemetry', 'configuration')),
+    resource_id      TEXT REFERENCES resources(id) ON DELETE CASCADE,
+    destination      TEXT NOT NULL DEFAULT 'local' CHECK (destination IN ('local', 'cloud')),
+    ai_cloud_export  INTEGER NOT NULL DEFAULT 0 CHECK (ai_cloud_export IN (0, 1)),
+    status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'withdrawn', 'expired')),
+    expires_at       INTEGER,
+    retention_until  INTEGER,
+    withdrawn_at     INTEGER,
+    created_by       TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    CHECK (expires_at IS NULL OR expires_at > created_at),
+    CHECK (retention_until IS NULL OR retention_until >= created_at),
+    CHECK (destination = 'local' OR ai_cloud_export = 1),
+    CHECK (withdrawn_at IS NULL OR status = 'withdrawn')
+)
+;
+CREATE TABLE privacy_requests (
+    id               TEXT PRIMARY KEY,
+    schema_version   INTEGER NOT NULL DEFAULT 1 CHECK (schema_version = 1),
+    household_id     TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind             TEXT NOT NULL CHECK (kind IN ('export', 'deletion')),
+    purpose          TEXT NOT NULL CHECK (purpose IN ('privacy_export', 'privacy_deletion')),
+    domain           TEXT NOT NULL CHECK (domain IN ('identity', 'inventory', 'telemetry', 'configuration')),
+    resource_id      TEXT REFERENCES resources(id) ON DELETE RESTRICT,
+    destination      TEXT NOT NULL DEFAULT 'local' CHECK (destination IN ('local', 'cloud')),
+    minimization     TEXT NOT NULL CHECK (minimization IN ('metadata', 'records')),
+    idempotency_key  TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+    state            TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'processing', 'succeeded', 'failed', 'cancelled')),
+    failure_code     TEXT CHECK (failure_code IS NULL OR length(failure_code) BETWEEN 1 AND 64),
+    failure_message  TEXT CHECK (failure_message IS NULL OR length(failure_message) <= 256),
+    correlation_id   TEXT NOT NULL,
+    requested_by     TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    completed_at     INTEGER, attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0), lease_owner TEXT, lease_expires_at INTEGER, cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)), artifact_id TEXT,
+    UNIQUE (household_id, user_id, kind, idempotency_key)
+)
+;
+CREATE TABLE privacy_artifacts (
+    id           TEXT PRIMARY KEY,
+    request_id   TEXT NOT NULL UNIQUE REFERENCES privacy_requests(id) ON DELETE RESTRICT,
+    relative_path TEXT NOT NULL CHECK (length(relative_path) BETWEEN 1 AND 256),
+    byte_length  INTEGER NOT NULL CHECK (byte_length >= 0),
+    sha256       TEXT NOT NULL CHECK (length(sha256) = 64),
+    created_at   INTEGER NOT NULL
+)
+;
+CREATE TABLE privacy_holds (
+    id           TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    domain       TEXT NOT NULL CHECK (domain IN ('identity', 'inventory', 'telemetry', 'configuration')),
+    resource_id  TEXT REFERENCES resources(id) ON DELETE RESTRICT,
+    reason_code  TEXT NOT NULL CHECK (length(reason_code) BETWEEN 1 AND 64),
+    created_at   INTEGER NOT NULL
+)
 ;

@@ -91,6 +91,7 @@ function PersistentAIFrame({ visible }: { visible: boolean }) {
 
 export default function AppLayout() {
   useMetrics()
+  const [navOpen, setNavOpen] = useState(false)
   const user = useAuthStore((s) => s.user)
   const { pathname } = useLocation()
   const isAI = pathname === '/ai'
@@ -98,9 +99,30 @@ export default function AppLayout() {
   const horizontal = placement === 'top' || placement === 'bottom'
   const sidebarFirst = placement === 'left' || placement === 'top'
 
+  // Mirror the body class into React so the drawer can render a tappable backdrop.
+  useEffect(() => {
+    const sync = () => setNavOpen(document.body.classList.contains('mobile-nav-open'))
+    sync()
+    const obs = new MutationObserver(sync)
+    obs.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+    return () => obs.disconnect()
+  }, [])
+
+  // Navigating always closes the mobile drawer.
+  useEffect(() => {
+    document.body.classList.remove('mobile-nav-open')
+  }, [pathname])
+
   return (
     <div className={horizontal ? 'flex flex-col h-full' : 'flex h-full'}>
       <AnimatedBackground />
+      {navOpen && (
+        <div
+          className="vt-nav-backdrop md:hidden"
+          onClick={() => document.body.classList.remove('mobile-nav-open')}
+          aria-hidden="true"
+        />
+      )}
       {/* Sidebar always renders in the same JSX slot (never unmounted by a placement change)
           so its own enter/slide animation — keyed on placement — can run every time.
           Visual position is controlled purely by CSS order, not by where it sits in the tree. */}

@@ -1,5 +1,6 @@
-import { useEffect, useCallback, Component, useState } from 'react'
+import { useEffect, useCallback, Component, useRef, useState } from 'react'
 import type { ReactNode, ErrorInfo } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { LayoutGrid } from 'lucide-react'
 import { useMetrics } from '@/hooks/useMetrics'
 import { useAiosStore } from '@/aios/store/aios'
@@ -55,6 +56,10 @@ import ModsPage from '@/pages/Mods'
 import StudioPage from '@/pages/Studio'
 import AiosInspectorPanel from '@/aios/AiosInspectorPanel'
 import { PanelShell } from '@/aios/PanelShell'
+import InventoryPage from '@/pages/Inventory'
+import HouseholdsPage from '@/pages/Households'
+import RequireRole from '@/auth/RequireRole'
+import { OPERATOR_ROLES } from '@/auth/roles'
 
 // ── Native panel imports ─────────────────────────────────────────────────────
 import NativeDashboardPanel    from '@/aios/panels/dashboard'
@@ -81,6 +86,8 @@ import NativeSettingsPanel     from '@/aios/panels/settings'
 import NativeStudioPanel       from '@/aios/panels/studio'
 import NativeAgentsPanel       from '@/aios/panels/agents'
 import NativeTabsPanel         from '@/aios/panels/tabs'
+import NativeJobsPanel         from '@/aios/panels/jobs'
+import NativeApprovalsPanel    from '@/aios/panels/approvals'
 
 // ── Error boundary — prevents one bad panel from blanking the whole page ─────
 
@@ -110,9 +117,31 @@ class PanelErrorBoundary extends Component<{ children: ReactNode }, { error: Err
 // ── Panel component registry ─────────────────────────────────────────────────
 // Direct render — no nested Router (React Router v6 forbids them).
 // Pages use the outer BrowserRouter context for any navigation they trigger.
+//
+// Every dock key must resolve here (or in `SPECIAL_PANELS`); `AiosLayout.dock.test.tsx`
+// fails if one does not, because `PanelContent` would render `Unknown page: <key>`.
+
+// Panels that need props or bespoke chrome cannot live in a plain registry, so
+// they get their own table. `PanelContent` renders from it and the dock test
+// reads the same table, so the two cannot drift.
+export const SPECIAL_PANELS: Record<string, (panelId: string) => React.ReactNode> = {
+  odysseus:  (panelId) => <AiosOdysseus panelId={panelId} />,
+  inspector: () => <AiosInspectorPanel />,
+}
+
+// The dock opens panels by component key. CMDB reads are operator-only, so the
+// panel entry fails closed for every other role rather than relying on the
+// route gate it does not pass through.
+function InventoryPanel() {
+  return (
+    <RequireRole allowed={OPERATOR_ROLES}>
+      <InventoryPage />
+    </RequireRole>
+  )
+}
 
 // Native panels render directly without PanelShell (they use NativePanelShell internally)
-const NATIVE_PANEL_REGISTRY: Record<string, React.ComponentType> = {
+export const NATIVE_PANEL_REGISTRY: Record<string, React.ComponentType> = {
   dashboard:    NativeDashboardPanel,
   services:     NativeServicesPanel,
   containers:   NativeContainersPanel,
@@ -137,9 +166,11 @@ const NATIVE_PANEL_REGISTRY: Record<string, React.ComponentType> = {
   studio:       NativeStudioPanel,
   agents:       NativeAgentsPanel,
   tabs:         NativeTabsPanel,
+  jobs:         NativeJobsPanel,
+  approvals:    NativeApprovalsPanel,
 }
 
-const PANEL_REGISTRY: Record<string, React.ComponentType> = {
+export const PANEL_REGISTRY: Record<string, React.ComponentType> = {
   dashboard:    DashboardPage,
   services:     ServicesPage,
   containers:   ContainersPage,
@@ -170,20 +201,16 @@ const PANEL_REGISTRY: Record<string, React.ComponentType> = {
   integrations: IntegrationsPage,
   mods:         ModsPage,
   studio:       StudioPage,
+  inventory:    InventoryPanel,
+  households:   HouseholdsPage,
 }
 
 function PanelContent({ component, panelId, title }: { component: string; panelId: string; title: string }) {
-  if (component === 'odysseus') {
+  const SpecialPanel = SPECIAL_PANELS[component]
+  if (SpecialPanel) {
     return (
       <PanelErrorBoundary>
-        <AiosOdysseus panelId={panelId} />
-      </PanelErrorBoundary>
-    )
-  }
-  if (component === 'inspector') {
-    return (
-      <PanelErrorBoundary>
-        <AiosInspectorPanel />
+        {SpecialPanel(panelId)}
       </PanelErrorBoundary>
     )
   }
@@ -309,6 +336,9 @@ function defaultGeometry(
 
 export default function AiosLayout() {
   useMetrics()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const bridgedPath = useRef('')
   const user = useAuthStore((s) => s.user)
   const tier = useDeviceTier()
   const {
@@ -349,6 +379,20 @@ export default function AiosLayout() {
       ...geo,
     })
   }, [workspacePanels, focusPanel, openPanel, tier, activeWorkspace, isPhone, statusBarH, dockH, dockLeft])
+
+  useEffect(() => {
+    const match = location.pathname.match(/^\/(jobs|approvals)(?:\/|$)/)
+    if (!match || bridgedPath.current === location.pathname) return
+    bridgedPath.current = location.pathname
+    openApp(match[1])
+  }, [location.pathname, openApp])
+
+  const openFromNavigation = useCallback((key: string) => {
+    if ((key === 'jobs' || key === 'approvals') && !location.pathname.startsWith(`/${key}`)) {
+      navigate(`/${key}`)
+    }
+    openApp(key)
+  }, [location.pathname, navigate, openApp])
 
   const openOdysseus = useCallback((query?: string) => {
     const existing = panels.find((p) => p.component === 'odysseus')
@@ -559,14 +603,14 @@ export default function AiosLayout() {
         tier={tier}
         dockH={dockH}
         statusBarH={statusBarH}
-        onOpen={openApp}
+        onOpen={openFromNavigation}
       />
 
       <AiosCommandBar
         tier={tier}
         statusBarH={statusBarH}
         dockH={dockH}
-        onOpen={openApp}
+        onOpen={openFromNavigation}
         onOdysseus={openOdysseus}
       />
 

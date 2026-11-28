@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Play, Square, RotateCcw, Trash2, Terminal } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import type { DurableJobResponse } from '@/api/types'
+import { notify } from '@/store/notifications'
 
 interface Port { host_port: number; container_port: number; protocol: string }
 interface Container {
@@ -25,6 +29,7 @@ export default function NativeContainersPanel() {
   const [search, setSearch] = useState('')
   const [logsFor, setLogsFor] = useState<string | null>(null)
   const [logLines, setLogLines] = useState<string[]>([])
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   async function load() {
     const r = await fetch('/api/containers', { credentials: 'include' })
@@ -33,12 +38,19 @@ export default function NativeContainersPanel() {
   }
 
   async function act(id: string, action: string) {
-    await fetch(`/api/containers/${encodeURIComponent(id)}/action`, {
-      method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    })
-    load()
+    try {
+      const response = await fetch(`/api/containers/${encodeURIComponent(id)}/action`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      })
+      const body = await response.json()
+      if (!response.ok || !body.job) throw new Error(body.error?.message ?? 'Submission failed')
+      const { job } = body as DurableJobResponse
+      track(job, { label: `Container ${action}`, onSucceeded: load })
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : `Container ${action} failed`)
+    }
   }
 
   async function viewLogs(id: string) {
@@ -59,6 +71,7 @@ export default function NativeContainersPanel() {
 
   return (
     <NativePanelShell search={search} onSearch={setSearch} searchPlaceholder="Filter containers…">
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {loading ? <LoadingState /> : filtered.length === 0 ? <EmptyState text="No containers" /> :
         filtered.map(c => {
           const portStr = c.ports && c.ports.length > 0 ? fmtPorts(c.ports) : ''

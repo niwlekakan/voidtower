@@ -38,6 +38,13 @@ pub struct Session {
     pub user_agent: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiTokenIdentity {
+    pub token_id: String,
+    pub user_id: String,
+    pub expires_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicUser {
     pub id: String,
@@ -320,9 +327,12 @@ pub async fn delete_expired_sessions(pool: &SqlitePool) -> Result<u64> {
     Ok(result.rows_affected())
 }
 
-/// Validate a Bearer token without requiring a specific scope.
-/// Updates last_used_at and returns the owner's user_id.
-pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Result<String> {
+/// Validate a Bearer token and retain its stable non-secret identity for durable actor and
+/// idempotency scoping. The raw token and token hash never leave this boundary.
+pub async fn validate_api_token_identity(
+    pool: &SqlitePool,
+    raw_token: &str,
+) -> Result<ApiTokenIdentity> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(raw_token.as_bytes());
@@ -345,7 +355,7 @@ pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Resul
 
     let now = unix_now();
     if let Some(exp) = row.expires_at {
-        if exp < now {
+        if exp <= now {
             return Err(anyhow::anyhow!("Token expired"));
         }
     }
@@ -356,7 +366,11 @@ pub async fn validate_api_token_any(pool: &SqlitePool, raw_token: &str) -> Resul
         .execute(pool)
         .await;
 
-    Ok(row.user_id)
+    Ok(ApiTokenIdentity {
+        token_id: row.id,
+        user_id: row.user_id,
+        expires_at: row.expires_at,
+    })
 }
 
 /// Looks up the declared scopes for a raw Bearer token, independent of
@@ -422,7 +436,7 @@ pub async fn validate_api_token(
 
     let now = unix_now();
     if let Some(exp) = row.expires_at {
-        if exp < now {
+        if exp <= now {
             return Err(anyhow::anyhow!("Token expired"));
         }
     }

@@ -1,4 +1,8 @@
-use crate::{auth, error::{AppError, Result}, AppState};
+use crate::{
+    auth,
+    error::{AppError, Result},
+    AppState,
+};
 use axum::{extract::State, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
@@ -14,7 +18,10 @@ pub struct LanNeighbor {
 }
 
 async fn require_user(state: &AppState, jar: &CookieJar) -> Result<auth::User> {
-    let session_id = jar.get("vt_session").map(|c| c.value().to_string()).ok_or(AppError::Unauthorized)?;
+    let session_id = jar
+        .get("vt_session")
+        .map(|c| c.value().to_string())
+        .ok_or(AppError::Unauthorized)?;
     auth::validate_session(&state.db, &session_id)
         .await
         .map_err(AppError::Internal)?
@@ -27,37 +34,73 @@ fn read_proc_arp() -> Vec<LanNeighbor> {
     let mut neighbors = Vec::new();
     for line in content.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 6 { continue; }
+        if parts.len() < 6 {
+            continue;
+        }
         let ip = parts[0].to_string();
         let flags = parts[2];
         let mac = parts[3].to_string();
         let iface = parts[5].to_string();
         // flags 0x0 = incomplete, 0x2 = complete, 0x6 = complete+perm
-        if mac == "00:00:00:00:00:00" || flags == "0x0" { continue; }
-        let state = if flags == "0x6" { "permanent" } else { "reachable" }.to_string();
-        neighbors.push(LanNeighbor { ip, mac, iface, state, hostname: None });
+        if mac == "00:00:00:00:00:00" || flags == "0x0" {
+            continue;
+        }
+        let state = if flags == "0x6" {
+            "permanent"
+        } else {
+            "reachable"
+        }
+        .to_string();
+        neighbors.push(LanNeighbor {
+            ip,
+            mac,
+            iface,
+            state,
+            hostname: None,
+        });
     }
     neighbors
 }
 
 // Supplement with `ip neigh show` for STALE entries /proc/net/arp may miss
 fn read_ip_neigh() -> Vec<LanNeighbor> {
-    let Ok(out) = std::process::Command::new("ip").args(["neigh", "show"]).output() else { return vec![] };
+    let Ok(out) = std::process::Command::new("ip")
+        .args(["neigh", "show"])
+        .output()
+    else {
+        return vec![];
+    };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut neighbors = Vec::new();
     for line in stdout.lines() {
         // format: <ip> dev <iface> lladdr <mac> <state>
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 5 { continue; }
+        if parts.len() < 5 {
+            continue;
+        }
         let ip = parts[0].to_string();
-        let iface = if parts.len() > 2 { parts[2].to_string() } else { String::new() };
+        let iface = if parts.len() > 2 {
+            parts[2].to_string()
+        } else {
+            String::new()
+        };
         let mac_idx = parts.iter().position(|&p| p == "lladdr").map(|i| i + 1);
         let Some(mac_pos) = mac_idx else { continue };
         let mac = parts.get(mac_pos).unwrap_or(&"").to_string();
-        if mac.is_empty() || mac == "00:00:00:00:00:00" { continue; }
+        if mac.is_empty() || mac == "00:00:00:00:00:00" {
+            continue;
+        }
         let state = parts.last().unwrap_or(&"unknown").to_lowercase();
-        if state == "failed" || state == "incomplete" { continue; }
-        neighbors.push(LanNeighbor { ip, mac, iface, state, hostname: None });
+        if state == "failed" || state == "incomplete" {
+            continue;
+        }
+        neighbors.push(LanNeighbor {
+            ip,
+            mac,
+            iface,
+            state,
+            hostname: None,
+        });
     }
     neighbors
 }
@@ -99,7 +142,12 @@ pub async fn neighbors(
 
     // Sort: by last octet so 192.168.1.1 comes before 192.168.1.100
     neighbors.sort_by(|a, b| {
-        let parse_last = |ip: &str| ip.split('.').next_back().and_then(|s| s.parse::<u32>().ok()).unwrap_or(999);
+        let parse_last = |ip: &str| {
+            ip.split('.')
+                .next_back()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(999)
+        };
         parse_last(&a.ip).cmp(&parse_last(&b.ip))
     });
 
@@ -115,10 +163,16 @@ pub async fn neighbors(
     neighbors.sort_by(|a, b| {
         let to_u32 = |ip: &str| -> u32 {
             let parts: Vec<u32> = ip.split('.').filter_map(|s| s.parse().ok()).collect();
-            if parts.len() == 4 { (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3] } else { 0 }
+            if parts.len() == 4 {
+                (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+            } else {
+                0
+            }
         };
         to_u32(&a.ip).cmp(&to_u32(&b.ip))
     });
 
-    Ok(Json(serde_json::json!({ "neighbors": neighbors, "count": neighbors.len() })))
+    Ok(Json(
+        serde_json::json!({ "neighbors": neighbors, "count": neighbors.len() }),
+    ))
 }

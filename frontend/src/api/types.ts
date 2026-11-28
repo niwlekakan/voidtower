@@ -16,6 +16,286 @@ export interface UserRecord {
   force_password_change: boolean
 }
 
+export type DurableJobState =
+  | 'awaiting_approval'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'needs_attention'
+  | 'rejected'
+  | 'expired'
+
+export type DurableActorType =
+  | 'human'
+  | 'api_token'
+  | 'automation'
+  | 'plugin'
+  | 'node'
+  | 'ai'
+  | 'system'
+
+export interface DurableResourceRef {
+  id: string
+  kind: string
+  display_name: string
+  revision: number
+}
+
+export interface DurableResourceAlias {
+  resource_id: string
+  namespace: string
+  scope_key: string
+  value: string
+}
+
+export type DurableResourceCapabilityAvailability = 'available' | 'unavailable' | 'unknown'
+
+export interface DurableResourceCapability {
+  resource_id: string
+  action: string
+  availability: DurableResourceCapabilityAvailability
+  reason_code: string | null
+  detail: string | null
+  schema_version: number
+  observed_at: number
+}
+
+export interface DurableResourceReadResponse {
+  schema_version: number
+  resource: DurableResourceRef
+  aliases: DurableResourceAlias[]
+  capabilities: DurableResourceCapability[]
+}
+
+export interface DurableResourceListResponse {
+  schema_version: number
+  resources: DurableResourceRef[]
+}
+
+export interface DurableResourceCapabilitiesResponse {
+  schema_version: number
+  resource_id: string
+  capabilities: DurableResourceCapability[]
+}
+
+export interface DurableActorRef {
+  actor_type: DurableActorType
+  id: string | null
+  source: string | null
+}
+
+export interface DurablePlanChange {
+  label: string
+  value: string
+}
+
+export interface DurablePlannedStep {
+  kind: string
+  name: string
+  retry_class: string
+  recovery_class: string
+}
+
+export interface DurableOperationPlan {
+  schema_version: number
+  title: string
+  risk: string
+  changes: DurablePlanChange[]
+  preview: string | null
+  external_fingerprint: string
+  steps: DurablePlannedStep[]
+}
+
+export type DurablePolicyOutcome = 'allow' | 'require_approval' | 'deny'
+
+export interface DurablePolicyPreview {
+  outcome: DurablePolicyOutcome
+  reason: string | null
+}
+
+export interface DurablePlanView {
+  action: string
+  resource: DurableResourceRef
+  input_schema_id: string
+  result_schema_id: string
+  operation: DurableOperationPlan
+  policy: DurablePolicyPreview
+}
+
+export interface DurablePlanResponse {
+  schema_version: number
+  resource_id: string
+  action: string
+  plan: DurablePlanView
+}
+
+export interface DurableOperationError {
+  code: string
+  message: string
+  retryable: boolean
+  job_id: string | null
+}
+
+export interface DurableJob {
+  id: string
+  action: string
+  resource: DurableResourceRef
+  actor: DurableActorRef
+  ingress: string
+  state: DurableJobState
+  approval_id: string | null
+  progress_current: number
+  progress_total: number
+  progress_message: string | null
+  plan: DurableOperationPlan
+  result: unknown | null
+  error: DurableOperationError | null
+  submitted_at: number
+  started_at: number | null
+  finished_at: number | null
+  updated_at: number
+}
+
+export type DurableJobSummary = DurableJob
+
+export interface DurableJobResponse {
+  schema_version: number
+  resource_id: string
+  action: string
+  job: DurableJob
+}
+
+export interface DurableJobListResponse {
+  schema_version: number
+  jobs: DurableJob[]
+}
+
+export type DurableApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'stale'
+
+export interface DurableApproval {
+  id: string
+  job_id: string
+  requirement: string
+  reason: string
+  status: DurableApprovalStatus
+  expires_at: number
+  decided_by: string | null
+  decision_comment: string | null
+  requested_at: number
+  decided_at: number | null
+  updated_at: number
+}
+
+export interface DurableApprovalResponse {
+  schema_version: number
+  approval: DurableApproval
+}
+
+export interface DurableApprovalListResponse {
+  schema_version: number
+  approvals: DurableApproval[]
+}
+
+export interface InventorySnapshotResult {
+  snapshot_id: string
+  replayed: boolean
+  linked: number
+  registered: number
+  review_required: number
+  missing: number
+}
+
+export interface InventoryUploadResponse {
+  schema_version: number
+  result: InventorySnapshotResult
+}
+
+export interface DurableEventEnvelope {
+  sequence: number
+  event_id: string
+  schema_version: number
+  event_type: string
+  occurred_at: number
+  actor: DurableActorRef | null
+  resource_id: string | null
+  job_id: string | null
+  approval_id: string | null
+  correlation_id: string
+  causation_id: string | null
+  payload: unknown
+}
+
+export interface DurableEventHistoryResponse {
+  schema_version: number
+  events: DurableEventEnvelope[]
+  next_cursor: number
+  earliest_available: number | null
+  latest_available: number
+}
+
+export interface DurableEventStreamReady {
+  cursor: number
+  high_water: number
+}
+
+export type DurableEventGapReason = 'behind_retention' | 'future_cursor' | 'discontinuity' | 'invalid_frame'
+
+export interface DurableEventStreamGap {
+  reason: DurableEventGapReason
+  requested_after: number
+  earliest_available: number | null
+  latest_available: number
+}
+
+export interface VoidTowerUpdateInfo {
+  mode: 'git' | 'docker'
+  current_commit: string
+  remote_commit: string
+  behind: number
+  ahead: number
+  commits: Array<{ hash: string; subject: string; author: string; date: string }>
+  backup_tags: string[]
+  fetch_error: string | null
+  current_image: string | null
+  update_status: 'unknown' | 'up-to-date' | 'update-available' | null
+  update_detail: string | null
+}
+
+export interface DockerUpdateRow {
+  container_id: string
+  container_name: string
+  image: string
+  status: 'unknown' | 'up-to-date' | 'update-available'
+  detail: string | null
+}
+
+export interface OsUpdateInfo {
+  package_manager: string
+  available: boolean
+  count: number
+  packages: string[]
+  error: string | null
+}
+
+export interface OdysseusUpdateInfo {
+  installed: boolean
+  mode: 'git' | 'none'
+  current_commit: string
+  remote_commit: string
+  behind: number
+  ahead: number
+  fetch_error: string | null
+}
+
+export interface SystemVersionInfo {
+  commit: string
+  branch: string
+  commit_date: string
+  dirty: boolean
+}
+
 // Self-hosting hub: per-member app access / storage / self-deployed apps
 export interface StorageSummary {
   quota_bytes: number
@@ -34,11 +314,26 @@ export interface DriveSummary {
   last_check_at: number | null
 }
 
+export interface MemberSelfDriveSummary {
+  id: string
+  label: string
+  total_bytes: number | null
+  free_bytes: number | null
+  last_check_at: number | null
+}
+
 export interface MemberAccessSummary {
   app_ids: string[]
   can_deploy_custom: boolean
   storage: StorageSummary
   drives: DriveSummary[]
+}
+
+export interface MemberSelfAccessSummary {
+  app_ids: string[]
+  can_deploy_custom: boolean
+  storage: StorageSummary
+  drives: MemberSelfDriveSummary[]
 }
 
 export interface MemberListEntry {
@@ -145,7 +440,7 @@ export interface ApiError {
   error: { code: string; message: string }
 }
 
-export type ServiceAction = 'start' | 'stop' | 'restart' | 'enable' | 'disable'
+export type ServiceAction = 'restart'
 
 // Containers
 export interface ContainerInfo {
@@ -203,12 +498,13 @@ export interface DeployedApp {
   project_name: string
   status: string
   deployed_at: number
-  compose_path: string
   primary_port: number | null
   origin: string  // 'voidtower' | 'adopted' | 'custom'
-  owner_user_id?: string | null
-  storage_root?: string | null
   target_node_id?: string | null
+  url?: string | null
+  hostname?: string | null
+  kind?: string
+  hidden?: number
 }
 
 export interface ExternalContainer {
@@ -221,7 +517,7 @@ export interface ExternalContainer {
 
 export interface ExternalStack {
   project_name: string
-  compose_path: string | null
+  compose_available: boolean
   containers: ExternalContainer[]
   primary_port: number | null
 }
@@ -292,7 +588,7 @@ export interface ProxyOptions {
   customHeaders?: ProxyCustomHeader[]
   rateLimitRpm?: number | null
   basicAuthUser?: string | null
-  basicAuthPassword?: string | null
+  basicAuthSecretId?: string | null
   websocketExtended?: boolean
   cacheStatic?: boolean
 }
@@ -412,6 +708,7 @@ export interface SecretMeta {
   updated_at: number
   last_used_at: number | null
   version: number
+  disabled: boolean
 }
 
 export interface SecretsResponse { secrets: SecretMeta[] }
@@ -727,6 +1024,7 @@ export interface CreateAiProviderReq {
   name: string
   enabled?: boolean
   base_url?: string
+  /** Canonical `secrets.id`; never a settings key. */
   api_key_ref?: string
   api_key_value?: string
   model?: string
@@ -737,6 +1035,7 @@ export interface UpdateAiProviderReq {
   name?: string
   enabled?: boolean
   base_url?: string
+  /** Canonical `secrets.id`; never a settings key. */
   api_key_ref?: string
   api_key_value?: string
   model?: string
@@ -1030,4 +1329,69 @@ export interface ExportedTab {
   icon: string | null
   kind: CustomTabKind
   config: Record<string, unknown>
+}
+
+/**
+ * A canonical CMDB asset. `resource_id` is the canonical operational resource
+ * UUID; `asset_id` is the renameable human alias. Both come from
+ * `GET /api/cmdb/assets`, which is a projection over `resources.id`.
+ */
+export interface CmdbAsset {
+  resource_id: string
+  resource_kind: string
+  display_name: string
+  asset_id: string
+  class_key: string
+  type_key: string
+  subtype: string | null
+  friendly_name: string | null
+  description: string | null
+  manufacturer: string | null
+  model: string | null
+  serial_number: string | null
+  part_number: string | null
+  lifecycle_status: string
+  discovery_status: string
+  condition_status: string
+  location_id: string | null
+  first_seen_at: number | null
+  last_seen_at: number | null
+  metadata_json: string
+  notes: string
+  revision: number
+  created_at: number
+  updated_at: number
+}
+
+export interface CmdbAssetList {
+  assets: CmdbAsset[]
+  limit: number
+  offset: number
+}
+
+/** An unresolved CMDB discovery (`state` is `review` or `ignored`). */
+export interface CmdbDiscovery {
+  id: string
+  resource_id: string | null
+  source_resource_id: string
+  provider: string
+  entity_key: string
+  entity_type: string
+  schema_version: number
+  identities: unknown
+  attributes: unknown
+  runtime: unknown
+  health: unknown
+  provider_observed_at: number | null
+  received_at: number
+  first_seen_at: number
+  last_seen_at: number
+  state: string
+  fingerprint: string
+}
+
+export interface CmdbDiscoveryList {
+  discoveries: CmdbDiscovery[]
+  limit: number
+  offset: number
 }

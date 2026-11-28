@@ -1,11 +1,14 @@
 use crate::{
     auth,
     error::{AppError, Result},
+    operations::proxmox_adoption::{self, ProxmoxSelector, LEGACY_HOST_ID},
     AppState,
 };
-use axum::{extract::State, Json};
+use axum::{extract::State, http::HeaderMap, response::Response, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
+
+use super::operation_adoption::{self, CompatibilityResult};
 
 // ── auth helper ──────────────────────────────────────────────────────────────
 
@@ -44,13 +47,28 @@ fn parse_virsh_list(output: &str) -> Vec<LocalVm> {
     let mut past_header = false;
     for line in output.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-        if trimmed.starts_with("Id") { past_header = true; continue; }
-        if trimmed.starts_with('-') { continue; }
-        if !past_header { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("Id") {
+            past_header = true;
+            continue;
+        }
+        if trimmed.starts_with('-') {
+            continue;
+        }
+        if !past_header {
+            continue;
+        }
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if parts.len() < 3 { continue; }
-        let id = if parts[0] == "-" { None } else { parts[0].parse().ok() };
+        if parts.len() < 3 {
+            continue;
+        }
+        let id = if parts[0] == "-" {
+            None
+        } else {
+            parts[0].parse().ok()
+        };
         let name = parts[1].to_string();
         let state = parts[2..].join(" ");
         vms.push(LocalVm { name, id, state });
@@ -58,20 +76,30 @@ fn parse_virsh_list(output: &str) -> Vec<LocalVm> {
     vms
 }
 
-pub async fn list_local(State(state): State<AppState>, jar: CookieJar) -> Result<Json<LocalVmsResponse>> {
+pub async fn list_local(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<LocalVmsResponse>> {
     require_admin(&state, &jar).await?;
     if !crate::vms::is_libvirt_available() {
-        return Ok(Json(LocalVmsResponse { vms: vec![], libvirt_available: false }));
+        return Ok(Json(LocalVmsResponse {
+            vms: vec![],
+            libvirt_available: false,
+        }));
     }
     let out = std::process::Command::new("virsh")
         .args(["list", "--all"])
         .output()
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    Ok(Json(LocalVmsResponse { vms: parse_virsh_list(&stdout), libvirt_available: true }))
+    Ok(Json(LocalVmsResponse {
+        vms: parse_virsh_list(&stdout),
+        libvirt_available: true,
+    }))
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)] // Retained request shape for the disabled legacy mutation route.
 pub struct LocalActionRequest {
     pub name: String,
     pub action: String,
@@ -80,38 +108,20 @@ pub struct LocalActionRequest {
 pub async fn local_action(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(req): Json<LocalActionRequest>,
 ) -> Result<Json<serde_json::Value>> {
     require_admin(&state, &jar).await?;
-    let virsh_cmd = match req.action.as_str() {
-        "start"    => "start",
-        "shutdown" => "shutdown",
-        "reboot"   => "reboot",
-        "suspend"  => "suspend",
-        "resume"   => "resume",
-        "destroy"  => "destroy",
-        _ => return Err(AppError::BadRequest("unknown action".into())),
-    };
-    let out = std::process::Command::new("virsh")
-        .args([virsh_cmd, &req.name])
-        .output()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if out.status.success() {
-        Ok(Json(serde_json::json!({ "ok": true, "message": stdout })))
-    } else {
-        Ok(Json(serde_json::json!({ "ok": false, "message": if stderr.is_empty() { stdout } else { stderr } })))
-    }
+    Err(AppError::FeatureUnavailable(
+        "local libvirt mutations require a canonical operation adapter".into(),
+    ))
 }
 
 // ── Proxmox ───────────────────────────────────────────────────────────────────
 
 const PX_HOST_KEY: &str = "proxmox_host";
 const PX_PORT_KEY: &str = "proxmox_port";
-const PX_TOKEN_KEY: &str = "proxmox_token";
 const PX_NODE_KEY: &str = "proxmox_node";
 const PX_VERIFY_KEY: &str = "proxmox_verify_ssl";
+const PX_TOKEN_SECRET_NAME: &str = "proxmox_legacy_token";
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ProxmoxConfig {
@@ -122,42 +132,75 @@ pub struct ProxmoxConfig {
     pub verify_ssl: bool,
 }
 
-async fn load_proxmox_config(state: &AppState) -> Option<ProxmoxConfig> {
+async fn load_proxmox_config(state: &AppState) -> Result<Option<ProxmoxConfig>> {
     let host: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-        .bind(PX_HOST_KEY).fetch_optional(&state.db).await.ok().flatten();
-    let host = host?;
+        .bind(PX_HOST_KEY)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+    let Some(host) = host else {
+        return Ok(None);
+    };
     let port: u16 = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(PX_PORT_KEY).fetch_optional(&state.db).await.ok().flatten()
-        .and_then(|v| v.parse().ok()).unwrap_or(8006);
-    let token: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-        .bind(PX_TOKEN_KEY).fetch_optional(&state.db).await.ok().flatten();
+        .bind(PX_PORT_KEY)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8006);
+    let token = match sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE name = ?")
+        .bind(PX_TOKEN_SECRET_NAME)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+    {
+        Some(secret_id) => crate::api::secrets::resolve(
+            &state.db,
+            &state.secrets_key,
+            &secret_id,
+            "proxmox_compatibility",
+        )
+        .await
+        .map_err(|error| AppError::BadRequest(format!("Proxmox secret unavailable: {error}")))?,
+        None => return Ok(None),
+    };
     let node: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-        .bind(PX_NODE_KEY).fetch_optional(&state.db).await.ok().flatten();
-    let verify_ssl: bool = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-        .bind(PX_VERIFY_KEY).fetch_optional(&state.db).await.ok().flatten()
-        .map(|v| v == "true").unwrap_or(false);
-    Some(ProxmoxConfig {
+        .bind(PX_NODE_KEY)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+    let verify_ssl: bool =
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+            .bind(PX_VERIFY_KEY)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(false);
+    Ok(Some(ProxmoxConfig {
         host,
         port,
-        token: token.unwrap_or_default(),
+        token,
         node: node.unwrap_or_else(|| "pve".into()),
         verify_ssl,
-    })
+    }))
 }
 
-async fn save_setting(state: &AppState, key: &str, value: &str) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, unixepoch())
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
-    )
-    .bind(key).bind(value)
-    .execute(&state.db).await?;
-    Ok(())
-}
-
-pub async fn get_proxmox_config(State(state): State<AppState>, jar: CookieJar) -> Result<Json<Option<ProxmoxConfig>>> {
+pub async fn get_proxmox_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Option<ProxmoxConfig>>> {
     require_admin(&state, &jar).await?;
-    Ok(Json(load_proxmox_config(&state).await))
+    let mut config = load_proxmox_config(&state).await?;
+    if let Some(value) = &mut config {
+        value.token.clear();
+    }
+    Ok(Json(config))
 }
 
 #[derive(Deserialize)]
@@ -172,15 +215,46 @@ pub struct SaveProxmoxConfig {
 pub async fn set_proxmox_config(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(req): Json<SaveProxmoxConfig>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    save_setting(&state, PX_HOST_KEY, &req.host).await?;
-    save_setting(&state, PX_PORT_KEY, &req.port.unwrap_or(8006).to_string()).await?;
-    save_setting(&state, PX_TOKEN_KEY, &req.token).await?;
-    save_setting(&state, PX_NODE_KEY, &req.node).await?;
-    save_setting(&state, PX_VERIFY_KEY, if req.verify_ssl { "true" } else { "false" }).await?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+) -> CompatibilityResult<Response> {
+    let credential = super::actions::credential(&state, &jar, None).await?;
+    let adopted = proxmox_adoption::resolve_target(
+        &state.db,
+        state.secrets_key.clone(),
+        &credential,
+        "proxmox.host.configure",
+        ProxmoxSelector::System,
+    )
+    .await?;
+    let token_secret_id = if req.token.is_empty() {
+        None
+    } else {
+        Some(super::proxmox::stage_compatibility_secret(&state, &req.token).await?)
+    };
+    let input = serde_json::json!({
+        "host_id": LEGACY_HOST_ID,
+        "name": "Legacy Proxmox",
+        "url": format!("https://{}:{}", req.host, req.port.unwrap_or(8006)),
+        "node": req.node,
+        "token_secret_id": token_secret_id,
+        "verify_ssl": req.verify_ssl,
+    });
+    let result = operation_adoption::submit(
+        &state,
+        &credential,
+        &adopted.resource.id,
+        "proxmox.host.configure",
+        input,
+        &headers,
+    )
+    .await;
+    if result.is_err() {
+        if let Some(secret_id) = &token_secret_id {
+            super::proxmox::discard_compatibility_secret(&state, secret_id).await;
+        }
+    }
+    result
 }
 
 fn proxmox_client(verify_ssl: bool) -> std::result::Result<reqwest::Client, reqwest::Error> {
@@ -214,13 +288,17 @@ pub struct ProxmoxVmsResponse {
     pub nodes: Vec<String>,
 }
 
-pub async fn list_proxmox(State(state): State<AppState>, jar: CookieJar) -> Result<Json<ProxmoxVmsResponse>> {
+pub async fn list_proxmox(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<ProxmoxVmsResponse>> {
     require_admin(&state, &jar).await?;
-    let cfg = load_proxmox_config(&state).await
+    let cfg = load_proxmox_config(&state)
+        .await?
         .ok_or_else(|| AppError::BadRequest("Proxmox not configured".into()))?;
 
-    let client = proxmox_client(cfg.verify_ssl)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    let client =
+        proxmox_client(cfg.verify_ssl).map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     let base = proxmox_base(&cfg);
     let auth_header = format!("PVEAPIToken={}", cfg.token);
 
@@ -228,13 +306,16 @@ pub async fn list_proxmox(State(state): State<AppState>, jar: CookieJar) -> Resu
     let nodes_res: serde_json::Value = client
         .get(format!("{base}/nodes"))
         .header("Authorization", &auth_header)
-        .send().await
+        .send()
+        .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .json().await
+        .json()
+        .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     let nodes: Vec<String> = nodes_res["data"]
-        .as_array().unwrap_or(&vec![])
+        .as_array()
+        .unwrap_or(&vec![])
         .iter()
         .filter_map(|n| n["node"].as_str().map(|s| s.to_string()))
         .collect();
@@ -252,21 +333,22 @@ pub async fn list_proxmox(State(state): State<AppState>, jar: CookieJar) -> Resu
         if let Ok(res) = client
             .get(format!("{base}/nodes/{node}/qemu"))
             .header("Authorization", &auth_header)
-            .send().await
+            .send()
+            .await
         {
             if let Ok(body) = res.json::<serde_json::Value>().await {
                 for vm in body["data"].as_array().unwrap_or(&vec![]) {
                     all_vms.push(ProxmoxVm {
-                        vmid:   vm["vmid"].as_u64().unwrap_or(0),
-                        name:   vm["name"].as_str().unwrap_or("").to_string(),
-                        kind:   "qemu".into(),
-                        node:   node.clone(),
+                        vmid: vm["vmid"].as_u64().unwrap_or(0),
+                        name: vm["name"].as_str().unwrap_or("").to_string(),
+                        kind: "qemu".into(),
+                        node: node.clone(),
                         status: vm["status"].as_str().unwrap_or("unknown").to_string(),
-                        mem:    vm["mem"].as_u64().unwrap_or(0),
+                        mem: vm["mem"].as_u64().unwrap_or(0),
                         maxmem: vm["maxmem"].as_u64().unwrap_or(0),
-                        cpu:    vm["cpu"].as_f64().unwrap_or(0.0),
+                        cpu: vm["cpu"].as_f64().unwrap_or(0.0),
                         uptime: vm["uptime"].as_u64().unwrap_or(0),
-                        cpus:   vm["cpus"].as_u64().unwrap_or(1),
+                        cpus: vm["cpus"].as_u64().unwrap_or(1),
                     });
                 }
             }
@@ -275,21 +357,22 @@ pub async fn list_proxmox(State(state): State<AppState>, jar: CookieJar) -> Resu
         if let Ok(res) = client
             .get(format!("{base}/nodes/{node}/lxc"))
             .header("Authorization", &auth_header)
-            .send().await
+            .send()
+            .await
         {
             if let Ok(body) = res.json::<serde_json::Value>().await {
                 for vm in body["data"].as_array().unwrap_or(&vec![]) {
                     all_vms.push(ProxmoxVm {
-                        vmid:   vm["vmid"].as_u64().unwrap_or(0),
-                        name:   vm["name"].as_str().unwrap_or("").to_string(),
-                        kind:   "lxc".into(),
-                        node:   node.clone(),
+                        vmid: vm["vmid"].as_u64().unwrap_or(0),
+                        name: vm["name"].as_str().unwrap_or("").to_string(),
+                        kind: "lxc".into(),
+                        node: node.clone(),
                         status: vm["status"].as_str().unwrap_or("unknown").to_string(),
-                        mem:    vm["mem"].as_u64().unwrap_or(0),
+                        mem: vm["mem"].as_u64().unwrap_or(0),
                         maxmem: vm["maxmem"].as_u64().unwrap_or(0),
-                        cpu:    vm["cpu"].as_f64().unwrap_or(0.0),
+                        cpu: vm["cpu"].as_f64().unwrap_or(0.0),
                         uptime: vm["uptime"].as_u64().unwrap_or(0),
-                        cpus:   vm["cpus"].as_u64().unwrap_or(1),
+                        cpus: vm["cpus"].as_u64().unwrap_or(1),
                     });
                 }
             }
@@ -297,7 +380,10 @@ pub async fn list_proxmox(State(state): State<AppState>, jar: CookieJar) -> Resu
     }
 
     all_vms.sort_by_key(|v| v.vmid);
-    Ok(Json(ProxmoxVmsResponse { vms: all_vms, nodes }))
+    Ok(Json(ProxmoxVmsResponse {
+        vms: all_vms,
+        nodes,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -311,65 +397,298 @@ pub struct ProxmoxActionRequest {
 pub async fn proxmox_action(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(req): Json<ProxmoxActionRequest>,
-) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    let cfg = load_proxmox_config(&state).await
-        .ok_or_else(|| AppError::BadRequest("Proxmox not configured".into()))?;
-
-    let pve_action = match req.action.as_str() {
-        "start"    => "start",
-        "stop"     => "stop",
+) -> CompatibilityResult<Response> {
+    let action = match req.action.as_str() {
+        "start" => "start",
+        "stop" => "stop",
         "shutdown" => "shutdown",
-        "reboot"   => "reboot",
-        "suspend"  => "suspend",
-        "resume"   => "resume",
-        _ => return Err(AppError::BadRequest("unknown action".into())),
+        "reboot" => "reboot",
+        "suspend" => "suspend",
+        "resume" => "resume",
+        _ => return Err(AppError::BadRequest("unknown action".into()).into()),
     };
-
-    let client = proxmox_client(cfg.verify_ssl)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let base = proxmox_base(&cfg);
-    let auth_header = format!("PVEAPIToken={}", cfg.token);
-    let kind_path = if req.kind == "lxc" { "lxc" } else { "qemu" };
-
-    let url = format!("{base}/nodes/{}/{}/{}/status/{pve_action}", req.node, kind_path, req.vmid);
-    let res = client
-        .post(&url)
-        .header("Authorization", &auth_header)
-        .send().await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-    if res.status().is_success() {
-        Ok(Json(serde_json::json!({ "ok": true })))
-    } else {
-        let msg = res.text().await.unwrap_or_default();
-        Ok(Json(serde_json::json!({ "ok": false, "message": msg })))
-    }
+    let credential = super::actions::credential(&state, &jar, None).await?;
+    let adopted = proxmox_adoption::resolve_target(
+        &state.db,
+        state.secrets_key.clone(),
+        &credential,
+        &format!("proxmox.guest.{action}"),
+        ProxmoxSelector::Guest {
+            host_id: LEGACY_HOST_ID.into(),
+            node: Some(req.node),
+            kind: Some(req.kind),
+            vmid: req.vmid,
+        },
+    )
+    .await?;
+    operation_adoption::submit(
+        &state,
+        &credential,
+        &adopted.resource.id,
+        &format!("proxmox.guest.{action}"),
+        serde_json::json!({}),
+        &headers,
+    )
+    .await
 }
 
-pub async fn test_proxmox(State(state): State<AppState>, jar: CookieJar) -> Result<Json<serde_json::Value>> {
-    require_admin(&state, &jar).await?;
-    let cfg = load_proxmox_config(&state).await
-        .ok_or_else(|| AppError::BadRequest("Proxmox not configured".into()))?;
+pub async fn test_proxmox(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> CompatibilityResult<Response> {
+    let credential = super::actions::credential(&state, &jar, None).await?;
+    let adopted = proxmox_adoption::resolve_target(
+        &state.db,
+        state.secrets_key.clone(),
+        &credential,
+        "proxmox.host.test",
+        ProxmoxSelector::Host {
+            host_id: LEGACY_HOST_ID.into(),
+        },
+    )
+    .await?;
+    operation_adoption::submit(
+        &state,
+        &credential,
+        &adopted.resource.id,
+        "proxmox.host.test",
+        serde_json::json!({}),
+        &headers,
+    )
+    .await
+}
 
-    let client = proxmox_client(cfg.verify_ssl)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    let url = format!("{}/nodes", proxmox_base(&cfg));
-    let auth_header = format!("PVEAPIToken={}", cfg.token);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum_extra::extract::cookie::Cookie;
 
-    match client.get(&url).header("Authorization", &auth_header).send().await {
-        Ok(res) if res.status().is_success() => {
-            let body: serde_json::Value = res.json().await.unwrap_or_default();
-            let nodes: Vec<String> = body["data"].as_array().unwrap_or(&vec![])
-                .iter().filter_map(|n| n["node"].as_str().map(|s| s.to_string())).collect();
-            Ok(Json(serde_json::json!({ "ok": true, "nodes": nodes })))
+    #[tokio::test]
+    async fn compatibility_config_stages_token_without_persisting_plaintext() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let state = crate::api::mcp::test_support::build(pool.clone());
+        let jar = CookieJar::new().add(Cookie::new("vt_session", session));
+        let mut headers = HeaderMap::new();
+        headers.insert("Idempotency-Key", "vms-test-1".parse().unwrap());
+
+        let _ = set_proxmox_config(
+            State(state.clone()),
+            jar.clone(),
+            headers,
+            Json(SaveProxmoxConfig {
+                host: "pve.internal".into(),
+                port: Some(8006),
+                token: "root@pam!voidtower=supersecret".into(),
+                node: "pve".into(),
+                verify_ssl: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let plaintext: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'proxmox_token'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(plaintext.is_none());
+        let encrypted: String =
+            sqlx::query_scalar("SELECT value_enc FROM secrets WHERE name LIKE 'proxmox_staged_%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            crate::api::secrets::decrypt(&state.secrets_key, &encrypted).unwrap(),
+            "root@pam!voidtower=supersecret"
+        );
+        let input: String = sqlx::query_scalar(
+            "SELECT input_json FROM jobs WHERE action = 'proxmox.host.configure'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(!input.contains("supersecret"));
+        assert!(input.contains("token_secret_id"));
+    }
+
+    #[tokio::test]
+    async fn local_libvirt_mutation_fails_closed_until_canonical_adapter_exists() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let state = crate::api::mcp::test_support::build(pool);
+        let jar = CookieJar::new().add(Cookie::new("vt_session", session));
+
+        let result = local_action(State(state), jar).await;
+
+        assert!(
+            matches!(result, Err(AppError::FeatureUnavailable(ref message)) if message.contains("canonical operation")),
+            "local libvirt mutation must fail closed instead of executing virsh: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_libvirt_mutation_route_returns_stable_feature_error() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::{header, Request, StatusCode},
+        };
+        use tower::ServiceExt;
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let session = crate::api::mcp::test_support::user_with_session(&pool).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/vms/local/action")
+                    .header(header::COOKIE, format!("vt_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"fixture-vm","action":"start"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["error"]["code"], "feature_unavailable");
+        assert_eq!(
+            payload["error"]["message"],
+            "local libvirt mutations require a canonical operation adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_libvirt_mutation_route_rejects_unauthenticated_call() {
+        use axum::{
+            body::{to_bytes, Body},
+            http::{header, Request, StatusCode},
+        };
+        use tower::ServiceExt;
+
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(pool));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/vms/local/action")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"fixture-vm","action":"start"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["error"]["code"], "unauthorized");
+    }
+
+    #[test]
+    fn local_libvirt_mutation_handler_has_no_provider_execution_path() {
+        let source = include_str!("vms.rs");
+        let start = source
+            .find("pub async fn local_action")
+            .expect("local_action handler must exist");
+        let tail = &source[start..];
+        let end = tail
+            .find("// ── Proxmox")
+            .expect("local_action section must end before Proxmox handlers");
+        let body = &tail[..end];
+        assert!(!body.contains("Command::new(\"virsh\")"));
+        assert!(!body.contains("process::Command"));
+        assert!(body.contains("FeatureUnavailable"));
+    }
+
+    #[test]
+    fn legacy_proxmox_mutations_only_submit_canonical_jobs() {
+        let source = include_str!("vms.rs");
+        for name in ["set_proxmox_config", "proxmox_action", "test_proxmox"] {
+            let declaration = format!("pub async fn {name}");
+            let start = source
+                .find(&declaration)
+                .unwrap_or_else(|| panic!("missing handler {name}"));
+            let tail = &source[start..];
+            let body_start = tail.find('{').expect("handler must have a body");
+            let mut depth = 0usize;
+            let mut end = tail.len();
+            for (offset, character) in tail[body_start..].char_indices() {
+                match character {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = body_start + offset + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let body = &tail[..end];
+            assert!(
+                body.contains("operation_adoption::submit"),
+                "legacy handler {name} must submit through the durable boundary"
+            );
+            for needle in [
+                ".send(",
+                ".post(",
+                ".delete(",
+                "INSERT INTO settings",
+                "DELETE FROM settings",
+                "audit::log",
+            ] {
+                assert!(
+                    !body.contains(needle),
+                    "legacy handler {name} contains forbidden direct execution marker {needle}"
+                );
+            }
         }
-        Ok(res) => {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            Ok(Json(serde_json::json!({ "ok": false, "message": format!("HTTP {status}: {body}") })))
-        }
-        Err(e) => Ok(Json(serde_json::json!({ "ok": false, "message": e.to_string() }))),
+    }
+
+    #[tokio::test]
+    async fn legacy_proxmox_loader_uses_secret_resolver_and_ignores_plaintext_fallback() {
+        let pool = crate::api::mcp::test_support::setup_db().await;
+        let state = crate::api::mcp::test_support::build(pool.clone());
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('proxmox_host', 'pve.internal', 1), ('proxmox_token', 'legacy-plaintext', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let encrypted =
+            crate::api::secrets::encrypt(&state.secrets_key, "canonical-token").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, 'proxmox_legacy_token', ?, 1, 1)",
+        )
+        .bind(&secret_id)
+        .bind(encrypted)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let config = load_proxmox_config(&state).await.unwrap().unwrap();
+        assert_eq!(config.token, "canonical-token");
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_some());
+
+        sqlx::query("UPDATE secrets SET disabled = 1 WHERE id = ?")
+            .bind(&secret_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(load_proxmox_config(&state).await.is_err());
     }
 }

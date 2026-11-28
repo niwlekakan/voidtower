@@ -12,18 +12,20 @@ Register in Odysseus:
 """
 
 import asyncio
-import os
+import hashlib
 import json
+import os
+import uuid
 from typing import Any
+
 import httpx
+from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp import types
 
 VOIDTOWER_URL = os.environ.get("VOIDTOWER_URL", "http://localhost:8743").rstrip("/")
 VOIDTOWER_TOKEN = os.environ.get("VOIDTOWER_TOKEN", "")
 
-server = Server("voidtower")
 _client: httpx.AsyncClient | None = None
 
 
@@ -44,10 +46,479 @@ async def vt_get(path: str, params: dict | None = None) -> Any:
     return r.json()
 
 
-async def vt_post(path: str, body: dict | None = None) -> Any:
-    r = await client().post(path, json=body or {})
-    r.raise_for_status()
-    return r.json()
+VM_ACTIONS = {
+    "start": "proxmox.guest.start",
+    "stop": "proxmox.guest.stop",
+    "reboot": "proxmox.guest.reboot",
+    "shutdown": "proxmox.guest.shutdown",
+}
+
+DISABLED_LEGACY_MUTATIONS = frozenset(
+    {
+        "vt_acknowledge_alert",
+        "vt_control_app",
+        "vt_control_container",
+        "vt_control_service",
+        "vt_create_proxy",
+        "vt_deploy_app",
+        "vt_remove_app",
+        "vt_resolve_alert",
+        "vt_run_automation_job",
+        "vt_run_backup",
+        "vt_toggle_proxy",
+        "vt_update_app_compose",
+    }
+)
+
+READ_ONLY_TOOLS = frozenset(
+    {
+        "vt_get_app_compose",
+        "vt_get_app_logs",
+        "vt_get_app_status",
+        "vt_get_audit_log",
+        "vt_get_capabilities",
+        "vt_get_container_logs",
+        "vt_get_metrics",
+        "vt_get_network_neighbors",
+        "vt_get_service_logs",
+        "vt_get_status_summary",
+        "vt_get_storage",
+        "vt_get_timeline",
+        "vt_list_alerts",
+        "vt_list_app_catalog",
+        "vt_list_automations",
+        "vt_list_backups",
+        "vt_list_containers",
+        "vt_list_deployed_apps",
+        "vt_list_firewall_rules",
+        "vt_list_proxies",
+        "vt_list_secrets",
+        "vt_list_services",
+        "vt_list_status_checks",
+        "vt_list_tags",
+        "vt_list_users",
+        "vt_list_vms",
+        "vt_list_wireguard_peers",
+        "vt_run_diagnostics",
+    }
+)
+CANONICAL_MUTATION_TOOLS = frozenset({"vt_control_vm"})
+ADVERTISED_TOOLS = READ_ONLY_TOOLS | CANONICAL_MUTATION_TOOLS
+
+CANONICAL_ERROR_MESSAGES = {
+    "ai_exposure_denied": "This action is not exposed to machine-capable ingress.",
+    "capability_unavailable": "The requested capability is not currently available.",
+    "forbidden": "The current credential does not permit this action.",
+    "idempotency_conflict": "The idempotency key belongs to different intent.",
+    "ingress_denied": "This action is not available from the current ingress.",
+    "insufficient_scope": "This API token's scopes do not permit this action.",
+    "invalid_idempotency_key": "A valid Idempotency-Key header is required.",
+    "invalid_request": "The request body is invalid.",
+    "operation_runtime_unavailable": "The durable operation runtime is unavailable.",
+    "planning_rejected": "The operation could not be planned safely.",
+    "policy_denied": "The operation was denied by policy.",
+    "resource_kind_mismatch": "The action does not apply to this resource kind.",
+    "resource_not_found": "The requested resource does not exist.",
+    "stale_state": "Resource or provider state changed during planning.",
+    "unauthorized": "Authentication is required.",
+    "unknown_action": "The requested durable action does not exist.",
+}
+
+
+def _stable_error(payload: Any) -> dict[str, Any]:
+    candidate = payload.get("error") if isinstance(payload, dict) else None
+    code = candidate.get("code") if isinstance(candidate, dict) else None
+    message = CANONICAL_ERROR_MESSAGES.get(code)
+    if message is None:
+        return {
+            "error": {
+                "code": "upstream_error",
+                "message": "VoidTower returned an unexpected error.",
+            }
+        }
+    error = {"code": code, "message": message}
+    job_id = candidate.get("job_id")
+    if isinstance(job_id, str):
+        try:
+            if str(uuid.UUID(job_id)) == job_id:
+                error["job_id"] = job_id
+        except ValueError:
+            pass
+    return {"error": error}
+
+
+def _ambiguous_submission(idempotency_key: str) -> dict[str, Any]:
+    return {
+        "error": {
+            "code": "ambiguous_submission",
+            "message": (
+                "The submission outcome is unknown; query canonical job state "
+                "before any retry."
+            ),
+        },
+        "idempotency_key": idempotency_key,
+        "recovery_path": f"/api/jobs/by-idempotency/{idempotency_key}",
+    }
+
+
+def _selected(payload: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {field: payload[field] for field in fields if field in payload}
+
+
+def _stable_resource(resource: Any) -> dict[str, Any]:
+    return _selected(resource, ("id", "kind", "display_name", "revision"))
+
+
+def _stable_operation(operation: Any) -> dict[str, Any]:
+    stable = _selected(
+        operation,
+        (
+            "schema_version",
+            "title",
+            "risk",
+            "preview",
+            "external_fingerprint",
+        ),
+    )
+    if not isinstance(operation, dict):
+        return stable
+    changes = operation.get("changes")
+    if isinstance(changes, list):
+        stable["changes"] = [
+            _selected(change, ("label", "value"))
+            for change in changes
+            if isinstance(change, dict)
+        ]
+    steps = operation.get("steps")
+    if isinstance(steps, list):
+        stable["steps"] = [
+            _selected(step, ("kind", "name", "retry_class", "recovery_class"))
+            for step in steps
+            if isinstance(step, dict)
+        ]
+    return stable
+
+
+def _stable_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    stable = _selected(plan, ("action", "input_schema_id", "result_schema_id"))
+    stable["resource"] = _stable_resource(plan.get("resource"))
+    if isinstance(plan.get("operation"), dict):
+        stable["operation"] = _stable_operation(plan["operation"])
+    if isinstance(plan.get("policy"), dict):
+        stable["policy"] = _selected(plan["policy"], ("outcome", "reason"))
+    return stable
+
+
+def _stable_job(job: dict[str, Any]) -> dict[str, Any]:
+    stable = _selected(
+        job,
+        (
+            "id",
+            "action",
+            "ingress",
+            "state",
+            "progress_current",
+            "progress_total",
+            "progress_message",
+            "approval_id",
+            "submitted_at",
+            "started_at",
+            "finished_at",
+            "updated_at",
+        ),
+    )
+    stable["resource"] = _stable_resource(job.get("resource"))
+    if isinstance(job.get("actor"), dict):
+        stable["actor"] = _selected(job["actor"], ("actor_type", "id", "source"))
+    if isinstance(job.get("plan"), dict):
+        stable["plan"] = _stable_operation(job["plan"])
+    if job.get("result") is None and "result" in job:
+        stable["result"] = None
+    if isinstance(job.get("error"), dict):
+        stable["error"] = _selected(
+            job["error"], ("code", "message", "retryable", "job_id")
+        )
+    elif job.get("error") is None and "error" in job:
+        stable["error"] = None
+    return stable
+
+
+def _canonical_uuid(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        canonical = str(uuid.UUID(value))
+    except (ValueError, AttributeError):
+        return None
+    return canonical if value == canonical else None
+
+
+def _canonical_resource_id(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("resource_id must be a canonical UUID")
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError) as error:
+        raise ValueError("resource_id must be a canonical UUID") from error
+    canonical = str(parsed)
+    if value != canonical:
+        raise ValueError("resource_id must use canonical lowercase UUID form")
+    return canonical
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _has_fields(value: Any, fields: tuple[str, ...]) -> bool:
+    return isinstance(value, dict) and all(field in value for field in fields)
+
+
+def _valid_resource(resource: Any, resource_id: str) -> bool:
+    return (
+        _has_fields(resource, ("id", "kind", "display_name", "revision"))
+        and resource.get("id") == resource_id
+        and _canonical_uuid(resource.get("id")) == resource_id
+        and resource.get("kind") == "proxmox_guest"
+        and isinstance(resource.get("display_name"), str)
+        and _is_int(resource.get("revision"))
+    )
+
+
+def _valid_operation(operation: Any) -> bool:
+    if not _has_fields(
+        operation,
+        (
+            "schema_version",
+            "title",
+            "risk",
+            "changes",
+            "preview",
+            "external_fingerprint",
+            "steps",
+        ),
+    ):
+        return False
+    changes = operation.get("changes")
+    steps = operation.get("steps")
+    return (
+        operation.get("schema_version") == 1
+        and isinstance(operation.get("title"), str)
+        and isinstance(operation.get("risk"), str)
+        and isinstance(changes, list)
+        and all(
+            isinstance(change, dict)
+            and isinstance(change.get("label"), str)
+            and isinstance(change.get("value"), str)
+            for change in changes
+        )
+        and (
+            operation.get("preview") is None
+            or isinstance(operation.get("preview"), str)
+        )
+        and isinstance(operation.get("external_fingerprint"), str)
+        and isinstance(steps, list)
+        and bool(steps)
+        and all(
+            isinstance(step, dict)
+            and all(
+                isinstance(step.get(field), str)
+                for field in ("kind", "name", "retry_class", "recovery_class")
+            )
+            for step in steps
+        )
+    )
+
+
+def _valid_plan(plan: Any, action: str, resource_id: str) -> bool:
+    if not _has_fields(
+        plan,
+        (
+            "action",
+            "resource",
+            "input_schema_id",
+            "result_schema_id",
+            "operation",
+            "policy",
+        ),
+    ):
+        return False
+    policy = plan.get("policy")
+    return (
+        plan.get("action") == action
+        and _valid_resource(plan.get("resource"), resource_id)
+        and plan.get("input_schema_id") == f"{action}.input.v1"
+        and plan.get("result_schema_id") == f"{action}.result.v1"
+        and _valid_operation(plan.get("operation"))
+        and _has_fields(policy, ("outcome", "reason"))
+        and policy.get("outcome") in {"allow", "require_approval", "deny"}
+        and (policy.get("reason") is None or isinstance(policy.get("reason"), str))
+    )
+
+
+def _valid_actor(actor: Any) -> bool:
+    return (
+        _has_fields(actor, ("actor_type", "id", "source"))
+        and actor.get("actor_type")
+        in {"human", "api_token", "automation", "plugin", "node", "ai", "system"}
+        and (actor.get("id") is None or isinstance(actor.get("id"), str))
+        and (actor.get("source") is None or isinstance(actor.get("source"), str))
+    )
+
+
+def _valid_job_error(error: Any) -> bool:
+    if error is None:
+        return True
+    if not _has_fields(error, ("code", "message", "retryable", "job_id")):
+        return False
+    job_id = error.get("job_id")
+    return (
+        isinstance(error.get("code"), str)
+        and isinstance(error.get("message"), str)
+        and isinstance(error.get("retryable"), bool)
+        and (job_id is None or _canonical_uuid(job_id) == job_id)
+    )
+
+
+def _valid_job(job: Any, action: str, resource_id: str, operation: dict) -> bool:
+    if not _has_fields(
+        job,
+        (
+            "id",
+            "action",
+            "resource",
+            "actor",
+            "ingress",
+            "state",
+            "progress_current",
+            "progress_total",
+            "progress_message",
+            "plan",
+            "approval_id",
+            "result",
+            "error",
+            "submitted_at",
+            "started_at",
+            "finished_at",
+            "updated_at",
+        ),
+    ):
+        return False
+    approval_id = job.get("approval_id")
+    progress_message = job.get("progress_message")
+    return (
+        _canonical_uuid(job.get("id")) == job.get("id")
+        and job.get("action") == action
+        and _valid_resource(job.get("resource"), resource_id)
+        and _valid_actor(job.get("actor"))
+        and isinstance(job.get("ingress"), str)
+        and job.get("state")
+        in {
+            "awaiting_approval",
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "needs_attention",
+            "rejected",
+            "expired",
+        }
+        and _is_int(job.get("progress_current"))
+        and _is_int(job.get("progress_total"))
+        and (progress_message is None or isinstance(progress_message, str))
+        and _valid_operation(job.get("plan"))
+        and _stable_operation(job["plan"]) == _stable_operation(operation)
+        and (approval_id is None or _canonical_uuid(approval_id) == approval_id)
+        and _valid_job_error(job.get("error"))
+        and _is_int(job.get("submitted_at"))
+        and (job.get("started_at") is None or _is_int(job.get("started_at")))
+        and (job.get("finished_at") is None or _is_int(job.get("finished_at")))
+        and _is_int(job.get("updated_at"))
+    )
+
+
+def _idempotency_key(tool: str, request_id: str) -> str:
+    operation = f"{tool}:{request_id}".encode("ascii")
+    return f"mcp-v1-{hashlib.sha256(operation).hexdigest()}"
+
+
+async def canonical_mutation(
+    tool: str,
+    request_id: str,
+    resource_id: str,
+    action: str,
+    input_data: dict | None = None,
+) -> dict[str, Any]:
+    input_data = input_data or {}
+    base = f"/api/resources/{resource_id}/actions/{action}"
+    try:
+        plan_response = await client().post(
+            f"{base}/plan", json={"input": input_data}
+        )
+    except Exception:
+        return {
+            "error": {
+                "code": "upstream_unavailable",
+                "message": "VoidTower could not be reached before submission.",
+            }
+        }
+    try:
+        plan = plan_response.json()
+    except Exception:
+        return {
+            "error": {
+                "code": "upstream_error",
+                "message": "VoidTower returned an invalid canonical plan response.",
+            }
+        }
+    if plan_response.status_code != 200:
+        return _stable_error(plan)
+    canonical_plan = plan.get("plan") if isinstance(plan, dict) else None
+    if not _valid_plan(canonical_plan, action, resource_id):
+        return {
+            "error": {
+                "code": "upstream_error",
+                "message": "VoidTower returned an invalid canonical plan response.",
+            }
+        }
+    assert isinstance(canonical_plan, dict)
+    key = _idempotency_key(tool, request_id)
+    try:
+        submit_response = await client().post(
+            base,
+            json={"input": input_data},
+            headers={"Idempotency-Key": key},
+        )
+    except Exception:
+        return _ambiguous_submission(key)
+    try:
+        submitted = submit_response.json()
+    except Exception:
+        return _ambiguous_submission(key)
+    if submit_response.status_code != 202:
+        if submit_response.status_code in {400, 401, 403, 404, 409, 422}:
+            return _stable_error(submitted)
+        return _ambiguous_submission(key)
+    job = submitted.get("job") if isinstance(submitted, dict) else None
+    raw_approval_id = job.get("approval_id") if isinstance(job, dict) else None
+    approval_id = (
+        _canonical_uuid(raw_approval_id) if raw_approval_id is not None else None
+    )
+    if (
+        not _valid_job(job, action, resource_id, canonical_plan["operation"])
+        or (raw_approval_id is not None and approval_id is None)
+    ):
+        return _ambiguous_submission(key)
+    assert isinstance(job, dict)
+    return {
+        "plan": _stable_plan(canonical_plan),
+        "job": _stable_job(job),
+        "approval": approval_id,
+        "idempotency_key": key,
+    }
 
 
 def _text(data: Any) -> list[types.TextContent]:
@@ -56,9 +527,8 @@ def _text(data: Any) -> list[types.TextContent]:
 
 # ─── Tool definitions ─────────────────────────────────────────────────────────
 
-@server.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return [
+    tools = [
         types.Tool(
             name="vt_get_metrics",
             description="Get current system metrics: CPU, RAM, disk, network, top processes",
@@ -391,12 +861,12 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "vmid": {"type": "integer", "description": "VM or container ID (e.g. 100)"},
-                    "kind": {"type": "string", "enum": ["qemu", "lxc"], "description": "VM type: qemu for VMs, lxc for containers"},
-                    "node": {"type": "string", "description": "Proxmox node name"},
+                    "resource_id": {"type": "string", "format": "uuid", "description": "Canonical VoidTower resources.id for the Proxmox guest"},
                     "action": {"type": "string", "enum": ["start", "stop", "reboot", "shutdown"]},
+                    "request_id": {"type": "string", "format": "uuid", "description": "Caller-generated operation UUID; reuse only when retrying the same intended operation"},
                 },
-                "required": ["vmid", "kind", "node", "action"],
+                "required": ["resource_id", "action", "request_id"],
+                "additionalProperties": False,
             },
         ),
         types.Tool(
@@ -410,12 +880,14 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
     ]
+    return [tool for tool in tools if tool.name in ADVERTISED_TOOLS]
 
 
 # ─── Tool handlers ────────────────────────────────────────────────────────────
 
-@server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    if name not in ADVERTISED_TOOLS:
+        return _text({"error": {"code": "unknown_tool", "message": "Unknown tool"}})
     try:
         match name:
             case "vt_get_metrics":
@@ -424,16 +896,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             case "vt_list_services":
                 return _text(await vt_get("/api/services"))
 
-            case "vt_control_service":
-                svc = arguments["name"]
-                return _text(await vt_post(f"/api/services/{svc}/action", {"action": arguments["action"]}))
-
             case "vt_list_containers":
                 return _text(await vt_get("/api/containers"))
-
-            case "vt_control_container":
-                cid = arguments["id"]
-                return _text(await vt_post(f"/api/containers/{cid}/action", {"action": arguments["action"]}))
 
             case "vt_list_alerts":
                 state = arguments.get("state", "active")
@@ -442,26 +906,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             case "vt_list_deployed_apps":
                 return _text(await vt_get("/api/apps/deployed"))
 
-            case "vt_deploy_app":
-                return _text(await vt_post("/api/apps/deploy", {
-                    "app_id": arguments["app_id"],
-                    "project_name": arguments.get("project_name"),
-                    "env_overrides": arguments.get("env_overrides"),
-                }))
-
-            case "vt_create_proxy":
-                return _text(await vt_post("/api/proxy", {
-                    "domain": arguments["domain"],
-                    "upstream": arguments["upstream"],
-                    "ssl": arguments.get("ssl", False),
-                    "allow_embed": arguments.get("allow_embed", True),
-                }))
-
             case "vt_list_backups":
                 return _text(await vt_get("/api/backups"))
-
-            case "vt_run_backup":
-                return _text(await vt_post(f"/api/backups/{arguments['id']}/run"))
 
             case "vt_get_audit_log":
                 limit = arguments.get("limit", 20)
@@ -488,20 +934,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             case "vt_list_automations":
                 return _text(await vt_get("/api/automation"))
 
-            case "vt_run_automation_job":
-                return _text(await vt_post(f"/api/automation/{arguments['id']}/run"))
-
             case "vt_get_container_logs":
                 tail = arguments.get("tail", 100)
                 data = await vt_get(f"/api/containers/{arguments['id']}/logs", params={"tail": tail})
                 lines = data.get("lines", [])
                 return [types.TextContent(type="text", text="\n".join(lines))]
-
-            case "vt_acknowledge_alert":
-                return _text(await vt_post(f"/api/alerts/{arguments['id']}/acknowledge"))
-
-            case "vt_resolve_alert":
-                return _text(await vt_post(f"/api/alerts/{arguments['id']}/resolve"))
 
             case "vt_get_capabilities":
                 return _text(await vt_get("/api/capabilities"))
@@ -543,9 +980,6 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             case "vt_list_proxies":
                 return _text(await vt_get("/api/proxy"))
 
-            case "vt_toggle_proxy":
-                return _text(await vt_post(f"/api/proxy/{arguments['id']}/toggle"))
-
             case "vt_list_firewall_rules":
                 return _text(await vt_get("/api/firewall"))
 
@@ -561,32 +995,43 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 lines = data.get("lines", []) if isinstance(data, dict) else data
                 return [types.TextContent(type="text", text="\n".join(lines) if isinstance(lines, list) else str(lines))]
 
-            case "vt_control_app":
-                name = arguments["name"]
-                action = arguments["action"]
-                return _text(await vt_post(f"/api/apps/{name}/{action}"))
-
             case "vt_get_app_compose":
                 return _text(await vt_get(f"/api/apps/{arguments['name']}/compose"))
-
-            case "vt_update_app_compose":
-                return _text(await vt_post(f"/api/apps/{arguments['name']}/compose", {"content": arguments["content"]}))
-
-            case "vt_remove_app":
-                r = await client().delete(f"/api/apps/{arguments['name']}")
-                r.raise_for_status()
-                return _text({"removed": arguments["name"]})
 
             case "vt_list_vms":
                 return _text(await vt_get("/api/vms/proxmox/vms"))
 
             case "vt_control_vm":
-                return _text(await vt_post("/api/vms/proxmox/action", {
-                    "vmid": arguments["vmid"],
-                    "kind": arguments["kind"],
-                    "node": arguments["node"],
-                    "action": arguments["action"],
-                }))
+                try:
+                    resource_id = _canonical_resource_id(arguments.get("resource_id"))
+                    request_id = _canonical_uuid(arguments.get("request_id"))
+                    if request_id is None:
+                        raise ValueError("request_id must be a canonical UUID")
+                    requested_action = arguments.get("action")
+                    action = (
+                        VM_ACTIONS.get(requested_action)
+                        if isinstance(requested_action, str)
+                        else None
+                    )
+                    if action is None:
+                        raise ValueError("unsupported VM lifecycle action")
+                except ValueError:
+                    return _text(
+                        {
+                            "error": {
+                                "code": "invalid_arguments",
+                                "message": "The VM mutation arguments are invalid.",
+                            }
+                        }
+                    )
+                return _text(
+                    await canonical_mutation(
+                        "vt_control_vm",
+                        request_id,
+                        resource_id,
+                        action,
+                    )
+                )
 
             case "vt_list_status_checks":
                 return _text(await vt_get("/api/status-checks"))
@@ -595,7 +1040,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 return _text(await vt_get("/api/tags"))
 
             case _:
-                return _text({"error": f"Unknown tool: {name}"})
+                return _text({"error": {"code": "unknown_tool", "message": "Unknown tool"}})
 
     except httpx.HTTPStatusError as e:
         return _text({"error": f"HTTP {e.response.status_code}", "detail": e.response.text})
@@ -604,6 +1049,22 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
+
+async def _list_tools_handler(_context, _params):
+    return types.ListToolsResult(tools=await list_tools())
+
+
+async def _call_tool_handler(_context, params):
+    content = await call_tool(params.name, params.arguments or {})
+    return types.CallToolResult(content=content)
+
+
+server = Server(
+    "voidtower",
+    on_list_tools=_list_tools_handler,
+    on_call_tool=_call_tool_handler,
+)
+
 
 async def main():
     async with stdio_server() as (read_stream, write_stream):

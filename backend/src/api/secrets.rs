@@ -3,6 +3,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
+use anyhow::Context;
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -10,6 +11,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 
 use crate::{
     audit, auth,
@@ -46,6 +48,507 @@ pub(crate) fn decrypt(key: &[u8; 32], encoded: &str) -> anyhow::Result<String> {
     String::from_utf8(plaintext).map_err(Into::into)
 }
 
+pub(crate) const MAX_SECRET_VALUE_BYTES: usize = 64 * 1024;
+
+pub(crate) const NOTIFICATION_WEBHOOK_PURPOSE: &str = "notification_webhook";
+
+const SUPPORTED_SECRET_PURPOSES: &[&str] = &[
+    "ai_provider",
+    "oidc_client",
+    "proxmox_api",
+    "proxmox_compatibility",
+    "odysseus_webhook",
+    "proxy_basic_auth",
+    "redaction",
+    "terminal_ssh",
+    NOTIFICATION_WEBHOOK_PURPOSE,
+];
+
+/// One legacy plaintext notification setting and the stable encrypted-secret
+/// identity that replaces it. The channel name doubles as the response field
+/// prefix (`<channel>_configured`) for the metadata-only settings read.
+pub(crate) struct NotificationCredential {
+    pub channel: &'static str,
+    pub legacy_setting: &'static str,
+    pub reference_setting: &'static str,
+    pub secret_name: &'static str,
+}
+
+pub(crate) const NOTIFICATION_CREDENTIALS: [NotificationCredential; 3] = [
+    NotificationCredential {
+        channel: "ntfy",
+        legacy_setting: "notif_ntfy_url",
+        reference_setting: "notif.ntfy_url_secret_id",
+        secret_name: "notification_ntfy_url",
+    },
+    NotificationCredential {
+        channel: "discord_webhook",
+        legacy_setting: "notif_discord_webhook",
+        reference_setting: "notif.discord_webhook_secret_id",
+        secret_name: "notification_discord_webhook",
+    },
+    NotificationCredential {
+        channel: "slack_webhook",
+        legacy_setting: "notif_slack_webhook",
+        reference_setting: "notif.slack_webhook_secret_id",
+        secret_name: "notification_slack_webhook",
+    },
+];
+
+pub(crate) const ODYSSEUS_WEBHOOK_PURPOSE: &str = "odysseus_webhook";
+pub(crate) const ODYSSEUS_WEBHOOK_SECRET_REF_SETTING: &str = "odysseus.webhook_secret_id";
+const ODYSSEUS_WEBHOOK_LEGACY_SETTING: &str = "odysseus.webhook_secret";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolveError {
+    InvalidPurpose,
+    Missing,
+    Disabled,
+    Corrupt,
+    TooLarge,
+    Database,
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::InvalidPurpose => "secret purpose is not supported",
+            Self::Missing => "secret unavailable",
+            Self::Disabled => "secret unavailable",
+            Self::Corrupt => "secret unavailable",
+            Self::TooLarge => "secret unavailable",
+            Self::Database => "secret unavailable",
+        };
+        f.write_str(message)
+    }
+}
+
+/// Resolve one encrypted secret for an internal purpose without exposing its
+/// value in errors or logs. The plaintext exists only in the returned value
+/// and is bounded before it crosses the provider construction boundary.
+pub(crate) async fn resolve(
+    db: &SqlitePool,
+    key: &[u8; 32],
+    secret_id: &str,
+    purpose: &str,
+) -> std::result::Result<String, ResolveError> {
+    if purpose.trim().is_empty() || !SUPPORTED_SECRET_PURPOSES.contains(&purpose) {
+        return Err(ResolveError::InvalidPurpose);
+    }
+    let row: Option<(String, bool)> =
+        sqlx::query_as("SELECT value_enc, disabled FROM secrets WHERE id = ?")
+            .bind(secret_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|_| ResolveError::Database)?;
+    let Some((value_enc, disabled)) = row else {
+        return Err(ResolveError::Missing);
+    };
+    if disabled {
+        return Err(ResolveError::Disabled);
+    }
+    let value = decrypt(key, &value_enc).map_err(|_| ResolveError::Corrupt)?;
+    if value.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(ResolveError::TooLarge);
+    }
+    let last_use_result = sqlx::query("UPDATE secrets SET last_used_at = ? WHERE id = ?")
+        .bind(now_ts())
+        .bind(secret_id)
+        .execute(db)
+        .await;
+    // Redaction must preserve a usable value even when its best-effort usage
+    // metadata cannot be persisted. Other consumers fail closed so they never
+    // receive a credential without successful last-use recording.
+    if purpose != "redaction" {
+        last_use_result.map_err(|_| ResolveError::Database)?;
+    }
+    Ok(value)
+}
+
+/// Move the legacy Odysseus webhook credential into the encrypted secret
+/// store. The reference update and plaintext removal commit together, so a
+/// failed encryption/database operation leaves the prior credential available
+/// for recovery instead of silently disabling authentication.
+pub(crate) async fn migrate_legacy_webhook_secret(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    let legacy: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(ODYSSEUS_WEBHOOK_LEGACY_SETTING)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(legacy) = legacy else {
+        return tx.commit().await.map_err(Into::into);
+    };
+    anyhow::ensure!(!legacy.is_empty(), "legacy webhook secret is empty");
+    anyhow::ensure!(
+        legacy.len() <= MAX_SECRET_VALUE_BYTES,
+        "legacy webhook secret exceeds size limit"
+    );
+
+    let existing_id: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let secret_id = existing_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let encrypted = encrypt(key, &legacy)?;
+    let now = now_ts();
+    sqlx::query(
+        "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at)
+         VALUES (?, 'odysseus-webhook', 'Odysseus inbound webhook credential', ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET value_enc = excluded.value_enc, updated_at = excluded.updated_at, disabled = 0",
+    )
+    .bind(&secret_id)
+    .bind(encrypted)
+    .bind(now)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(ODYSSEUS_WEBHOOK_SECRET_REF_SETTING)
+    .bind(&secret_id)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM settings WHERE key = ?")
+        .bind(ODYSSEUS_WEBHOOK_LEGACY_SETTING)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Convert legacy AI-provider settings into encrypted secret references.
+///
+/// The whole conversion is transactional: plaintext settings are removed only
+/// after every affected provider points at its encrypted secret. A missing
+/// legacy value leaves the old reference intact but disables that provider so
+/// startup cannot silently activate an unusable credential.
+pub(crate) async fn migrate_legacy_provider_secrets(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+
+    let mut tx = db.begin().await?;
+    let providers: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, api_key_ref FROM ai_providers WHERE api_key_ref IS NOT NULL")
+            .fetch_all(&mut *tx)
+            .await?;
+    let mut migrated = HashMap::<String, String>::new();
+    let mut settings_to_delete = Vec::new();
+
+    let migration_result: anyhow::Result<()> = async {
+        for (provider_id, reference) in providers {
+            let is_canonical = uuid::Uuid::parse_str(&reference).is_ok()
+                && sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                    .bind(&reference)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .is_some();
+            if is_canonical {
+                sqlx::query("DELETE FROM settings WHERE key = ?")
+                    .bind(&reference)
+                    .execute(&mut *tx)
+                    .await?;
+                continue;
+            }
+
+            let legacy_value: Option<String> =
+                sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                    .bind(&reference)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            let Some(legacy_value) = legacy_value else {
+                sqlx::query("UPDATE ai_providers SET enabled = 0, updated_at = ? WHERE id = ?")
+                    .bind(now_ts())
+                    .bind(&provider_id)
+                    .execute(&mut *tx)
+                    .await?;
+                continue;
+            };
+
+            let secret_id = if let Some(existing) = migrated.get(&reference) {
+                existing.clone()
+            } else {
+                let secret_id = uuid::Uuid::new_v4().to_string();
+                let encrypted = encrypt(key, &legacy_value)?;
+                let now = now_ts();
+                sqlx::query(
+                    "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&secret_id)
+                .bind(format!("ai-provider-legacy-{secret_id}"))
+                .bind("Migrated AI-provider credential")
+                .bind(encrypted)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+                migrated.insert(reference.clone(), secret_id.clone());
+                settings_to_delete.push(reference.clone());
+                secret_id
+            };
+
+            sqlx::query("UPDATE ai_providers SET api_key_ref = ?, updated_at = ? WHERE id = ?")
+                .bind(secret_id)
+                .bind(now_ts())
+                .bind(provider_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        for reference in settings_to_delete {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(reference)
+                .execute(&mut *tx)
+                .await?;
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Err(error) = migration_result {
+        // Dropping the open transaction rolls back any partial conversion before
+        // fail-closed recovery is persisted independently for every remaining
+        // legacy reference.
+        drop(tx);
+        sqlx::query(
+            "UPDATE ai_providers SET enabled = 0, updated_at = ? \
+             WHERE api_key_ref IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM secrets WHERE secrets.id = ai_providers.api_key_ref)",
+        )
+        .bind(now_ts())
+        .execute(db)
+        .await
+        .map_err(|disable_error| {
+            anyhow::anyhow!(
+                "legacy provider migration failed and fail-closed recovery did not commit: {disable_error}"
+            )
+        })?;
+        return Err(error);
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Convert legacy SSH-session ciphertext into a canonical encrypted secret
+/// reference. The conversion is transactional and safe to rerun: the legacy
+/// column is cleared only after the secret record and reference are durable.
+pub(crate) async fn migrate_legacy_ssh_session_passwords(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    let sessions: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, password_enc, password_secret_id FROM ssh_sessions \
+         WHERE password_enc IS NOT NULL",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    for (session_id, legacy_ciphertext, existing_secret_id) in sessions {
+        let Some(legacy_ciphertext) = legacy_ciphertext else {
+            continue;
+        };
+        let legacy_value = decrypt(key, &legacy_ciphertext)
+            .map_err(|_| anyhow::anyhow!("legacy SSH password is unavailable"))?;
+        anyhow::ensure!(!legacy_value.is_empty(), "legacy SSH password is empty");
+        anyhow::ensure!(
+            legacy_value.len() <= MAX_SECRET_VALUE_BYTES,
+            "legacy SSH password exceeds size limit"
+        );
+
+        let secret_id: String = if let Some(secret_id) = existing_secret_id {
+            let value_enc: String =
+                sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+                    .bind(&secret_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("legacy SSH password reference is unavailable")
+                    })?;
+            let existing_value = decrypt(key, &value_enc)
+                .map_err(|_| anyhow::anyhow!("legacy SSH password reference is corrupt"))?;
+            anyhow::ensure!(
+                existing_value.len() <= MAX_SECRET_VALUE_BYTES,
+                "legacy SSH password reference exceeds size limit"
+            );
+            secret_id
+        } else {
+            let secret_id = uuid::Uuid::new_v4().to_string();
+            let value_enc = encrypt(key, &legacy_value)?;
+            let now = now_ts();
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+                 VALUES (?, ?, 'Migrated terminal SSH password', ?, ?, ?)",
+            )
+            .bind(&secret_id)
+            .bind(format!("terminal-ssh-password-{session_id}-{secret_id}"))
+            .bind(&value_enc)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            secret_id
+        };
+
+        sqlx::query(
+            "UPDATE ssh_sessions SET password_secret_id = ?, password_enc = NULL WHERE id = ?",
+        )
+        .bind(secret_id)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Convert the legacy Proxmox API token setting into the encrypted secret
+/// record used by the compatibility adapter. Plaintext is removed only after
+/// an encrypted value is present and decryptable; any failure leaves the
+/// legacy setting available for operator recovery.
+pub(crate) async fn migrate_legacy_proxmox_token(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    let legacy_value: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'proxmox_token'")
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(legacy_value) = legacy_value else {
+        tx.commit().await?;
+        return Ok(());
+    };
+    anyhow::ensure!(!legacy_value.is_empty(), "legacy Proxmox token is empty");
+    anyhow::ensure!(
+        legacy_value.len() <= MAX_SECRET_VALUE_BYTES,
+        "legacy Proxmox token exceeds size limit"
+    );
+
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT value_enc FROM secrets WHERE name = 'proxmox_legacy_token'")
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some(value_enc) = existing {
+        decrypt(key, &value_enc).context("legacy Proxmox token decryption failed")?;
+    } else {
+        let now = now_ts();
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let value_enc = encrypt(key, &legacy_value)?;
+        sqlx::query(
+            "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+             VALUES (?, 'proxmox_legacy_token', 'Legacy Proxmox API token', ?, ?, ?)",
+        )
+        .bind(secret_id)
+        .bind(value_enc)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query("DELETE FROM settings WHERE key = 'proxmox_token'")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Convert legacy plaintext notification channel URLs into canonical encrypted
+/// secrets referenced from settings. The whole conversion is one transaction:
+/// a failure in any channel leaves every plaintext value available for
+/// recovery and creates no partial reference. Re-running is safe because the
+/// reference is updated and the plaintext key removed in the same commit.
+pub(crate) async fn migrate_legacy_notification_credentials(
+    db: &SqlitePool,
+    key: &[u8; 32],
+) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    for credential in NOTIFICATION_CREDENTIALS.iter() {
+        let legacy: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(credential.legacy_setting)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(legacy) = legacy else {
+            continue;
+        };
+        anyhow::ensure!(
+            !legacy.is_empty(),
+            "legacy notification credential is empty"
+        );
+        anyhow::ensure!(
+            legacy.len() <= MAX_SECRET_VALUE_BYTES,
+            "legacy notification credential exceeds size limit"
+        );
+
+        let existing: Option<(String, String)> =
+            sqlx::query_as("SELECT id, value_enc FROM secrets WHERE name = ?")
+                .bind(credential.secret_name)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let secret_id = if let Some((secret_id, value_enc)) = existing {
+            // A stable-named secret already exists (an earlier operator action
+            // or a partially completed deployment). Verify it is readable under
+            // the current key before discarding the plaintext copy.
+            let value = decrypt(key, &value_enc)
+                .context("legacy notification credential secret is corrupt")?;
+            anyhow::ensure!(
+                value.len() <= MAX_SECRET_VALUE_BYTES,
+                "legacy notification credential secret exceeds size limit"
+            );
+            secret_id
+        } else {
+            let secret_id = uuid::Uuid::new_v4().to_string();
+            let value_enc = encrypt(key, &legacy)?;
+            let now = now_ts();
+            sqlx::query(
+                "INSERT INTO secrets (id, name, description, value_enc, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&secret_id)
+            .bind(credential.secret_name)
+            .bind(format!(
+                "Migrated notification credential ({})",
+                credential.channel
+            ))
+            .bind(value_enc)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            secret_id
+        };
+
+        let now = now_ts();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(credential.reference_setting)
+        .bind(&secret_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(credential.legacy_setting)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub struct SecretMeta {
     id: String,
@@ -55,6 +558,7 @@ pub struct SecretMeta {
     updated_at: i64,
     last_used_at: Option<i64>,
     version: i64,
+    disabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +578,7 @@ pub struct UpdateSecret {
     name: Option<String>,
     description: Option<String>,
     value: Option<String>,
+    disabled: Option<bool>,
 }
 
 pub async fn list(
@@ -82,25 +587,28 @@ pub async fn list(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
     auth_user(&state, &jar, false).await?;
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, Option<i64>, i64)>(
-        "SELECT id, name, description, created_at, updated_at, last_used_at, version FROM secrets ORDER BY name"
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, Option<i64>, i64, bool)>(
+        "SELECT id, name, description, created_at, updated_at, last_used_at, version, disabled FROM secrets ORDER BY name"
     ).fetch_all(&state.db).await.map_err(AppError::Database)?;
 
     // Item #7B: if the Bearer token has secret_ids restrictions, filter the list
-    let allowed = token_secret_ids(&state, &headers).await;
+    let allowed = token_secret_ids(&state, &headers).await?;
 
     let secrets: Vec<SecretMeta> = rows
         .into_iter()
         .filter(|(id, ..)| allowed.as_ref().map(|ids| ids.contains(id)).unwrap_or(true))
         .map(
-            |(id, name, description, created_at, updated_at, last_used_at, version)| SecretMeta {
-                id,
-                name,
-                description,
-                created_at,
-                updated_at,
-                last_used_at,
-                version,
+            |(id, name, description, created_at, updated_at, last_used_at, version, disabled)| {
+                SecretMeta {
+                    id,
+                    name,
+                    description,
+                    created_at,
+                    updated_at,
+                    last_used_at,
+                    version,
+                    disabled,
+                }
             },
         )
         .collect();
@@ -119,6 +627,7 @@ pub async fn create(
     if body.value.is_empty() {
         return Err(AppError::BadRequest("value required".into()));
     }
+    validate_secret_value(&body.value)?;
     let enc = encrypt(&state.secrets_key, &body.value).map_err(AppError::Internal)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
@@ -148,13 +657,17 @@ pub async fn update(
 ) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
     let now = now_ts();
+    if let Some(value) = &body.value {
+        validate_secret_value(value)?;
+    }
+    let mut tx = state.db.begin().await.map_err(AppError::Database)?;
     if let Some(v) = &body.value {
         let enc = encrypt(&state.secrets_key, v).map_err(AppError::Internal)?;
-        sqlx::query("UPDATE secrets SET value_enc=?, updated_at=? WHERE id=?")
+        sqlx::query("UPDATE secrets SET value_enc=?, version=version+1, updated_at=? WHERE id=?")
             .bind(&enc)
             .bind(now)
             .bind(&id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
     }
@@ -163,7 +676,7 @@ pub async fn update(
             .bind(n)
             .bind(now)
             .bind(&id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
     }
@@ -172,10 +685,20 @@ pub async fn update(
             .bind(&body.description)
             .bind(now)
             .bind(&id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
     }
+    if let Some(disabled) = body.disabled {
+        sqlx::query("UPDATE secrets SET disabled=?, updated_at=? WHERE id=?")
+            .bind(disabled)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    tx.commit().await.map_err(AppError::Database)?;
     audit::log(
         &state.db,
         Some(&user.id),
@@ -197,11 +720,84 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user = auth_user(&state, &jar, true).await?;
-    sqlx::query("DELETE FROM secrets WHERE id=?")
+    let mut tx = state.db.begin().await?;
+    let provider_refs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ai_providers WHERE api_key_ref = ?")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    let terminal_refs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ssh_sessions WHERE password_secret_id = ?")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    let oidc_refs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM oidc_config WHERE client_secret_id = ?")
+            .bind(&id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    let proxmox_refs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM secrets
+         WHERE id = ?
+           AND (
+               (name = 'proxmox_legacy_token' AND EXISTS (
+                   SELECT 1 FROM settings WHERE key = 'proxmox_host'
+               ))
+               OR EXISTS (
+                   SELECT 1 FROM proxmox_hosts
+                   WHERE secrets.name = 'proxmox_token_' || proxmox_hosts.id
+               )
+           )",
+    )
+    .bind(&id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+    let mut notification_refs = 0i64;
+    for credential in NOTIFICATION_CREDENTIALS.iter() {
+        notification_refs += sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM settings WHERE key = ? AND value = ?",
+        )
+        .bind(credential.reference_setting)
         .bind(&id)
-        .execute(&state.db)
+        .fetch_one(&mut *tx)
         .await
         .map_err(AppError::Database)?;
+    }
+    if provider_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by an AI provider".into(),
+        ));
+    }
+    if terminal_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by a terminal SSH session".into(),
+        ));
+    }
+    if oidc_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by OIDC configuration".into(),
+        ));
+    }
+    if proxmox_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by Proxmox configuration".into(),
+        ));
+    }
+    if notification_refs > 0 {
+        return Err(AppError::BadRequest(
+            "secret is still referenced by notification settings".into(),
+        ));
+    }
+    sqlx::query("DELETE FROM secrets WHERE id=?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    tx.commit().await.map_err(AppError::Database)?;
     audit::log(
         &state.db,
         Some(&user.id),
@@ -226,7 +822,7 @@ pub async fn reveal(
     let user = auth_user(&state, &jar, true).await?;
 
     // Item #7B: enforce scoped token restriction
-    let allowed = token_secret_ids(&state, &headers).await;
+    let allowed = token_secret_ids(&state, &headers).await?;
     if let Some(ids) = &allowed {
         if !ids.contains(&id) {
             audit::log(
@@ -339,7 +935,10 @@ pub async fn rotate(
 
     // Use provided new_value or generate a random 32-byte hex value
     let new_value = match body.new_value {
-        Some(v) if !v.is_empty() => v,
+        Some(v) if !v.is_empty() => {
+            validate_secret_value(&v)?;
+            v
+        }
         _ => {
             let mut bytes = [0u8; 32];
             OsRng.fill_bytes(&mut bytes);
@@ -410,43 +1009,133 @@ async fn auth_user(state: &AppState, jar: &CookieJar, require_admin: bool) -> Re
 }
 
 /// Item #7B: if the request carries a Bearer token that has `secret_ids` set,
-/// return Some(allowed_ids). Returns None when the token is unrestricted or
-/// the request is session-authenticated (no bearer token present).
+/// return Some(allowed_ids). A presented token with a missing or malformed
+/// secret scope fails closed; None is reserved for session-authenticated
+/// requests without a bearer token.
 async fn token_secret_ids(
     state: &AppState,
     headers: &HeaderMap,
-) -> Option<std::collections::HashSet<String>> {
+) -> Result<Option<std::collections::HashSet<String>>> {
     use sha2::{Digest, Sha256};
-    let raw_token = headers
-        .get(axum::http::header::AUTHORIZATION)?
+    let Some(header) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+    let raw_token = header
         .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")?
+        .map_err(|_| AppError::Forbidden)?
+        .strip_prefix("Bearer ")
+        .ok_or(AppError::Forbidden)?
         .trim();
+    if raw_token.is_empty() {
+        return Err(AppError::Forbidden);
+    }
 
     let mut h = Sha256::new();
     h.update(raw_token.as_bytes());
     let token_hash = hex::encode(h.finalize());
-
-    // fetch_optional returns Option<Option<String>> — outer = row found, inner = column value
     let row: Option<Option<String>> =
         sqlx::query_scalar("SELECT secret_ids FROM api_tokens WHERE token_hash = ?")
             .bind(&token_hash)
             .fetch_optional(&state.db)
             .await
-            .ok()?;
-
-    // If no row found, or column is NULL, the token has no restriction
-    let secret_ids_json = row??.to_string();
-    let ids: Vec<String> = serde_json::from_str(&secret_ids_json).ok()?;
-    Some(ids.into_iter().collect())
+            .map_err(AppError::Database)?;
+    let Some(secret_ids_json) = row else {
+        return Err(AppError::Unauthorized);
+    };
+    let Some(secret_ids_json) = secret_ids_json else {
+        return Err(AppError::Forbidden);
+    };
+    let ids: Vec<String> =
+        serde_json::from_str(&secret_ids_json).map_err(|_| AppError::Forbidden)?;
+    Ok(Some(ids.into_iter().collect()))
 }
 
-fn now_ts() -> i64 {
+fn validate_secret_value(value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(AppError::BadRequest("value required".into()));
+    }
+    if value.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(AppError::BadRequest("value exceeds size limit".into()));
+    }
+    Ok(())
+}
+
+pub(crate) fn now_ts() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod webhook_migration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn legacy_webhook_secret_moves_to_encrypted_reference_without_plaintext() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let legacy = "legacy-webhook-sentinel";
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.webhook_secret', ?, 0)",
+        )
+        .bind(legacy)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        migrate_legacy_webhook_secret(&db, &[0u8; 32])
+            .await
+            .unwrap();
+
+        let old: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.webhook_secret'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(old.is_none());
+        let secret_id: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'odysseus.webhook_secret_id'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert!(!encrypted.contains(legacy));
+        assert_eq!(
+            resolve(&db, &[0u8; 32], &secret_id, ODYSSEUS_WEBHOOK_PURPOSE)
+                .await
+                .unwrap(),
+            legacy
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_legacy_webhook_secret_preserves_plaintext_for_recovery() {
+        let db = crate::api::mcp::test_support::setup_db().await;
+        let legacy = "x".repeat(MAX_SECRET_VALUE_BYTES + 1);
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('odysseus.webhook_secret', ?, 0)",
+        )
+        .bind(&legacy)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let error = migrate_legacy_webhook_secret(&db, &[0u8; 32])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds size limit"));
+        let retained: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'odysseus.webhook_secret'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(retained, legacy);
+    }
 }
 
 #[cfg(test)]
@@ -473,7 +1162,11 @@ mod tests {
     //!   `encrypt()` failure branch are left unaudited for the same reason:
     //!   no secret exists yet at that point to attach a `resource_id` to.
 
-    use super::encrypt;
+    use super::{
+        decrypt, encrypt, migrate_legacy_notification_credentials, migrate_legacy_provider_secrets,
+        migrate_legacy_proxmox_token, migrate_legacy_ssh_session_passwords, resolve, ResolveError,
+        NOTIFICATION_CREDENTIALS, NOTIFICATION_WEBHOOK_PURPOSE,
+    };
     use axum::{
         body::Body,
         extract::connect_info::ConnectInfo,
@@ -558,6 +1251,27 @@ mod tests {
         .bind(&hash)
         .bind(now)
         .bind(&secret_ids_json)
+        .execute(db)
+        .await
+        .unwrap();
+        raw
+    }
+
+    async fn insert_token_with_null_secret_scope(db: &SqlitePool, user_id: &str) -> String {
+        let raw = format!("vt_null_scope_{}", uuid::Uuid::new_v4().simple());
+        let mut h = Sha256::new();
+        h.update(raw.as_bytes());
+        let hash = hex::encode(h.finalize());
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at, secret_ids)
+             VALUES (?, ?, 'test-null-secret-scope-token', ?, '[]', NULL, ?, NULL)",
+        )
+        .bind(&id)
+        .bind(user_id)
+        .bind(&hash)
+        .bind(now)
         .execute(db)
         .await
         .unwrap();
@@ -676,6 +1390,84 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn resolver_rejects_unregistered_purpose_before_secret_access() {
+        let db = setup_db().await;
+        let secret_id = insert_secret(&db).await;
+
+        let error = resolve(&db, &[0u8; 32], &secret_id, "unregistered-purpose")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ResolveError::InvalidPurpose);
+        assert_eq!(error.to_string(), "secret purpose is not supported");
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolver_fails_closed_when_last_use_update_fails() {
+        let db = setup_db().await;
+        let secret_id = insert_secret(&db).await;
+        sqlx::query(
+            "CREATE TRIGGER fail_secret_last_used \
+             BEFORE UPDATE OF last_used_at ON secrets \
+             WHEN NEW.id = OLD.id \
+             BEGIN SELECT RAISE(ABORT, 'fixture last-use failure'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let error = resolve(&db, &[0u8; 32], &secret_id, "ai_provider")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ResolveError::Database);
+        assert_eq!(error.to_string(), "secret unavailable");
+        assert!(!error.to_string().contains("fixture last-use failure"));
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_none());
+    }
+
+    /// Values above the storage bound are rejected before last-use recording.
+    #[tokio::test]
+    async fn resolver_rejects_oversized_secret_before_last_use_recording() {
+        let db = setup_db().await;
+        let secret_id = insert_secret(&db).await;
+        let oversized = "x".repeat(super::MAX_SECRET_VALUE_BYTES + 1);
+        let value_enc = encrypt(&[0u8; 32], &oversized).unwrap();
+        sqlx::query("UPDATE secrets SET value_enc = ? WHERE id = ?")
+            .bind(value_enc)
+            .bind(&secret_id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let error = resolve(&db, &[0u8; 32], &secret_id, "redaction")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ResolveError::TooLarge);
+        let last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(last_used_at.is_none());
+    }
+
     /// Baseline: confirms current behavior before any change in this task —
     /// `reveal`'s success path already audit-logs unconditionally.
     #[tokio::test]
@@ -774,6 +1566,117 @@ mod tests {
             "expected exactly one audit row, got {rows:?}"
         );
         assert_eq!(rows[0].0, "forbidden");
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_secret_referenced_by_terminal_ssh_session() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = "terminal-referenced-secret";
+        let now = unix_now();
+        let encrypted = encrypt(&[0u8; 32], "fixture-terminal-password").unwrap();
+        sqlx::query(
+            "INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(secret_id)
+        .bind("terminal-referenced-secret")
+        .bind(encrypted)
+        .bind(now)
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ssh_sessions (id, label, host, port, username, key_path, password_secret_id) \
+             VALUES ('terminal-referenced-session', 'fixture', '192.0.2.20', 22, 'fixture-user', NULL, ?)",
+        )
+        .bind(secret_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+        let response = app
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM secrets WHERE id = ?")
+                .bind(secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT password_secret_id FROM ssh_sessions WHERE id = ?",
+            )
+            .bind("terminal-referenced-session")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .as_deref(),
+            Some(secret_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_secret_referenced_by_notification_settings() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('notif_discord_webhook', 'fixture-webhook-sentinel', ?)")
+            .bind(unix_now())
+            .execute(&db)
+            .await
+            .unwrap();
+        migrate_legacy_notification_credentials(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let secret_id: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'notif.discord_webhook_secret_id'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+        let response = app
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM settings WHERE key = 'notif.discord_webhook_secret_id' AND value = ?",
+            )
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            1
+        );
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     /// Regression guard against double-logging (a call site duplicated by a
@@ -884,5 +1787,1058 @@ mod tests {
         );
         assert_eq!(good_rows[0].0, "success");
         assert_eq!(bad_rows[0].0, "internal_error");
+    }
+
+    #[tokio::test]
+    async fn updating_secret_value_increments_version_and_replaces_ciphertext() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = insert_secret(&db).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let response = app
+            .oneshot(cookie_req(
+                "PATCH",
+                &format!("/api/secrets/{secret_id}"),
+                &session,
+                Some(serde_json::json!({ "value": "fixture-updated-value" })),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let (version, value_enc): (i64, String) =
+            sqlx::query_as("SELECT version, value_enc FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(
+            decrypt(&[0u8; 32], &value_enc).unwrap(),
+            "fixture-updated-value"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_provider_settings_migrate_once_and_missing_values_disable_safely() {
+        let db = setup_db().await;
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('legacy.ai.key', 'fixture-value', ?)",
+        )
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        for (id, reference) in [
+            ("provider-a", "legacy.ai.key"),
+            ("provider-b", "legacy.ai.key"),
+            ("provider-missing", "missing.ai.key"),
+        ] {
+            sqlx::query(
+                "INSERT INTO ai_providers \
+                 (id, kind, name, enabled, api_key_ref, priority, created_at, updated_at) \
+                 VALUES (?, 'openai', ?, 1, ?, 1, ?, ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(reference)
+            .bind(now)
+            .bind(now)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap();
+
+        let refs: Vec<(String, String, bool)> =
+            sqlx::query_as("SELECT id, api_key_ref, enabled FROM ai_providers ORDER BY id")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        assert!(uuid::Uuid::parse_str(&refs[0].1).is_ok());
+        assert_eq!(refs[0].1, refs[1].1);
+        assert_eq!(refs[2].1, "missing.ai.key");
+        assert!(!refs[2].2);
+        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+            .bind(&refs[0].1)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(decrypt(&[0u8; 32], &encrypted).unwrap(), "fixture-value");
+        let remaining: Option<String> =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'legacy.ai.key'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(remaining.is_none());
+
+        migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let secret_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM secrets")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(secret_count, 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_proxmox_token_migration_encrypts_and_removes_plaintext() {
+        let db_path = std::env::temp_dir().join(format!(
+            "voidtower-proxmox-secret-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::init_pool(&db_path).await.unwrap();
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('proxmox_token', 'proxmox-fixture-token', ?)",
+        )
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        migrate_legacy_proxmox_token(&db, &[0u8; 32]).await.unwrap();
+
+        let encrypted: String =
+            sqlx::query_scalar("SELECT value_enc FROM secrets WHERE name = 'proxmox_legacy_token'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            decrypt(&[0u8; 32], &encrypted).unwrap(),
+            "proxmox-fixture-token"
+        );
+        assert!(sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = 'proxmox_token'",
+        )
+        .fetch_optional(&db)
+        .await
+        .unwrap()
+        .is_none());
+
+        migrate_legacy_proxmox_token(&db, &[0u8; 32]).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM secrets WHERE name = 'proxmox_legacy_token'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            1
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn legacy_proxmox_token_migration_preserves_plaintext_on_failure() {
+        let db = setup_db().await;
+        let oversized = "x".repeat(super::MAX_SECRET_VALUE_BYTES + 1);
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('proxmox_token', ?, ?)")
+            .bind(&oversized)
+            .bind(unix_now())
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let error = migrate_legacy_proxmox_token(&db, &[0u8; 32])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds size limit"));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'proxmox_token'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            oversized
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM secrets WHERE name = 'proxmox_legacy_token'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_notification_credentials_migrate_to_encrypted_references_without_plaintext() {
+        let db = setup_db().await;
+        let sentinels = [
+            "https://ntfy.invalid/topic-sentinel",
+            "https://discord.invalid/api/webhooks/sentinel",
+            "https://hooks.slack.invalid/services/sentinel",
+        ];
+        for (credential, sentinel) in NOTIFICATION_CREDENTIALS.iter().zip(sentinels) {
+            sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+                .bind(credential.legacy_setting)
+                .bind(sentinel)
+                .bind(unix_now())
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+
+        migrate_legacy_notification_credentials(&db, &[0u8; 32])
+            .await
+            .unwrap();
+
+        for (credential, sentinel) in NOTIFICATION_CREDENTIALS.iter().zip(sentinels) {
+            let legacy: Option<String> =
+                sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                    .bind(credential.legacy_setting)
+                    .fetch_optional(&db)
+                    .await
+                    .unwrap();
+            assert!(
+                legacy.is_none(),
+                "plaintext {} survived",
+                credential.channel
+            );
+
+            let secret_id: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                .bind(credential.reference_setting)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+            assert!(uuid::Uuid::parse_str(&secret_id).is_ok());
+            let (name, value_enc): (String, String) =
+                sqlx::query_as("SELECT name, value_enc FROM secrets WHERE id = ?")
+                    .bind(&secret_id)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap();
+            assert_eq!(name, credential.secret_name);
+            assert!(
+                !value_enc.contains(sentinel),
+                "{} ciphertext contains plaintext",
+                credential.channel
+            );
+            assert_eq!(decrypt(&[0u8; 32], &value_enc).unwrap(), sentinel);
+            assert_eq!(
+                resolve(&db, &[0u8; 32], &secret_id, NOTIFICATION_WEBHOOK_PURPOSE)
+                    .await
+                    .unwrap(),
+                sentinel
+            );
+            assert!(
+                sqlx::query_scalar::<_, Option<i64>>(
+                    "SELECT last_used_at FROM secrets WHERE id = ?"
+                )
+                .bind(&secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+                .is_some(),
+                "{} resolution must record last use",
+                credential.channel
+            );
+        }
+
+        // Re-running is a no-op: the plaintext keys are gone and no duplicate,
+        // re-versioned secret is created.
+        migrate_legacy_notification_credentials(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM secrets WHERE name LIKE 'notification_%'"
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            NOTIFICATION_CREDENTIALS.len() as i64
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM secrets WHERE name LIKE 'notification_%' AND version = 0"
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            NOTIFICATION_CREDENTIALS.len() as i64
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_notification_credential_keeps_every_plaintext_value_atomically() {
+        let db = setup_db().await;
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('notif_discord_webhook', 'valid-discord-sentinel', ?)")
+            .bind(unix_now())
+            .execute(&db)
+            .await
+            .unwrap();
+        let oversized = "x".repeat(super::MAX_SECRET_VALUE_BYTES + 1);
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('notif_slack_webhook', ?, ?)",
+        )
+        .bind(&oversized)
+        .bind(unix_now())
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let error = migrate_legacy_notification_credentials(&db, &[0u8; 32])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds size limit"));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'notif_discord_webhook'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            "valid-discord-sentinel"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'notif_slack_webhook'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            oversized
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM secrets WHERE name LIKE 'notification_%'"
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM settings WHERE key LIKE 'notif.%'",)
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_credential_migration_reuses_a_stable_named_secret() {
+        let db = setup_db().await;
+        let secret_id = uuid::Uuid::new_v4().to_string();
+        let now = unix_now();
+        let value_enc = encrypt(&[0u8; 32], "operator-managed-value").unwrap();
+        sqlx::query("INSERT INTO secrets (id, name, value_enc, created_at, updated_at) VALUES (?, 'notification_discord_webhook', ?, ?, ?)")
+            .bind(&secret_id)
+            .bind(&value_enc)
+            .bind(now)
+            .bind(now)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('notif_discord_webhook', 'stale-plaintext', ?)")
+            .bind(now)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        migrate_legacy_notification_credentials(&db, &[0u8; 32])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'notif.discord_webhook_secret_id'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            secret_id
+        );
+        assert!(sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = 'notif_discord_webhook'",
+        )
+        .fetch_optional(&db)
+        .await
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            resolve(&db, &[0u8; 32], &secret_id, NOTIFICATION_WEBHOOK_PURPOSE)
+                .await
+                .unwrap(),
+            "operator-managed-value"
+        );
+    }
+
+    #[tokio::test]
+    async fn migrated_notification_secret_rotates_and_resolves_the_new_value() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let now = unix_now();
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('notif_discord_webhook', 'initial-sentinel', ?)")
+            .bind(now)
+            .execute(&db)
+            .await
+            .unwrap();
+        migrate_legacy_notification_credentials(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let secret_id: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'notif.discord_webhook_secret_id'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+        let response = app
+            .oneshot(cookie_req(
+                "POST",
+                &format!("/api/secrets/{secret_id}/rotate"),
+                &session,
+                Some(serde_json::json!({ "new_value": "rotated-sentinel" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let version: i64 = sqlx::query_scalar("SELECT version FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(
+            resolve(&db, &[0u8; 32], &secret_id, NOTIFICATION_WEBHOOK_PURPOSE)
+                .await
+                .unwrap(),
+            "rotated-sentinel"
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_credential_migration_is_restart_safe_on_a_file_database() {
+        let db_path = std::env::temp_dir().join(format!(
+            "voidtower-notification-secret-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::init_pool(&db_path).await.unwrap();
+        let now = unix_now();
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('notif_ntfy_url', 'https://ntfy.invalid/restart-topic', ?), ('notif_slack_webhook', 'https://hooks.slack.invalid/services/restart', ?)")
+            .bind(now)
+            .bind(now)
+            .execute(&db)
+            .await
+            .unwrap();
+        migrate_legacy_notification_credentials(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let mut references: Vec<(String, String)> =
+            sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'notif.%' ORDER BY key")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        db.close().await;
+
+        // Second startup on the same database must not duplicate, re-version, or
+        // resurrect the plaintext keys.
+        let db = crate::db::init_pool(&db_path).await.unwrap();
+        migrate_legacy_notification_credentials(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let after: Vec<(String, String)> =
+            sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'notif.%' ORDER BY key")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        references.sort();
+        assert_eq!(references, after);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM secrets WHERE name LIKE 'notification_%'"
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM settings WHERE key IN ('notif_ntfy_url', 'notif_slack_webhook')",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            0
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn malformed_token_secret_scope_fails_closed_before_reveal() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = insert_secret(&db).await;
+        let raw_token = format!("vt_malformed_{}", uuid::Uuid::new_v4().simple());
+        let mut hash = Sha256::new();
+        hash.update(raw_token.as_bytes());
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO api_tokens (id, user_id, name, token_hash, scopes, expires_at, created_at, secret_ids)
+             VALUES (?, ?, 'malformed-scope-token', ?, '[\"secrets:list\"]', NULL, ?, '{not-json}')",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&admin)
+        .bind(hex::encode(hash.finalize()))
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+        let response = app
+            .oneshot(cookie_and_bearer_req(
+                "GET",
+                &format!("/api/secrets/{secret_id}/reveal"),
+                &session,
+                &raw_token,
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let rows = audit_rows(&db, "reveal_secret", &secret_id).await;
+        assert_eq!(
+            rows.len(),
+            0,
+            "malformed token must fail before secret lookup"
+        );
+    }
+
+    #[tokio::test]
+    async fn null_token_secret_scope_fails_closed_before_list_or_reveal() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = insert_secret(&db).await;
+        let raw_token = insert_token_with_null_secret_scope(&db, &admin).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let list_response = app
+            .clone()
+            .oneshot(cookie_and_bearer_req(
+                "GET",
+                "/api/secrets",
+                &session,
+                &raw_token,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::FORBIDDEN);
+
+        let reveal_response = app
+            .oneshot(cookie_and_bearer_req(
+                "GET",
+                &format!("/api/secrets/{secret_id}/reveal"),
+                &session,
+                &raw_token,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reveal_response.status(), StatusCode::FORBIDDEN);
+        assert!(audit_rows(&db, "reveal_secret", &secret_id)
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_secret_referenced_by_oidc_or_proxmox() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let oidc_secret_id = insert_secret(&db).await;
+        sqlx::query(
+            "INSERT INTO oidc_config (id, enabled, client_secret_id, updated_at) VALUES ('default', 1, ?, ?)",
+        )
+        .bind(&oidc_secret_id)
+        .bind(unix_now())
+        .execute(&db)
+        .await
+        .unwrap();
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let oidc_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{oidc_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(oidc_response.status(), StatusCode::BAD_REQUEST);
+        let oidc_body = axum::body::to_bytes(oidc_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&oidc_body).contains("super-secret-value"));
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&oidc_secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT client_secret_id FROM oidc_config WHERE id = 'default'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .as_deref(),
+            Some(oidc_secret_id.as_str())
+        );
+
+        sqlx::query("UPDATE oidc_config SET client_secret_id = NULL WHERE id = 'default'")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO proxmox_hosts (id, name, url, node) VALUES ('fixture', 'Fixture', 'https://192.0.2.30:8006', 'pve')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let proxmox_secret_id = insert_secret(&db).await;
+        sqlx::query("UPDATE secrets SET name = ? WHERE id = ?")
+            .bind("proxmox_token_fixture")
+            .bind(&proxmox_secret_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        let proxmox_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{proxmox_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(proxmox_response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&proxmox_secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let orphaned_proxmox_name_id = insert_secret(&db).await;
+        sqlx::query("UPDATE secrets SET name = ? WHERE id = ?")
+            .bind("proxmox_token_orphan")
+            .bind(&orphaned_proxmox_name_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        let orphaned_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{orphaned_proxmox_name_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(orphaned_response.status(), StatusCode::OK);
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&orphaned_proxmox_name_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let legacy_proxmox_secret_id = insert_secret(&db).await;
+        sqlx::query("UPDATE secrets SET name = ? WHERE id = ?")
+            .bind("proxmox_legacy_token")
+            .bind(&legacy_proxmox_secret_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+            .bind("proxmox_host")
+            .bind("192.0.2.31")
+            .bind(unix_now())
+            .execute(&db)
+            .await
+            .unwrap();
+        let legacy_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{legacy_proxmox_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(legacy_response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&legacy_proxmox_secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        sqlx::query("DELETE FROM settings WHERE key = 'proxmox_host'")
+            .execute(&db)
+            .await
+            .unwrap();
+        let legacy_deleted_response = app
+            .clone()
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{legacy_proxmox_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(legacy_deleted_response.status(), StatusCode::OK);
+
+        let unreferenced_secret_id = insert_secret(&db).await;
+        let deleted_response = app
+            .oneshot(cookie_req(
+                "DELETE",
+                &format!("/api/secrets/{unreferenced_secret_id}"),
+                &session,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(deleted_response.status(), StatusCode::OK);
+        assert!(
+            sqlx::query_scalar::<_, String>("SELECT id FROM secrets WHERE id = ?")
+                .bind(&unreferenced_secret_id)
+                .fetch_optional(&db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_rotation_is_rejected_without_replacing_last_good_value() {
+        let db = setup_db().await;
+        let admin = insert_user(&db, "admin").await;
+        let session = insert_session(&db, &admin).await;
+        let secret_id = insert_secret(&db).await;
+        let app = crate::api::router(crate::api::mcp::test_support::build(db.clone()));
+
+        let oversized = "x".repeat(super::MAX_SECRET_VALUE_BYTES + 1);
+        let response = app
+            .oneshot(cookie_req(
+                "POST",
+                &format!("/api/secrets/{secret_id}/rotate"),
+                &session,
+                Some(serde_json::json!({ "new_value": oversized })),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let (value_enc, version): (String, i64) =
+            sqlx::query_as("SELECT value_enc, version FROM secrets WHERE id = ?")
+                .bind(&secret_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            decrypt(&[0u8; 32], &value_enc).unwrap(),
+            "super-secret-value"
+        );
+        assert_eq!(version, 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_provider_migration_is_fresh_restart_safe_and_fails_closed() {
+        let db_path = std::env::temp_dir().join(format!(
+            "voidtower-secret-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::init_pool(&db_path).await.unwrap();
+        let migration_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = 1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            migration_count, 10,
+            "fresh databases apply migrations through 0010"
+        );
+
+        let now = unix_now();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) \
+             VALUES ('legacy.missing', 'must-remain-unread', ?)",
+        )
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_providers \
+             (id, kind, name, enabled, api_key_ref, priority, created_at, updated_at) \
+             VALUES ('provider-missing', 'openai', 'Missing legacy provider', 1, \
+                     'legacy.not-found', 1, ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let missing_state: (String, bool) = sqlx::query_as(
+            "SELECT api_key_ref, enabled FROM ai_providers WHERE id = 'provider-missing'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(missing_state.0, "legacy.not-found");
+        assert!(!missing_state.1);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'legacy.missing'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            "must-remain-unread"
+        );
+
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) \
+             VALUES ('legacy.failure', 'failure-fixture', ?), \
+                    ('legacy.good', 'good-fixture', ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&db)
+        .await
+        .unwrap();
+        for (id, reference) in [
+            ("provider-failure", "legacy.failure"),
+            ("provider-good", "legacy.good"),
+        ] {
+            sqlx::query(
+                "INSERT INTO ai_providers \
+                 (id, kind, name, enabled, api_key_ref, priority, created_at, updated_at) \
+                 VALUES (?, 'openai', ?, 1, ?, 1, ?, ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(reference)
+            .bind(now)
+            .bind(now)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "CREATE TRIGGER fail_secret_provider_update \
+             BEFORE UPDATE OF api_key_ref ON ai_providers \
+             WHEN NEW.id = 'provider-failure' \
+             BEGIN SELECT RAISE(ABORT, 'fixture migration failure'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let migration_error = migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap_err();
+        assert!(migration_error
+            .to_string()
+            .contains("fixture migration failure"));
+        let failed_state: (String, bool) = sqlx::query_as(
+            "SELECT api_key_ref, enabled FROM ai_providers WHERE id = 'provider-failure'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(failed_state.0, "legacy.failure");
+        assert!(!failed_state.1);
+        let good_enabled: bool =
+            sqlx::query_scalar("SELECT enabled FROM ai_providers WHERE id = 'provider-good'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(!good_enabled);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM settings WHERE key = 'legacy.failure'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            "failure-fixture"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM secrets")
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            0
+        );
+
+        sqlx::query("DROP TRIGGER fail_secret_provider_update")
+            .execute(&db)
+            .await
+            .unwrap();
+        db.close().await;
+
+        let db = crate::db::init_pool(&db_path).await.unwrap();
+        migrate_legacy_provider_secrets(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let good_ref: String =
+            sqlx::query_scalar("SELECT api_key_ref FROM ai_providers WHERE id = 'provider-good'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(uuid::Uuid::parse_str(&good_ref).is_ok());
+        assert_eq!(
+            decrypt(
+                &[0u8; 32],
+                &sqlx::query_scalar::<_, String>("SELECT value_enc FROM secrets WHERE id = ?",)
+                    .bind(&good_ref)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap(),
+            "good-fixture"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM secrets")
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            2
+        );
+        assert!(sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = 'legacy.good'",
+        )
+        .fetch_optional(&db)
+        .await
+        .unwrap()
+        .is_none());
+        db.close().await;
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn legacy_ssh_password_migrates_to_secret_reference_and_is_idempotent() {
+        let db = setup_db().await;
+        let session_id = "ssh-session-legacy-fixture";
+        let legacy_password = "legacy-ssh-password-fixture";
+        let legacy_ciphertext = encrypt(&[0u8; 32], legacy_password).unwrap();
+        sqlx::query(
+            "INSERT INTO ssh_sessions \
+             (id, label, host, port, username, key_path, password_enc) \
+             VALUES (?, 'legacy fixture', '192.0.2.10', 22, 'fixture-user', NULL, ?)",
+        )
+        .bind(session_id)
+        .bind(&legacy_ciphertext)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        migrate_legacy_ssh_session_passwords(&db, &[0u8; 32])
+            .await
+            .unwrap();
+
+        let (legacy_after, secret_id): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT password_enc, password_secret_id FROM ssh_sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(legacy_after.is_none());
+        let secret_id = secret_id.expect("migrated secret reference");
+        let encrypted: String = sqlx::query_scalar("SELECT value_enc FROM secrets WHERE id = ?")
+            .bind(&secret_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(decrypt(&[0u8; 32], &encrypted).unwrap(), legacy_password);
+        assert_eq!(
+            resolve(&db, &[0u8; 32], &secret_id, "terminal_ssh")
+                .await
+                .unwrap(),
+            legacy_password
+        );
+
+        migrate_legacy_ssh_session_passwords(&db, &[0u8; 32])
+            .await
+            .unwrap();
+        let (_, reference_after): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT password_enc, password_secret_id FROM ssh_sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(reference_after.as_deref(), Some(secret_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn legacy_ssh_password_migration_preserves_ciphertext_on_failure() {
+        let db = setup_db().await;
+        sqlx::query(
+            "INSERT INTO ssh_sessions \
+             (id, label, host, port, username, key_path, password_enc) \
+             VALUES ('ssh-session-corrupt-fixture', 'corrupt fixture', '192.0.2.11', 22, 'fixture-user', NULL, 'not-ciphertext')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        assert!(migrate_legacy_ssh_session_passwords(&db, &[0u8; 32])
+            .await
+            .is_err());
+        let row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT password_enc, password_secret_id FROM ssh_sessions WHERE id = 'ssh-session-corrupt-fixture'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(row.0.as_deref(), Some("not-ciphertext"));
+        assert!(row.1.is_none());
     }
 }

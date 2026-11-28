@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Trash2, Play, Plus, ShieldCheck, ShieldOff } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import type { DurableJobResponse } from '@/api/types'
+import { notify } from '@/store/notifications'
 
-interface FirewallRule { id: string; chain: string; protocol: string; port?: string; action: string; enabled: boolean; from?: string }
-interface FwStatus { status: 'active' | 'inactive' | 'unknown'; rules: FirewallRule[] }
+interface FirewallRule { num: number; to: string; action: string; from: string; ipv6: boolean }
+interface FwStatus { enabled: boolean; rules: FirewallRule[]; error?: string | null }
 const emptyForm = { direction: 'in', action: 'allow', protocol: 'tcp', port: '' }
 
 export default function NativeFirewallPanel() {
@@ -11,25 +15,36 @@ export default function NativeFirewallPanel() {
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(false)
   const [form, setForm] = useState(emptyForm)
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   async function load() {
     const r = await fetch('/api/firewall', { credentials: 'include' })
     if (r.ok) { const d = await r.json(); setStatus(d) }
     setLoading(false)
   }
-  async function deleteRule(id: string) {
-    await fetch('/api/firewall/rules/delete', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
-    load()
+  async function submitJob(path: string, body: Record<string, unknown>, label: string): Promise<boolean> {
+    try {
+      const response = await fetch(path, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const payload = await response.json()
+      if (!response.ok || !payload.job) throw new Error(payload.error?.message ?? 'Submission failed')
+      const { job } = payload as DurableJobResponse
+      track(job, { label, onSucceeded: load })
+      return true
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : `${label} failed`)
+      return false
+    }
+  }
+  async function deleteRule(num: number) {
+    await submitJob('/api/firewall/rules/delete', { num }, `Delete firewall rule #${num}`)
   }
   async function runAction(action: string) {
-    await fetch('/api/firewall/action', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) })
-    load()
+    await submitJob('/api/firewall/action', { action }, `Firewall ${action}`)
   }
   async function submit() {
-    const body: Record<string, string> = { direction: form.direction, action: form.action, protocol: form.protocol }
+    const body: Record<string, string> = { direction: form.direction, action: form.action, proto: form.protocol }
     if (form.port) body.port = form.port
-    await fetch('/api/firewall', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    setModal(false); load()
+    if (await submitJob('/api/firewall/rules', body, 'Add firewall rule')) setModal(false)
   }
 
   useEffect(() => { load() }, [])
@@ -40,7 +55,7 @@ export default function NativeFirewallPanel() {
     return () => window.removeEventListener('keydown', h)
   }, [modal])
 
-  const active = status?.status === 'active'
+  const active = status?.enabled ?? false
   const rules = status?.rules ?? []
 
   return (
@@ -48,23 +63,24 @@ export default function NativeFirewallPanel() {
       <IconBtn title="Reload firewall" onClick={() => runAction('reload')}><Play size={11} /></IconBtn>
       <IconBtn title="New rule" onClick={() => { setForm(emptyForm); setModal(true) }}><Plus size={12} /></IconBtn>
     </>}>
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {loading ? <LoadingState /> : <>
         <NativeRow style={{ background: 'var(--bg-elevated)' }}>
-          <StatusDot color={active ? '#22c55e' : status?.status === 'inactive' ? '#ef4444' : '#94a3b8'} />
+          <StatusDot color={active ? '#22c55e' : status?.error ? '#94a3b8' : '#ef4444'} />
           <div style={{ flex: 1, fontSize: 11, color: 'var(--text-primary)' }}>UFW {active ? 'Active' : 'Inactive'}</div>
           <IconBtn title={active ? 'Disable firewall' : 'Enable firewall'} onClick={() => runAction(active ? 'disable' : 'enable')}>
             {active ? <ShieldCheck size={13} /> : <ShieldOff size={13} />}
           </IconBtn>
         </NativeRow>
         {rules.length === 0 ? <EmptyState text="No rules" /> :
-          rules.map(rule => (
-            <NativeRow key={rule.id}>
+          rules.filter(rule => !rule.ipv6).map(rule => (
+            <NativeRow key={rule.num}>
               <StatusDot color={rule.action === 'ACCEPT' ? '#22c55e' : rule.action === 'DROP' ? '#ef4444' : '#f59e0b'} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 11, color: 'var(--text-primary)' }}>{rule.chain} {rule.protocol}{rule.port ? `:${rule.port}` : ''} · {rule.action}</div>
-                {rule.from && <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>from {rule.from}</div>}
+                <div style={{ fontSize: 11, color: 'var(--text-primary)' }}>{rule.to} · {rule.action}</div>
+                <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>from {rule.from}</div>
               </div>
-              <IconBtn title="Delete rule" onClick={() => deleteRule(rule.id)} danger><Trash2 size={11} /></IconBtn>
+              <IconBtn title="Delete rule" onClick={() => deleteRule(rule.num)} danger><Trash2 size={11} /></IconBtn>
             </NativeRow>
           ))
         }

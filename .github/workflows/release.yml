@@ -5,22 +5,41 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: Build ${{ matrix.target }}
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     strategy:
       matrix:
         target:
           - x86_64-unknown-linux-musl
           - aarch64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Install standalone MCP contract dependencies
+        run: python3 -m pip install --disable-pip-version-check --requirement odysseus-mcp-servers/requirements.txt
+
+      - name: Validate release package contract
+        run: python3 scripts/test_release_gate.py
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
@@ -30,7 +49,7 @@ jobs:
         working-directory: frontend
         run: npm ci && npm run build
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-26
         with:
           targets: ${{ matrix.target }}
 
@@ -40,7 +59,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu musl-tools
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: backend
           key: ${{ matrix.target }}
@@ -56,35 +75,180 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           ARCH="${{ matrix.target }}"
           ARCHIVE="voidtower-${VERSION}-${ARCH%%-*}-unknown-linux-musl.tar.gz"
-          mkdir -p pkg
-          cp backend/target/${{ matrix.target }}/release/voidtower pkg/
-          cp -r frontend/dist pkg/frontend
-          tar -czf "$ARCHIVE" -C pkg .
-          sha256sum "$ARCHIVE" >> SHA256SUMS
+          rm -rf dist
+          mkdir -p dist/pkg/packaging/systemd
+          cp backend/target/${{ matrix.target }}/release/voidtower dist/pkg/
+          cp -r frontend/dist dist/pkg/frontend
+          cp -r packaging/systemd/. dist/pkg/packaging/systemd/
+          tar -czf "$ARCHIVE" -C dist/pkg .
+          sha256sum "$ARCHIVE" > dist/SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - name: Install release-gate tooling
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-deny
+
+      - name: Run release gate manifest
+        run: >-
+          VERSION="${GITHUB_REF_NAME#v}";
+          TARGET="${{ matrix.target }}";
+          ARCH_NAME=x86_64;
+          if [ "$TARGET" = aarch64-unknown-linux-musl ]; then ARCH_NAME=aarch64; fi;
+          ARCHIVE="voidtower-${VERSION}-${ARCH_NAME}-unknown-linux-musl.tar.gz";
+          python3 scripts/release_gate.py
+          --repo .
+          --manifest scripts/release-gates.json
+          --scope all
+          --require-clean
+          --artifact "$ARCHIVE"
+          --json
+          --output dev-data/release-gate-${{ matrix.target }}.json
+
+      - name: Prepare release evidence artifact
+        run: cp dev-data/release-gate-${{ matrix.target }}.json release-gate-${{ matrix.target }}.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-${{ matrix.target }}
           path: |
             voidtower-*.tar.gz
-            SHA256SUMS
+            release-gate-${{ matrix.target }}.json
+          if-no-files-found: error
+
+  golden-path-runtime:
+    name: Release golden path runtime
+    needs: build
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-x86_64-unknown-linux-musl
+          path: release-package
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-26
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: backend
+      - name: Install restic
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes -qq restic
+      - name: Verify Docker and restic dependencies
+        run: |
+          docker info
+          docker compose version
+          restic version
+      - name: Run and record real-infrastructure golden path
+        shell: bash
+        run: |
+          ARCHIVE_PATH="$(find release-package -maxdepth 1 -type f -name 'voidtower-*.tar.gz' -print -quit)"
+          test -n "$ARCHIVE_PATH"
+          ARCHIVE="$(basename "$ARCHIVE_PATH")"
+          mv -- "$ARCHIVE_PATH" "$ARCHIVE"
+          mkdir -p release-package/extracted
+          python3 scripts/extract_release_binary.py \
+            --archive "$ARCHIVE" \
+            --output release-package/extracted/voidtower
+          restic_password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          trap 'unset restic_password' EXIT
+          echo "::add-mask::$restic_password"
+          VOIDTOWER_REQUIRE_PACKAGED=1 RESTIC_PASSWORD="$restic_password" python3 scripts/write_external_gate_evidence.py \
+            --gate-id golden-path-runtime \
+            --workflow-job golden-path-runtime \
+            --candidate-commit "$GITHUB_SHA" \
+            --cwd backend \
+            --artifact "$ARCHIVE" \
+            --output release-external-golden-path-runtime.json \
+            -- cargo run --example golden_path
+          unset restic_password
+          trap - EXIT
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-external-golden-path-runtime
+          path: release-external-golden-path-runtime.json
+          if-no-files-found: error
+
+  secret-history-scan:
+    name: Release secret history scan
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Scan Git history for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+      - name: Mark successful secret-history scan
+        run: printf 'gitleaks passed\n' > .gitleaks-success
+      - name: Record external gate evidence
+        run: >-
+          python3 scripts/write_external_gate_evidence.py
+          --gate-id secret-history-scan
+          --workflow-job secret-history-scan
+          --candidate-commit "$GITHUB_SHA"
+          --cwd .
+          --observed-file .gitleaks-success
+          --output release-external-secret-history-scan.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-external-secret-history-scan
+          path: release-external-secret-history-scan.json
+          if-no-files-found: error
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, golden-path-runtime, secret-history-scan]
+    if: startsWith(github.ref, 'refs/tags/v') && github.ref_protected && needs.build.result == 'success' && needs.golden-path-runtime.result == 'success' && needs.secret-history-scan.result == 'success'
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    environment:
+      name: release
+      url: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
     runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           merge-multiple: true
           path: artifacts
 
-      - name: Merge checksums
-        run: cat artifacts/SHA256SUMS | sort -u > SHA256SUMS
+      - name: Validate and publish release evidence
+        run: |
+          python3 scripts/validate_release_evidence.py \
+            --root artifacts \
+            --manifest scripts/release-gates.json \
+            --expected-reports 2 \
+            --expected-commit "$GITHUB_SHA" \
+            --publication-root published-artifacts \
+            --checksums-output SHA256SUMS
 
-      - uses: softprops/action-gh-release@v2
+      - name: Attest release archives
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: published-artifacts/voidtower-*.tar.gz
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
-            artifacts/voidtower-*.tar.gz
+            published-artifacts/voidtower-*.tar.gz
+            published-artifacts/release-gate-*.json
+            published-artifacts/release-external-*.json
             SHA256SUMS
           generate_release_notes: true

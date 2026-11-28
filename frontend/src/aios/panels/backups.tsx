@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Play, ShieldCheck, FlaskConical, Trash2 } from 'lucide-react'
 import NativePanelShell, { NativeRow, StatusDot, IconBtn, EmptyState, LoadingState } from './NativePanelShell'
+import DurableJobNotice from '@/components/ui/DurableJobNotice'
+import { useDurableJobTracker } from '@/hooks/useDurableJobTracker'
+import type { DurableJobResponse } from '@/api/types'
+import { notify } from '@/store/notifications'
 
 interface Backup {
   id: string; name: string; last_run?: string; status?: string; schedule?: string
@@ -28,6 +32,7 @@ export default function NativeBackupsPanel() {
   const [backups, setBackups] = useState<Backup[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<Record<string, string>>({})
+  const { trackedJob, trackedLabel, tracking, track } = useDurableJobTracker()
 
   async function load() {
     const r = await fetch('/api/backups', { credentials: 'include' })
@@ -37,15 +42,24 @@ export default function NativeBackupsPanel() {
 
   async function act(id: string, label: string, path: string, method = 'POST') {
     setBusy(b => ({ ...b, [id]: label }))
-    await fetch(path, { method, credentials: 'include' })
-    setBusy(b => { const n = { ...b }; delete n[id]; return n })
-    load()
+    try {
+      const response = await fetch(path, { method, credentials: 'include' })
+      const body = await response.json()
+      if (!response.ok || !body.job) throw new Error(body.error?.message ?? 'Submission failed')
+      const { job } = body as DurableJobResponse
+      track(job, { label: `${label} backup`, onSucceeded: load })
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : `${label} backup failed`)
+    } finally {
+      setBusy(b => { const n = { ...b }; delete n[id]; return n })
+    }
   }
 
   useEffect(() => { load() }, [])
 
   return (
     <NativePanelShell>
+      <DurableJobNotice job={trackedJob} label={trackedLabel} tracking={tracking} />
       {loading ? <LoadingState /> : backups.length === 0 ? <EmptyState text="No backup jobs" /> :
         backups.map(b => {
           const conf = confidenceLabel(b.confidence)

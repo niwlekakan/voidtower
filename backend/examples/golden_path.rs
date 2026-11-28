@@ -733,19 +733,7 @@ async fn app_vault_teardown_removes_containers_and_optionally_volumes(
 /// Compatibility endpoints that mutate a resource now go through the canonical
 /// operation adapter and answer `202 Accepted` with a job envelope instead of the
 /// mutated row. Wait for the job to reach a terminal state and return its summary.
-async fn await_operation(server: &TestServer, response: Response, operation: &str) -> Result<Value> {
-    let status = response.status();
-    let body: Value = if status.is_success() {
-        response.json().await.unwrap_or(Value::Null)
-    } else {
-        let text = response.text().await.unwrap_or_default();
-        bail!("{operation} failed with {status}: {text}");
-    };
-    let job_id = body["job"]["id"]
-        .as_str()
-        .map(str::to_owned)
-        .with_context(|| format!("{operation} did not return a job envelope: {body}"))?;
-
+async fn wait_for_job(server: &TestServer, job_id: &str, operation: &str) -> Result<Value> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     loop {
         let response = server
@@ -767,6 +755,21 @@ async fn await_operation(server: &TestServer, response: Response, operation: &st
             other => bail!("{operation} did not finish in time (state {other})"),
         }
     }
+}
+
+async fn await_operation(server: &TestServer, response: Response, operation: &str) -> Result<Value> {
+    let status = response.status();
+    let body: Value = if status.is_success() {
+        response.json().await.unwrap_or(Value::Null)
+    } else {
+        let text = response.text().await.unwrap_or_default();
+        bail!("{operation} failed with {status}: {text}");
+    };
+    let job_id = body["job"]["id"]
+        .as_str()
+        .map(str::to_owned)
+        .with_context(|| format!("{operation} did not return a job envelope: {body}"))?;
+    wait_for_job(server, &job_id, operation).await
 }
 
 async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer) -> Result<()> {
@@ -968,7 +971,19 @@ async fn container_action(
         .send()
         .await
         .with_context(|| format!("send container {action_name} request"))?;
-    expect_success(response, &format!("container {action_name}")).await?;
+    let status = response.status();
+    let body: Value = if status.is_success() {
+        response.json().await.unwrap_or(Value::Null)
+    } else {
+        let text = response.text().await.unwrap_or_default();
+        bail!("container {action_name} failed with {status}: {text}");
+    };
+    // Actions may be submitted through the operation adapter. When the response
+    // carries a job, wait for it so the caller observes the finished state rather
+    // than racing the worker.
+    if let Some(job_id) = body["job"]["id"].as_str() {
+        wait_for_job(server, job_id, &format!("container {action_name}")).await?;
+    }
     Ok(())
 }
 

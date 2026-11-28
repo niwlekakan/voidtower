@@ -92,6 +92,10 @@ class InstallerTree:
     def use_install_dir(self, install_dir: Path) -> None:
         self.install_dir = install_dir
         self.install_dir.mkdir(parents=True, exist_ok=True)
+        # The default mkdir mode is umask-dependent: with the common 002 umask on
+        # Debian and GitHub runners the directory lands at 0775, which the installer
+        # then correctly refuses to restore into. Pin the mode the tests mean.
+        self.install_dir.chmod(0o755)
         self.installed = self.install_dir / BINARY_NAME
         self.previous = self.install_dir / f"{BINARY_NAME}.previous"
         self.manifest = self.install_dir / f"{BINARY_NAME}.previous.manifest"

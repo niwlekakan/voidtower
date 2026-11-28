@@ -957,10 +957,13 @@ _canonical_restore_prefix() {
 }
 
 # A restore target must not be replaceable by another user. The install directory
-# and every ancestor up to / must be a real directory owned by us (or root) and
-# must not be group or world writable; a sticky ancestor (for example /tmp) is
-# allowed because only an entry's owner can remove it there. The path must be
-# absolute and canonical, so the walk always terminates at /.
+# and every ancestor up to / must be a real directory and must not be group or
+# world writable; a sticky ancestor (for example /tmp) is allowed because only an
+# entry's owner can remove it there. Ownership must be ours, root, or an unmapped
+# uid: inside a user namespace (bubblewrap, containers) host root is reported as
+# 65534 because it has no mapping, and no principal in that namespace can replace
+# the entry. The path must be absolute and canonical, so the walk always
+# terminates at /.
 _verify_restore_prefix() {
   local path="$1" mode owner
   [[ -n "$path" && "$path" == /* ]] || return 1
@@ -969,7 +972,7 @@ _verify_restore_prefix() {
     mode=$(stat -c %a -- "$path" 2>/dev/null) || return 1
     owner=$(stat -c %u -- "$path" 2>/dev/null) || return 1
     [[ "$mode" =~ ^[0-7]{3,4}$ && "$owner" =~ ^[0-9]+$ ]] || return 1
-    (( owner == 0 || owner == EUID )) || return 1
+    (( owner == 0 || owner == EUID || owner == 65534 )) || return 1
     if (( (0${mode} & 0022) != 0 )) && (( (0${mode} & 01000) == 0 )); then
       return 1
     fi

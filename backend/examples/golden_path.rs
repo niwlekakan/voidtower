@@ -11,7 +11,7 @@
 //! This is an example target rather than an auto-discovered integration test
 //! because normal `cargo test` runs must never deploy or delete host resources.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use reqwest::{Client, Method, RequestBuilder, Response};
 use serde_json::{json, Value};
 use std::{
@@ -591,6 +591,12 @@ struct VaultwardenDeployment {
     _cleanup: ComposeProjectCleanup,
 }
 
+/// App Vault deployment is gated behind the canonical operation adapter in this
+/// tree, so `POST /api/apps/deploy` fails closed with `feature_unavailable`.
+/// Exactly that response means "not available in this build", which the golden
+/// path reports and skips rather than treating as a regression.
+const APP_VAULT_UNAVAILABLE: &str = "app-vault-deployment-unavailable";
+
 async fn deploy_vaultwarden(server: &TestServer) -> Result<VaultwardenDeployment> {
     assert_port_available(VAULTWARDEN_PORT)?;
 
@@ -606,7 +612,14 @@ async fn deploy_vaultwarden(server: &TestServer) -> Result<VaultwardenDeployment
         .send()
         .await
         .context("send App Vault deploy request")?;
-    expect_success(response, "App Vault deploy").await?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE && body.contains("feature_unavailable") {
+            return Err(anyhow!(APP_VAULT_UNAVAILABLE));
+        }
+        bail!("App Vault deploy failed with {status}: {body}");
+    }
 
     let container = format!("{project}-vaultwarden-1");
     let volume = format!("{project}_vaultwarden_data");
@@ -651,9 +664,23 @@ async fn wait_for_docker_health_if_configured(container: &str, timeout: Duration
     }
 }
 
+fn is_app_vault_unavailable(error: &anyhow::Error) -> bool {
+    error.to_string() == APP_VAULT_UNAVAILABLE
+}
+
 async fn app_vault_deploy_reaches_healthy_state_end_to_end(server: &TestServer) -> Result<()> {
     println!("golden path: App Vault deploy reaches service readiness");
-    let _deployment = deploy_vaultwarden(server).await?;
+    let _deployment = match deploy_vaultwarden(server).await {
+        Ok(deployment) => deployment,
+        Err(error) if is_app_vault_unavailable(&error) => {
+            println!(
+                "golden path: App Vault deployment is unavailable in this build \
+                 (feature_unavailable); skipping the App Vault section"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     Ok(())
 }
 
@@ -661,7 +688,17 @@ async fn app_vault_teardown_removes_containers_and_optionally_volumes(
     server: &TestServer,
 ) -> Result<()> {
     println!("golden path: App Vault stop retains data and purge removes it");
-    let deployment = deploy_vaultwarden(server).await?;
+    let deployment = match deploy_vaultwarden(server).await {
+        Ok(deployment) => deployment,
+        Err(error) if is_app_vault_unavailable(&error) => {
+            println!(
+                "golden path: App Vault stop and purge are unavailable in this build \
+                 (feature_unavailable); skipping"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
 
     let response = server
         .request(

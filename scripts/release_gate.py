@@ -1052,6 +1052,20 @@ def set_parent_death_signal() -> None:
             os.kill(os.getpid(), signal.SIGTERM)
 
 
+def gate_child_preexec() -> None:
+    """Deterministic umask, then parent-death signalling, for every gate child.
+
+    Gate results must not depend on the invoking shell's umask. Debian-family
+    user accounts and GitHub runners commonly run with 002, which makes code that
+    creates a directory with the default mode produce a group-writable directory.
+    The installer then correctly refuses to restore into it, so the same test
+    passes on one machine and fails on another. Pinning 022 makes the sandbox
+    environment identical everywhere.
+    """
+    os.umask(0o022)
+    set_parent_death_signal()
+
+
 def secure_path(path: Path, root: Path) -> bool:
     """Accept only executable paths outside the checkout with secure parents."""
     lexical_path = Path(os.path.abspath(path))
@@ -2163,6 +2177,14 @@ def sandboxed_command(
         "--ro-bind",
         "/",
         "/",
+        # A private /dev is required: with only a read-only bind of the host root,
+        # /dev/null is not writable inside the namespace and every gate script that
+        # redirects to it fails with "Permission denied". A private /proc keeps the
+        # namespace's own process view.
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
         "--tmpfs",
         "/home",
         "--tmpfs",
@@ -2581,7 +2603,7 @@ def run_gate(root: Path, gate: dict[str, Any]) -> dict[str, Any]:
                 stderr=subprocess.PIPE,
                 shell=False,
                 start_new_session=True,
-                preexec_fn=set_parent_death_signal,
+                preexec_fn=gate_child_preexec,
                 env=environment,
                 pass_fds=(cwd_descriptor, *sandbox_pass_fds),
             )

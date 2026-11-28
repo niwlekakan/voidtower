@@ -244,6 +244,8 @@ jobs:
         # A missing tool inside the sandbox surfaces 15 minutes later as exit 125
         # with "gate executable or command was unavailable". Print the selection
         # up front so the cause is visible in the first minute.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 - <<'PY'
           import json, os, shutil, sys

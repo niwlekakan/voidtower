@@ -730,6 +730,45 @@ async fn app_vault_teardown_removes_containers_and_optionally_volumes(
     Ok(())
 }
 
+/// Compatibility endpoints that mutate a resource now go through the canonical
+/// operation adapter and answer `202 Accepted` with a job envelope instead of the
+/// mutated row. Wait for the job to reach a terminal state and return its summary.
+async fn await_operation(server: &TestServer, response: Response, operation: &str) -> Result<Value> {
+    let status = response.status();
+    let body: Value = if status.is_success() {
+        response.json().await.unwrap_or(Value::Null)
+    } else {
+        let text = response.text().await.unwrap_or_default();
+        bail!("{operation} failed with {status}: {text}");
+    };
+    let job_id = body["job"]["id"]
+        .as_str()
+        .map(str::to_owned)
+        .with_context(|| format!("{operation} did not return a job envelope: {body}"))?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        let response = server
+            .request(Method::GET, &format!("/api/jobs/{job_id}"))
+            .send()
+            .await
+            .with_context(|| format!("poll job for {operation}"))?;
+        let body: Value = expect_success(response, operation).await?.json().await?;
+        let job = body.get("job").cloned().unwrap_or(body);
+        match job["state"].as_str().unwrap_or_default() {
+            "succeeded" => return Ok(job),
+            "failed" | "cancelled" | "rejected" | "expired" | "needs_attention" => {
+                bail!("{operation} ended in state {}: {job}", job["state"]);
+            }
+            other if tokio::time::Instant::now() < deadline => {
+                let _ = other;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            other => bail!("{operation} did not finish in time (state {other})"),
+        }
+    }
+}
+
 async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer) -> Result<()> {
     println!("golden path: restic backup, check, restore-test, and confidence");
 
@@ -739,59 +778,62 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
     std::fs::write(source_path.join("evidence.txt"), b"voidtower golden path\n")
         .context("write backup evidence")?;
 
+    let backup_name = unique_name("backup");
     let response = server
         .request(Method::POST, "/api/backups")
         .json(&json!({
-            "name": unique_name("backup"),
+            "name": backup_name,
             "source_path": source_path,
             "repo_path": repo_path,
         }))
         .send()
         .await
         .context("send backup creation request")?;
-    let created: Value = expect_success(response, "backup creation")
+    await_operation(server, response, "backup creation").await?;
+
+    // Creation returns a job, not the row, so resolve the config by its name.
+    let response = server
+        .request(Method::GET, "/api/backups")
+        .send()
+        .await
+        .context("list backups after creation")?;
+    let listed: Value = expect_success(response, "backup list after creation")
         .await?
         .json()
         .await?;
-    let id = created["id"]
-        .as_str()
-        .context("backup creation omitted id")?;
+    let id = listed["configs"]
+        .as_array()
+        .and_then(|configs| {
+            configs
+                .iter()
+                .find(|config| config["name"] == backup_name.as_str())
+        })
+        .and_then(|config| config["id"].as_str())
+        .map(str::to_owned)
+        .with_context(|| {
+            format!("backup creation produced no config named {backup_name}: {listed}")
+        })?;
 
     let response = server
         .request(Method::POST, &format!("/api/backups/{id}/run"))
         .send()
         .await
         .context("send backup run request")?;
-    let run: Value = expect_success(response, "backup run").await?.json().await?;
-    if run["status"] != "success" {
-        bail!("backup run did not succeed: {run}");
-    }
+    await_operation(server, response, "backup run").await?;
 
     let response = server
         .request(Method::POST, &format!("/api/backups/{id}/check"))
         .send()
         .await
         .context("send restic check request")?;
-    let check: Value = expect_success(response, "restic check")
-        .await?
-        .json()
-        .await?;
-    if check["status"] != "ok" {
-        bail!("restic check did not succeed: {check}");
-    }
+    await_operation(server, response, "restic check").await?;
 
     let response = server
         .request(Method::POST, &format!("/api/backups/{id}/restore-test"))
         .send()
         .await
         .context("send restore-test request")?;
-    let restore: Value = expect_success(response, "restore-test")
-        .await?
-        .json()
-        .await?;
-    if restore["status"] != "ok" {
-        bail!("restore-test did not succeed: {restore}");
-    }
+    await_operation(server, response, "restore-test").await?;
 
     let response = server
         .request(Method::GET, "/api/backups")
@@ -806,7 +848,7 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .as_array()
         .context("backup list omitted configs")?
         .iter()
-        .find(|config| config["id"].as_str() == Some(id))
+        .find(|config| config["id"].as_str() == Some(id.as_str()))
         .context("created backup missing from list")?;
 
     if config["last_status"] != "success"
@@ -837,7 +879,7 @@ async fn restic_backup_then_restore_test_reports_confidence(server: &TestServer)
         .as_array()
         .context("backup list omitted configs")?
         .iter()
-        .any(|config| config["id"].as_str() == Some(id))
+        .any(|config| config["id"].as_str() == Some(id.as_str()))
     {
         bail!("deleted backup configuration remained visible");
     }

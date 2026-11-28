@@ -203,23 +203,22 @@ jobs:
         with:
           components: clippy, rustfmt
       - name: Stage node and npm in a gate-trusted path
-        # The gate only trusts a tool when every ancestor is root- or self-owned
-        # and not group/world writable. /opt/hostedtoolcache is group-writable on
-        # these runners, so setup-node's node and npm are rejected by
-        # trusted_tool_directory and the frontend gates die with "gate executable
-        # or command was unavailable". Stage a root-owned copy under /usr/local,
-        # which is a trusted directory.
+        # The gate trusts a tool only when every ancestor is root- or self-owned and
+        # not group/world writable. On these runners both /opt/hostedtoolcache and
+        # /usr/local/bin are group-writable, so setup-node's node and npm are
+        # rejected and the frontend gates die with "gate executable or command was
+        # unavailable". Stage a root-owned copy at /usr/local/lib/node, whose
+        # ancestry is secure, and put its bin directory on PATH. The directory must
+        # be named after a toolchain marker ("node") for the gate to accept it.
         run: |
           NODE_ROOT="$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")"
-          sudo rm -rf /usr/local/lib/node-toolchain
-          sudo cp -a "$NODE_ROOT" /usr/local/lib/node-toolchain
-          sudo chown -R root:root /usr/local/lib/node-toolchain
-          sudo chmod -R go-w /usr/local/lib/node-toolchain
-          sudo ln -sfn /usr/local/lib/node-toolchain/bin/node /usr/local/bin/node
-          sudo ln -sfn /usr/local/lib/node-toolchain/bin/npm /usr/local/bin/npm
-          sudo ln -sfn /usr/local/lib/node-toolchain/bin/npx /usr/local/bin/npx
-          /usr/local/bin/node --version
-          /usr/local/bin/npm --version
+          sudo rm -rf /usr/local/lib/node
+          sudo cp -a "$NODE_ROOT" /usr/local/lib/node
+          sudo chown -R root:root /usr/local/lib/node
+          sudo chmod -R go-w /usr/local/lib/node
+          echo "/usr/local/lib/node/bin" >> "$GITHUB_PATH"
+          /usr/local/lib/node/bin/node --version
+          /usr/local/lib/node/bin/npm --version
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
